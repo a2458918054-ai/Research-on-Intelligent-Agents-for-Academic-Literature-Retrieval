@@ -1,0 +1,371 @@
+{
+  "title": "MuDAF: Long-Context Multi-Document Attention Focusing through Contrastive Learning on Attention Heads",
+  "authors": "Weihao Liu, Ning Wu, Shiping Yang∗, Wenbiao Ding,Shining Liang, Ming Gong, Dongmei ZhangMicrosoft Corporation, Beijing, Chinaliuweihao2022@outlook.com{wuning, v-shipiyang}@microsoft.com{wenbiaoding, shiningliang, migon, dongmeiz}@microsoft.comWork done during their internship at Microsoft.",
+  "abstract": "Large Language Models (LLMs) frequently show distracted attention due to irrelevant information in the input, which severely impairs their long-context capabilities. Inspired by recent studies on the effectiveness of retrieval heads in long-context factutality, we aim at addressing this distraction issue through improving such retrieval heads directly. We propose Multi-Document Attention Focusing (MuDAF), a novel method that explicitly optimizes the attention distribution at the head level through contrastive learning. According to the experimental results, MuDAF can significantly improve the long-context question answering performance of LLMs, especially in multi-document question answering. Extensive evaluations on retrieval scores and attention visualizations show that MuDAF possesses great potential in making attention heads more focused on relevant information and reducing attention distractions111https://github.com/NeosKnight233/MuDAF.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "As large language models (LLMs) continue to advance and find broader applications, the demand for their ability to efficiently handle ultra-long texts is growing. For instance, in Retrieval-Augmented Generation (RAG) systems (Gao et al., 2023; Jin et al., 2024) and LLM agent systems (Guo et al., 2024), models are often required to extract critical information from long-text corpora to accomplish complex generative tasks. However, research has shown that the real context window size of existing models often falls short of their claimed capabilities (An et al., 2024a), revealing significant shortcomings in their ability to utilize information from long inputs. This issue is particularly evident in two major challenges: the \"lost-in-the-middle\" (Liu et al., 2024a) phenomenon, where the middle portions of the text are neglected, and the interference from irrelevant information (Shi et al., 2023; Wu et al., 2024a). These challenges substantially hinder the performance of models in long-context tasks.",
+        "In recent years, many studies have conducted in-depth analyses of the role of attention mechanisms in long-context modeling (Chen et al., 2024; Hong et al., 2024; Zheng et al., 2024). Notably, some research has identified that specific attention heads found in the Needle-in-a-Haystack (NIAH) test are critical for long-context factuality and has named them retrieval heads (Wu et al., 2024c), which can perform a copy-paste operation from the input context to the output. Inspired by these works, we are extremely curious about such a question: How can we strengthen these retrieval heads directly to enhance models’ long-context modeling capabilities?",
+        "In this work, we care about long-context question answering (LCQA), especially multi-document question answering (MDQA), where the long input context contains many irrelevant documents and causes distractions. However, the retrieval heads in MDQA might be different from those in the NIAH test, since the NIAH test only shows the effectiveness of these heads in the copy-paste pattern. Considering the gap between them, we need to identify the retrieval heads in the MDQA setting and prove their effectiveness in helping models utilize relevant information in the context. As expected, we indeed found some retrieval heads that were different from those found in the NIAH test (§3.1), which may point to the fact that attention heads exhibit different levels of retrieval capabilities when applied to different tasks. Then, we explored methods to improve such retrieval heads in MDQA. As we know that attention weights are calculated by the softmax of the scaled dot product between query and key projections (Vaswani, 2017), it’s feasible to optimize the attention weights allocation by learning better projections. Therefore, we propose Multi-Document Attention Focusing (MuDAF), a method that applies contrastive learning on attention heads to help them learn better query-key projections, thus optimizing their attention distributions. As depicted in Figure 1, MuDAF can help attention heads be more focused on relevant passages while minimizing interference from irrelevant content.",
+        "In summary, our contributions are as follows.",
+        "• We provide a method to assess the retrieval capabilities of attention heads in multi-document question answering, distinguishing special retrieval heads that are different from those found in the NIAH test.",
+        "• We propose MuDAF, a novel approach based on contrastive learning that optimizes the attention pattern at the head level to improve the long-context modeling ability of LLMs, especially in MDQA tasks.",
+        "• Experiments show that our methods can significantly enhance the long-context performance of LLMs and surpass GPT-4o in some datasets.",
+        "• We did further analysis and ablations to show the effectiveness of our methods. Providing several insights about enhancing retrieval heads in MDQA."
+      ],
+      "subsections": []
+    },
+    "2 Related Work": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Attention-Based Salience for Long-Context.",
+          "paragraphs": [
+            "Since the attention mechanism was first introduced by (Bahdanau, 2014), attention weight has become an important tool for interpreting important information in the input sequence (Serrano and Smith, 2019; Ferrando et al., 2024). For example, Peysakhovich and Lerer (2023) use attention weights to estimate the importance of documents that can be leveraged to arrange their positions, thus improving the performance of long-context LLMs. Xiao et al. (2024) manage to reduce KV cache for attention heads based on their attention patterns. He et al. (2024a) investigate the importance of attention weights in knowledge retention. Obviously, the attention mechanism has not only been a critical and reliable information resource for processing various long-context tasks Xiao et al. ; Chen et al. (2024) but also presented substantial potential for further exploration and optimization (Wu et al., 2024c; Lu et al., 2024; He et al., 2024b). Our approach also highlights the function of certain attention heads in in-context retrieval (Ram et al., 2023), aiming at optimizing attention distribution to get better long-context LLMs."
+          ]
+        },
+        {
+          "title": "Distractions by Irrelevant Content.",
+          "paragraphs": [
+            "Previous research has shown that LLMs can be easily disturbed by irrelevant context Shi et al. (2023); Wu et al. (2024b), making them overallocate attention to useless content. Some methods have been proposed to mitigate such issues. Liu et al. (2024b) introduce an innovative framework that helps LLMs recognize relevant entities in long contexts through efficient reference management. Wu et al. (2024d) reduce distractions by aligning the representations of the original context and the retrieved sub-context. Xiong et al. (2024) enhance the retrieval capabilities of LLMs in highly similar contexts through fine-tuning on synthetic data. Another method proposes a novel differential attention mechanism to amplify attention to the relevant context while canceling attention noise (Ye et al., 2024). However, these methods do not explicitly optimize the attention distribution based on the input context, while our method provides a more straightforward and effective way."
+          ]
+        },
+        {
+          "title": "Contrastive Learning on Generative Models.",
+          "paragraphs": [
+            "As a self-supervised training technique, contrastive learning (cho, 2005; Hadsell et al., 2006; Robinson et al., 2021) has been widely leveraged in NLP tasks such as sentence embedding (Gao et al., 2021; Li et al., 2023; Zhang et al., 2022). With the advancement of generative language models (Radford et al., 2019), contrastive learning has also exhibited great potential in decoder-only architectures to achieve better hidden expressiveness (Su et al., 2022; Jain et al., 2023; Yan et al., 2024). For long-context tasks, Caciularu et al. (2022) utilize contrastive learning to explicitly discriminate representations of supporting evidence sentences from negative ones in long-context QA. Wu et al. (2024d) also leverage contrastive learning to align representations of different contexts. However, our method applies contrastive learning inside the attention head components instead of sequence representations. To the best of our knowledge, we are the first to show the effectiveness of optimizing attention distributions by adjusting the similarity between query and key projections at the head level directly."
+          ]
+        }
+      ]
+    },
+    "3 Method": {
+      "paragraphs": [
+        "In this section, we introduce our proposed method. We start by investigating the relationship between the performance of an LLM in MDQA and the ability of its attention heads for information retrieval to identify its retrieval heads (§3.1). We then discuss the details of our method (§3.2). An overview of our approach is provided in Figure 2."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Attention Heads Responsible for IR",
+          "paragraphs": [
+            "Information retrieval (IR) here means recognizing required information from noisy input context. Wu et al. (2024c) have proven the existence of retrieval heads in the NIAH test (i.e., NIAH retrieval heads), which implement the conditional copy algorithm and redirect information from the input to the output. However, it remains unclear whether these retrieval heads function similarly in other long-context tasks, such as MDQA, where LLMs are required to retrieve relevant information from previous passages to answer a given question rather than simply repeating patterns found in the context.",
+            "First, we manually labeled golden passages for all questions in the HotpotQA subset of LongBench. Our annotation pipeline can be found in Appendix A.1. We define the retrieval score of a given attention head as their ability to attend to golden passages among all input passages. Formally, for each question qq, we have several relevant golden passages PGP_{G} and quite a few irrelevant passages PIP_{I}. We mixed all PGP_{G} and PIP_{I} into a long input context 𝒞\\mathcal{C} in random order, then we concatenated the question qq to the end of 𝒞\\mathcal{C} to obtain the final prompt 𝒫\\mathcal{P}. For each attention head, we calculated its attention score over all input passages by summing the attention scores between the last token of the input and all tokens in the corresponding passages. The passage whose attention score was higher than a given threshold ϵ\\epsilon would be considered an attended passage PAhP_{A_{h}} of attention head hh. We then calculated the F1 score and EM score based on PGP_{G}, PIP_{I} and PAP_{A}. Figure 3 presents the curves of F1 scores and EM scores of all attention heads in Llama-3.1-8B Meta (2024), ranked in descending order of F1 scores. The final retrieval score ℛh\\mathcal{R}_{h} (0≤ℛh≤10\\leq\\mathcal{R}_{h}\\leq 1) of an attention head hh is the average F1 score on all HotpotQA test cases. The formula for calculating ℛh\\mathcal{R}_{h} is as follows:",
+            "Details about the calculation process can be found in Appendix A.2.",
+            "We found that retrieval scores decline smoothly from the strongest heads to the weakest heads, making it difficult to distinctly classify them as either \"strong\" or \"weak\" based on a clear threshold. For convenience, we consider the top 50 attention heads (about 5% of the total) as retrieval heads. To confirm the essentiality of these retrieval heads, we then carried out further masking experiments. As shown in Figure 4, the performance on LongBench is severely damaged when strong MDQA retrieval heads are masked, showing that they play a vital role in multi-document modeling. In addition, the model’s performance exhibits smaller fluctuations when random attention heads or NIAH retrieval heads are masked. This experimental result gives us a reliable direction for selecting which attention heads to optimize. In other words, we may assume that only by optimizing attention heads with a strong enough retrieval capability can we improve the long-context modeling ability of the model."
+          ]
+        },
+        {
+          "title": "3.2 Contrastive Learning for Optimizing Attention Heads",
+          "paragraphs": [
+            "We have proven that MDQA retrieval heads can offer reliable key information in input context, helping LLMs leverage golden information to answer the given question. Therefore, we propose MuDAF, a method based on joint training of casual language modeling (CLM) and contrastive learning, aiming at enhancing MDQA retrieval heads for a better focus on relevant context and reducing the distraction caused by irrelevant content.",
+            "To better describe our method, we first define some universal notations and variables:",
+            "• ℋ\\mathcal{H}: attention head set of the model. ℋi\\mathcal{H}_{i} means the attention head set in the iith layer of the model.",
+            "• NN: the number of layers that the model has.",
+            "• kk and 𝒦\\mathcal{K}: kk indicates the index of a certain passage. 𝒦\\mathcal{K} means the number of passages for a given example.",
+            "• [h][h]: a superscript that denotes a specific attention head.",
+            "ℋ\\mathcal{H}: attention head set of the model. ℋi\\mathcal{H}_{i} means the attention head set in the iith layer of the model.",
+            "NN: the number of layers that the model has.",
+            "kk and 𝒦\\mathcal{K}: kk indicates the index of a certain passage. 𝒦\\mathcal{K} means the number of passages for a given example.",
+            "[h][h]: a superscript that denotes a specific attention head.",
+            "We perform a simplification to the attention mechanism in the MDQA setting that makes it easy to understand our optimization goal.",
+            "Let 𝒞\\mathcal{C} represent the holistic long context, which consists of golden passages PGP_{G}, irrelevant passages PIP_{I} and the question qq. We assume that LLMs can better answer a question if they attain more hidden information directly from golden passages PGP_{G}. To describe this information aggregation process more concisely, we define the hidden information of passage PkP_{k} stored at layer ii as ℐi,k\\mathcal{I}_{i,k}, and we only consider the attention distribution of the last input token. We simply define a substitutive attention weight of head hh for a passage PkP_{k} as 𝒜k[h]\\mathcal{A}^{[h]}_{k}. Meanwhile, for other tokens in the input, we define their attention weight and hidden information as 𝒜∘[h]\\mathcal{A}^{[h]}_{\\circ} and ℐi−1\\mathcal{I}_{i-1}. Then we can simply denote the information obtained by layer ii as follows:",
+            "where 𝒪i\\mathcal{O}_{i} represents the output projection module of layer ii, ℋi\\mathcal{H}_{i} represents the attention heads set of layer ii, 𝒜k[h]\\mathcal{A}^{[h]}_{k} is the attention score on passage PkP_{k}, while 𝒜∘[h]\\mathcal{A}^{[h]}_{\\circ} represents the sum of attention scores of all other non-passage tokens. To make LLMs gain more information from golden passages and mitigate the disturbance by irrelevant passages, our optimization goal is to increase the attention weights assigned to golden passages PGP_{G} while reducing the attention weights assigned to irrelevant passages PIP_{I}. Formally, a multi-head attention score (Vaswani, 2017) between the last input token tt and a token ii inside a passage can be expressed as:",
+            "Intuitively, the attention score can be raised through aligning the representations of Qt[h]Q^{[h]}_{t} and Ki[h]K^{[h]}_{i}, as well as pushing apart Qt[h]Q^{[h]}_{t} and KK projections of other tokens in the embedding space. Therefore, we can leverage contrastive learning (Hadsell et al., 2006) at the head level inside the attention mechanism to adjust the attention allocation. In our approach, we argue that aggregating the representations of all tokens in a passage for contrastive learning is as effective as performing contrastive learning on the representation of each individual token. Hence, we perform an average pooling operation on KK projections of all tokens to obtain the overall KK representation of a passage. Then the attention weight 𝒜k[h]\\mathcal{A}^{[h]}_{k} can be written as:",
+            "We denote the pooled KK representation of passage PkP_{k} as KPK_{P}:",
+            "To magnify the attention weight allocated to golden passages, the objective of the contrastive learning is to maximize the similarity between Qt[h]Q^{[h]}_{t} and KPG[h]K^{[h]}_{P_{G}}, while pushing apart the representations of Qt[h]Q^{[h]}_{t} and KPI[h]K^{[h]}_{P_{I}}. Therefore, the loss function can be presented as follows:",
+            "where P=PG∪PIP=P_{G}\\cup P_{I}, sim(⋅\\cdot,⋅\\cdot) denotes the cosine similarity function and τ\\tau is a temperature hyperparameter. Finally, we combine LCONL_{\\text{CON}} with a Causal Language Modeling (CLM) loss function as the overall loss function:",
+            "where λ\\lambda is a hyperparameter to control the weight of ℒCON\\mathcal{L}_{\\text{CON}}."
+          ]
+        },
+        {
+          "title": "Preliminary.",
+          "paragraphs": [
+            "To better describe our method, we first define some universal notations and variables:",
+            "• ℋ\\mathcal{H}: attention head set of the model. ℋi\\mathcal{H}_{i} means the attention head set in the iith layer of the model.",
+            "• NN: the number of layers that the model has.",
+            "• kk and 𝒦\\mathcal{K}: kk indicates the index of a certain passage. 𝒦\\mathcal{K} means the number of passages for a given example.",
+            "• [h][h]: a superscript that denotes a specific attention head.",
+            "ℋ\\mathcal{H}: attention head set of the model. ℋi\\mathcal{H}_{i} means the attention head set in the iith layer of the model.",
+            "NN: the number of layers that the model has.",
+            "kk and 𝒦\\mathcal{K}: kk indicates the index of a certain passage. 𝒦\\mathcal{K} means the number of passages for a given example.",
+            "[h][h]: a superscript that denotes a specific attention head."
+          ]
+        },
+        {
+          "title": "Attention Simplification for MDQA.",
+          "paragraphs": [
+            "We perform a simplification to the attention mechanism in the MDQA setting that makes it easy to understand our optimization goal.",
+            "Let 𝒞\\mathcal{C} represent the holistic long context, which consists of golden passages PGP_{G}, irrelevant passages PIP_{I} and the question qq. We assume that LLMs can better answer a question if they attain more hidden information directly from golden passages PGP_{G}. To describe this information aggregation process more concisely, we define the hidden information of passage PkP_{k} stored at layer ii as ℐi,k\\mathcal{I}_{i,k}, and we only consider the attention distribution of the last input token. We simply define a substitutive attention weight of head hh for a passage PkP_{k} as 𝒜k[h]\\mathcal{A}^{[h]}_{k}. Meanwhile, for other tokens in the input, we define their attention weight and hidden information as 𝒜∘[h]\\mathcal{A}^{[h]}_{\\circ} and ℐi−1\\mathcal{I}_{i-1}. Then we can simply denote the information obtained by layer ii as follows:",
+            "where 𝒪i\\mathcal{O}_{i} represents the output projection module of layer ii, ℋi\\mathcal{H}_{i} represents the attention heads set of layer ii, 𝒜k[h]\\mathcal{A}^{[h]}_{k} is the attention score on passage PkP_{k}, while 𝒜∘[h]\\mathcal{A}^{[h]}_{\\circ} represents the sum of attention scores of all other non-passage tokens. To make LLMs gain more information from golden passages and mitigate the disturbance by irrelevant passages, our optimization goal is to increase the attention weights assigned to golden passages PGP_{G} while reducing the attention weights assigned to irrelevant passages PIP_{I}. Formally, a multi-head attention score (Vaswani, 2017) between the last input token tt and a token ii inside a passage can be expressed as:",
+            "Intuitively, the attention score can be raised through aligning the representations of Qt[h]Q^{[h]}_{t} and Ki[h]K^{[h]}_{i}, as well as pushing apart Qt[h]Q^{[h]}_{t} and KK projections of other tokens in the embedding space. Therefore, we can leverage contrastive learning (Hadsell et al., 2006) at the head level inside the attention mechanism to adjust the attention allocation. In our approach, we argue that aggregating the representations of all tokens in a passage for contrastive learning is as effective as performing contrastive learning on the representation of each individual token. Hence, we perform an average pooling operation on KK projections of all tokens to obtain the overall KK representation of a passage. Then the attention weight 𝒜k[h]\\mathcal{A}^{[h]}_{k} can be written as:",
+            "We denote the pooled KK representation of passage PkP_{k} as KPK_{P}:"
+          ]
+        },
+        {
+          "title": "Objective of Contrastive Learning.",
+          "paragraphs": [
+            "To magnify the attention weight allocated to golden passages, the objective of the contrastive learning is to maximize the similarity between Qt[h]Q^{[h]}_{t} and KPG[h]K^{[h]}_{P_{G}}, while pushing apart the representations of Qt[h]Q^{[h]}_{t} and KPI[h]K^{[h]}_{P_{I}}. Therefore, the loss function can be presented as follows:",
+            "where P=PG∪PIP=P_{G}\\cup P_{I}, sim(⋅\\cdot,⋅\\cdot) denotes the cosine similarity function and τ\\tau is a temperature hyperparameter. Finally, we combine LCONL_{\\text{CON}} with a Causal Language Modeling (CLM) loss function as the overall loss function:",
+            "where λ\\lambda is a hyperparameter to control the weight of ℒCON\\mathcal{L}_{\\text{CON}}."
+          ]
+        }
+      ]
+    },
+    "4 Experiments": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "4.1 Setup",
+          "paragraphs": [
+            "We evaluated our fine-tuned models on LCQA datasets, including both multi-document question answering and single-document question answering subsets from LongBench (Bai et al., 2024) and ZeroSCROLLS benchmarks (Shaham et al., 2023). LongBench is a bilingual and multitask benchmark for long-context understanding. Among its subsets, we included HotpotQA (Yang et al., 2018), 2WikiMQA (Ho et al., 2020), MuSiQue Trivedi et al. (2022) and Qasper (Dasigi et al., 2021). ZeroSCROLLS also provides various datasets for evaluating models’ capabilities in synthesizing information over long texts, and we included the MuSiQue and Qasper subsets from it. The statistics of benchmarks are listed in Table 1.",
+            "We compared our approach to several popular and strong long-context LLMs, including GPT-3.5 Turbo (OpenAI, 2022), GPT-4o (OpenAI, 2024), FILM-7B (An et al., 2024b), ChatQA-2-8B (Xu et al., 2024), ProLong-8B-64k222https://huggingface.co/princeton-nlp/Llama-3-8B-ProLong-64k-Base (Gao et al., 2024), and Llama3.1-8B-Instruct-128k Meta (2024). In this paper, our method are applied to the foundation model Llama-3.1-8B Dubey et al. (2024), which has 128K context length. We also include an intuitive vanilla supervised fine-tuning (Vanilla-SFT) baseline that fine-tuning the foundation model only with ℒCLM\\mathcal{L}_{\\text{CLM}} loss.",
+            "We adopted the training dataset of HotpotQA (Yang et al., 2018) with additional hard negative passages. Here negative samples are enriched by similar passages collected from the work by Jiang et al. (2024), where they grouped multiple Wikipedia documents through hyperlinks. Thus, we expanded negative passages utilizing the group of existing passages in the original set."
+          ]
+        },
+        {
+          "title": "Benchmarks",
+          "paragraphs": [
+            "We evaluated our fine-tuned models on LCQA datasets, including both multi-document question answering and single-document question answering subsets from LongBench (Bai et al., 2024) and ZeroSCROLLS benchmarks (Shaham et al., 2023). LongBench is a bilingual and multitask benchmark for long-context understanding. Among its subsets, we included HotpotQA (Yang et al., 2018), 2WikiMQA (Ho et al., 2020), MuSiQue Trivedi et al. (2022) and Qasper (Dasigi et al., 2021). ZeroSCROLLS also provides various datasets for evaluating models’ capabilities in synthesizing information over long texts, and we included the MuSiQue and Qasper subsets from it. The statistics of benchmarks are listed in Table 1."
+          ]
+        },
+        {
+          "title": "Baselines and Foundation Models",
+          "paragraphs": [
+            "We compared our approach to several popular and strong long-context LLMs, including GPT-3.5 Turbo (OpenAI, 2022), GPT-4o (OpenAI, 2024), FILM-7B (An et al., 2024b), ChatQA-2-8B (Xu et al., 2024), ProLong-8B-64k222https://huggingface.co/princeton-nlp/Llama-3-8B-ProLong-64k-Base (Gao et al., 2024), and Llama3.1-8B-Instruct-128k Meta (2024). In this paper, our method are applied to the foundation model Llama-3.1-8B Dubey et al. (2024), which has 128K context length. We also include an intuitive vanilla supervised fine-tuning (Vanilla-SFT) baseline that fine-tuning the foundation model only with ℒCLM\\mathcal{L}_{\\text{CLM}} loss."
+          ]
+        },
+        {
+          "title": "Training Data",
+          "paragraphs": [
+            "We adopted the training dataset of HotpotQA (Yang et al., 2018) with additional hard negative passages. Here negative samples are enriched by similar passages collected from the work by Jiang et al. (2024), where they grouped multiple Wikipedia documents through hyperlinks. Thus, we expanded negative passages utilizing the group of existing passages in the original set."
+          ]
+        },
+        {
+          "title": "4.2 Implementation Details",
+          "paragraphs": [
+            "To implement MuDAF, we first select several strong MDQA retrieval heads for contrastive learning. Since we have got retrieval scores of all attention heads in section §3.1, we could simply select retrieval heads with the highest retrieval score. However, we found that this greedy strategy is not the best and not robust. We thus use a weighted random selection algorithm that randomly picks attention heads based on their retrieval scores. More specifically, given attention heads set ℋ\\mathcal{H} and their retrieval scores {ℛh}\\{\\mathcal{R}_{h}\\}, the probability P​(h)P(h) of selecting the attention head hh is computed as:",
+            "where τ>0\\tau>0 is a temperature parameter (e.g., 0.05), ℋ\\mathcal{H} denotes all attention heads. We set the number of selected target heads to 8.",
+            "One training sample of contrastive learning contains one golden passage to the given question and many negative passages. We separately compute QQ projection for the last token of the question and pooled KPK_{P} projection for all passages. During the similarity calculation, we concatenate corresponding representations from all selected attention heads and calculate the overall cosine similarity between them. We found that this implementation is more stable and also effective compared with calculating the similarity for each attention head separately. For Vanilla SFT, the order of input passages is randomly shuffled before forming an MDQA input and computing CLM loss. More details can be found in Appendix B."
+          ]
+        },
+        {
+          "title": "Target Heads Selection",
+          "paragraphs": [
+            "To implement MuDAF, we first select several strong MDQA retrieval heads for contrastive learning. Since we have got retrieval scores of all attention heads in section §3.1, we could simply select retrieval heads with the highest retrieval score. However, we found that this greedy strategy is not the best and not robust. We thus use a weighted random selection algorithm that randomly picks attention heads based on their retrieval scores. More specifically, given attention heads set ℋ\\mathcal{H} and their retrieval scores {ℛh}\\{\\mathcal{R}_{h}\\}, the probability P​(h)P(h) of selecting the attention head hh is computed as:",
+            "where τ>0\\tau>0 is a temperature parameter (e.g., 0.05), ℋ\\mathcal{H} denotes all attention heads. We set the number of selected target heads to 8."
+          ]
+        },
+        {
+          "title": "Fine-tuning Details",
+          "paragraphs": [
+            "One training sample of contrastive learning contains one golden passage to the given question and many negative passages. We separately compute QQ projection for the last token of the question and pooled KPK_{P} projection for all passages. During the similarity calculation, we concatenate corresponding representations from all selected attention heads and calculate the overall cosine similarity between them. We found that this implementation is more stable and also effective compared with calculating the similarity for each attention head separately. For Vanilla SFT, the order of input passages is randomly shuffled before forming an MDQA input and computing CLM loss. More details can be found in Appendix B."
+          ]
+        },
+        {
+          "title": "4.3 Main Results",
+          "paragraphs": [
+            "Our method significantly enhances the model’s LCQA performance. Table 2 compares the performance of our method with other baselines. MuDAF shows great potential in enhancing the LCQA performance of models, getting +12.7% improvement on average scores compared with the Vanilla-SFT baseline. Meanwhile, our method is also effective on single-document question-answering datasets (e.g., Qasper), indicating that our method is also robust in enhancing the retrieval capabilities of LLMs in one long document. Moreover, our method achieves comparable performance to that of GPT-4o, and even performs better on some datasets, proving the effectiveness of our method. Note that one in five questions of the MuSiQue subset from ZeroSCROLLS are unanswerable, which may have affected the performance of our method on this dataset.",
+            "Besides improvements on QA performance, we want to examine whether MuDAF can genuinely strengthen the retrieval capabilities of target attention heads. Therefore, we make a comparison of target attention heads’ retrieval scores between the original model, MuDAF and Vanilla-SFT. As shown in Figure 5, all target attention heads get significant enhancement from MuDAF on retrieval scores compared with the original model, and the optimization gains are also substantially larger than those observed with the Vanilla-SFT baseline. For example, head 16-9 achieves a +0.48 improvement in retrieval scores through MuDAF, elevating its ranking from the 119th to the 3rd place instantaneously. In contrast, the Vanilla-SFT baseline brings few improvements to its ranking. It is worth noting that stronger heads often achieve smaller improvements, indicating that it is easier to enhance those attention heads in the middle part."
+          ]
+        },
+        {
+          "title": "Enhancement on LCQA Performance.",
+          "paragraphs": [
+            "Our method significantly enhances the model’s LCQA performance. Table 2 compares the performance of our method with other baselines. MuDAF shows great potential in enhancing the LCQA performance of models, getting +12.7% improvement on average scores compared with the Vanilla-SFT baseline. Meanwhile, our method is also effective on single-document question-answering datasets (e.g., Qasper), indicating that our method is also robust in enhancing the retrieval capabilities of LLMs in one long document. Moreover, our method achieves comparable performance to that of GPT-4o, and even performs better on some datasets, proving the effectiveness of our method. Note that one in five questions of the MuSiQue subset from ZeroSCROLLS are unanswerable, which may have affected the performance of our method on this dataset."
+          ]
+        },
+        {
+          "title": "Achieving More Focused Retrieval Heads.",
+          "paragraphs": [
+            "Besides improvements on QA performance, we want to examine whether MuDAF can genuinely strengthen the retrieval capabilities of target attention heads. Therefore, we make a comparison of target attention heads’ retrieval scores between the original model, MuDAF and Vanilla-SFT. As shown in Figure 5, all target attention heads get significant enhancement from MuDAF on retrieval scores compared with the original model, and the optimization gains are also substantially larger than those observed with the Vanilla-SFT baseline. For example, head 16-9 achieves a +0.48 improvement in retrieval scores through MuDAF, elevating its ranking from the 119th to the 3rd place instantaneously. In contrast, the Vanilla-SFT baseline brings few improvements to its ranking. It is worth noting that stronger heads often achieve smaller improvements, indicating that it is easier to enhance those attention heads in the middle part."
+          ]
+        },
+        {
+          "title": "4.4 Analysis",
+          "paragraphs": [
+            "In this paper, we regard attention heads with low retrieval scores (i.e., ℛh\\mathcal{R}_{h} < 0.1) as weak attention heads. Due to the promising improvements of both performance and retrieval scores when applying MuDAF to strong retrieval heads, we are curious about whether our method could transform weak attention heads into heads with a certain retrieval capability. Therefore, we randomly selected attention heads whose retrieval scores are nearly zero for optimization. As shown in Table 2, the overall performance is relatively weak, but it is still an improvement compared with the Vanilla-SFT baseline. We further calculated their retrieval scores after the training stage. As illustrated in Figure 6, MuDAF can exactly enhance the retrieval capabilities of these weak heads, while Vanilla-SFT does nothing in it. This phenomenon manifests that we could adjust the attention pattern of one head through MuDAF towards retrieval heads even though they are extremely weak attention heads in the original model. But at the same time, obviously we can hardly achieve the same performance as strong retrieval heads do since their attention values are still relatively low in the middle context.",
+            "Although we are focusing on target attention heads in previous experiments, the model parameters of other parts are not frozen, making them possible to get improved as well. So we also calculated the attention scores after the training for other attention heads that are not directly selected for the contrastive learning. Surprisingly, we found that most attention heads within the same layer can also be optimized when incorporating at least one attention head in the contrastive learning process. We discuss more about this interesting phenomenon in Appendix C.",
+            "We wonder if it is possible to get a stronger model through applying MuDAF to more attention heads. Unfortunately, we discovered a bottleneck when scaling the number of trained attention heads. As depicted in Figure 7, we did not see much improvement if we consistently increased the number of selected attention heads beyond 8 heads. Furthermore, if we engage all attention heads in contrastive learning, the training will become unstable and struggle to converge, leading to a collapse of the overall performance. We remain the investigation of this bottleneck as future research.",
+            "We present a case study to show the effectiveness of MuDAF to make the model be more focused on relevant passages within a long context. Through our observations, our approach can correct incorrect attention assignments while enhancing attention weights allocated to golden documents, exhibiting its potential to convert weak attention heads into retrieval-capable attention heads. Details are provided in Appendix E."
+          ]
+        },
+        {
+          "title": "Effectiveness on Weak Heads.",
+          "paragraphs": [
+            "In this paper, we regard attention heads with low retrieval scores (i.e., ℛh\\mathcal{R}_{h} < 0.1) as weak attention heads. Due to the promising improvements of both performance and retrieval scores when applying MuDAF to strong retrieval heads, we are curious about whether our method could transform weak attention heads into heads with a certain retrieval capability. Therefore, we randomly selected attention heads whose retrieval scores are nearly zero for optimization. As shown in Table 2, the overall performance is relatively weak, but it is still an improvement compared with the Vanilla-SFT baseline. We further calculated their retrieval scores after the training stage. As illustrated in Figure 6, MuDAF can exactly enhance the retrieval capabilities of these weak heads, while Vanilla-SFT does nothing in it. This phenomenon manifests that we could adjust the attention pattern of one head through MuDAF towards retrieval heads even though they are extremely weak attention heads in the original model. But at the same time, obviously we can hardly achieve the same performance as strong retrieval heads do since their attention values are still relatively low in the middle context."
+          ]
+        },
+        {
+          "title": "Whole-layer Optimization.",
+          "paragraphs": [
+            "Although we are focusing on target attention heads in previous experiments, the model parameters of other parts are not frozen, making them possible to get improved as well. So we also calculated the attention scores after the training for other attention heads that are not directly selected for the contrastive learning. Surprisingly, we found that most attention heads within the same layer can also be optimized when incorporating at least one attention head in the contrastive learning process. We discuss more about this interesting phenomenon in Appendix C."
+          ]
+        },
+        {
+          "title": "Bottleneck When Scaling the Number of Target Heads.",
+          "paragraphs": [
+            "We wonder if it is possible to get a stronger model through applying MuDAF to more attention heads. Unfortunately, we discovered a bottleneck when scaling the number of trained attention heads. As depicted in Figure 7, we did not see much improvement if we consistently increased the number of selected attention heads beyond 8 heads. Furthermore, if we engage all attention heads in contrastive learning, the training will become unstable and struggle to converge, leading to a collapse of the overall performance. We remain the investigation of this bottleneck as future research."
+          ]
+        },
+        {
+          "title": "Case study.",
+          "paragraphs": [
+            "We present a case study to show the effectiveness of MuDAF to make the model be more focused on relevant passages within a long context. Through our observations, our approach can correct incorrect attention assignments while enhancing attention weights allocated to golden documents, exhibiting its potential to convert weak attention heads into retrieval-capable attention heads. Details are provided in Appendix E."
+          ]
+        }
+      ]
+    },
+    "5 Conclusion": {
+      "paragraphs": [
+        "In this paper, we focus on optimizing specific attention heads to enhance their ability to concentrate on relevant content in LCQA tasks. Our analysis reveals the existence of specialized retrieval heads in the MDQA setting that differ from those found in the NIAH test. To improve these retrieval heads, we introduce MuDAF, an approach that significantly enhances the retrieval capabilities of attention heads in MDQA regardless of their initial strength. Consequently, the performance of LLMs in LCQA tasks gets remarkable improvements as well. Our method and experiments draw a promising roadmap and provide valuable insights in utilizing contrastive learning to optimize the attention distribution at the head level in MDQA tasks."
+      ],
+      "subsections": []
+    },
+    "Limitations": {
+      "paragraphs": [
+        "Although we see improvements on attention scores and the LCQA performance through our method, it is still hard to explain the relationship between optimizing a certain head’s attention distribution and the final output of the model, since other attention heads also engage in reasoning and making the final response.",
+        "Moreover, our approach can be affected by the position of the question, which means the model can better retrieve relevant documents in the input through attention focusing only when the question is at the end of the input sequence. It is of great importance if we can design a more robust method to mitigate such positional bias."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Retrieval Head Detection": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "A.1 LongBench Annotation",
+          "paragraphs": [
+            "Each question in the HotpotQA subset of LongBench has at least two relevant passages that contain essential information to answer the question. We manually reviewed each question and annotated its golden passages. Figure 8 shows the annotation interface we used."
+          ]
+        },
+        {
+          "title": "A.2 Retrieval Score Calculation",
+          "paragraphs": [
+            "Assume that for a given question qq, we have: These passages are concatenated (in random order) to form the input context 𝒞\\mathcal{C}. An attention head hh assigns an attention weight apa_{p} to every passage p∈𝒞p\\in\\mathcal{C} (by summing the attention weights over tokens in the passage from the last token of the prompt). In the following we describe two retrieval metrics computed for head hh.",
+            "• A set of golden (i.e., relevant) passages, PGP_{G}.",
+            "• A set of irrelevant passages, PIP_{I}.",
+            "A set of golden (i.e., relevant) passages, PGP_{G}.",
+            "A set of irrelevant passages, PIP_{I}.",
+            "For the EM metric, the ranking of passages by their attention weights is used directly without considering the threshold ϵ\\epsilon. Let",
+            "be the number of golden passages. Define a permutation σh\\sigma_{h} that sorts the passages in 𝒞\\mathcal{C} in descending order of attention weight:",
+            "Then, for a given question qq, the EM Retrieval Score for head hh is defined as:",
+            "That is, if the top XX passages (i.e., the XX passages with the highest attention weights) are exactly the golden passages, we consider the retrieval perfect and set EMh​(q)=1\\text{EM}_{h}(q)=1. Otherwise, EMh​(q)=0\\text{EM}_{h}(q)=0. The overall EM Retrieval Score for attention head hh is then the average over all test queries:",
+            "where QQ is the set of test questions.",
+            "For the F1 metric, we first use a fixed threshold ϵ\\epsilon to decide whether a passage is attended. Specifically, define the set of passages attended by head hh for question qq as:",
+            "Then, we compute the precision and recall based on the golden set PGP_{G} and the attended set PAh​(q)P_{A_{h}}(q):",
+            "The F1 Retrieval Score for head hh on question qq is then defined as the harmonic mean of precision and recall:",
+            "with the convention that if both precision and recall are zero, we set F​1​(q)=0F1(q)=0. Finally, the overall F1 Retrieval Score for attention head hh is obtained by averaging over all test queries:",
+            "Averaging these scores over the test set QQ yields ℛhEM\\mathcal{R}_{h}^{\\text{EM}} [Eq. (10)] and ℛhF1\\mathcal{R}_{h}^{\\text{F1}} [Eq. (15)], which serve as our final metrics for evaluating the retrieval capability of attention head hh."
+          ]
+        },
+        {
+          "title": "EM Retrieval Score.",
+          "paragraphs": [
+            "For the EM metric, the ranking of passages by their attention weights is used directly without considering the threshold ϵ\\epsilon. Let",
+            "be the number of golden passages. Define a permutation σh\\sigma_{h} that sorts the passages in 𝒞\\mathcal{C} in descending order of attention weight:",
+            "Then, for a given question qq, the EM Retrieval Score for head hh is defined as:",
+            "That is, if the top XX passages (i.e., the XX passages with the highest attention weights) are exactly the golden passages, we consider the retrieval perfect and set EMh​(q)=1\\text{EM}_{h}(q)=1. Otherwise, EMh​(q)=0\\text{EM}_{h}(q)=0. The overall EM Retrieval Score for attention head hh is then the average over all test queries:",
+            "where QQ is the set of test questions."
+          ]
+        },
+        {
+          "title": "F1 Retrieval Score.",
+          "paragraphs": [
+            "For the F1 metric, we first use a fixed threshold ϵ\\epsilon to decide whether a passage is attended. Specifically, define the set of passages attended by head hh for question qq as:",
+            "Then, we compute the precision and recall based on the golden set PGP_{G} and the attended set PAh​(q)P_{A_{h}}(q):",
+            "The F1 Retrieval Score for head hh on question qq is then defined as the harmonic mean of precision and recall:",
+            "with the convention that if both precision and recall are zero, we set F​1​(q)=0F1(q)=0. Finally, the overall F1 Retrieval Score for attention head hh is obtained by averaging over all test queries:",
+            "Averaging these scores over the test set QQ yields ℛhEM\\mathcal{R}_{h}^{\\text{EM}} [Eq. (10)] and ℛhF1\\mathcal{R}_{h}^{\\text{F1}} [Eq. (15)], which serve as our final metrics for evaluating the retrieval capability of attention head hh."
+          ]
+        }
+      ]
+    },
+    "Appendix B More Implementation Details": {
+      "paragraphs": [
+        "We fine-tuned the Llama3.1-8B model with full parameters fine-tuning on 32 (2*16) 64G AMD INSTINCT MI250X GPUs. The distributed training was run with the DeepSpeed (Rasley et al., 2020) framework with ZeRO stage 2. The learning rate is 5e-6. We use AdamW (Loshchilov and Hutter, 2019) as the optimizer with β1=0.9\\beta_{1}=0.9 and β2=0.999\\beta_{2}=0.999. The template for the training sequence is: \"Based on the following passages, answer the question.\\n\\n<passages>\\n{body}\\n\\n</passages>\\n\\n Question: {question}\\nAnswer: {answer}\". The default EOS token is ’</s>’."
+      ],
+      "subsections": []
+    },
+    "Appendix C Analysis on Whole-layer Optimization": {
+      "paragraphs": [
+        "We compared the retrieval scores of attention heads by layer between the Vanilla-SFT baseline, MuDAF-strong and MuDAF-weak. Considering the different layers of selected attention heads, we can analyze the impact of a certain head on its layer. Table 3 shows the layer distribution of the two selection strategies. Considering some representative layers: 15, 16, 17, 25. For the layer 15, neither MuDAF-strong nor MuDAF-weak has heads from this layer, so most attention heads in this layer are not influenced with some of them being harmed actually (the line chart is below the zero threshold); For layer 16, both MuDAF-strong and MuDAF-weak select heads from it (four heads fror MuDAF-strong and one head for MuDAF-weak). As we can see, most attention heads are enhanced through MuDAF-strong, even though they are not selected directly, and the improvement is much bigger than MuDAF-weak. Meanwhile, nearly half of the attention heads also get enhanced through MuDAF-weak, indicating that it is also helpful by selecting just one head; Finally, for layer 17 and 25, we can clearly observe that the retrieval scores of all attention heads are significantly improved when the corresponding strategy optimizes more attention heads at that layer (i.e., MuDAF-strong for layer 17 and MuDAF-weak for layer 25). In the contrast, basically no improvement can be seen if no attention head is selected in that layer. We speculate that this phenomenon is related to the Grouped-Query Attention (GQA) (Ainslie et al., 2023), where query heads are divided into several subgroups and each subgroup has only one corresponding key head. It also partly explains why MuDAF-weak can still achieve appreciable improvements in the overall performance, given that there may exist some relatively strong attention heads within the same group.",
+        "[Figure: Figure 8: Our annotation interface with attention visualization for reference.]",
+        "[Figure: Figure 9: Retrieval scores of all attention heads listed by layer. The bars present the value of retrieval scores, while the line charts mean the difference between MuDAF-* and the Vanilla-SFT baseline.]",
+        "[Table: Table 3: The distribution of selected attention heads in two different selection strategies.]"
+      ],
+      "subsections": []
+    },
+    "Appendix D More Experimental Results": {
+      "paragraphs": [
+        "We provides full results for the ablation study on the number of selected attention heads in Table 4.",
+        "[Table: Table 4: Ablations on the number of selected attention heads.]"
+      ],
+      "subsections": []
+    },
+    "Appendix E Case Study": {
+      "paragraphs": [
+        "Figure 10 and Figure 11 show two cases that compare the output and attention distribution between Llama3.1-8B-Vanilla-SFT and Llama3.1-8B-MuDAF. MuDAF effectively optimizes the attention distribution of the selected attention heads, making the model be more focused on relevant passages.",
+        "[Figure: Figure 10: Comparison of the output and passage-level attention distribution (heatmaps below) in three different layers. This case contains 9 passages. The golden passages are passage#1 and passage#2 (in the dotted box). Llama3.1-8B-MuDAF is more focused and can redirect the attention from the beginning part (i.e., #0) to the passages.]",
+        "[Figure: Figure 11: This case contains 10 passages. The golden passages are passage#1 and passage#9 (in the dotted box).]"
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "cho (2005) 2005. Learning a similarity metric discriminatively, with application to face verification. In 2005 IEEE computer society conference on computer vision and pattern recognition (CVPR’05), volume 1, pages 539–546. IEEE.",
+    "Ainslie et al. (2023) Joshua Ainslie, James Lee-Thorp, Michiel de Jong, Yury Zemlyanskiy, Federico Lebron, and Sumit Sanghai. 2023. Gqa: Training generalized multi-query transformer models from multi-head checkpoints. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, pages 4895–4901.",
+    "An et al. (2024a) Chenxin An, Jun Zhang, Ming Zhong, Lei Li, Shansan Gong, Yao Luo, Jingjing Xu, and Lingpeng Kong. 2024a. Why does the effective context length of llms fall short? arXiv preprint arXiv:2410.18745.",
+    "An et al. (2024b) Shengnan An, Zexiong Ma, Zeqi Lin, Nanning Zheng, Jian-Guang Lou, and Weizhu Chen. 2024b. Make your LLM fully utilize the context. In The Thirty-eighth Annual Conference on Neural Information Processing Systems.",
+    "Bahdanau (2014) Dzmitry Bahdanau. 2014. Neural machine translation by jointly learning to align and translate. arXiv preprint arXiv:1409.0473.",
+    "Bai et al. (2024) Yushi Bai, Xin Lv, Jiajie Zhang, Hongchang Lyu, Jiankai Tang, Zhidian Huang, Zhengxiao Du, Xiao Liu, Aohan Zeng, Lei Hou, Yuxiao Dong, Jie Tang, and Juanzi Li. 2024. LongBench: A bilingual, multitask benchmark for long context understanding. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 3119–3137, Bangkok, Thailand. Association for Computational Linguistics.",
+    "Caciularu et al. (2022) Avi Caciularu, Ido Dagan, Jacob Goldberger, and Arman Cohan. 2022. Long context question answering via supervised contrastive learning. In Proceedings of the 2022 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, pages 2872–2879, Seattle, United States. Association for Computational Linguistics.",
+    "Chen et al. (2024) Shijie Chen, Bernal Jiménez Gutiérrez, and Yu Su. 2024. Attention in large language models yields efficient zero-shot re-rankers. arXiv preprint arXiv:2410.02642.",
+    "Dasigi et al. (2021) Pradeep Dasigi, Kyle Lo, Iz Beltagy, Arman Cohan, Noah A Smith, and Matt Gardner. 2021. A dataset of information-seeking questions and answers anchored in research papers. In Proceedings of the 2021 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, pages 4599–4610.",
+    "Dubey et al. (2024) Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Amy Yang, Angela Fan, et al. 2024. The llama 3 herd of models. arXiv preprint arXiv:2407.21783.",
+    "Ferrando et al. (2024) Javier Ferrando, Gabriele Sarti, Arianna Bisazza, and Marta R Costa-jussà. 2024. A primer on the inner workings of transformer-based language models. arXiv preprint arXiv:2405.00208.",
+    "Gao et al. (2024) Tianyu Gao, Alexander Wettig, Howard Yen, and Danqi Chen. 2024. How to train long-context language models (effectively). arXiv preprint arXiv:2410.02660.",
+    "Gao et al. (2021) Tianyu Gao, Xingcheng Yao, and Danqi Chen. 2021. Simcse: Simple contrastive learning of sentence embeddings. In Proceedings of the 2021 Conference on Empirical Methods in Natural Language Processing, pages 6894–6910.",
+    "Gao et al. (2023) Yunfan Gao, Yun Xiong, Xinyu Gao, Kangxiang Jia, Jinliu Pan, Yuxi Bi, Yi Dai, Jiawei Sun, and Haofen Wang. 2023. Retrieval-augmented generation for large language models: A survey. arXiv preprint arXiv:2312.10997.",
+    "Guo et al. (2024) T Guo, X Chen, Y Wang, R Chang, S Pei, NV Chawla, O Wiest, and X Zhang. 2024. Large language model based multi-agents: A survey of progress and challenges. In 33rd International Joint Conference on Artificial Intelligence (IJCAI 2024). IJCAI; Cornell arxiv.",
+    "Hadsell et al. (2006) Raia Hadsell, Sumit Chopra, and Yann LeCun. 2006. Dimensionality reduction by learning an invariant mapping. In 2006 IEEE computer society conference on computer vision and pattern recognition (CVPR’06), volume 2, pages 1735–1742. IEEE.",
+    "He et al. (2024a) Jinghan He, Haiyun Guo, Kuan Zhu, Zihan Zhao, Ming Tang, and Jinqiao Wang. 2024a. Seekr: Selective attention-guided knowledge retention for continual learning of large language models. In Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing, pages 3254–3266.",
+    "He et al. (2024b) Junqing He, Kunhao Pan, Xiaoqun Dong, Zhuoyang Song, LiuYiBo LiuYiBo, Qianguosun Qianguosun, Yuxin Liang, Hao Wang, Enming Zhang, and Jiaxing Zhang. 2024b. Never lost in the middle: Mastering long-context question answering with position-agnostic decompositional training. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 13628–13642, Bangkok, Thailand. Association for Computational Linguistics.",
+    "Ho et al. (2020) Xanh Ho, Anh-Khoa Duong Nguyen, Saku Sugawara, and Akiko Aizawa. 2020. Constructing a multi-hop QA dataset for comprehensive evaluation of reasoning steps. In Proceedings of the 28th International Conference on Computational Linguistics, pages 6609–6625, Barcelona, Spain (Online). International Committee on Computational Linguistics.",
+    "Hong et al. (2024) Xiangyu Hong, Che Jiang, Biqing Qi, Fandong Meng, Mo Yu, Bowen Zhou, and Jie Zhou. 2024. On the token distance modeling ability of higher rope attention dimension. In Findings of the Association for Computational Linguistics: EMNLP 2024, pages 5877–5888.",
+    "Jain et al. (2023) Nihal Jain, Dejiao Zhang, Wasi Uddin Ahmad, Zijian Wang, Feng Nan, Xiaopeng Li, Ming Tan, Ramesh Nallapati, Baishakhi Ray, Parminder Bhatia, Xiaofei Ma, and Bing Xiang. 2023. ContraCLM: Contrastive learning for causal language model. In Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 6436–6459, Toronto, Canada. Association for Computational Linguistics.",
+    "Jiang et al. (2024) Ziyan Jiang, Xueguang Ma, and Wenhu Chen. 2024. Longrag: Enhancing retrieval-augmented generation with long-context llms. arXiv preprint arXiv:2406.15319.",
+    "Jin et al. (2024) Bowen Jin, Jinsung Yoon, Jiawei Han, and Sercan O Arik. 2024. Long-context llms meet rag: Overcoming challenges for long inputs in rag. arXiv preprint arXiv:2410.05983.",
+    "Li et al. (2023) Dawei Li, Hengyuan Zhang, Yanran Li, and Shiping Yang. 2023. Multi-level contrastive learning for script-based character understanding. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, pages 5995–6013.",
+    "Liu et al. (2024a) Nelson F. Liu, Kevin Lin, John Hewitt, Ashwin Paranjape, Michele Bevilacqua, Fabio Petroni, and Percy Liang. 2024a. Lost in the middle: How language models use long contexts. Transactions of the Association for Computational Linguistics, 12:157–173.",
+    "Liu et al. (2024b) Yanming Liu, Xinyue Peng, Jiannan Cao, Shi Bo, Yanxin Shen, Xuhong Zhang, Sheng Cheng, Xun Wang, Jianwei Yin, and Tianyu Du. 2024b. Bridging context gaps: Leveraging coreference resolution for long contextual understanding. arXiv preprint arXiv:2410.01671.",
+    "Loshchilov and Hutter (2019) Ilya Loshchilov and Frank Hutter. 2019. Decoupled weight decay regularization. In International Conference on Learning Representations.",
+    "Lu et al. (2024) Yi Lu, Xin Zhou, Wei He, Jun Zhao, Tao Ji, Tao Gui, Qi Zhang, and Xuanjing Huang. 2024. Longheads: Multi-head attention is secretly a long context processor. arXiv preprint arXiv:2402.10685.",
+    "Meta (2024) Meta. 2024. Llama 3.1 model card.",
+    "OpenAI (2022) OpenAI. 2022. Introducing chatgpt.",
+    "OpenAI (2024) OpenAI. 2024. Gpt-4o system card.",
+    "Peysakhovich and Lerer (2023) Alexander Peysakhovich and Adam Lerer. 2023. Attention sorting combats recency bias in long context language models. arXiv preprint arXiv:2310.01427.",
+    "Radford et al. (2019) Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario Amodei, Ilya Sutskever, et al. 2019. Language models are unsupervised multitask learners. OpenAI blog, 1(8):9.",
+    "Ram et al. (2023) Ori Ram, Yoav Levine, Itay Dalmedigos, Dor Muhlgay, Amnon Shashua, Kevin Leyton-Brown, and Yoav Shoham. 2023. In-context retrieval-augmented language models. Transactions of the Association for Computational Linguistics, 11:1316–1331.",
+    "Rasley et al. (2020) Jeff Rasley, Samyam Rajbhandari, Olatunji Ruwase, and Yuxiong He. 2020. Deepspeed: System optimizations enable training deep learning models with over 100 billion parameters. In Proceedings of the 26th ACM SIGKDD International Conference on Knowledge Discovery & Data Mining, pages 3505–3506.",
+    "Robinson et al. (2021) Joshua David Robinson, Ching-Yao Chuang, Suvrit Sra, and Stefanie Jegelka. 2021. Contrastive learning with hard negative samples. In International Conference on Learning Representations.",
+    "Serrano and Smith (2019) Sofia Serrano and Noah A. Smith. 2019. Is attention interpretable? In Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics, pages 2931–2951, Florence, Italy. Association for Computational Linguistics.",
+    "Shaham et al. (2023) Uri Shaham, Maor Ivgi, Avia Efrat, Jonathan Berant, and Omer Levy. 2023. ZeroSCROLLS: A zero-shot benchmark for long text understanding. In Findings of the Association for Computational Linguistics: EMNLP 2023, pages 7977–7989, Singapore. Association for Computational Linguistics.",
+    "Shi et al. (2023) Freda Shi, Xinyun Chen, Kanishka Misra, Nathan Scales, David Dohan, Ed H Chi, Nathanael Schärli, and Denny Zhou. 2023. Large language models can be easily distracted by irrelevant context. In International Conference on Machine Learning, pages 31210–31227. PMLR.",
+    "Su et al. (2022) Yixuan Su, Tian Lan, Yan Wang, Dani Yogatama, Lingpeng Kong, and Nigel Collier. 2022. A contrastive framework for neural text generation. In Advances in Neural Information Processing Systems.",
+    "Trivedi et al. (2022) Harsh Trivedi, Niranjan Balasubramanian, Tushar Khot, and Ashish Sabharwal. 2022. Musique: Multihop questions via single-hop question composition. Transactions of the Association for Computational Linguistics, 10:539–554.",
+    "Vaswani (2017) A Vaswani. 2017. Attention is all you need. Advances in Neural Information Processing Systems.",
+    "Wu et al. (2024a) Siye Wu, Jian Xie, Jiangjie Chen, Tinghui Zhu, Kai Zhang, and Yanghua Xiao. 2024a. How easily do irrelevant inputs skew the responses of large language models? In First Conference on Language Modeling.",
+    "Wu et al. (2024b) Siye Wu, Jian Xie, Jiangjie Chen, Tinghui Zhu, Kai Zhang, and Yanghua Xiao. 2024b. How easily do irrelevant inputs skew the responses of large language models? arXiv preprint arXiv:2404.03302.",
+    "Wu et al. (2024c) Wenhao Wu, Yizhong Wang, Guangxuan Xiao, Hao Peng, and Yao Fu. 2024c. Retrieval head mechanistically explains long-context factuality. arXiv preprint arXiv:2404.15574.",
+    "Wu et al. (2024d) Zijun Wu, Bingyuan Liu, Ran Yan, Lei Chen, and Thomas Delteil. 2024d. Reducing distraction in long-context language models by focused learning. arXiv preprint arXiv:2411.05928.",
+    "Xiao et al. (2024) Guangxuan Xiao, Jiaming Tang, Jingwei Zuo, Junxian Guo, Shang Yang, Haotian Tang, Yao Fu, and Song Han. 2024. Duoattention: Efficient long-context llm inference with retrieval and streaming heads. arXiv preprint arXiv:2410.10819.",
+    "(48) Guangxuan Xiao, Yuandong Tian, Beidi Chen, Song Han, and Mike Lewis. Efficient streaming language models with attention sinks. In The Twelfth International Conference on Learning Representations.",
+    "Xiong et al. (2024) Zheyang Xiong, Vasilis Papageorgiou, Kangwook Lee, and Dimitris Papailiopoulos. 2024. From artificial needles to real haystacks: Improving retrieval capabilities in llms by finetuning on synthetic data. arXiv preprint arXiv:2406.19292.",
+    "Xu et al. (2024) Peng Xu, Wei Ping, Xianchao Wu, Chejian Xu, Zihan Liu, Mohammad Shoeybi, and Bryan Catanzaro. 2024. Chatqa 2: Bridging the gap to proprietary llms in long context and rag capabilities. arXiv preprint arXiv:2407.14482.",
+    "Yan et al. (2024) Tianyi Lorena Yan, Fei Wang, James Y Huang, Wenxuan Zhou, Fan Yin, Aram Galstyan, Wenpeng Yin, and Muhao Chen. 2024. Contrastive instruction tuning. arXiv preprint arXiv:2402.11138.",
+    "Yang et al. (2018) Zhilin Yang, Peng Qi, Saizheng Zhang, Yoshua Bengio, William Cohen, Ruslan Salakhutdinov, and Christopher D Manning. 2018. Hotpotqa: A dataset for diverse, explainable multi-hop question answering. In Proceedings of the 2018 Conference on Empirical Methods in Natural Language Processing, pages 2369–2380.",
+    "Ye et al. (2024) Tianzhu Ye, Li Dong, Yuqing Xia, Yutao Sun, Yi Zhu, Gao Huang, and Furu Wei. 2024. Differential transformer. arXiv preprint arXiv:2410.05258.",
+    "Zhang et al. (2022) Hengyuan Zhang, Dawei Li, Shiping Yang, and Yanran Li. 2022. Fine-grained contrastive learning for definition generation. In Proceedings of the 2nd Conference of the Asia-Pacific Chapter of the Association for Computational Linguistics and the 12th International Joint Conference on Natural Language Processing (Volume 1: Long Papers), pages 1001–1012.",
+    "Zheng et al. (2024) Zifan Zheng, Yezhaohui Wang, Yuxin Huang, Shichao Song, Mingchuan Yang, Bo Tang, Feiyu Xiong, and Zhiyu Li. 2024. Attention heads of large language models: A survey. arXiv preprint arXiv:2409.03752."
+  ]
+}

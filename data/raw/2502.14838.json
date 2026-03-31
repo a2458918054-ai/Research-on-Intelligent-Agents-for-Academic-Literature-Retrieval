@@ -1,0 +1,521 @@
+{
+  "title": "Revealing and Mitigating Over-Attention in\nKnowledge Editing",
+  "authors": "Pinzheng Wang Zecheng Tang Keyan Zhou Juntao Li  Qiaoming Zhu Min ZhangSoochow University{pzwang1,zctang,kyzhou}@stu.sud.edu.cn{ljt,qmzhu,minzhang}@suda.edu.cnCorresponding author",
+  "abstract": "Large Language Models (LLMs) have demonstrated superior performance across a wide range of tasks, but they still exhibit undesirable errors due to incorrect knowledge learned from the training data. To avoid this, knowledge editing methods emerged to precisely edit the specific model knowledge via efficiently modifying a very small percentage of parameters. However, those methods can lead to the problem of Specificity Failure, where the existing knowledge and capabilities are severely degraded due to editing. Our preliminary indicates that Specificity Failure primarily stems from the model’s attention heads assigning excessive attention scores to entities related to the edited knowledge, thereby unduly focusing on specific snippets within the context, which we denote as the Attention Drift phenomenon. To mitigate such Attention Drift issue, we introduce a simple yet effective method Selective Attention Drift Restriction (SADR), which introduces an additional regularization term during the knowledge editing process to restrict changes in the attention weight distribution, thereby preventing undue focus on the edited entity. Experiments on five frequently used strong LLMs demonstrate the effectiveness of our method, where SADR can significantly mitigate Specificity Failure in the predominant knowledge editing tasks.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Large language models (LLMs) have demonstrated outstanding performance on various downstream natural language processing tasks, e.g., dialogue generation (Ni et al., 2023; Yang et al., 2024a), attributed to the numerous inherent knowledge (Roberts et al., 2020; Cao et al., 2023). However, many unpredictable errors inevitably arise due to the model’s inner defect, which stems from negative or outdated samples within the extensive pre-training datasets (Balachandran et al., 2022). These imperfections can lead to the propagation of misinformation or biased outputs (Li et al., 2023a; Tang et al., 2023), undermining the reliability and robustness of the models in real-world applications.",
+        "One straightforward way to mitigate such an issue is to modify the knowledge of LLMs by directly fine-tuning the model with specific data. However, such a direct training method is uncontrollable and carries a significant risk of over-fitting (Kirkpatrick et al., 2017; Zhu et al., 2020). Consequently, knowledge editing methods (Meng et al., 2022; 2023; Mitchell et al., 2021) aim to efficiently modify specific knowledge within a limited subset of parameters while theoretically ensuring that the rest of the model’s knowledge remains unchanged. However, when employing the knowledge editing methods, the instability feature limits their potential (Hoelscher-Obermaier et al., 2023). Specifically, we find that when content related to the edited knowledge appears in the context, it can inadvertently corrupt pre-existing knowledge, which we define as Specificity Failure in this paper. For instance, a language model, edited with a new knowledge—“Eiffel Towel” is in “New York” rather than “Eiffel Towel” is in “Paris” (Figure 1(a) and (b)), tends to predict “Pyramids” is in “New York” (Figure 1(c)), which is inconsistent with the original knowledge embedded in the model before editing, i.e., “Pyramids” is in “Egypt”. Based on our preliminary study, we observe that a 6B GPT-J model (Wang & Komatsuzaki, 2021) after the knowledge editing can exhibit severe Specificity Failure in over 50% of cases regarding factual statements.",
+        "To delve deeper, the essence of the aforementioned issue fundamentally lies in the transmission of erroneous information flows that occur during the model’s knowledge association recall process (Geva et al., 2023), where the model’s prediction of certain knowledge can be viewed as the construction of a causal graph (Meng et al., 2022). Consequently, to ascertain the cause of Specificity Failure, we employ a lens experiment to scrutinize the causal graph within the model’s generative process. Our observations reveal that the output attention activation at the last token position markedly contaminates the forward pass of the edited model, thereby resulting in erroneous outputs. Intuitively, the attention errors in the edited model could stem from the attention module’s potential to erroneously focus on edited information, thus overlooking other pertinent details throughout the prediction process. By conducting the significance analysis and patching experiments on the attention module within the edited model, we observe an Attention Drift phenomenon: the edited model assigns excessive attention scores to the entities related to the edited knowledge, thereby overly concentrating on the specific snippet within the context. Consequently, this leads to outputs that predominantly align with the entities associated with the edited knowledge rather than conforming to the contextual semantics, even at the risk of clashing with pre-existing knowledge inherent in the model.",
+        "To alleviate the Attention Drift phenomenon, we propose a simple yet efficient strategy called Selective Attention Drift Restriction (SADR), which prevents excessive editing by constraining partial attention heads that overly focus on entities related to the edited knowledge. Specifically, we first locate the attention heads that exhibit severe Attention Drift phenomenon by comparing the model attention outputs before and after the editing, and then align the attention outputs of these identified heads to closely approximate those observed before editing. Currently, knowledge editing methods can be categorized into three types (Yao et al., 2023): locate-then-edit, parameter-preserving, and meta-learning approaches. We observe that severe specificity failure exists across methods from all three categories, with the accuracy of the original knowledge decreasing by more than half. Our proposed SADR can significantly mitigate specificity failure on five models ranging from 1.1B to 20B, and five editing methods covering all three categories, achieving improvements of up to 130.9% and 295.8% in the two main specificity tasks, with only a minimal 0.19% decrease in edit success."
+      ],
+      "subsections": []
+    },
+    "2 Notation and Background": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "2.1 Definition and Evaluation of Knowledge Editing",
+          "paragraphs": [
+            "Previous works (Dai et al., 2021; Meng et al., 2022; 2023) represent factual associations as a knowledge tuple t=(s,r,o)t=(s,r,o), where ss is the subject, rr is the relation, and oo is the object. To evaluate whether a factual association (e.g., Eiffel Tower, is located in, Paris) is captured in a LLM, we provide a prompt consisting of ss and rr (e.g., “Eiffel Tower is located in”) and evaluate the model’s prediction of oo. Knowledge editing aims to replace the factual association stored in model parameters with a new factual association (s,r,oe​d​i​t)(s,r,o_{edit}), where oe​d​i​to_{edit} is the counterfactual target object (e.g., New York). In contrast, we denote ot​r​u​eo_{true} as the true answer in the real world. Existing works (Meng et al., 2022; 2023; Mitchell et al., 2021; Tan et al., 2023) mainly evaluate knowledge editing in terms of reliability, generalization and specifictiy with the following metrics:",
+            "1) Efficacy Score (ES) and Efficacy Magnitude (EM) represent the portion of cases that P​(oe​d​i​t|s,r)>P​(ot​r​u​e|s,r)P(o_{edit}|s,r)>P(o_{true}|s,r) and the mean P​(oe​d​i​t|s,r)P(o_{edit}|s,r), respectively.",
+            "2) Paraphrase Score (PS) and Paraphrase Magnitude (PM) evaluate generalization performance for a paraphrased prompt (sp​a​r​a,rp​a​r​a)(s_{para},r_{para}) (e.g., “The Tower of Eiffel stands in”). These two metrics can be written as P​(oe​d​i​t|sp​a​r​a,rp​a​r​a)>P​(ot​r​u​e|sp​a​r​a,rp​a​r​a)P(o_{edit}|s_{para},r_{para})>P(o_{true}|s_{para},r_{para}) and P​(oe​d​i​t|sp​a​r​a,rp​a​r​a)P(o_{edit}|s_{para},r_{para}).",
+            "3) Neighborhood Score (NS) and Neighborhood Magnitude (NM) evaluate specificity by providing a neighboring but distinct subject s′s^{\\prime} (e.g., “The Louvre”). These two metrics can be represented as P​(ot​r​u​e|s′,r)>P​(oe​d​i​t|s′,r)P(o_{true}|s^{\\prime},r)>P(o_{edit}|s^{\\prime},r) and P​(ot​r​u​e|s′,r)P(o_{true}|s^{\\prime},r), respectively.",
+            "Efficacy Score (ES) and Efficacy Magnitude (EM) represent the portion of cases that P​(oe​d​i​t|s,r)>P​(ot​r​u​e|s,r)P(o_{edit}|s,r)>P(o_{true}|s,r) and the mean P​(oe​d​i​t|s,r)P(o_{edit}|s,r), respectively.",
+            "Paraphrase Score (PS) and Paraphrase Magnitude (PM) evaluate generalization performance for a paraphrased prompt (sp​a​r​a,rp​a​r​a)(s_{para},r_{para}) (e.g., “The Tower of Eiffel stands in”). These two metrics can be written as P​(oe​d​i​t|sp​a​r​a,rp​a​r​a)>P​(ot​r​u​e|sp​a​r​a,rp​a​r​a)P(o_{edit}|s_{para},r_{para})>P(o_{true}|s_{para},r_{para}) and P​(oe​d​i​t|sp​a​r​a,rp​a​r​a)P(o_{edit}|s_{para},r_{para}).",
+            "Neighborhood Score (NS) and Neighborhood Magnitude (NM) evaluate specificity by providing a neighboring but distinct subject s′s^{\\prime} (e.g., “The Louvre”). These two metrics can be represented as P​(ot​r​u​e|s′,r)>P​(oe​d​i​t|s′,r)P(o_{true}|s^{\\prime},r)>P(o_{edit}|s^{\\prime},r) and P​(ot​r​u​e|s′,r)P(o_{true}|s^{\\prime},r), respectively.",
+            "As recent studies (Hoelscher-Obermaier et al., 2023; Yao et al., 2023) show that the presence of edited subjects in the inference context can deteriorate specificity performance, we incorporate two additional specificity metrics that include the edited subject in the test prompts.",
+            "1) Relation Score (RS) and Relation Magnitude (RM) evaluate how the model handles attributes of the edited subject that are unrelated to the edit, identified by the relation r′r^{\\prime}. Empirically, we find the edited model tends to predict the object oe​d​i​to_{edit} for even unrelated relations, e.g., “The color of Eiffel Tower is New York”. Therefore, we calculate the Relation Score by P​(ot​r​u​e|s,r′)>P​(oe​d​i​t|s,r′)P(o_{true}|s,r^{\\prime})>P(o_{edit}|s,r^{\\prime}) and the Relation Magnitude by P​(ot​r​u​e|s,r′)P(o_{true}|s,r^{\\prime}).",
+            "2) Distract Neighborhood Score (DNS) and Distract Neighborhood Magnitude (DNM)) function similarly to NS and NM but concatenate the edited sentence (s,r,oe​d​i​t)(s,r,o_{edit}) before the test prompt in the neighborhood task. These metrics can be written as P​(ot​r​u​e|(s,r,oe​d​i​t)⊕(s′,r))>P​(oe​d​i​t|(s,r,oe​d​i​t)⊕(s′,r))P(o_{true}|(s,r,o_{edit})\\oplus(s^{\\prime},r))>P(o_{edit}|(s,r,o_{edit})\\oplus(s^{\\prime},r)) and P​(ot​r​u​e|(s,r,oe​d​i​t)⊕(s′,r))P(o_{true}|(s,r,o_{edit})\\oplus(s^{\\prime},r)), respectively.",
+            "Relation Score (RS) and Relation Magnitude (RM) evaluate how the model handles attributes of the edited subject that are unrelated to the edit, identified by the relation r′r^{\\prime}. Empirically, we find the edited model tends to predict the object oe​d​i​to_{edit} for even unrelated relations, e.g., “The color of Eiffel Tower is New York”. Therefore, we calculate the Relation Score by P​(ot​r​u​e|s,r′)>P​(oe​d​i​t|s,r′)P(o_{true}|s,r^{\\prime})>P(o_{edit}|s,r^{\\prime}) and the Relation Magnitude by P​(ot​r​u​e|s,r′)P(o_{true}|s,r^{\\prime}).",
+            "Distract Neighborhood Score (DNS) and Distract Neighborhood Magnitude (DNM)) function similarly to NS and NM but concatenate the edited sentence (s,r,oe​d​i​t)(s,r,o_{edit}) before the test prompt in the neighborhood task. These metrics can be written as P​(ot​r​u​e|(s,r,oe​d​i​t)⊕(s′,r))>P​(oe​d​i​t|(s,r,oe​d​i​t)⊕(s′,r))P(o_{true}|(s,r,o_{edit})\\oplus(s^{\\prime},r))>P(o_{edit}|(s,r,o_{edit})\\oplus(s^{\\prime},r)) and P​(ot​r​u​e|(s,r,oe​d​i​t)⊕(s′,r))P(o_{true}|(s,r,o_{edit})\\oplus(s^{\\prime},r)), respectively.",
+            "We provide an example in Figure 2 to illustrate how to evaluate knowledge editing. Although knowledge editing involves various settings, such as batch (Meng et al., 2023) and sequential editing (Hartvigsen et al., 2024), we find that even editing a single factual association can significantly damage specificity performance when the edited subject occurs in the context. We call this Specificity Failure and focus on knowledge editing that modifies one factual association in this work."
+          ]
+        },
+        {
+          "title": "2.2 The Knowledge Editing Framework",
+          "paragraphs": [
+            "To illustrate how knowledge editing methods work, we describe ROME (Meng et al., 2022) here as it is a foundational method that inspired subsequent techniques such as MEMIT (Meng et al., 2023), PMET (Li et al., 2024), and others (Li et al., 2024; Ma et al., 2023).",
+            "Geva et al. (2021) reveals that MLP layers can serve as two-layer key-value memories, with the output of the first MLP layer serving as kk, and the output from the second layer acting as vv, thereby facilitating knowledge retrieval about entities. Inspired by this, ROME changes vv to facilitate the model’s prediction of oe​d​i​to_{edit} when kk is associated with the target subject. Meanwhile, it preserves vv as much as possible when kk is not related to the target subject, ensuring stability across unrelated contexts. To achieve this, ROME implements a rank-one update on weight WW of the second MLP layer with these two main objectives: Herein, the second objective seeks a vector zz that, when substituted as the output of the MLP in layer ll at token tt (denoted G​(mtl∗:=z)G(m^{l^{*}}_{t}:=z)), it will lead the model to predict oe​d​i​to_{edit}. tt is the last token of the subject. The KL divergence term minimizes the distances of predicted distribution between the predicted distributions for the prompt p′p^{\\prime} (formatted as “subject is a”) before and after editing, which controls the essence drift (Meng et al., 2022). ω\\omega is denoted as the controlling weight. ROME integrates these objectives by solving a linear system.",
+            "1 Minimize ∥W^​k−W​k∥\\lVert\\hat{W}k-Wk\\rVert when kk is not from the last token of the target subject.",
+            "2 Satisfy W^​k∗=v∗\\hat{W}k^{*}=v^{*} when k∗k^{*} corresponds to the output of the last token of the target subject, while v∗=arg​minz(−logPG​(mtl∗:=z)(oe​d​i​t|s,r)+ωDKL(P(x|p′)∥PG​(mtl∗:=z)(x|p′)))v^{*}=\\operatorname*{arg\\,min}_{z}\\left(-\\log P_{G(m^{l^{*}}_{t}:=z)}\\left(o_{edit}|s,r\\right)+\\omega D_{\\mathrm{KL}}\\left(P(x|p^{\\prime})\\big{\\|}P_{G(m^{l^{*}}_{t}:=z)}(x|p^{\\prime})\\right)\\right).",
+            "Minimize ∥W^​k−W​k∥\\lVert\\hat{W}k-Wk\\rVert when kk is not from the last token of the target subject.",
+            "Satisfy W^​k∗=v∗\\hat{W}k^{*}=v^{*} when k∗k^{*} corresponds to the output of the last token of the target subject, while v∗=arg​minz(−logPG​(mtl∗:=z)(oe​d​i​t|s,r)+ωDKL(P(x|p′)∥PG​(mtl∗:=z)(x|p′)))v^{*}=\\operatorname*{arg\\,min}_{z}\\left(-\\log P_{G(m^{l^{*}}_{t}:=z)}\\left(o_{edit}|s,r\\right)+\\omega D_{\\mathrm{KL}}\\left(P(x|p^{\\prime})\\big{\\|}P_{G(m^{l^{*}}_{t}:=z)}(x|p^{\\prime})\\right)\\right).",
+            "The general framework of locate-then-edit knowledge editing mentioned above can be viewed as first optimizing a certain vector v∗v^{*} that facilitates predicting the new knowledge, then integrating the vector v∗v^{*} into the model’s parameters. We primarily focus on locate-then-edit knowledge editing in this paper, analyzing the causes of specificity failure within this framework. Additionally, we also evaluate specificity failure and the effectiveness of our SADR method on other parameter-preserving and meta-learning approaches."
+          ]
+        }
+      ]
+    },
+    "3 Exploration of Specificity Failure": {
+      "paragraphs": [
+        "While knowledge editing excels at memorizing new knowledge, it still suffers from specificity failure. We first measure these failures on CounterFact benchmarks and then identify which intermediate outputs during the edited model’s inference cause incorrect predictions. We further explore the primary triggers for these errors at a granular level and verify our findings by patching attention drift to mitigate specificity failure. Our experiments focus on Relation and Distract Neighborhood tasks, employing the widely-used ROME method on the GPT-J-6b model (Wang & Komatsuzaki, 2021)."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Calibrating Specificity Failure on Counterfactual Benchmarks",
+          "paragraphs": [
+            "To measure performance on both the Relation and Distract Neighborhood tasks, we employ a dataset composed of CounterFact (Meng et al., 2022) and WikiDatacounterfact (Zhang et al., 2024a). The dataset includes 1683 factual statements, with more details provided in Appendix C.1.",
+            "Table 1 illustrates a significant specificity failure when the edited subject occurs in the context, with the edited model incorrectly outputting the edited object in over 50% of test cases. Furthermore, the average probability of incorrect answers oe​d​i​to_{edit} is much greater than that of correct answers ot​r​u​eo_{true}, as 48.4% versus 3.3% for the Relation task and 24.9% versus 10.5% for the Distract Neighborhood task when editing with ROME. Editing methods such as MEMIT (Meng et al., 2023) and PMET (Li et al., 2024) also display significant specificity failure. This failure is further observed across a range of data formats and tasks, with detailed results provided in Appendix E.3."
+          ]
+        },
+        {
+          "title": "3.2 Localizing Specificity Failure",
+          "paragraphs": [
+            "In the forward pass of an autoregressive language model, the flow of information can be viewed as a causal graph (Li et al., 2023b). When a model with LL layers predicts based on a prompt containing TT tokens, each module such as attention modules, MLPs, and transformer blocks, produces T×LT\\times L outputs. Each of these outputs is influenced by prior outputs from earlier layers and preceding token positions. Inspired by causal tracing (Meng et al., 2022), we trace across different states in the causal graph to identify which parts contaminate the information flow in specificity failure.",
+            "We first conduct a forward pass on the edited model with test prompts and record outputs from various network modules across different layers and token positions. Then, we execute a forward pass with the vanilla model, copying the representations of specific modules from the stored outputs to the corresponding location without altering other computations. We traverse modules within a window of kk layers for each ll-th layer and token position tt. We refer to this approach as “Contaminating Substitution” and quantify its impact on the final output probability, formulated as:",
+            "where G​(m​o​d​u​l​etl:=z)G(module^{l}_{t}:=z) denotes the substitution of zz for the output of modules at token tt in layer ll.",
+            "As shown in Figure 3, the light-colored areas represent the primary states that lead to incorrect answers. We observe that replacing six layers of MLP activations or Attention activations can decrease the probability of a correct answer by up to 4.59% and 3.74%, respectively, while the total decrease caused by the edited model is 5.26%. As we edit the MLP module in the 5th layer, it is expected that the contaminating substitution of MLP activations near the edited layer significantly influences the final predictions. However, modifying the middle-upper layers of attention activations also has a similar impact on the correct output, suggesting that the primary cause of specificity failure is the attention module mishandling the information at the last token due to the edits. The findings are consistent on the Relation task, with additional experiments exploring the tracing effects with varying window sizes and prediction probability of oe​d​i​to_{edit} detailed in Appendix D.1."
+          ]
+        },
+        {
+          "title": "3.3 Identifying Attention Drift as a Trigger for Specificity Failure",
+          "paragraphs": [
+            "As mentioned above, attention activations are one of the primary causes of specificity failures. Previous studies (Geva et al., 2023; Chen et al., 2024; Geva et al., 2022) have indicated that attention modules in the middle-upper layers extract factual attributes during predictions. This suggests that the attention module may mistakenly focus on edited information, thereby neglecting other information when predicting the final token. Therefore, we quantify the relationship between drift in attention weights and failures in the Distract Neighborhood and Relation tasks using the Pearson coefficient. Given that the edited model overestimates the probability of the edited object oedito_{\\text{edit}} relative to the true object otrueo_{\\text{true}}, we analyze the correlation between ∑l∑hDKL​(Wl,h∥Wl,h∗)\\sum_{l}\\sum_{h}D_{\\text{KL}}(W_{l,h}\\parallel W_{l,h}^{*}) and P​(oe​d​i​t)P(o_{edit}). Here, Wl,hW_{l,h} and Wl,h∗W^{*}_{l,h} represent the attention weights that the last token attends to previous tokens in layer ll and head hh before and after editing, respectively.",
+            "Figure 4 shows a positive relationship between the drift in attention weights and the probability of the incorrect answer oe​d​i​to_{edit}, suggesting that incorrect attention on previous information is a key factor for specificity failures. To further analyze the attention drift from the perspectives of attended tokens and heads, it’s natural to figure out the following two questions:",
+            "1. The last token incorrectly allocates attention to previous tokens, leading to specificity failures. Among these previous tokens, which one has a significant impact when attended incorrectly?",
+            "2. Which has a greater impact on the prediction: the excessive localized attention drift of specific heads or the cumulative attention drift across all heads?",
+            "The last token incorrectly allocates attention to previous tokens, leading to specificity failures. Among these previous tokens, which one has a significant impact when attended incorrectly?",
+            "Which has a greater impact on the prediction: the excessive localized attention drift of specific heads or the cumulative attention drift across all heads?",
+            "To address these questions, we calculate the Pearson coefficient between various factors and P​(oe​d​i​t)P(o_{edit}). Table 2 indicates that the Pearson coefficient for drift on the last token of the edited subject ss is higher compared to other tokens (Equation 1 vs Equation 2). Furthermore, the largest drift in attention weights among heads impacts the final result more than the cumulative drift across all heads (Equation 1 vs Equation 2), suggesting that the excessive attention of certain heads to the last subject token primarily triggers specificity failure."
+          ]
+        },
+        {
+          "title": "3.4 Mitigating Specificity Failure by Patching Attention Drift",
+          "paragraphs": [
+            "To further verify the significant impact of attention drift on specificity failure, we quantify the change in prediction probability after patching attention weights across various layers. We first conduct a forward pass using the vanilla model with prompts from the specificity tasks and store the intermediate attention weights. Then, we test the edited model on the same prompts, substituting its attention weights with those previously stored.",
+            "We find patching attention weights in middle-upper layers can lead to significant improvements in specificity tasks. As shown in Figure 5, patching attention weights in 10 consecutive layers result in a relative increase of 28.6% and 739.2% in the probability of the correct answer P​(ot​r​u​e)P(o_{true}), and a decrease of 54.0% and 89.6% in the probability of the wrong answer P​(oe​d​i​t)P(o_{edit}) for two specificity tasks, respectively. This shows preventing attention drift can effectively mitigate specificity failure."
+          ]
+        },
+        {
+          "title": "3.5 Takeaways",
+          "paragraphs": [
+            "Based on the analysis mentioned above, we can conclude that: (1) the attention activations at the last token position significantly contaminate the forward pass of the edited model, causing specificity failures; (2) the max attention drift at the edited token position among heads is a primary trigger for the incorrect output oe​d​i​to_{edit}, and (3) patching attention drift can largely mitigate the specificity failure."
+          ]
+        }
+      ]
+    },
+    "4 Selectively Restraining Attention Drift During Knowledge Editing": {
+      "paragraphs": [
+        "As mentioned in Section 2.2, the optimized value v∗v_{*} for knowledge editing can be obtained through gradient descent based on the following objective:",
+        "However, this objective may cause attention drift that leads to Specificity Failure. To enhance specificity in knowledge editing when optimizing v∗v^{*}, we introduce the Selective Attention Drift Restriction (SADR), which is a regularization term based on Equation 1. It is worth noting that SADR dynamically applies constraints to different heads as needed since Transformer models contain various knowledge-specific attention heads (Wang et al., 2022; Geva et al., 2023) that capture different factual associations. Additionally, SADR is a simple yet efficient method and can be flexibly adapted across various editing methods.",
+        "More concretely, as excessive attention to the edited subject of certain heads is strongly correlated with Specificity Failures, we apply SADR on heads where the last token overly focuses on the edited subject. We determine which heads to restrain by the following criterion: a head is selected if the attention weight attending to the subject’s last token exceeds the maximum attention weight among all heads in the vanilla model.",
+        "Let Wl,h​(S)W_{l,h}(S) be the attention weight from layer ll and head hh when processing the prompt SS, Wl,hG​(mi(l∗):=z)​(S)W^{G(m^{(l^{*})}_{i}:=z)}_{l,h}(S) be the attention weight from the model that is edited with zz, and Ml​(S)=maxh⁡Wl,h​(S)​[−1,s]M_{l}(S)=\\max_{h}W_{l,h}(S)[-1,s] be the maximum attention weight that the last token attends to the edited subject ss among all heads at layer ll in the vanilla model. The objective of SADR can be written as:",
+        "where Hl​(Sj)={h:Wl,hG​(mi(l∗):=z)​(Sj)​[−1,s]>Ml​(Sj)}H_{l}(S_{j})=\\{h:W^{G(m^{(l^{*})}_{i}:=z)}_{l,h}(S_{j})[-1,s]>M_{l}(S_{j})\\} and Sj=xj⊕(s,r)S_{j}=x_{j}\\oplus(s,r).",
+        "Thus, the optimized value v∗v_{*} can be obtained by: v∗=arg​min⁡(ℒ​(z)+γ​ℒS​A​D​R​(z))v_{*}=\\operatorname*{arg\\,min}\\left(\\mathcal{L}(z)+\\gamma\\mathcal{L}_{SADR}(z)\\right), where γ\\gamma is the controlling weight."
+      ],
+      "subsections": []
+    },
+    "5 Experiments": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "5.1 Settings",
+          "paragraphs": [
+            "Due to the limited availability of datasets that satisfy the required fields for our tasks, we combine CounterFact (Meng et al., 2022) and WikiDatacounterfact (Zhang et al., 2024a) with 1,683 factual statements as the testing data. The processing details are mentioned in Appendix C.1. Additionally, we extend our experiments to broader datasets, including QA-format and recent knowledge editing tasks, as detailed in Appendix E.3. The phenomena of Specificity Failure and the performance of SADR remain consistent across these datasets.",
+            "We evaluate the performance of our methods on three mainstream locate-then-edit knowledge editing baselines: ROME (Meng et al., 2022), MEMIT (Meng et al., 2023), and PMET (Li et al., 2024). Specifically, we focus on knowledge editing with one factual association for all the baselines. We implement our SADR method across three editing baselines on the GPT-J-6b (Wang & Komatsuzaki, 2021), Llama3-8b (AI@Meta, 2024) and GPT-NeoX-20b (Black et al., 2022) models. In Appendix E.1 and E.2, we also conduct SADR on more model variants and editing methods, including parameter-preserving and meta-learning approaches. More details about baseline methods and our implementations can be found in Appendix C.2.",
+            "Apart from the metrics mentioned in Section 2.1, we utilize Fluency Score (FL) (Meng et al., 2022) to evaluate the generation ability of the edited model with prompts related to the edited subject, which is computed by the weighted mean of bi-gram and tri-gram entropies. Results closer to that of the vanilla model indicate better performance. To further test the generalization–specificity tradeoff, we report the harmonic mean of ES, PS, NS, RS, and DNS as the average score (Avg. S). We also test the model’s commonsense reasoning abilities and its perplexity in language modeling, with results reported in the Appendix E.1."
+          ]
+        },
+        {
+          "title": "Dataset",
+          "paragraphs": [
+            "Due to the limited availability of datasets that satisfy the required fields for our tasks, we combine CounterFact (Meng et al., 2022) and WikiDatacounterfact (Zhang et al., 2024a) with 1,683 factual statements as the testing data. The processing details are mentioned in Appendix C.1. Additionally, we extend our experiments to broader datasets, including QA-format and recent knowledge editing tasks, as detailed in Appendix E.3. The phenomena of Specificity Failure and the performance of SADR remain consistent across these datasets."
+          ]
+        },
+        {
+          "title": "Baselines & Models",
+          "paragraphs": [
+            "We evaluate the performance of our methods on three mainstream locate-then-edit knowledge editing baselines: ROME (Meng et al., 2022), MEMIT (Meng et al., 2023), and PMET (Li et al., 2024). Specifically, we focus on knowledge editing with one factual association for all the baselines. We implement our SADR method across three editing baselines on the GPT-J-6b (Wang & Komatsuzaki, 2021), Llama3-8b (AI@Meta, 2024) and GPT-NeoX-20b (Black et al., 2022) models. In Appendix E.1 and E.2, we also conduct SADR on more model variants and editing methods, including parameter-preserving and meta-learning approaches. More details about baseline methods and our implementations can be found in Appendix C.2."
+          ]
+        },
+        {
+          "title": "Metrics",
+          "paragraphs": [
+            "Apart from the metrics mentioned in Section 2.1, we utilize Fluency Score (FL) (Meng et al., 2022) to evaluate the generation ability of the edited model with prompts related to the edited subject, which is computed by the weighted mean of bi-gram and tri-gram entropies. Results closer to that of the vanilla model indicate better performance. To further test the generalization–specificity tradeoff, we report the harmonic mean of ES, PS, NS, RS, and DNS as the average score (Avg. S). We also test the model’s commonsense reasoning abilities and its perplexity in language modeling, with results reported in the Appendix E.1."
+          ]
+        },
+        {
+          "title": "5.2 Main Results",
+          "paragraphs": [
+            "As shown in Table 4, the Relation and Distract Neighborhood tasks exhibit a significant decline across all editing methods, even though these methods perform edits at different layers and modules. Specifically, in the Relation task, the accuracy of all edited models drops to less than half of their original performance. This indicates that specificity failure is a widespread and severe issue in knowledge editing.",
+            "In the Relation and Distract Neighborhood tasks, SADR consistently improves the specificity across all editing methods. Notably, in over half of the setups, our method enhances the original specificity metrics by more than 50% (marked in green). SADR also stabilizes the performance in the Neighborhood task and the Fluency of generated text, e.g., when using SADR on ROME and PMET with GPT-NeoX, the Fluency score is significantly improved. SADR can also achieve better performance on TinyLlama-1.1b (Zhang et al., 2024b) and Llama2-13b (Touvron et al., 2023) compared with baselines, indicating that our method is effective across models with various sizes and knowledge densities. We provide more detailed results in Appendix E.1 and report the human evaluation results in Appendix E.4.",
+            "SADR results in less than a 3% decrease in performance on the Rewrite and Generation tasks. It is important to note that significantly mitigating specificity failure while fully preserving rewrite and generalization performance is quiet difficult. This is because in many previous model editing evaluation frameworks, the specificity failure highlighted in our paper is often overlooked. As a result, prior methods tend to prioritize generalization and rewrite scores, neglecting the risks of specificity failure. Under such evaluation criteria, high scores can be achieved by simply identifying the subject and greedily predicting the object, even if the relationship between them is completely ignored.",
+            "We believe that ensuring stable knowledge editing is more important than achieving nearly 100% accuracy in generalization. In real-world scenarios, methods that achieve 97% generalization with stable and safe edits are often more acceptable than those with 100% generalization but significant specificity failures (e.g., severe knowledge errors caused by attention drift after editing the subject). Furthermore, while addressing specificity failure without compromising generalization is challenging, we demonstrate a better balance between these two aspects in Section 6.2."
+          ]
+        },
+        {
+          "title": "Specificity Failure is prevalent in existing knowledge editing methods.",
+          "paragraphs": [
+            "As shown in Table 4, the Relation and Distract Neighborhood tasks exhibit a significant decline across all editing methods, even though these methods perform edits at different layers and modules. Specifically, in the Relation task, the accuracy of all edited models drops to less than half of their original performance. This indicates that specificity failure is a widespread and severe issue in knowledge editing."
+          ]
+        },
+        {
+          "title": "SADR significantly mitigates Specificity Failure.",
+          "paragraphs": [
+            "In the Relation and Distract Neighborhood tasks, SADR consistently improves the specificity across all editing methods. Notably, in over half of the setups, our method enhances the original specificity metrics by more than 50% (marked in green). SADR also stabilizes the performance in the Neighborhood task and the Fluency of generated text, e.g., when using SADR on ROME and PMET with GPT-NeoX, the Fluency score is significantly improved. SADR can also achieve better performance on TinyLlama-1.1b (Zhang et al., 2024b) and Llama2-13b (Touvron et al., 2023) compared with baselines, indicating that our method is effective across models with various sizes and knowledge densities. We provide more detailed results in Appendix E.1 and report the human evaluation results in Appendix E.4."
+          ]
+        },
+        {
+          "title": "SADR has minimal impact on edit success rates.",
+          "paragraphs": [
+            "SADR results in less than a 3% decrease in performance on the Rewrite and Generation tasks. It is important to note that significantly mitigating specificity failure while fully preserving rewrite and generalization performance is quiet difficult. This is because in many previous model editing evaluation frameworks, the specificity failure highlighted in our paper is often overlooked. As a result, prior methods tend to prioritize generalization and rewrite scores, neglecting the risks of specificity failure. Under such evaluation criteria, high scores can be achieved by simply identifying the subject and greedily predicting the object, even if the relationship between them is completely ignored.",
+            "We believe that ensuring stable knowledge editing is more important than achieving nearly 100% accuracy in generalization. In real-world scenarios, methods that achieve 97% generalization with stable and safe edits are often more acceptable than those with 100% generalization but significant specificity failures (e.g., severe knowledge errors caused by attention drift after editing the subject). Furthermore, while addressing specificity failure without compromising generalization is challenging, we demonstrate a better balance between these two aspects in Section 6.2."
+          ]
+        }
+      ]
+    },
+    "6 Ablation Study": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "6.1 Effect of restraining heads selection",
+          "paragraphs": [
+            "We first explore the effects of selectively restraining heads that exhibit significant attention drift compared to restraining all heads across various control weights γ\\gamma on ROME with GPT-J. Edit Success is quantified by the average of PS and ES, while Specificity is calculated as the average of NS, RS, and DNS. As shown in Figure 6, selectively restraining heads that over-focus on the edited token outperforms restraining all heads on both the Edit Success and Specificity across different γ\\gamma settings. This suggests that not all drift in attention is harmful; rather, it is excessive attention compared to the vanilla model that should be addressed."
+          ]
+        },
+        {
+          "title": "6.2 Trade-off between generalization and specificity",
+          "paragraphs": [
+            "Knowledge editing methods present a trade-off between Edit Success and Specificity, which can be visualized through adjustments in hyperparameters such as optimization steps, learning rate, and ω\\omega which controlling the essence drift. We analyze the trade-off of our method by varying γ\\gamma and compare it with the trade-offs from adjusting other hyperparameters in the original ROME on GPT-J. As changes are more clear on P​(oe​d​i​t)P(o_{edit}) than the proportion of cases which P​(oe​d​i​t)>P​(ot​r​u​e)P(o_{edit})>P(o_{true}), we use the average of EM and PM to measure Edit Success and apply RM and DNM for evaluating Relation and Distract Neighborhood task, respectively. Further details are illustrated in Appendix C.3.",
+            "Figure 7 shows that our method exhibits a superior trade-off compared to the adjustments of hyperparameters in the original ROME method, indicating that SADR can obtain v∗v^{*} that enable the model to more effectively distinguish when to output the edited knowledge."
+          ]
+        }
+      ]
+    },
+    "7 Related Work": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Knowledge editing.",
+          "paragraphs": [
+            "The field of knowledge editing has recently emerged, aiming to modify model knowledge at a low cost without adversely affecting performance. The methods can be categorized into three main paradigms: parameter-preserving, locate-then-edit, and meta-learning approaches (Yao et al., 2023; Wang et al., 2023; Mazzia et al., 2023). Parameter-preserving methods explicitly store modified knowledge in memory and use techniques such as classifiers (Mitchell et al., 2022), prompt engineering (Madaan et al., 2022; Zhong et al., 2023; Zheng et al., 2023), or external parameters (Dong et al., 2022; Huang et al., 2023; Hartvigsen et al., 2024; Wang et al., 2024b) to retrieve the knowledge. locate-then-edit methods update specific parameters by identifying where the targeted knowledge is stored and directly editing those locations (Meng et al., 2022; 2023; Li et al., 2024; Ma et al., 2023). Meta-learning approaches involve training a hypernetwork to edit the model’s knowledge parameters (Mitchell et al., 2021; Tan et al., 2023).",
+            "Despite the promising prospects of knowledge editing, significant challenges remain in specificity and generalization. Editing specific pieces of knowledge can lead to ripple effects within the knowledge graph (Wang et al., 2024a; Cohen et al., 2024), but the edited model may be prone to under-editing (Li et al., 2023d; Pinter & Elhadad, 2023) or over-editing (Li et al., 2023c) in response to these changes. Recent works (Gu et al., 2024; Hazra et al., 2024; Yang et al., 2024b) also find that knowledge editing may impair general abilities as the number of edits increases. While an ideal edited model should generalize the impacts of edits within a knowledge graph and safely conduct large-scale modifications, Hoelscher-Obermaier et al. (2023) and Rosati et al. (2024) identify a more pressing issue in knowledge editing: the performance of the model drops dramatically when the edited subject or sentence appears in the context. This motivates us to focus on this issue in the current paper."
+          ]
+        },
+        {
+          "title": "Mechanisms of Factual Associations in Transformers.",
+          "paragraphs": [
+            "Transformer (Vaswani et al., 2017) is the most commonly used architecture for large language models, achieving remarkable performance attributed to the vast amount of knowledge stored in its parameters (Petroni et al., 2019; Roberts et al., 2020; Cao et al., 2023). Significant efforts have been made to uncover the mechanism of how transformers memorize and retrieve knowledge during training and inference. Geva et al. (2021) view the FFN layers as the primary module that stores knowledge in a key-value format. Dai et al. (2021) and Geva et al. (2022) explore the manipulation of factual associations by intensifying or attenuating the values in the activated outputs of the first FFN layer. Meng et al. (2022) employ causal tracing to demonstrate the crucial role that early MLP layers play in factual recall. Hase et al. (2023) find that editing on layers where knowledge is not primarily stored can also achieve a high success rate, indicating that it is possible to “override” the information in layer ll with an edit to another layer kk. Additionally, Hao et al. (2021) find that the self-attention module performs attribute extraction during factual association recall. Building on the knowledge recall mechanisms identified in previous works, we explore the reasons behind Specificity Failure and design our approach to mitigate attention drift."
+          ]
+        }
+      ]
+    },
+    "8 Conclusion": {
+      "paragraphs": [
+        "In this paper, we explore and mitigate the limitations of current knowledge editing methods in Large Language Models (LLMs) when the edited content is present in the context. Our investigations reveal the Specificity Failure issue that the attention mechanisms in these models overly focus on the edited entities, leading to a neglect of other relevant information in the context. Based on the preliminary study, such a Specificity Failure issue stems from the Attention Drift phenomenon: the edited model assigns excessive attention scores to the entities related to the edited knowledge, thereby overly concentrating on specific snippets within the context. Thus, based on the previous knowledge editing methods, we propose the Selective Attention Drift Restriction (SADR) method, which introduces a regularization term during the editing process, dynamically constraining the weight of partial selected attention heads and preventing excessive focus on the edited entities. Our experiment indicates that SADR can significantly reduce Specificity Failures while preserving high rates of editing success."
+      ],
+      "subsections": []
+    },
+    "Reproducibility Statement": {
+      "paragraphs": [
+        "Our work is based on open-source models and datasets. In Section 5 and Appendix C, we provide detailed descriptions of data processing, method implementation, and ablation experiments. Additionally, in the supplementary materials, we include the complete code for our method as well as the processed datasets."
+      ],
+      "subsections": []
+    },
+    "Acknowledgments": {
+      "paragraphs": [
+        "We want to thank all the anonymous reviewers for their valuable comments. This work was supported by the National Science Foundation of China (NSFC No. 62206194), the Natural Science Foundation of Jiangsu Province, China (Grant No. BK20220488), the Young Elite Scientists Sponsorship Program by CAST (2023QNRC001), the Key Laboratory of Data Intelligence and Advanced Computing in Provincial Universities, Soochow University, and the Priority Academic Program Development of Jiangsu Higher Education Institutions."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Limitations and Future Works": {
+      "paragraphs": [
+        "In this section, we outline several limitations of our study that highlight areas for future research and improvement: (1) While our method shows promise, there is still potential for improvement in the Relation task. This may be due to the fact that edits can inadvertently erase or obscure other relevant knowledge about the subject, thereby affecting the model’s overall performance in understanding and maintaining relations. (2) Our study primarily focused on single factual association edits. This scope excluded more complex scenarios such as batch and sequential editing, which involve multiple edits either simultaneously or over a sequence. (3) We focus on knowledge editing on only transformer-based models, omitting models with new architectures (Gu & Dao, 2023). These issues highlight important avenues for future research and will be explored in subsequent studies to enhance the robustness and applicability of knowledge editing."
+      ],
+      "subsections": []
+    },
+    "Appendix B Preliminary of Knowledge Editing": {
+      "paragraphs": [
+        "In this section, we provide more details of the baselines used in our experiments."
+      ],
+      "subsections": [
+        {
+          "title": "ROME",
+          "paragraphs": [
+            "As mentioned in Section 2.2, ROME (Meng et al., 2022) implements rank-one knowledge editing by deriving a closed form solution:",
+            "where C=K​KTC=KK^{T} is a constant that estimates the uncentered covariance of kk from samples of Wikipedia text. In order to choose the lookup key k∗k^{*} for the subject, ROME concatenates different prefixes generated by the vanilla model with the sentence of the editing request. Then, ROME records the activations of the first layer of MLP, consider the average value k∗=1N​∑j=1Nk​(xj+s)k_{*}=\\frac{1}{N}\\sum_{j=1}^{N}k(x_{j}+s) as the lookup key. The v∗v^{*} for recalling the fact is obtained by minimizing the objective in Equation 1."
+          ]
+        },
+        {
+          "title": "MEMIT",
+          "paragraphs": [
+            "In order to directly update multiple memories in a language model, MEMIT employs batch update and multiple layers update based on ROME. To derive an optimal single-layer update that minimizes the squared error of memorized associations while preserving existing memories, the expanded objective for batch update is defined as:",
+            "where W1W_{1} is the new matrix for the second layer of the FFN. Here, K0=[k1​∣k2∣​…∣kn]K_{0}=\\left[k_{1}\\mid k_{2}\\mid\\dots\\mid k_{n}\\right] and M0=[m1​∣m2∣​…∣mn]M_{0}=\\left[m_{1}\\mid m_{2}\\mid\\dots\\mid m_{n}\\right] represent the original keys and memories in the vanilla Wo​u​tlW_{out}^{l}, while K1=[kn+1​∣kn+2∣​…∣kn+u]K_{1}=\\left[k_{n+1}\\mid k_{n+2}\\mid\\dots\\mid k_{n+u}\\right] and M1=[mn+1​∣mn+2∣​…∣mn+u]M_{1}=\\left[m_{n+1}\\mid m_{n+2}\\mid\\dots\\mid m_{n+u}\\right] are new uu factual associations that need to be edited in the model.",
+            "By solving the linear system, the updated matrix W1W_{1} can be formalized as:",
+            "where C0C_{0} is the aggregate statistic over the previously stored keys, computed by a random sample of inputs as in ROME.",
+            "In order to improve the robustness, MEMIT distributes updates evenly across the range of mediating layers ℛ\\mathcal{R}. The approach to obtain k∗k^{*} and v∗v^{*} is similar to ROME. MEMIT calculates δl\\delta^{l} in ascending layer order to prevent the influence of edit layers on subsequent layers. The update process of MEMIT can be represented by Algorithm 1."
+          ]
+        },
+        {
+          "title": "PMET",
+          "paragraphs": [
+            "PMET (Li et al., 2024) discovers that Multi-Head Self-Attention(MHSA) weights do not require updating when new knowledge is introduced, thus only integrating the optimized FFN activation to conduct precise editing. PMET introduces optimizable parameters, δia\\delta^{a}_{i} for the MHSA output and δim\\delta^{m}_{i} for the FFN output at the LL-th layer. It then retains only the optimized hidden states of the FFN to update its weights, represented as vim=miL+δim=arg​min⁡ℒ​(z)v^{m}_{i}=m^{L}_{i}+\\delta^{m}_{i}=\\operatorname*{arg\\,min}\\mathcal{L}(z), where ℒ​(z)\\mathcal{L}(z) refers to the objective in Equation 1. Following this, PMET employs the same algorithmic steps as MEMIT to update the FFN weights."
+          ]
+        }
+      ]
+    },
+    "Appendix C Implementation Details": {
+      "paragraphs": [
+        "[Figure: Figure 8: Prompts for gpt-4 to filter specificity cases]"
+      ],
+      "subsections": [
+        {
+          "title": "C.1 Dataset Processing",
+          "paragraphs": [
+            "The dataset we use is a mixture of counterfact datasets from Meng et al. (2022) and Zhang et al. (2024a). Meng et al. (2022) introduce CounterFact, which contains 21,919 records featuring a diverse set of subjects, relations, and linguistic variations. It also provides paraphrase prompts, neighborhood prompts, and generation prompts for specificity evaluation. Zhang et al. (2024a) collect triplets about popular entities from top-viewed pages on Wikipedia to construct WikiDatacounterfact. They provide relational prompts to evaluate the impact of edits on other attributes associated with the edited subject. We combined these datasets in equal proportions to create a balanced dataset with 1683 factual statements.",
+            "When measuring specificity, it is crucial that the neighborhood subject and the test relationship of the subject remain unaffected by the edit. For example, when editing the factual knowledge tuple “(Carl Bosch, citizenship, Germany)” to “(Carl Bosch, citizenship, Canada)”, it might be logically consistent to also generalize Carl Bosch’s birthplace to Canada, which should not be considered in specificity tests. However, this edit should not alter the answer to “The gender of Carl Bosch is”. Test cases like this should be considered in specificity tests. To measure specificity more accurately, we filter our dataset using GPT-4. The filtering prompts are detailed in Figs. 8.",
+            "[Figure: Figure 8: Prompts for gpt-4 to filter specificity cases]",
+            "[SVG Content: Prompts for Filtering Specificity Cases Request Editing: Irma Boom spoke the language →\\rightarrow Russian Test prompt for neighborhood: Johannes Lingelbach is a native speaker of Test prompt for relationship: The place of birth of Irma Boom is Prompt for gpt-4 to filter neighborhood: Prompt for gpt-4 to filter relationship: Determine the subjects in the following two sentences is related or unrelated. Determine the factual relationships in the following two sentences is related or unrelated: - Neighborhood subjects in the same field without Sentence 1: {Request Editing} direct collaboration or interaction are considered Sentence 2: {Test prompt for relationship} unrelated. Expected answer: Related or Unrelated. Sentence 1: {Request Editing} Sentence 2: {Test prompt for neighborhood} Expected answer: Related or Unrelated.]"
+          ]
+        },
+        {
+          "title": "C.2 Baseline Settings",
+          "paragraphs": [
+            "In this section, we detail the parameters used for each baseline and the SADR method across different models. We utilize ROME (Meng et al., 2022), MEMIT (Meng et al., 2023), and PMET (Li et al., 2024) as the baseline knowledge editing techniques, implemented using EasyEdit 111https://github.com/zjunlp/EasyEdit. As the objective of SADR prevents over-editing by restricting optimization from causing large attention drift, it is necessary to increase the number of optimization steps to ensure convergence. We test [20,40,80][20,40,80] optimization steps with restraining weights γ\\gamma set at [5​e​−3,1​e​−2,4​e​−2,8​e​−2][$510-3$,$110-2$,$410-2$,$810-2$] on the validation split. All experiments are conducted on eight NVIDIA A100 (40GB) GPUs, with individual edits taking approximately 20 to 80 seconds on a single GPU. Completing all edits and evaluations across our dataset requires 1-2 days.",
+            "The parameters applied for the original baseline are consistent with the original paper. The learning rate is 0.5, optimization steps are 2020, and the KL factor ω\\omega is 0.0625 across various models. For GPT-J-6b, we edit layer 5, with optimization steps of 8080 and a controlling weight γ=1​e​−2\\gamma=$110-2$ for the SADR method. For Llama3-8B, we edit layer 5, with optimization steps of 8080 and a controlling weight γ=4​e​−2\\gamma=$410-2$ for the SADR method. For GPT-NeoX-20b, we edit layer 5, with optimization steps of 8080 and a controlling weight γ=1​e​−2\\gamma=$110-2$ for the SADR method. For Llama2-13B, we edit layer 15, with optimization steps of 8080 and a controlling weight γ=1​e​−2\\gamma=$110-2$ for the SADR method. For TinyLlama, we edit layer 4, with optimization steps of 8080 and a controlling weight γ=8​e​−2\\gamma=$810-2$ for the SADR method.",
+            "The original baseline applies learning rate of 0.5, 20 optimization steps, and KL factor ω\\omega of 0.0625 across various models. For GPT-J-6b, we edit layers 3-8, with optimization steps of 2020, learning rate 0.250.25, and a controlling weight γ=5​e​−3\\gamma=$510-3$ for the SADR method. For Llama3-8B, we edit layers 4-8, with optimization steps of 8080 and a controlling weight γ=1​e​−2\\gamma=$110-2$ for the SADR method. For GPT-NeoX-20b, we edit layers 13-16, with optimization steps of 8080 and a controlling weight γ=5​e​−3\\gamma=$510-3$ for the SADR method. For Llama2-13B, we edit layers 5-9, with optimization steps of 8080 and a controlling weight γ=4​e​−2\\gamma=$410-2$ for the SADR method. For TinyLlama, we edit layers 3-5, with optimization steps of 8080 and a controlling weight γ=8​e​−2\\gamma=$810-2$ for the SADR method.",
+            "The original baseline applies learning rate of 0.5, 20 optimization steps, and KL factor ω\\omega of 0.0625 across various models. For GPT-J-6b, we edit layers 3-8, with optimization steps of 4040 and a controlling weight γ=8​e​−2\\gamma=$810-2$ for the SADR method. For Llama3-8B, we edit layers 4-8, with optimization steps of 8080 and a controlling weight γ=1​e​−2\\gamma=$110-2$ for the SADR method. For GPT-NeoX-20b, we edit layers 13-16, with optimization steps of 2020 and a controlling weight γ=2​e​−3\\gamma=$210-3$ for the SADR method. For Llama2-13B, we edit layers 7-9, with optimization steps of 2020 and a controlling weight γ=5​e​−3\\gamma=$510-3$ for the SADR method. For TinyLlama, we edit layers 3-5, with optimization steps of 4040 and a controlling weight γ=8​e​−2\\gamma=$810-2$ for the SADR method."
+          ]
+        },
+        {
+          "title": "ROME",
+          "paragraphs": [
+            "The parameters applied for the original baseline are consistent with the original paper. The learning rate is 0.5, optimization steps are 2020, and the KL factor ω\\omega is 0.0625 across various models. For GPT-J-6b, we edit layer 5, with optimization steps of 8080 and a controlling weight γ=1​e​−2\\gamma=$110-2$ for the SADR method. For Llama3-8B, we edit layer 5, with optimization steps of 8080 and a controlling weight γ=4​e​−2\\gamma=$410-2$ for the SADR method. For GPT-NeoX-20b, we edit layer 5, with optimization steps of 8080 and a controlling weight γ=1​e​−2\\gamma=$110-2$ for the SADR method. For Llama2-13B, we edit layer 15, with optimization steps of 8080 and a controlling weight γ=1​e​−2\\gamma=$110-2$ for the SADR method. For TinyLlama, we edit layer 4, with optimization steps of 8080 and a controlling weight γ=8​e​−2\\gamma=$810-2$ for the SADR method."
+          ]
+        },
+        {
+          "title": "MEMIT",
+          "paragraphs": [
+            "The original baseline applies learning rate of 0.5, 20 optimization steps, and KL factor ω\\omega of 0.0625 across various models. For GPT-J-6b, we edit layers 3-8, with optimization steps of 2020, learning rate 0.250.25, and a controlling weight γ=5​e​−3\\gamma=$510-3$ for the SADR method. For Llama3-8B, we edit layers 4-8, with optimization steps of 8080 and a controlling weight γ=1​e​−2\\gamma=$110-2$ for the SADR method. For GPT-NeoX-20b, we edit layers 13-16, with optimization steps of 8080 and a controlling weight γ=5​e​−3\\gamma=$510-3$ for the SADR method. For Llama2-13B, we edit layers 5-9, with optimization steps of 8080 and a controlling weight γ=4​e​−2\\gamma=$410-2$ for the SADR method. For TinyLlama, we edit layers 3-5, with optimization steps of 8080 and a controlling weight γ=8​e​−2\\gamma=$810-2$ for the SADR method."
+          ]
+        },
+        {
+          "title": "PMET",
+          "paragraphs": [
+            "The original baseline applies learning rate of 0.5, 20 optimization steps, and KL factor ω\\omega of 0.0625 across various models. For GPT-J-6b, we edit layers 3-8, with optimization steps of 4040 and a controlling weight γ=8​e​−2\\gamma=$810-2$ for the SADR method. For Llama3-8B, we edit layers 4-8, with optimization steps of 8080 and a controlling weight γ=1​e​−2\\gamma=$110-2$ for the SADR method. For GPT-NeoX-20b, we edit layers 13-16, with optimization steps of 2020 and a controlling weight γ=2​e​−3\\gamma=$210-3$ for the SADR method. For Llama2-13B, we edit layers 7-9, with optimization steps of 2020 and a controlling weight γ=5​e​−3\\gamma=$510-3$ for the SADR method. For TinyLlama, we edit layers 3-5, with optimization steps of 4040 and a controlling weight γ=8​e​−2\\gamma=$810-2$ for the SADR method."
+          ]
+        },
+        {
+          "title": "C.3 Ablation Settings",
+          "paragraphs": [
+            "We further illustrate the implementation details for experiments in Section 6. When testing the trade-off between generalization and specificity, we randomly sample 500 data points for evaluation. The controlling weight γ\\gamma for the SADR method is applied at [1​e​−5,1​e​−4,5​e​−4,2.5​e​−4,1​e​−2,8​e​−2][$110-5$,$110-4$,$510-4$,$2.510-4$,$110-2$,$810-2$]. The optimization steps are applied at [7,14,20,40,80,120][7,14,20,40,80,120]. The KL factor ω\\omega is applied at [0.1,1,2,3,4,5][0.1,1,2,3,4,5]. The learning rate is applied at [5​e​−2,6​e​−2,8​e​−2,1​e​−1,2​e​−1,4​e​−1][$510-2$,$610-2$,$810-2$,$110-1$,$210-1$,$410-1$]."
+          ]
+        }
+      ]
+    },
+    "Appendix D Additional Results for Exploring Specificity Failures": {
+      "paragraphs": [
+        "[Figure: (a) Tracing Effect on P​(ot​r​u​e)P(o_{true}) with different window sizes in the Distract Neighborhood task.]",
+        "[Figure: (a) Tracing Effect on P​(ot​r​u​e)P(o_{true}) with different window sizes in the Distract Neighborhood task.]",
+        "[Figure: (b) Tracing Effect on P​(oe​d​i​t)P(o_{edit}) in the Distract Neighborhood task with window size 6.]",
+        "[Figure: (c) Tracing Effect on P​(ot​r​u​e)P(o_{true}) in the Relation task with window size 6.]",
+        "[Figure: (d) Tracing Effect on P​(oe​d​i​t)P(o_{edit}) in the Relation task with window size 6.]",
+        "[Figure: (a) Tracing Effect with window size 10 in the Distract Neighborhood task.]",
+        "[Figure: (a) Tracing Effect with window size 10 in the Distract Neighborhood task.]",
+        "[Figure: (b) Tracing Effect with window size 10 in the Relation task.]",
+        "[Figure: Figure 11: P​(oe​d​i​t)P(o_{edit}) of the edited model when attention weight optimization is disabled.]",
+        "[Table: Table 4: Correlation of different factors with specificity failure.]",
+        "[Table: Table 5: Comparison of editing performance for easy-to-edit and hard-to-edit knowledge.]"
+      ],
+      "subsections": [
+        {
+          "title": "D.1 Localize Specificity Failure in Causal Graph",
+          "paragraphs": [
+            "We further investigate the tracing effects of “Contaminating Substitution” across different window sizes in the “Distract Neighborhood” and “Relation” tasks, and also demonstrate the impact on the prediction probability of oe​d​i​to_{edit}.",
+            "As shown in Figure 9(a), varying window sizes indicate similar areas leading to Specificity Failures, and the decrease in P​(ot​r​u​e)P(o_{true}) is correlated with window size. This suggests that contaminating information accumulates at the last token in middle-upper layers due to the recall mechanism of attention modules.",
+            "By comparing Figure 3 with Figure 9(b), and Figure 9(c) with Figure 9(d), we observe notable similarities in the areas that correspond to increases in incorrect answer probabilities P​(oe​d​i​t)P(o_{edit}) and decreases in correct answer probabilities P​(ot​r​u​e)P(o_{true}). This suggests that the same information flow may be driving changes in both probabilities.",
+            "Furthermore, a phenomenon that may seem counterintuitive is that replacing MLP or Attn activations in the final layers increases the probability of correct answers. This can be attributed to the disruption of anti-overconfidence mechanisms in the final layers (Lv et al., 2024).",
+            "[Figure: (a) Tracing Effect on P​(ot​r​u​e)P(o_{true}) with different window sizes in the Distract Neighborhood task.]",
+            "[Figure: (a) Tracing Effect on P​(ot​r​u​e)P(o_{true}) with different window sizes in the Distract Neighborhood task.]",
+            "[Figure: (b) Tracing Effect on P​(oe​d​i​t)P(o_{edit}) in the Distract Neighborhood task with window size 6.]",
+            "[Figure: (c) Tracing Effect on P​(ot​r​u​e)P(o_{true}) in the Relation task with window size 6.]",
+            "[Figure: (d) Tracing Effect on P​(oe​d​i​t)P(o_{edit}) in the Relation task with window size 6.]"
+          ]
+        },
+        {
+          "title": "D.2 Patching Attention Drift to Mitigate Specificity Failure",
+          "paragraphs": [
+            "In section 3.4, we demonstrate an improvement in specificity performance after patching attention drift in some consecutive layers. To explore the effectiveness of patching attention drift at a finer granularity, we evaluate the tracing effect of modifying a single value in the attention weight matrix. Specifically, we alter the value that represents the weight of the last token attending to the tt-th token before softmax during the forward pass of the edited model. The replacement value is the one generated by the vanilla model for the same prompts. Considering residual connections in Transformer, we patch for a window of kk layers around the ll-th layer.",
+            "As shown in Figure 10, patching the attention value of the last edited subject token in the middle-upper layers significantly mitigates the Specificity Failure, where the magnitude of change in probability closely matches the one of replacing the entire attention weight matrix in Figure 5. This aligns with the findings in Section 3.3 that the drift of attention weights from the last token to the edited token is the main trigger for Specificity Failure.",
+            "[Figure: (a) Tracing Effect with window size 10 in the Distract Neighborhood task.]",
+            "[Figure: (a) Tracing Effect with window size 10 in the Distract Neighborhood task.]",
+            "[Figure: (b) Tracing Effect with window size 10 in the Relation task.]"
+          ]
+        },
+        {
+          "title": "D.3 The Correlation Between More Factors and Specificity Failure",
+          "paragraphs": [
+            "Recent works (Fang et al., 2024; Yao et al., 2024; Ma et al., 2024) point out that the edit vector’s direction, space, and norm can influence the model’s specificity performance. However, these works primarily focus on preserving general knowledge and capabilities, rather than addressing the specificity failure that arises when the edited subject appears in the context. To explore the relevance of these factors to the specificity failure problem studied in our work, we conducted a correlation analysis. Specifically, we compared four factors—attention drift, hidden state norm post-editing, L2 distance between hidden states pre- and post-editing, and the cosine similarity of hidden states pre- and post-editing —with the probability of P​(oedit)P(o_{\\text{edit}}) in specificity tasks.",
+            "Table 4 shows that, compared to the direction or norm of the edit vector, attention drift has a more direct and significant impact on specificity failure."
+          ]
+        },
+        {
+          "title": "D.4 Discussion about Reasons for Attention Drift",
+          "paragraphs": [
+            "Experiments have shown that attention drift is closely related to specificity failure. A natural question arises: what is the reason for attention drift during the editing process? Intuitively, editing methods primarily modify the hidden states of the edited subject, which subsequently influence the final output through the attention mechanism. In traditional editing methods (e.g., ROME discussed in Section 2.2), the optimization objective explicitly trains the model to predict the new oedito_{\\text{edit}} given (s,r)(s,r). This may create a shortcut, where the hidden state of the subject is shaped in a way that makes it overly prone to being prioritized by the attention mechanism, thereby hard-coding the knowledge into the forward propagation rather than truly integrating it into the model.",
+            "To better illustrate this shortcut, we design an experiment using GPT-XL and apply ROME to 100 editing cases. During the optimization of the model’s target vectors, we employ the “torch.detach()” function to prevent gradients from propagating through the attention weights. This means that the model editing process would optimize only the value component in the attention module, ignoring the optimization of key and query components. Under this setup, we observe that ROME’s editing success rate (measured by EM) exhibit a polarized trend, where probabilities are either very high or very low, as shown in Figure 11.",
+            "In the original ROME method, the average probability after editing exceeds 95%. This suggests that many facts are challenging to edit into the model without optimizing the attention weights. To further analyze this phenomenon, we set a threshold of P​(oedit)P(o_{\\text{edit}}) greater than or less than 0.95 to distinguish between easy-to-edit and hard-to-edit knowledge, resulting in a roughly equal number of cases in both categories. Subsequently, we compare various performance metrics for the original ROME method and the modified ROME method with attention weight optimization disabled (referred to as ROME-AWD), as shown in Table 5. The Distracting Neighborhood Task is selected as the representative metric for specificity.",
+            "The results indicate that: (1) For easy-to-edit knowledge, disabling the attention weight shortcut allows editing methods to achieve satisfactory results in both edit success and specificity; (2) For hard-to-edit knowledge, disabling the optimization of attention weights significantly reduces the editing success rate, and such knowledge is more prone to specificity failure under original editing methods. Furthermore, we calculate the Pearson correlation coefficient between ROME’s attention drift and the editing difficulty (measured by 1−P​(oe​d​i​t)1-P(o_{edit}) on ROME-AWD). The results indicate a significant positive correlation, with a Pearson coefficient of 0.748 and a p-value<0.05\\text{p-value}<\\text{0.05}. This indicates that attention drift is likely a result of editing methods hard-coding the edited knowledge into the model’s forward propagation, rather than enabling a more natural and reasonable assimilation of new knowledge.",
+            "[Figure: Figure 11: P​(oe​d​i​t)P(o_{edit}) of the edited model when attention weight optimization is disabled.]"
+          ]
+        }
+      ]
+    },
+    "Appendix E Additional Results on Selective Attention Drift Restriction": {
+      "paragraphs": [
+        "[Figure: Figure 12: Example of one comparison pair in the human evaluation website.]",
+        "[Figure: Figure 13: Interface of human evaluation website.]",
+        "[Table: Table 6: Results of our methods on five frequently used models with detailed metrics. Bold numbers indicate better performance, and Green numbers indicate a significantly better score with more than 50% relative improvement.]",
+        "[Table: Table 7: Results of our methods on WISE and MEND.]",
+        "[Table: Table 8: Results of our methods on more datasets.]",
+        "[Table: Table 9: Human evaluation results on three tracks (Specificity, Edit Success and Fluency), where ζ\\zeta denotes Fleiss’ kappa.]",
+        "[Table: Table 10: The influence of restraining weight γ\\gamma]"
+      ],
+      "subsections": [
+        {
+          "title": "E.1 Main Results",
+          "paragraphs": [
+            "To comprehensively evaluate the effectiveness of our method, we employ two additional frequently used models, Llama2-13B (Touvron et al., 2023) and TinyLlama (Zhang et al., 2024b), to observe the performance of our method across different model sizes and advanced knowledge-rich models in this section. To further validate our method’s performance in knowledge editing, we have incorporated new metrics for generalization, specificity, and fluency.",
+            "Generalization: To ensure the edited knowledge is fully integrated into the model, we use a new metric called the Reasoning Score (RES) (Yao et al., 2023). This metric evaluates the model’s ability to perform reasoning based on modified facts, which is more challenging.",
+            "Specificity: To assess the impact of model editing on other tasks, we follow the approach in Yao et al. (2023) and report accuracy on PIQA (Bisk et al., 2020), a multiple-choice commonsense reasoning test. We measure this using the Other Task Score (OS). Additionally, we evaluate how the edited knowledge affects related tasks by incorporating the edited sentence in a distraction-based format, termed the Distracted Other Task Score (DOS).",
+            "Fluency: We evaluate language modeling on a high-quality text dataset ME-PPL (Yang et al., 2024b), which includes various commonly used corpora. We use perplexity (PPL) as a measure of the language model’s generative capability.",
+            "As shown in Table 6, consistent with the observations in Section 5.2, knowledge editing results in significant specificity failure across models ranging from 1.1B to 20B parameters, which is mitigated by our SADR method (with over 50% improvement in major specificity tasks in more than half of the cases). The improvement in prediction probability (as reflected by the RM and DNM metrics) is also evident. Notably, in the Distract Neighborhood task, the probability of correct predictions has been restored to the level of the unedited model, showing the potential of our approach.",
+            "The OS and DOS metrics show that when the edited entity appears in the context, the performance of tasks entirely unrelated to the entity also degrades. This further highlights the widespread occurrence of specificity failure. In most settings, our method shows improvement on the DOS metric.",
+            "As discussed in Section 5.2, mitigating specificity failure without compromising any aspect of editing performance is quite difficult. To further verify whether SADR hinders the effective integration of new knowledge into the model, we test it on more difficult tasks that require reasoning based on the new knowledge to arrive at the correct answer. The decline in RES metrics with our method is consistently below 3%, and in some settings, it even shows slight improvements. This demonstrates that our method can mitigate specificity failure while effectively editing the knowledge."
+          ]
+        },
+        {
+          "title": "Our method is effective across various models.",
+          "paragraphs": [
+            "As shown in Table 6, consistent with the observations in Section 5.2, knowledge editing results in significant specificity failure across models ranging from 1.1B to 20B parameters, which is mitigated by our SADR method (with over 50% improvement in major specificity tasks in more than half of the cases). The improvement in prediction probability (as reflected by the RM and DNM metrics) is also evident. Notably, in the Distract Neighborhood task, the probability of correct predictions has been restored to the level of the unedited model, showing the potential of our approach."
+          ]
+        },
+        {
+          "title": "The edited entity also impacts unrelated knowledge:",
+          "paragraphs": [
+            "The OS and DOS metrics show that when the edited entity appears in the context, the performance of tasks entirely unrelated to the entity also degrades. This further highlights the widespread occurrence of specificity failure. In most settings, our method shows improvement on the DOS metric."
+          ]
+        },
+        {
+          "title": "The impact of SADR on editing performance is minimal:",
+          "paragraphs": [
+            "As discussed in Section 5.2, mitigating specificity failure without compromising any aspect of editing performance is quite difficult. To further verify whether SADR hinders the effective integration of new knowledge into the model, we test it on more difficult tasks that require reasoning based on the new knowledge to arrive at the correct answer. The decline in RES metrics with our method is consistently below 3%, and in some settings, it even shows slight improvements. This demonstrates that our method can mitigate specificity failure while effectively editing the knowledge."
+          ]
+        },
+        {
+          "title": "E.2 Results on More Editing Methods",
+          "paragraphs": [
+            "Knowledge editing methods can be categorized into three types: locate-then-edit, parameter-preserving, and meta-learning. To further verify whether attention drift is also evident in parameter-preserving and meta-learning-based editing methods, we conduct additional experiments on WISE (Wang et al., 2024b) and MEND (Mitchell et al., 2021). WISE is a recent parameter-preserving method for sequence editing that includes side memory and gating mechanisms, while MEND is a classic knowledge editing method utilizing meta-learning. Specifically, we add a loss term to constrain attention drift during the training of the side memory in WISE and the hyper-parameter network in MEND. The results, shown in Table 7, indicate that specificity failure is evident in both methods, and imposing attention constraints significantly improves their performance."
+          ]
+        },
+        {
+          "title": "E.3 Results on More Datasets",
+          "paragraphs": [
+            "Due to the limited availability of datasets that meet the required fields for our tasks, we conducted experiments on a relatively small dataset with 1,683 pieces of data from CounterFact (Meng et al., 2022) and WikiDatacounterfact (Yao et al., 2023). To better illustrate the specificity failure problem and validate the effectiveness of our approach across a wider range of data formats and entities, we expand our experiments to include two extensive datasets. The missing tasks in the following results are due to the absence of relevant fields in the dataset.",
+            "First, we use the full CounterFact (Meng et al., 2022) dataset, which includes 21,919 records (12 times larger than our original dataset), including 20,391 subjects, 749 objects, and 645 relations. We also apply Zsre (Meng et al., 2022) and Wikirecent (Yao et al., 2023), which includes data in a Q&A format and recent knowledge data from Wikipedia, with a total of 2,532 records. The results in Table 8 demonstrate the robustness and effectiveness of our approach when applied to larger and more diverse datasets."
+          ]
+        },
+        {
+          "title": "E.4 Human Evaluation",
+          "paragraphs": [
+            "We compare the performance of three knowledge editing baselines with and without our SADR method on GPT-J and Llama3-8b in human evaluation. We provide the edited model with prompts composed of (s,r)(s,r) for text generation, restricting output to a maximum of 100 tokens. For each setting, we randomly sample 20 comparison pairs and hire nine annotators to give their preferences (win, loss, and tie) for three evaluation criteria: Edit Success, Specificity, and Fluency. We show the statistics of human evaluation data in Tabel 9 and human evaluation interface in Figure 12 and 13. To ensure consistency among the annotators, we report the Fleiss’ kappa score and we can observe that all the inter-annotator agreements are substantially consistent (κ∈[0.6,1]\\kappa\\in[0.6,1]). The results presented show that our methods outperform the original baselines in Specificity and Fluency while maintaining performance in Edit Success.",
+            "We build the human evaluation interface with the open-source python web library Django 222https://www.djangoproject.com. As shown in Figure 13, during the evaluation, each comparison pair contains the editing request and two corresponding outputs generated from two edited models with and without our SADR method. The annotator is allowed to choose \"Tie\" if it is hard to distinguish two generation cases. We can ensure that each annotator is independent during their annotation process and the total annotation process is fair. We paid each annotator $ 0.05 for comparing each pair. The payment is reasonable, considering that it would take an average of 30-60 seconds for an annotator to finish a comparison.",
+            "[Figure: Figure 12: Example of one comparison pair in the human evaluation website.]",
+            "[Figure: Figure 13: Interface of human evaluation website.]"
+          ]
+        },
+        {
+          "title": "E.5 Ablation Study on Restraining Weight",
+          "paragraphs": [
+            "The hyper-parameters of our method primarily include the controlling weight γ\\gamma. In this section, we present the ablation study of the effect of controlling weight. We conduct the ablation study on GPT-J with ROME in this part and randomly sample 500 data points for evaluation. The results of adjusting the hyper-parameter γ\\gamma are reported in Table 10. We observe that larger γ\\gamma slightly improves specificity while keeping other metrics almost unchanged. This indicates that our method is not sensitive to γ\\gamma, as we only restrain heads that over-focus on the edited token compared to the vanilla model."
+          ]
+        }
+      ]
+    },
+    "Appendix F Efficiency Analysis": {
+      "paragraphs": [
+        "In terms of memory usage, the additional variables to store in our method are the attention weights across all layers. These weights can be represented as L×H×S2L\\times H\\times S^{2}, where LL is the number of layers in the model, HH is the number of attention heads, and SS is the sequence length. The additional storage required is minimal compared to the overall model parameters. During our experiments, we did not observe any noticeable increase in GPU memory usage.",
+        "Regarding runtime, our method primarily involves computing a mask through comparison of attention weights and calculating the KL divergence. However, due to the use of Python loops in our current implementation, a slight runtime overhead is observed. For instance, when applying the ROME editing method to GPT-J-6B on an A100-PCIE-40GB GPU, the runtime per edit increased from 7.80 seconds (without SADR) to 9.65 seconds (with SADR)."
+      ],
+      "subsections": []
+    },
+    "Appendix G Ethical considerations": {
+      "paragraphs": [
+        "Our goal in improving knowledge editing performance is to correct errors and update the knowledge in LLMs. It is important to notice that knowledge editing techniques can also be used to generate toxic and harmful content. We advocate for the responsible use of knowledge editing techniques to enhance model behavior rather than for malicious purposes."
+      ],
+      "subsections": []
+    },
+    "Appendix H Case Study": {
+      "paragraphs": [
+        "In this section, we present the results generated by our method in comparison with the original method using ROME on GPT-J-6b.",
+        "[Table: Table 11: Generated results of ROME with GPT-J-6b when given prompts containing the edited subject and relation.]",
+        "[Table: Table 12: Generated results of ROME with GPT-J-6b when given prompts from the Distract Neighborhood Task.]"
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "AI@Meta (2024) AI@Meta. Llama 3 model card. 2024. URL https://github.com/meta-llama/llama3/blob/main/MODEL_CARD.md.",
+    "Balachandran et al. (2022) Vidhisha Balachandran, Hannaneh Hajishirzi, William Cohen, and Yulia Tsvetkov. Correcting diverse factual errors in abstractive summarization via post-editing and language model infilling. In Empirical Methods in Natural Language Processing, 2022.",
+    "Bisk et al. (2020) Yonatan Bisk, Rowan Zellers, Jianfeng Gao, Yejin Choi, et al. Piqa: Reasoning about physical commonsense in natural language. In Proceedings of the AAAI conference on artificial intelligence, volume 34, pp. 7432–7439, 2020.",
+    "Black et al. (2022) Sidney Black, Stella Biderman, Eric Hallahan, Quentin Anthony, Leo Gao, Laurence Golding, Horace He, Connor Leahy, Kyle McDonell, Jason Phang, Michael Pieler, Usvsn Sai Prashanth, Shivanshu Purohit, Laria Reynolds, Jonathan Tow, Ben Wang, and Samuel Weinbach. GPT-NeoX-20B: An open-source autoregressive language model. In Angela Fan, Suzana Ilic, Thomas Wolf, and Matthias Gallé (eds.), Proceedings of BigScience Episode #5 – Workshop on Challenges & Perspectives in Creating Large Language Models, pp. 95–136, virtual+Dublin, May 2022. Association for Computational Linguistics. doi: 10.18653/v1/2022.bigscience-1.9. URL https://aclanthology.org/2022.bigscience-1.9.",
+    "Cao et al. (2023) Boxi Cao, Qiaoyu Tang, Hongyu Lin, Xianpei Han, Jiawei Chen, Tianshu Wang, and Le Sun. Retentive or forgetful? diving into the knowledge memorizing mechanism of language models. arXiv preprint arXiv:2305.09144, 2023.",
+    "Chen et al. (2024) Yuheng Chen, Pengfei Cao, Yubo Chen, Kang Liu, and Jun Zhao. Journey to the center of the knowledge neurons: Discoveries of language-independent knowledge neurons and degenerate knowledge neurons. In Proceedings of the AAAI Conference on Artificial Intelligence, volume 38, pp. 17817–17825, 2024.",
+    "Cohen et al. (2024) Roi Cohen, Eden Biran, Ori Yoran, Amir Globerson, and Mor Geva. Evaluating the ripple effects of knowledge editing in language models. Transactions of the Association for Computational Linguistics, 12:283–298, 2024.",
+    "Dai et al. (2021) Damai Dai, Li Dong, Yaru Hao, Zhifang Sui, Baobao Chang, and Furu Wei. Knowledge neurons in pretrained transformers. arXiv preprint arXiv:2104.08696, 2021.",
+    "Dong et al. (2022) Qingxiu Dong, Damai Dai, Yifan Song, Jingjing Xu, Zhifang Sui, and Lei Li. Calibrating factual knowledge in pretrained language models. In Findings of the Association for Computational Linguistics: EMNLP 2022, pp. 5937–5947, 2022.",
+    "Fang et al. (2024) Junfeng Fang, Houcheng Jiang, Kun Wang, Yunshan Ma, Xiang Wang, Xiangnan He, and Tat-seng Chua. Alphaedit: Null-space constrained knowledge editing for language models. arXiv preprint arXiv:2410.02355, 2024.",
+    "Geva et al. (2021) Mor Geva, Roei Schuster, Jonathan Berant, and Omer Levy. Transformer feed-forward layers are key-value memories. In Proceedings of the 2021 Conference on Empirical Methods in Natural Language Processing, pp. 5484–5495, 2021.",
+    "Geva et al. (2022) Mor Geva, Avi Caciularu, Kevin Wang, and Yoav Goldberg. Transformer feed-forward layers build predictions by promoting concepts in the vocabulary space. In Proceedings of the 2022 Conference on Empirical Methods in Natural Language Processing, pp. 30–45, 2022.",
+    "Geva et al. (2023) Mor Geva, Jasmijn Bastings, Katja Filippova, and Amir Globerson. Dissecting recall of factual associations in auto-regressive language models. arXiv preprint arXiv:2304.14767, 2023.",
+    "Gu & Dao (2023) Albert Gu and Tri Dao. Mamba: Linear-time sequence modeling with selective state spaces. arXiv preprint arXiv:2312.00752, 2023.",
+    "Gu et al. (2024) Jia-Chen Gu, Hao-Xiang Xu, Jun-Yu Ma, Pan Lu, Zhen-Hua Ling, Kai-Wei Chang, and Nanyun Peng. Model editing can hurt general abilities of large language models. arXiv preprint arXiv:2401.04700, 2024.",
+    "Hao et al. (2021) Yaru Hao, Li Dong, Furu Wei, and Ke Xu. Self-attention attribution: Interpreting information interactions inside transformer. In Proceedings of the AAAI Conference on Artificial Intelligence, volume 35, pp. 12963–12971, 2021.",
+    "Hartvigsen et al. (2024) Tom Hartvigsen, Swami Sankaranarayanan, Hamid Palangi, Yoon Kim, and Marzyeh Ghassemi. Aging with grace: Lifelong model editing with discrete key-value adaptors. Advances in Neural Information Processing Systems, 36, 2024.",
+    "Hase et al. (2023) Peter Hase, Mohit Bansal, Been Kim, and Asma Ghandeharioun. Does localization inform editing? surprising differences in causality-based localization vs. knowledge editing in language models. In A. Oh, T. Naumann, A. Globerson, K. Saenko, M. Hardt, and S. Levine (eds.), Advances in Neural Information Processing Systems, volume 36, pp. 17643–17668. Curran Associates, Inc., 2023. URL https://proceedings.neurips.cc/paper_files/paper/2023/file/3927bbdcf0e8d1fa8aa23c26f358a281-Paper-Conference.pdf.",
+    "Hazra et al. (2024) Rima Hazra, Sayan Layek, Somnath Banerjee, and Soujanya Poria. Sowing the wind, reaping the whirlwind: The impact of editing language models. arXiv preprint arXiv:2401.10647, 2024.",
+    "Hoelscher-Obermaier et al. (2023) Jason Hoelscher-Obermaier, Julia Persson, Esben Kran, Ioannis Konstas, and Fazl Barez. Detecting edit failures in large language models: An improved specificity benchmark. arXiv preprint arXiv:2305.17553, 2023.",
+    "Huang et al. (2023) Zeyu Huang, Yikang Shen, Xiaofeng Zhang, Jie Zhou, Wenge Rong, and Zhang Xiong. Transformer-patcher: One mistake worth one neuron. arXiv preprint arXiv:2301.09785, 2023.",
+    "Kirkpatrick et al. (2017) James Kirkpatrick, Razvan Pascanu, Neil Rabinowitz, Joel Veness, Guillaume Desjardins, Andrei A Rusu, Kieran Milan, John Quan, Tiago Ramalho, Agnieszka Grabska-Barwinska, et al. Overcoming catastrophic forgetting in neural networks. Proceedings of the national academy of sciences, 114(13):3521–3526, 2017.",
+    "Li et al. (2023a) Haoran Li, Dadi Guo, Wei Fan, Mingshi Xu, Jie Huang, Fanpu Meng, and Yangqiu Song. Multi-step jailbreaking privacy attacks on chatgpt. In Findings of the Association for Computational Linguistics: EMNLP 2023, pp. 4138–4153, 2023a.",
+    "Li et al. (2023b) Jiahang Li, Taoyu Chen, and Yuanli Wang. Trace and edit relation associations in gpt. arXiv preprint arXiv:2401.02976, 2023b.",
+    "Li et al. (2024) Xiaopeng Li, Shasha Li, Shezheng Song, Jing Yang, Jun Ma, and Jie Yu. Pmet: Precise model editing in a transformer. In Proceedings of the AAAI Conference on Artificial Intelligence, volume 38, pp. 18564–18572, 2024.",
+    "Li et al. (2023c) Zhoubo Li, Ningyu Zhang, Yunzhi Yao, Mengru Wang, Xi Chen, and Huajun Chen. Unveiling the pitfalls of knowledge editing for large language models. arXiv preprint arXiv:2310.02129, 2023c.",
+    "Li et al. (2023d) Zichao Li, Ines Arous, Siva Reddy, and Jackie Chi Kit Cheung. Evaluating dependencies in fact editing for language models: Specificity and implication awareness. In Findings of the Association for Computational Linguistics: EMNLP 2023, pp. 7623–7636, 2023d.",
+    "Lv et al. (2024) Ang Lv, Kaiyi Zhang, Yuhan Chen, Yulong Wang, Lifeng Liu, Ji-Rong Wen, Jian Xie, and Rui Yan. Interpreting key mechanisms of factual recall in transformer-based language models. arXiv preprint arXiv:2403.19521, 2024.",
+    "Ma et al. (2023) Jun-Yu Ma, Jia-Chen Gu, Zhen-Hua Ling, Quan Liu, and Cong Liu. Untying the reversal curse via bidirectional language model editing. arXiv preprint arXiv:2310.10322, 2023.",
+    "Ma et al. (2024) Jun-Yu Ma, Hong Wang, Hao-Xiang Xu, Zhen-Hua Ling, and Jia-Chen Gu. Perturbation-restrained sequential model editing, 2024. URL https://arxiv. org/abs/2405.16821, 2024.",
+    "Madaan et al. (2022) Aman Madaan, Niket Tandon, Peter Clark, and Yiming Yang. Memory-assisted prompt editing to improve gpt-3 after deployment. In Proceedings of the 2022 Conference on Empirical Methods in Natural Language Processing, pp. 2833–2861, 2022.",
+    "Mazzia et al. (2023) Vittorio Mazzia, Alessandro Pedrani, Andrea Caciolai, Kay Rottmann, and Davide Bernardi. A survey on knowledge editing of neural networks. arXiv preprint arXiv:2310.19704, 2023.",
+    "Meng et al. (2022) Kevin Meng, David Bau, Alex Andonian, and Yonatan Belinkov. Locating and editing factual associations in gpt. Advances in Neural Information Processing Systems, 35:17359–17372, 2022.",
+    "Meng et al. (2023) Kevin Meng, Arnab Sen Sharma, Alex J Andonian, Yonatan Belinkov, and David Bau. Mass-editing memory in a transformer. In The Eleventh International Conference on Learning Representations, 2023. URL https://openreview.net/forum?id=MkbcAHIYgyS.",
+    "Mitchell et al. (2021) Eric Mitchell, Charles Lin, Antoine Bosselut, Chelsea Finn, and Christopher D Manning. Fast model editing at scale. arXiv preprint arXiv:2110.11309, 2021.",
+    "Mitchell et al. (2022) Eric Mitchell, Charles Lin, Antoine Bosselut, Christopher D Manning, and Chelsea Finn. Memory-based model editing at scale. In International Conference on Machine Learning, pp. 15817–15831. PMLR, 2022.",
+    "Ni et al. (2023) Jinjie Ni, Tom Young, Vlad Pandelea, Fuzhao Xue, and Erik Cambria. Recent advances in deep learning based dialogue systems: A systematic survey. Artificial intelligence review, 56(4):3055–3155, 2023.",
+    "Petroni et al. (2019) Fabio Petroni, Tim Rocktäschel, Sebastian Riedel, Patrick Lewis, Anton Bakhtin, Yuxiang Wu, and Alexander Miller. Language models as knowledge bases? In Proceedings of the 2019 Conference on Empirical Methods in Natural Language Processing and the 9th International Joint Conference on Natural Language Processing (EMNLP-IJCNLP), pp. 2463–2473, 2019.",
+    "Pinter & Elhadad (2023) Yuval Pinter and Michael Elhadad. Emptying the ocean with a spoon: Should we edit models? In Findings of the Association for Computational Linguistics: EMNLP 2023, pp. 15164–15172, 2023.",
+    "Roberts et al. (2020) Adam Roberts, Colin Raffel, and Noam Shazeer. How much knowledge can you pack into the parameters of a language model? arXiv preprint arXiv:2002.08910, 2020.",
+    "Rosati et al. (2024) Domenic Rosati, Robie Gonzales, Jinkun Chen, Xuemin Yu, Melis Erkan, Yahya Kayani, Satya Deepika Chavatapalli, Frank Rudzicz, and Hassan Sajjad. Long-form evaluation of model editing. arXiv preprint arXiv:2402.09394, 2024.",
+    "Tan et al. (2023) Chenmien Tan, Ge Zhang, and Jie Fu. Massive editing for large language models via meta learning. arXiv preprint arXiv:2311.04661, 2023.",
+    "Tang et al. (2023) Zecheng Tang, Keyan Zhou, Pinzheng Wang, Yuyang Ding, Juntao Li, et al. Detoxify language model step-by-step. arXiv preprint arXiv:2308.08295, 2023.",
+    "Touvron et al. (2023) Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, et al. Llama 2: Open foundation and fine-tuned chat models. arXiv preprint arXiv:2307.09288, 2023.",
+    "Vaswani et al. (2017) Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. Attention is all you need. Advances in neural information processing systems, 30, 2017.",
+    "Wang & Komatsuzaki (2021) Ben Wang and Aran Komatsuzaki. GPT-J-6B: A 6 Billion Parameter Autoregressive Language Model. https://github.com/kingoflolz/mesh-transformer-jax, May 2021.",
+    "Wang et al. (2024a) Jianchen Wang, Zhouhong Gu, Zhuozhi Xiong, Hongwei Feng, and Yanghua Xiao. The missing piece in model editing: A deep dive into the hidden damage brought by model editing. arXiv preprint arXiv:2403.07825, 2024a.",
+    "Wang et al. (2022) Kevin Wang, Alexandre Variengien, Arthur Conmy, Buck Shlegeris, and Jacob Steinhardt. Interpretability in the wild: a circuit for indirect object identification in gpt-2 small. arXiv preprint arXiv:2211.00593, 2022.",
+    "Wang et al. (2024b) Peng Wang, Zexi Li, Ningyu Zhang, Ziwen Xu, Yunzhi Yao, Yong Jiang, Pengjun Xie, Fei Huang, and Huajun Chen. Wise: Rethinking the knowledge memory for lifelong model editing of large language models. arXiv preprint arXiv:2405.14768, 2024b.",
+    "Wang et al. (2023) Song Wang, Yaochen Zhu, Haochen Liu, Zaiyi Zheng, Chen Chen, and Jundong Li. Knowledge editing for large language models: A survey. ACM Computing Surveys, 2023.",
+    "Yang et al. (2024a) Jingfeng Yang, Hongye Jin, Ruixiang Tang, Xiaotian Han, Qizhang Feng, Haoming Jiang, Shaochen Zhong, Bing Yin, and Xia Hu. Harnessing the power of llms in practice: A survey on chatgpt and beyond. ACM Transactions on Knowledge Discovery from Data, 18(6):1–32, 2024a.",
+    "Yang et al. (2024b) Wanli Yang, Fei Sun, Xinyu Ma, Xun Liu, Dawei Yin, and Xueqi Cheng. The butterfly effect of model editing: Few edits can trigger large language models collapse. arXiv preprint arXiv:2402.09656, 2024b.",
+    "Yao et al. (2023) Yunzhi Yao, Peng Wang, Bozhong Tian, Siyuan Cheng, Zhoubo Li, Shumin Deng, Huajun Chen, and Ningyu Zhang. Editing large language models: Problems, methods, and opportunities. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, pp. 10222–10240, 2023.",
+    "Yao et al. (2024) Yunzhi Yao, Ningyu Zhang, Zekun Xi, Mengru Wang, Ziwen Xu, Shumin Deng, and Huajun Chen. Knowledge circuits in pretrained transformers. arXiv preprint arXiv:2405.17969, 2024.",
+    "Zhang et al. (2024a) Ningyu Zhang, Yunzhi Yao, Bozhong Tian, Peng Wang, Shumin Deng, Mengru Wang, Zekun Xi, Shengyu Mao, Jintian Zhang, Yuansheng Ni, et al. A comprehensive study of knowledge editing for large language models. arXiv preprint arXiv:2401.01286, 2024a.",
+    "Zhang et al. (2024b) Peiyuan Zhang, Guangtao Zeng, Tianduo Wang, and Wei Lu. Tinyllama: An open-source small language model. arXiv preprint arXiv:2401.02385, 2024b.",
+    "Zheng et al. (2023) Ce Zheng, Lei Li, Qingxiu Dong, Yuxuan Fan, Zhiyong Wu, Jingjing Xu, and Baobao Chang. Can we edit factual knowledge by in-context learning? In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, pp. 4862–4876, 2023.",
+    "Zhong et al. (2023) Zexuan Zhong, Zhengxuan Wu, Christopher D Manning, Christopher Potts, and Danqi Chen. Mquake: Assessing knowledge editing in language models via multi-hop questions. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, pp. 15686–15702, 2023.",
+    "Zhu et al. (2020) Chen Zhu, Ankit Singh Rawat, Manzil Zaheer, Srinadh Bhojanapalli, Daliang Li, Felix Yu, and Sanjiv Kumar. Modifying memories in transformer models. arXiv preprint arXiv:2012.00363, 2020."
+  ]
+}

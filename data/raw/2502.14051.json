@@ -1,0 +1,333 @@
+{
+  "title": "RocketKV: Accelerating Long-Context LLM Inference viaTwo-Stage KV Cache Compression",
+  "authors": "",
+  "abstract": "Transformer-based Large Language Models rely critically on KV cache to efficiently handle extended contexts during the decode phase. Yet, the size of the KV cache grows proportionally with the input length, burdening both memory bandwidth and capacity as decoding progresses. To address this challenge, we present RocketKV, a training-free KV cache compression strategy designed specifically to reduce both memory bandwidth and capacity demand of KV cache during the decode phase. RocketKV contains two consecutive stages. In the first stage, it performs coarse-grain KV cache eviction on the input sequence tokens with SnapKV++, a method improved upon SnapKV by introducing adaptive pooling size and full compatibility with grouped-query attention. In the second stage, it adopts a hybrid attention method to conduct fine-grain top-k sparse attention, approximating the attention scores by leveraging both head and sequence dimensional reductions. Combining these two stages, RocketKV achieves significant KV cache fetching bandwidth and storage savings while maintaining comparable accuracy to full KV cache attention. We show that RocketKV provides end-to-end speedup by up to 3×\\times as well as peak memory reduction by up to 31% in the decode phase on an NVIDIA H100 GPU compared to the full KV cache baseline, while achieving negligible accuracy loss on a variety of long-context tasks.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Long-context Large Language Models (LLMs) have enhanced the capabilities of LLMs across diverse tasks that require processing extensive amounts of text. Examples of such applications are document summarization, legal document analysis, coding assistants, conversational AI, etc [24, 22, 12].",
+        "In transformer-based LLM [33] inference, the key-value cache (KV cache)—which stores past attention keys and values to avoid recomputation—becomes a major bottleneck during the decode phase, as its size scales linearly with both the sequence length and batch size. For example, the Llama3.1-70B-Instruct [1] model with a batch size of 32, and a context length of 32K requires around 320GB of KV cache storage at FP16 precision, which even advanced hardware [23, 15, 3] can hardly handle.",
+        "Fortunately, previous work [37, 31, 25, 20, 28, 9] has shown that only a small subset of KV tokens is required at each decode step to maintain accuracy. Therefore, if those KV tokens can be accurately predicted in advance, dense attention operations can be replaced with sparse attention operations with significant memory bandwidth and capacity improvement. These methods often fall into two categories: 1) permanent KV token eviction, and 2) dynamic KV token selection. The former results in both memory bandwidth and storage savings, but could lead to noticeable accuracy loss if KV tokens dropped earlier are needed by later decode steps. The latter avoids this shortcoming by keeping all KV tokens in the memory and dynamically selecting a subset each time. Hence, it only results in memory bandwidth savings, but often requires extra memory storage overhead for auxiliary data.",
+        "Aiming to achieve better trade-offs among memory bandwidth, capacity, and model accuracy, we propose RocketKV, a two-stage KV cache compression method that combines permanent KV token eviction with dynamic KV token selection to accelerate the decode phase of LLM inference. In the first stage, we propose SnapKV++ for coarse-grain permanent KV token eviction on the input prompt. SnapKV++ improves upon SnapKV [20] with adaptive pooling size and full compatibility with grouped-query attention (GQA). In the second stage, RocketKV performs fine-grain dynamic KV token selection with a hybrid attention mechanism which estimates KV token indices with top-k attention scores by leveraging both head and sequence dimensional reductions. Combining these two stages together, RocketKV achieves significant memory bandwidth and storage savings with negligible accuracy loss across a wide variety of models and downstream tasks.",
+        "In summary, the contributions of the paper can be summarized as follows:",
+        "• We analyze and identify the limitations of existing KV token dropping methods and then propose RocketKV with two-stage KV cache compression.",
+        "• In the first stage, we propose SnapKV++ for prompt KV cache eviction that improves upon SnapKV by introducing adaptive pooling size and full compatibility with GQA. In the second stage, we propose hybrid attention for dynamic KV token selection at each decode step.",
+        "• We conduct a comprehensive evaluation of RocketKV on a wide variety of models and downstream tasks. RocketKV consistently demonstrates comparable accuracy with full-KV attention while maintaining KV token budgets as low as 256.",
+        "• We evaluate the efficiency of RocketKV on an NVIDIA H100 GPU and it shows up to 3×\\times end-to-end speedup while reducing total memory consumption by up to 31% at the decode phase compared to the full KV cache."
+      ],
+      "subsections": []
+    },
+    "2 Related Work": {
+      "paragraphs": [
+        "A number of recent approaches have focused on improving the efficiency of attention mechanisms in LLMs, particularly when dealing with long contexts. One feasible solution is to share KV cache across multiple layers [5] or selectively drop attention for some layers [21]. Others [29, 10] propose mixed attention designs where some layers use global attention while others use local attention. Multi-Query Attention (MQA) [26] and Grouped-Query Attention (GQA) [2] are widely adopted by many recent LLMs [1, 13, 32], which reduce KV cache by sharing them across multiple attention heads. All the above techniques directly modify the attention architecture and require integration since pre-training.",
+        "Another direction is to improve attention efficiency with training-free techniques. These techniques can be further categorized as prefill phase acceleration, decode phase acceleration, or accelerating both phases together. For example, StreamingLLM [13] combines initial and local-window attention to reduce the KV cache into a constant size regardless of the sequence length. DuoAttention [35] and RazorAttention [30] improve upon StreamingLLM by applying global attention on retrieval heads and StreamingLLM-style attention on rest heads. While these techniques can be applied to both the prefill and decode phases of LLM inference, other techniques focus on accelerating only one of the two phases.",
+        "For prefill phase attention acceleration, MInference [14] identifies three distinct patterns in long-context attention matrices that can be harnessed for efficient sparse operations with customized GPU kernels. SeerAttention [8] explores dynamic block-level sparsity in attention module with a learnable gate.",
+        "A common approach for attention acceleration at the decode phase is through permanent KV cache eviction, which can save both KV cache fetching bandwidth and storage requirements. H2O [37] observes that a small subset of tokens, known as heavy-hitters, dominates the attention computation, thus only keeps recent and heavy-hitter tokens. SnapKV [20] employs an observation window at the end of the prompt to identify critical KV tokens of the input prompt. Then it uses a clustering algorithm via pooling to retain critical KV token clusters without loss the completeness of the information. Quest [31] observes that permanent KV cache eviction could lead to inevitable accuracy loss, and proposes query-aware selection on top-k KV tokens based on approximation attention with representative vectors of contiguous key cache pages. On the other hand, SparQ and Loki [25, 28] conduct approximation attention by selecting only important indices on the head dimension instead. The above approaches can save KV cache compute and data fetching from memory but not KV cache storage. InfiniGen [18] tackles this challenge by offloading the entire KV cache to CPU memory and only fetching the selected KV tokens to GPU memory when needed. MagicPIG[6] discovers that using importance sampling is more efficient than top-k estimation and proposes an approximation attention solution leveraging locality sensitive hashing (LSH) and CPU offloading.",
+        "In contrast to prior work, RocketKV combines both permanent KV cache eviction and dynamic KV token selection as two consecutive stages for accelerating the decode phase and utilizes the advantages of both worlds. As a result, it achieves remarkable memory bandwidth and storage savings without the need for sophisticated system-level optimizations such as CPU offloading, while maintaining remarkable accuracy even at low token budgets."
+      ],
+      "subsections": []
+    },
+    "3 Proposed Method: RocketKV": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "3.1 Observation",
+          "paragraphs": [
+            "As discussed previously in Sections 1 and 2, existing training-free KV cache eviction methods for decode phase acceleration can be categorized into two types: permanent KV cache eviction and dynamic KV token selection. To understand the effectiveness of strategies in each type, Figure 1 presents the accuracy comparison of four different methods for qasper benchmark in LongBench [4] on Mistral-7B-Instruct-v0.2 model, where DuoAttention and SnapKV belong to the first type, and Quest and SparQ belong to the second type. As shown in the figure, the accuracy of all four methods drops significantly as the token budget becomes lower than 1024. In comparison, we present Exact-TopK as an oracle method that performs sparse attention on top-k KV token indices selected based on the exact attention scores. Exact-TopK achieves negligible accuracy drop compared to the Full-KV attention even with a token budget of 256, which indicates that all those practical methods fail to accurately predict top-k KV tokens at low token budgets.",
+            "To improve the prediction accuracy, we observe that permanent KV cache eviction and dynamic KV token selection are complementary to each other and can be seamlessly combined together. In fact, we can perform permanent KV cache eviction with a much larger token budget first and then conduct dynamic KV token selection on the remaining KV tokens. By doing this, the chance of permanently evicting important KV tokens is greatly reduced. Meanwhile, dynamic KV token selection only needs to perform on a subset of KV tokens rather than the original full set, significantly lowering the prediction difficulty."
+          ]
+        },
+        {
+          "title": "3.2 RocketKV",
+          "paragraphs": [
+            "Based on the above observation, we propose RocketKV, a two-stage KV cache compression method for decode phase acceleration. As shown in Figure 2, RocketKV performs coarse-grain KV cache eviction at the first stage. The purpose of this stage is to remove KV tokens with low importance while trying to keep the majority of important tokens. In the second stage, it conducts fine-grain dynamic KV token selection on the remaining KV tokens followed by top-k sparse attention. For a given token budget tt and associated compression ratio cc, we evenly split the compression ratio across both stages so that each stage results in a compression ratio of c\\sqrt{c}. To achieve the best performance at each stage, we further propose a highly effective KV cache eviction and dynamic KV token selection method for each stage."
+          ]
+        },
+        {
+          "title": "3.3 First Stage: SnapKV++",
+          "paragraphs": [
+            "In the first stage, we propose SnapKV++ as an efficient KV cache compression method on the input prompt. Compared with the original SnapKV, SnapKV++ introduces two enhancements that greatly improve the performance: 1) Full compatibility to GQA, and 2) adaptive kernel size for pooling.",
+            "The original SnapKV method keeps crucial KV tokens based on aggregated per-head attention scores across the observation window. In the case of GQA, each attention head within an attention group will keep a separate set of KV cache tokens, which could introduce redundant storage of the same KV token. To be fully compatible with GQA, SnapKV++ accumulates per-group rather than per-head attention score, and hence the selected KV tokens are shared across the entire attention group.",
+            "SnapKV uses pooling along the sequence dimension so that the critical KV tokens are selected along with their neighbor tokens. It demonstrates better accuracy with pooling because it retains the completeness of selected information. The employed kernel sizes for pooling are quite small (e.g., a kernel size of 7 for LongBench [4]). Since SnapKV++ is only used for coarse-grain KV token eviction at the first stage, we discovered that the optimal kernel sizes for pooling are much larger. In fact, the optimal kernel size can grow as the input sequence length increases. Therefore, SnapKV++ provides a simple adaptive kernel size selection mechanism based on the input sequence length: it selects a smaller kernel size if the input sequence length is shorter than a threshold value, otherwise, it will switch to a larger kernel size. Those two kernel sizes and threshold values are empirically determined in our work as shown in Section 4.4. We found this mechanism is sufficient to capture close-to-optimal performance in our studies, so we did not explore more sophisticated algorithms.",
+            "The overall algorithm of SnapKV++ is illustrated in Algorithm 1. We found that with those two enhancements, SnapKV++ greatly outperforms the original SnapKV method as shown in Section 4.4."
+          ]
+        },
+        {
+          "title": "3.4 Second Stage: Hybrid Attention",
+          "paragraphs": [
+            "Previous methods on dynamic KV token selection often leverage the sparsity in the head or sequence dimension of the Q or K tensor [31, 25, 28] to estimate top-k attention scores. Unfortunately, relying on the sparsity of a single dimension can only achieve a certain degree of compression ratio, beyond which the accuracy could drop rapidly, as shown previously in Figure 1. In contrast, we propose a hybrid attention method which takes advantage of sparsity in both head and sequence dimensions together to achieve better estimation accuracy on KV token indices with top-k attention scores.",
+            "Figure 3 shows the detailed implementation of our proposed algorithm, which is inspired by Quest [31] and SparQ [25]. Our hybrid attention algorithm can be decomposed into three steps: In our hybrid attention algorithm, the KK tensor is compressed along the sequence dimension first for auxiliary storage, and then selectively fetched along the head dimension for approximation attention calculation. For a given compression ratio cc, we evenly split it between those two steps so that each step results in a compression ratio of c\\sqrt{c}. This would avoid significant accuracy loss caused by over-compression on a single dimension. Our method is fully compatible with GQA because all selections on the key and value vectors are based on per attention group rather than attention head, similar to our enhancement in SnapKV++.",
+            "• Step 1: Group tokens in key tensor into consecutive pages along the sequence dimension and store element-wise min and max of each page as auxiliary storage. They are stored along the head dimension to enable efficient gathering in Step 2. The auxiliary storage is updated accordingly each time a new key token is generated and stored.",
+            "• Step 2: For each query q, accumulate |q||q| in group dimension and find the r largest indices along the head dimension. Then fetch only the corresponding indices in either element-wise min or max tensors depending on the sign of the sum of qq in group dimension at those indices. Finally calculate approximation attention scores based on those partial qq and element-wise vectors, and find top-k indices along the sequence dimension.",
+            "• Step 3: Perform sparse attention by fetching the full key and value vectors from the top-k indices.",
+            "Step 1: Group tokens in key tensor into consecutive pages along the sequence dimension and store element-wise min and max of each page as auxiliary storage. They are stored along the head dimension to enable efficient gathering in Step 2. The auxiliary storage is updated accordingly each time a new key token is generated and stored.",
+            "Step 2: For each query q, accumulate |q||q| in group dimension and find the r largest indices along the head dimension. Then fetch only the corresponding indices in either element-wise min or max tensors depending on the sign of the sum of qq in group dimension at those indices. Finally calculate approximation attention scores based on those partial qq and element-wise vectors, and find top-k indices along the sequence dimension.",
+            "Step 3: Perform sparse attention by fetching the full key and value vectors from the top-k indices."
+          ]
+        },
+        {
+          "title": "3.5 Cost Analysis and Comparison",
+          "paragraphs": [
+            "The decode phase of LLM inference is typically memory bound [25] so the time spent in the attention module is roughly proportional to the total memory traffic. In this work, we use token budget tt to estimate the amount of memory traffic for each attention operation in the decode phase (we mainly focus on KV cache traffic since it contributes to the majority of memory traffic in this scenario). For example, a token budget of 512 means each attention module needs to fetch an equivalent total amount of 512 key and value pairs from the memory. For models with GQA, this token budget is defined for the entire attention group rather than each attention head. For a given sequence length SS, the total compression ratio cc can be defined as c=S/tc=S/t.",
+            "In RocketKV, the total compression ratio is evenly split between two stages with each stage having a compression ratio of c\\sqrt{c}. Therefore, in the first stage, SnapKV++ results in both KV cache storage and traffic reduction of c\\sqrt{c}. In the second stage, we need to take the additional memory storage overhead introduced by approximation attention into consideration. Since we further evenly split the compression ratio c\\sqrt{c} into c1/4c^{1/4} between step 1 and 2 in the hybrid attention algorithm, it introduces a memory storage overhead of (1/c)×(1/c1/4)×2=2/c3/4(1/\\sqrt{c})\\times(1/c^{1/4})\\times 2=2/c^{3/4} where 1/c1/\\sqrt{c} is the relative KV cache storage after SnapKV++ and both element-wise min and max tensors will introduce a storage overhead of 1/c1/41/c^{1/4} on top of it. Therefore, the total KV cache storage and traffic in RocketKV are 1/c+2/c3/41/\\sqrt{c}+2/c^{3/4} and 1/c1/c of the full KV baseline, respectively. Table 1 compares the KV cache storage and traffic of RocketKV against other methods at a given compression ratio cc and we can see that while all methods lead to KV cache traffic savings, only RocketKV and SnapKV provide additional KV cache storage savings but Quest and SparQ require extra storage for auxiliary data.",
+            "In terms of system-level optimizations, RocketKV is fully compatible with FlashAttention [7] as it does not modify attention in the prefill phase, as well as Tensor Parallelism [27] as all operations are symmetric across attention heads/groups."
+          ]
+        }
+      ]
+    },
+    "4 Experiments": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "4.1 Experimental Settings",
+          "paragraphs": [
+            "We conduct our experiments on three widely used long-context models: Llama3.1-8B-Instruct [1], Mistral-7B-Instruct-v0.2 [13], and LongChat-7B-v1.5-32k [19]. We use the notations Llama3.1-8B-Ins, Mistral-7B-Ins-v0.2, LongChat-7B-v1.5 for them, respectively throughout the paper. The first two models are based on GQA, while the last one is based on MHA. For downstream tasks, we utilize LongBench [4], Needle-in-a-Haystack [16] and RULER [11] benchmarks. We compare RocketKV with several other methods: Full-KV, Exact-TopK, DuoAttention [35], SnapKV [20], Quest [31], and SparQ [25]. Exact-TopK serves as an oracle method for sparse attention with exact top-k KV token selection. We evaluate all methods across various KV token budgets per attention group except for Full-KV. RocketKV, Quest, and SparQ involve additional memory traffic for top-k approximation, which is converted into an equivalent KV token budget such that the total token budget precisely reflects the total amount of memory loads in the attention module. More details on our experimental settings can be found in Appendix A."
+          ]
+        },
+        {
+          "title": "4.2 Accuracy Results",
+          "paragraphs": [
+            "In our accuracy evaluation, we vary the token budget of each method from 256 to 4096 except for the Full-KV and then compare the average accuracy across all individual tasks for each benchmark. More detailed results with accuracy breakdown for individual tasks can be found in Appendix B.",
+            "LongBench Benchmark: The first row in Figure 4 shows the average score comparison of RocketKV with other methods on LongBench across all three models. Based on the figure, we can see that RocketKV consistently outperforms all other methods, especially with the lower token budgets. For Llama3.1-8B-Ins, RocketKV achieves almost no accuracy loss with a token budget of 512 and above, and only 1.1% average accuracy drop with a token budget of 256. RocketKV results in slightly higher accuracy losses for Mistral-7B-Ins-v0.2 and LongChat-7B-v1.5, which might be because Llama3.1-8B-Ins is better-trained than the other two models, making it more robust to sparse attention methods, as a similar trend can be found with Exact-TopK. SparQ performs well on Llama3.1-8B-Ins and LongChat-7B-v1.5 with a token budget of 1024 and above but underperforms all other methods on Mistral-7B-Ins-v0.2. SnapKV achieves relatively good accuracy with a token budget of 1024 and above across all three models, however, it cannot further reduce the token budget to 512 or below for tasks in LongBench with 512 maximum generated tokens. This is because it only compresses the KV cache of the input prompt but not the generated tokens, so the token budget cannot reach 512 or below for those tasks. Although we cannot plot the average accuracy score of SnapKV for those cases, the accuracy scores for the remaining tasks are available in Appendix B.3, and we can still see widening accuracy gaps between SnapKV and RocketKV for those tasks.",
+            "Needle-in-a-Haystack Benchmark: Presented in the second row of Figure 4, RocketKV achieves near the Full-KV accuracy across all models, even with a token budget of 512, and experiences only negligible accuracy loss with a token budget of 256. In contrast, all other methods suffer substantial accuracy drops. For example, the accuracy of SnapKV for Mistral-7B-Ins-v0.2 and LongChat-7B-v1.5 decreases by more than 20% compared to the Full-KV, even with a token budget of 1024. We present the heatmaps of RocketKV under various token budgets in Appendix B.2.",
+            "RULER Benchmark: For the RULER benchmark, we evaluate all methods across three models with varying sequence lengths as shown in Figure 4 (rows 3-5). Again, RocketKV shows robust performance and a clear advantage over all other methods across various token budget and sequence length settings. Overall, we can see that the accuracy loss of RocketKV is negligible under short sequence lengths, and gradually becomes larger as sequence length increases. We believe this is because those models are less robust to sparse attention under longer sequence lengths. Notice that the accuracy gaps between RocketKV and other methods become even wider under longer sequence lengths."
+          ]
+        },
+        {
+          "title": "4.3 Efficiency Results",
+          "paragraphs": [
+            "Our efficiency experiments are conducted with Llama3.1-8B-Ins [1] under FP16 precision, running on an NVIDIA H100 GPU at a batch size of 1. Similar to SparQ, we leverage gpt-fast [17], a low-latency Python-native",
+            "LLM framework for running the efficiency experiments. We found a python-based implementation of RocketKV under gpt-fast is sufficient to demonstrate its efficiency benefit, but it could be further improved with customized CUDA kernels and more advanced frameworks such as FlashInfer [36]. Figure 5 demonstrates the end-to-end speedups and peak memory savings of RocketKV with varying token budgets at the decode phase, with all values normalized to the Full-KV. Notice that the peak memory usage measured in the figure includes memory allocations for weights, activations, KV cache, and all other metadata at the decode phase. As shown in the figure, RocketKV with token budgets of 512 and 256 achieves up to 2.9×\\times and 3×\\times end-to-end speedups as well as 30% and 31.4% peak memory savings, respectively. Additionally, increasing the sequence lengths results in almost linear improvements in both speedup and peak memory savings."
+          ]
+        },
+        {
+          "title": "4.4 Ablation Study",
+          "paragraphs": [
+            "In this subsection, we present a series of ablation studies to further demonstrate the effectiveness of RocketKV. More ablation results can be found in Appendix B.",
+            "As illustrated in Figures 6, SnapKV with the grouped-query attention (GQA) [2] enhancement consistently outperforms the original SnapKV, especially with low token budgets. This is because with the GQA enhancement, the compressed KV tokens are shared across the entire attention group which is far more effective than storing them separately within each attention head. Recall that, the GQA enhancement does not make any difference for LongChat-7B-v1.5 since it uses MHA in the attention module.",
+            "We run extensive experiments to examine the impact of the kernel sizes for pooling on the overall accuracy of RocketKV. We primarily focus on the RULER benchmark to understand the optimal kernel size selection across different sequence lengths, as shown in Figures 7. For Llama3.1-8B-Ins, a kernel size of 63 performs best for sequence lengths of 16K and 32K, while a kernel size of 511 performs best for sequence lengths of 64K and 96K. Therefore, we simply set the switching threshold to 48K as the middle point between 32K and 64K. For Mistral-7B-Ins-v0.2, a kernel size of 63 generally performs best across all sequence lengths so there is no need to switch to other kernel sizes. For LongChat-7B-v1.5, a kernel size of 63 performs best for a sequence length of 8K, and a kernel size of 511 performs best for remaining sequence lengths; so, we set the switching threshold to 12K. We found adaptive kernel selection with empirically determined kernel sizes and threshold generalizes well in other benchmarks (shown in Appendix B.1). Hence, we do not explore more sophisticated solutions.",
+            "To illustrate the effectiveness of hybrid attention, we compare the accuracy of the standalone hybrid attention mechanism (Hybrid) against Quest and SparQ in the Figures 8. In all cases, hybrid attention consistently outperforms Quest and SparQ, especially at low token budgets. This clearly demonstrates the advantage of hybrid attention which intelligently leverages approximations in both head and sequence dimensions compared to single dimension approximation methods such as Quest and SparQ."
+          ]
+        }
+      ]
+    },
+    "5 Conclusion": {
+      "paragraphs": [
+        "RocketKV presents a novel, training-free approach to KV cache compression, addressing the challenges of memory bandwidth and capacity demands during the decode phase of LLM inference. RocketKV contains two consecutive stages: SnapKV++ for coarse-grain KV cache eviction and hybrid attention for fine-grain dynamic KV token selection. Our evaluations on models and long-context benchmarks demonstrate that RocketKV maintains comparable accuracy to full KV cache attention while significantly lowering memory bandwidth and capacity usage. At low token budgets of 256 or 512, RocketKV outperforms all other techniques by a considerable margin. It achieves up to 3×\\times speedup and 31% peak memory reduction at the decode phase on an NVIDIA H100 GPU compared to the full KV cache baseline, highlighting its efficiency and potential for widespread application in optimizing LLM performance."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Detailed Experiment Settings": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "A.1 Models",
+          "paragraphs": [
+            "We evaluate our methods on the three widely used long-context models: Llama3.1-8B-Ins [1], Mistral-7B-Ins-v0.2 [13], and LongChat-7B-v1.5 [4]. They are all decoder-only transformer models [33]. Llama3.1-8B-Ins and Mistral-7B-Ins-v0.2 use GQA, while LongChat-7B-v1.5 uses MHA in the attention module. In terms of sequence length, Llama3.1-8B-Ins supports a maximum sequence length of 128K while the other two support up to 32K sequence length. Prior work [31, 6] usually skips the first two layers during KV cache compression to maintain accuracy. We found this is only necessary for LongChat-7B-v1.5; so, we conduct KV cache compression on all attention layers for Llama3.1-8B-Ins and Mistral-7B-Ins-v0.2 but skip the first two layers for LongChat-7B-v1.5."
+          ]
+        },
+        {
+          "title": "A.2 Benchmarks",
+          "paragraphs": [
+            "Our LongBench and Needle-in-a-Haystack settings are mostly following the prior work [34]. For LongBench, we set the maximum prompt length to 127,500 for Llama3.1-8B-Ins and 31,500 for Mistral-7B-Ins-v0.2 and LongChat-7B-v1.5. Prompts beyond the maximum prompt length will be middle-truncated by keeping the first and last half of the input tokens. For Needle-in-a-Haystack, we evaluate with 10 different input sequence lengths uniformly spanning from 2048 to 81,920 words and 10 different depths for each sequence length in Llama3.1-8B-Ins. The maximum word count of 81,920 roughly converts to 109K tokens by the tokenizer in Llama3.1-8B-Ins. For the other two models, the input sequence lengths range from 512 to 20480 words since they support up to 32K sequence length, which convert up to 30K and 31K tokens for Mistral-7B-Ins-v0.2 and LongChat-7B-v1.5, respectively. For RULER, we mostly follow the configurations in the original benchmark except for reducing the number of examples per task from 500 to 50 to speed up the evaluation."
+          ]
+        },
+        {
+          "title": "A.3 Baselines",
+          "paragraphs": [
+            "Since RocketKV primarily focuses on accelerating the decode phase of LLM inference, we do not perform any KV cache compression or sparse attention mechanism in the prefill phase across all comparing baselines including DuoAttention for fair comparison.",
+            "Exact-TopK: Exact-TopK serves as an oracle method to demonstrate the effectiveness of top-k sparse attention. We assume the top-k KV tokens can be directly identified with no cost so a given token budget will directly correspond to its top-k value.",
+            "DuoAttention: We set the initial and recent tokens to 128 and 512 respectively for streaming heads if the token budget is larger than 640, and vary the ratio of retrieval heads to match with the given token budget on average. If the token budget is lower than 640, all attention heads become streaming heads. In this case, we set the number of initial tokens for attention sink to 128 if the token budget is larger than 256, otherwise it is set to 20% of the token budget. The rest of the token budget is assigned to recent tokens within the sliding window.",
+            "SnapKV: We set the observation window size to 32 and kernel size for pooling to 7 following the SnapKV paper. Since SnapKV only compresses the KV cache of the input prompt, the token budget for the input prompt is calculated by deducting the number of maximum generated tokens from the total token budget. This budget is further divided by the number of heads per attention group in case of GQA as SnapKV performs on each attention head separately and the pruned KV cache is not shared within the attention group.",
+            "Quest: We evenly split the token budget between approximate attention for identifying top-k KV token indices and top-k sparse attention so that the token budget can accurately reflect total memory fetching bandwidth required in the attention module. The original Quest method is not compatible with GQA. We modify it to select indices of top-k accumulated attention scores per attention group rather than per attention head similar to our enhancement in SnapKV++.",
+            "SparQ: Similar to Quest, we evenly split the token budget between approximate attention for identifying top-k KV token indices and top-k sparse attention.",
+            "RocketKV: We evenly split the compression ratio between SnapKV++ in the first stage and hybrid attention in the second stage. For SnapKV++, we use an observation window size of 32 and adaptively select the kernel size for pooling between 63 and 511, depending on the input sequence length. For Llama3.1-8B-Ins, we use the kernel size of 63 if the input sequence length is shorter than 48K, otherwise 511 is used. For LongChat-7B-v1.5, the input sequence length threshold is 12K, and Mistral-7B-Ins-v0.2 always selects a kernel size of 63. The adaptive selection policy is empirically determined based on our ablation study in Section 4.4. For hybrid attention, we evenly split the token budget between approximate attention for identifying top-k indices and top-k sparse attention."
+          ]
+        }
+      ]
+    },
+    "Appendix B Detailed Results": {
+      "paragraphs": [
+        "[Figure: (a) Llama3.1-8B-Ins, SeqLen= 16K]",
+        "[Figure: (a) Llama3.1-8B-Ins, SeqLen= 16K]",
+        "[Figure: (b) Llama3.1-8B-Ins, SeqLen=32K]",
+        "[Figure: (c) Llama3.1-8B-Ins, SeqLen=64K]",
+        "[Figure: (d) Llama3.1-8B-Ins, SeqLen=96K]",
+        "[Figure: (e) Mistral-7B-Ins-v0.2, SeqLen=8K]",
+        "[Figure: (f) Mistral-7B-Ins-v0.2, SeqLen=16K]",
+        "[Figure: (g) Mistral-7B-Ins-v0.2, SeqLen=24K]",
+        "[Figure: (h) Mistral-7B-Ins-v0.2, SeqLen=32K]",
+        "[Figure: (a) LongBench, Llama3.1-8B-Ins ]",
+        "[Figure: (a) LongBench, Llama3.1-8B-Ins ]",
+        "[Figure: (b) LongBench, Mistral-7B-Ins-v0.2 ]",
+        "[Figure: (c) LongBench, LongChat-7B-v1.5 ]",
+        "[Figure: (d) NIAH, Llama3.1-8B-Ins ]",
+        "[Figure: (e) NIAH, Mistral-7B-Ins-v0.2 ]",
+        "[Figure: (f) NIAH, LongChat-7B-v1.5 ]",
+        "[Figure: (a) Llama3.1-8B-Ins, SeqLen = 16K ]",
+        "[Figure: (a) Llama3.1-8B-Ins, SeqLen = 16K ]",
+        "[Figure: (b) Llama3.1-8B-Ins, SeqLen= 32K]",
+        "[Figure: (c) Llama3.1-8B-Ins, SeqLen=64K]",
+        "[Figure: (d) Llama3.1-8B-Ins, SeqLen=96K]",
+        "[Figure: (e) Mistral-7B-Ins-v0.2, SeqLen=8K]",
+        "[Figure: (f) Mistral-7B-Ins-v0.2, SeqLen=16K]",
+        "[Figure: (g) Mistral-7B-Ins-v0.2, SeqLen=24K]",
+        "[Figure: (h) Mistral-7B-Ins-v0.2, SeqLen=32K]",
+        "[Figure: (i) LongChat-7B-v1.5, SeqLen=8K]",
+        "[Figure: (j) LongChat-7B-v1.5, SeqLen=16K]",
+        "[Figure: (k) LongChat-7B-v1.5, SeqLen=24K]",
+        "[Figure: (l) LongChat-7B-v1.5, SeqLen=32K]",
+        "[Figure: (a) Token Budget = 256 ]",
+        "[Figure: (a) Token Budget = 256 ]",
+        "[Figure: (b) Token Budget = 512]",
+        "[Figure: (c) Token Budget = 1024 ]",
+        "[Figure: (d) Token Budget = 2048]",
+        "[Figure: (e) Token Budget = 4096]",
+        "[Figure: (f) Full-KV]",
+        "[Figure: (a) Token Budget = 256 ]",
+        "[Figure: (a) Token Budget = 256 ]",
+        "[Figure: (b) Token Budget = 512]",
+        "[Figure: (c) Token Budget = 1024 ]",
+        "[Figure: (d) Token Budget = 2048]",
+        "[Figure: (e) Token Budget = 4096]",
+        "[Figure: (f) Full-KV]",
+        "[Figure: (a) Token Budget = 256 ]",
+        "[Figure: (a) Token Budget = 256 ]",
+        "[Figure: (b) Token Budget = 512]",
+        "[Figure: (c) Token Budget = 1024 ]",
+        "[Figure: (d) Token Budget = 2048]",
+        "[Figure: (e) Token Budget = 4096]",
+        "[Figure: (f) Full-KV]",
+        "[Table: Table 2: Average results of LongBench and NIAH for Llama3.1-8B-Ins]",
+        "[Table: Table 3: Individual results of LongBench for Llama3.1-8B-Ins]",
+        "[Table: Table 4: Results of RULER, SeqLen=16000 for Llama3.1-8B-Ins]",
+        "[Table: Table 5: Results of RULER, SeqLen=32000 for Llama3.1-8B-Ins]",
+        "[Table: Table 6: Results of RULER, SeqLen=64000 for Llama3.1-8B-Ins]",
+        "[Table: Table 7: Results of RULER, SeqLen=96000 for Llama3.1-8B-Ins]",
+        "[Table: Table 8: Average results of LongBench and NIAH for Mistral-7B-Ins-v0.2]",
+        "[Table: Table 9: Individual results of LongBench for Mistral-7B-Ins-v0.2]",
+        "[Table: Table 10: Results of RULER, SeqLen=8000 for Mistral-7B-Ins-v0.2]",
+        "[Table: Table 11: Results of RULER, SeqLen=16000 for Mistral-7B-Ins-v0.2]",
+        "[Table: Table 12: Results of RULER, SeqLen=24000 for Mistral-7B-Ins-v0.2]",
+        "[Table: Table 13: Results of RULER, SeqLen=32000 for Mistral-7B-Ins-v0.2]",
+        "[Table: Table 14: Average results of LongBench and NIAH for LongChat-7B-v1.5]",
+        "[Table: Table 15: Individual results of LongBench for LongChat-7B-v1.5]",
+        "[Table: Table 16: Results of RULER, SeqLen=8000 for LongChat-7B-v1.5]",
+        "[Table: Table 17: Results of RULER, SeqLen=16000 for LongChat-7B-v1.5]",
+        "[Table: Table 18: Results of RULER, SeqLen=24000 for LongChat-7B-v1.5]",
+        "[Table: Table 19: Results of RULER, SeqLen=32000 for LongChat-7B-v1.5]"
+      ],
+      "subsections": [
+        {
+          "title": "B.1 Further Ablation Study",
+          "paragraphs": [
+            "This subsection presents additional results from the ablation studies discussed in the main paper. These results further enhance our observations in Section 4.4.",
+            "[Figure: (a) Llama3.1-8B-Ins, SeqLen= 16K]",
+            "[Figure: (a) Llama3.1-8B-Ins, SeqLen= 16K]",
+            "[Figure: (b) Llama3.1-8B-Ins, SeqLen=32K]",
+            "[Figure: (c) Llama3.1-8B-Ins, SeqLen=64K]",
+            "[Figure: (d) Llama3.1-8B-Ins, SeqLen=96K]",
+            "[Figure: (e) Mistral-7B-Ins-v0.2, SeqLen=8K]",
+            "[Figure: (f) Mistral-7B-Ins-v0.2, SeqLen=16K]",
+            "[Figure: (g) Mistral-7B-Ins-v0.2, SeqLen=24K]",
+            "[Figure: (h) Mistral-7B-Ins-v0.2, SeqLen=32K]",
+            "[Figure: (a) LongBench, Llama3.1-8B-Ins ]",
+            "[Figure: (a) LongBench, Llama3.1-8B-Ins ]",
+            "[Figure: (b) LongBench, Mistral-7B-Ins-v0.2 ]",
+            "[Figure: (c) LongBench, LongChat-7B-v1.5 ]",
+            "[Figure: (d) NIAH, Llama3.1-8B-Ins ]",
+            "[Figure: (e) NIAH, Mistral-7B-Ins-v0.2 ]",
+            "[Figure: (f) NIAH, LongChat-7B-v1.5 ]",
+            "[Figure: (a) Llama3.1-8B-Ins, SeqLen = 16K ]",
+            "[Figure: (a) Llama3.1-8B-Ins, SeqLen = 16K ]",
+            "[Figure: (b) Llama3.1-8B-Ins, SeqLen= 32K]",
+            "[Figure: (c) Llama3.1-8B-Ins, SeqLen=64K]",
+            "[Figure: (d) Llama3.1-8B-Ins, SeqLen=96K]",
+            "[Figure: (e) Mistral-7B-Ins-v0.2, SeqLen=8K]",
+            "[Figure: (f) Mistral-7B-Ins-v0.2, SeqLen=16K]",
+            "[Figure: (g) Mistral-7B-Ins-v0.2, SeqLen=24K]",
+            "[Figure: (h) Mistral-7B-Ins-v0.2, SeqLen=32K]",
+            "[Figure: (i) LongChat-7B-v1.5, SeqLen=8K]",
+            "[Figure: (j) LongChat-7B-v1.5, SeqLen=16K]",
+            "[Figure: (k) LongChat-7B-v1.5, SeqLen=24K]",
+            "[Figure: (l) LongChat-7B-v1.5, SeqLen=32K]"
+          ]
+        },
+        {
+          "title": "B.2 Needle-in-a-Haystack Visualization",
+          "paragraphs": [
+            "Needle-in-a-haystack (NIAH) is a type of synthetic challenge designed to test how effectively an LLM can retrieve specific information in a large volume of text [16]. In Figures 12, 13, 14, the x-axis shows the document length (i.e., ”haystack”), while the y-axis marks the relative position of the ”needle” (i.e., a short sentence) within the text. As the results show, RocketKV can retrieve the needle with almost the same accuracy as the Full-KV throughout the whole text across all three models with token budgets as low as 512, and only incurs small accuracy losses with a token budget of 256.",
+            "[Figure: (a) Token Budget = 256 ]",
+            "[Figure: (a) Token Budget = 256 ]",
+            "[Figure: (b) Token Budget = 512]",
+            "[Figure: (c) Token Budget = 1024 ]",
+            "[Figure: (d) Token Budget = 2048]",
+            "[Figure: (e) Token Budget = 4096]",
+            "[Figure: (f) Full-KV]",
+            "[Figure: (a) Token Budget = 256 ]",
+            "[Figure: (a) Token Budget = 256 ]",
+            "[Figure: (b) Token Budget = 512]",
+            "[Figure: (c) Token Budget = 1024 ]",
+            "[Figure: (d) Token Budget = 2048]",
+            "[Figure: (e) Token Budget = 4096]",
+            "[Figure: (f) Full-KV]",
+            "[Figure: (a) Token Budget = 256 ]",
+            "[Figure: (a) Token Budget = 256 ]",
+            "[Figure: (b) Token Budget = 512]",
+            "[Figure: (c) Token Budget = 1024 ]",
+            "[Figure: (d) Token Budget = 2048]",
+            "[Figure: (e) Token Budget = 4096]",
+            "[Figure: (f) Full-KV]"
+          ]
+        },
+        {
+          "title": "B.3 Detailed Accuracy Results",
+          "paragraphs": [
+            "In this section, we present 18 detailed tables that display the accuracy results discussed in previous sections. These tables offer additional information and insights into the results we captured."
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "[1] AI@Meta. Llama 3 Model Card. 2024.",
+    "[2] Joshua Ainslie, James Lee-Thorp, Michiel de Jong, Yury Zemlyanskiy, Federico Lebrón, and Sumit Sanghai. GQA: Training generalized multi-query transformer models from multi-head checkpoints. Conference on Empirical Methods in Natural Language Processing (EMNLP), 2023.",
+    "[3] AMD. AMD Instinct™ MI300X Accelerators. https://www.amd.com/en/products/accelerators/instinct/mi300/mi300x.html, 2024. Accessed: 2025-01-07.",
+    "[4] Yushi Bai, Xin Lv, Jiajie Zhang, Hongchang Lyu, Jiankai Tang, Zhidian Huang, Zhengxiao Du, Xiao Liu, Aohan Zeng, Lei Hou, et al. LongBench: A bilingual, multitask benchmark for long context understanding. Annual Meeting of the Association for Computational Linguistics (ACL), 2024.",
+    "[5] William Brandon, Mayank Mishra, Aniruddha Nrusimha, Rameswar Panda, and Jonathan Ragan Kelly. Reducing transformer key-value cache size with cross-layer attention. Conference on Neural Information Processing Systems (Neurips), 2024.",
+    "[6] Zhuoming Chen, Ranajoy Sadhukhan, Zihao Ye, Yang Zhou, Jianyu Zhang, Niklas Nolte, Yuandong Tian, Matthijs Douze, Leon Bottou, Zhihao Jia, and Beidi Chen. MagicPIG: LSH Sampling for Efficient LLM Generation. International Conference on Learning Representations (ICLR), To appear, 2025.",
+    "[7] Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. Flashattention: Fast and memory-efficient exact attention with io-awareness. Advances in Neural Information Processing Systems (Neurips), 35:16344–16359, 2022.",
+    "[8] Yizhao Gao, Zhichen Zeng, Dayou Du, Shijie Cao, Hayden Kwok-Hay So, Ting Cao, Fan Yang, and Mao Yang. SeerAttention: Learning Intrinsic Sparse Attention in Your LLMs. arXiv preprint arXiv:2410.13276, 2024.",
+    "[9] Suyu Ge, Yunan Zhang, Liyuan Liu, Minjia Zhang, Jiawei Han, and Jianfeng Gao. Model tells you what to discard: Adaptive kv cache compression for llms. International Conference on Learning Representations (ICLR), 2024.",
+    "[10] Namgyu Ho, Sangmin Bae, Taehyeon Kim, Hyunjik Jo, Yireun Kim, Tal Schuster, Adam Fisch, James Thorne, and Se-Young Yun. Block Transformer: Global-to-Local Language Modeling for Fast Inference. Conference on Neural Information Processing Systems (Neurips), 2024.",
+    "[11] Cheng-Ping Hsieh, Simeng Sun, Samuel Kriman, Shantanu Acharya, Dima Rekesh, Fei Jia, and Boris Ginsburg. RULER: What’s the real context size of your long-context language models? Conference on Language Modeling (COLM), 2024.",
+    "[12] Yunpeng Huang, Jingwei Xu, Junyu Lai, Zixu Jiang, Taolue Chen, Zenan Li, Yuan Yao, Xiaoxing Ma, Lijuan Yang, Hao Chen, et al. Advancing transformer architecture in long-context large language models: A comprehensive survey. arXiv preprint arXiv:2311.12351, 2023.",
+    "[13] Albert Q Jiang, Alexandre Sablayrolles, Arthur Mensch, Chris Bamford, Devendra Singh Chaplot, Diego de las Casas, Florian Bressand, Gianna Lengyel, Guillaume Lample, Lucile Saulnier, et al. Mistral 7b. arXiv preprint arXiv:2310.06825, 2023.",
+    "[14] Huiqiang Jiang, Yucheng Li, Chengruidong Zhang, Qianhui Wu, Xufang Luo, Surin Ahn, Zhenhua Han, Amir H Abdi, Dongsheng Li, Chin-Yew Lin, et al. MInference 1.0: Accelerating pre-filling for long-context llms via dynamic sparse attention. Conference on Neural Information Processing Systems (Neurips), 2024.",
+    "[15] Norm Jouppi, George Kurian, Sheng Li, Peter Ma, Rahul Nagarajan, Lifeng Nai, Nishant Patil, Suvinay Subramanian, Andy Swing, Brian Towles, et al. TPUv4 : An optically reconfigurable supercomputer for machine learning with hardware support for embeddings. In Proceedings of the 50th Annual International Symposium on Computer Architecture (ISCA), pages 1–14, 2023.",
+    "[16] Garrett Kamradt. LLMTest_Needle In A Haystack. https://github.com/gkamradt/LLMTest_NeedleInAHaystack, 2023. Accessed: 2024-12-14.",
+    "[17] PyTorch Labs. gpt-fast: Simple and efficient PyTorch-native transformer text generation. https://github.com/pytorch-labs/gpt-fast, 2023. Accessed: 2024-12-12.",
+    "[18] Wonbeom Lee, Jungi Lee, Junghwan Seo, and Jaewoong Sim. InfiniGen: Efficient generative inference of large language models with dynamic KV cache management. In 18th USENIX Symposium on Operating Systems Design and Implementation (OSDI), pages 155–172, 2024.",
+    "[19] Dacheng Li, Rulin Shao, Anze Xie, Ying Sheng, Lianmin Zheng, Joseph Gonzalez, Ion Stoica, Xuezhe Ma, and Hao Zhang. How Long Can Context Length of Open-Source LLMs truly Promise? In NeurIPS 2023 Workshop on Instruction Tuning and Instruction Following, 2023.",
+    "[20] Yuhong Li, Yingbing Huang, Bowen Yang, Bharat Venkitesh, Acyr Locatelli, Hanchen Ye, Tianle Cai, Patrick Lewis, and Deming Chen. SnapKV: LLM knows what you are looking for before generation. Conference on Neural Information Processing Systems (Neurips), 2024.",
+    "[21] Gui Ling, Ziyang Wang, Yuliang Yan, and Qingwen Liu. SlimGPT: Layer-wise Structured Pruning for Large Language Models. Conference on Neural Information Processing Systems (Neurips), 2024.",
+    "[22] Nelson F Liu, Kevin Lin, John Hewitt, Ashwin Paranjape, Michele Bevilacqua, Fabio Petroni, and Percy Liang. Lost in the middle: How language models use long contexts. Transactions of the Association for Computational Linguistics (TACL), 12:157–173, 2024.",
+    "[23] NVIDIA. NVIDIA H100 Tensor Core GPU. https://www.nvidia.com/en-us/data-center/h100/, 2024. Accessed: 2025-01-06.",
+    "[24] Saurav Pawar, SM Tonmoy, SM Zaman, Vinija Jain, Aman Chadha, and Amitava Das. The What, Why, and How of Context Length Extension Techniques in Large Language Models–A Detailed Survey. arXiv preprint arXiv:2401.07872, 2024.",
+    "[25] Luka Ribar, Ivan Chelombiev, Luke Hudlass-Galley, Charlie Blake, Carlo Luschi, and Douglas Orr. SparQ Attention: Bandwidth-Efficient LLM Inference. In Proceedings of the 41st International Conference on Machine Learning (ICML), 2024.",
+    "[26] Noam Shazeer. Fast transformer decoding: One write-head is all you need. arXiv preprint arXiv:1911.02150, 2019.",
+    "[27] Mohammad Shoeybi, Mostofa Patwary, Raul Puri, Patrick LeGresley, Jared Casper, and Bryan Catanzaro. Megatron-LM: Training multi-billion parameter language models using model parallelism. arXiv preprint arXiv:1909.08053, 2019.",
+    "[28] Prajwal Singhania, Siddharth Singh, Shwai He, Soheil Feizi, and Abhinav Bhatele. Loki: Low-Rank Keys for Efficient Sparse Attention. Conference on Neural Information Processing Systems (Neurips), 2024.",
+    "[29] Yutao Sun, Li Dong, Yi Zhu, Shaohan Huang, Wenhui Wang, Shuming Ma, Quanlu Zhang, Jianyong Wang, and Furu Wei. You only cache once: Decoder-decoder architectures for language models. Conference on Neural Information Processing Systems (Neurips), 2024.",
+    "[30] Hanlin Tang, Yang Lin, Jing Lin, Qingsen Han, Shikuan Hong, Yiwu Yao, and Gongyi Wang. RazorAttention: Efficient kv cache compression through retrieval heads. International Conference on Learning Representations (ICLR), To appear, 2025.",
+    "[31] Jiaming Tang, Yilong Zhao, Kan Zhu, Guangxuan Xiao, Baris Kasikci, and Song Han. Quest: Query-Aware Sparsity for Efficient Long-Context LLM Inference. In Proceedings of the International Conference on Machine Learning (ICML), 2024.",
+    "[32] Gemma Team, Thomas Mesnard, Cassidy Hardin, Robert Dadashi, Surya Bhupatiraju, Shreya Pathak, Laurent Sifre, Morgane Rivière, Mihir Sanjay Kale, Juliette Love, et al. Gemma: Open models based on gemini research and technology. arXiv preprint arXiv:2403.08295, 2024.",
+    "[33] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Lukasz Kaiser, and Illia Polosukhin. Attention Is All You Need. Advances in Neural Information Processing Systems (Neurips), 2017.",
+    "[34] Guangxuan Xiao, Jiaming Tang, Junxian Guo, Haotian Tang, Shang Yang, Jingwei Zuo, Yao Fu, and Song Han. KV Cache Compression, But What Must We Give in Return? A Comprehensive Benchmark of Long Context Capable Approaches. Conference on Empirical Methods in Natural Language Processing (EMNLP), 2024.",
+    "[35] Guangxuan Xiao, Jiaming Tang, Jingwei Zuo, Junxian Guo, Shang Yang, Haotian Tang, Yao Fu, and Song Han. DuoAttention: Efficient Long-Context LLM Inference with Retrieval and Streaming Heads. International Conference on Learning Representations (ICLR), To appear, 2025.",
+    "[36] Zihao Ye, Lequn Chen, Ruihang Lai, Wuwei Lin, Yineng Zhang, Stephanie Wang, Tianqi Chen, Baris Kasikci, Vinod Grover, Arvind Krishnamurthy, and Luis Ceze. FlashInfer: Efficient and Customizable Attention Engine for LLM Inference Serving. arXiv preprint arXiv:2501.01005, 2025.",
+    "[37] Zhenyu Zhang, Ying Sheng, Tianyi Zhou, Tianlong Chen, Lianmin Zheng, Ruisi Cai, Zhao Song, Yuandong Tian, Christopher Ré, Clark Barrett, et al. H2o: Heavy-hitter oracle for efficient generative inference of large language models. Advances in Neural Information Processing Systems (Neurips), 36:34661–34710, 2023."
+  ]
+}

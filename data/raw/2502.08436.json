@@ -1,0 +1,334 @@
+{
+  "title": "From Haystack to Needle: Label Space Reduction for Zero-shot Classification",
+  "authors": "Nathan VandemoorteleBram SteenwinckelFemke OngenaeSofie Van Hoecke",
+  "abstract": "We present Label Space Reduction (LSR), a novel method for improving zero-shot classification performance of Large Language Models (LLMs). LSR iteratively refines the classification label space by systematically ranking and reducing candidate classes, enabling the model to concentrate on the most relevant options. By leveraging unlabeled data with the statistical learning capabilities of data-driven models, LSR dynamically optimizes the label space representation at test time. Our experiments across seven benchmarks demonstrate that LSR improves macro-F1 scores by an average of 7.0% (up to 14.2%) with Llama-3.1-70B and 3.3% (up to 11.1%) with Claude-3.5-Sonnet compared to standard zero-shot classification baselines. To reduce the computational overhead of LSR, which requires an additional LLM call at each iteration, we propose distilling the model into a probabilistic classifier, allowing for efficient inference.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Zero-shot learning is a powerful paradigm that enables machine learning models to handle new tasks without requiring task-specific training. Instead, these models transfer knowledge from previously learned tasks to tackle novel challenges (Wang et al., 2019). A key application of this paradigm is zero-shot classification. In this approach, models can identify examples from classes they’ve never seen during training by making connections to known classes through semantic embeddings or attribute spaces (Xian et al., 2017; Wang et al., 2019). This capability addresses a major limitation of traditional supervised learning: the need for labeled training data for every target class. As a result, zero-shot classification is particularly valuable in real-world applications where collecting labeled examples for all possible classes is expensive or impractical (Xian et al., 2017).",
+        "The field of Large Language Models (LLMs) has further advanced zero-shot classification by leveraging their extensive pretraining on diverse datasets. Consequently, LLMs demonstrate an unprecedented ability to understand and generate human-like text, enabling them to infer semantic relationships between input text and class descriptions without task-specific fine-tuning (Brown et al., 2020; Bommasani et al., 2021; Wei et al., 2022a). For example, when presented with a maintenance log entry like “Bearing temperature increased to 85°C with unusual vibration patterns and metallic noise during operation,” an LLM can identify critical indicators such as “increased temperature,” “vibration,” and “metallic noise” to accurately classify the text under the “bearing failure” category, even if equipment failure classification was not explicitly included in its pretraining. Such versatility highlights the practical utility of LLMs in real-world applications.",
+        "However, current approaches to LLM zero-shot classification often rely on simplistic methods that present class options as unstructured, flat lists within the prompt. This becomes increasingly problematic as the number of potential classes expands. Specifically, LLMs face critical limitations when dealing with long contexts due to key limitations, often attributed to factors such as positional bias (Peysakhovich & Lerer, 2023; An et al., 2024) and attention dilution (Peysakhovich & Lerer, 2023), reducing their ability to accurately distinguish between a large set of potential classes. As context length grows, the fixed attention budget of transformers must be distributed across more tokens, as the attention weights are normalized to sum to 1. This shared attention makes it harder to focus strongly on relevant information, as demonstrated in “Needle in the haystack” tests (Kamradt, 2023; Hsieh et al., 2024) where LLMs struggle to retrieve key facts from long contexts (Hsieh et al., 2024; Liu et al., 2024). The challenge becomes even more complex when multiple “needles” must not only be retrieved, but also reasoned over (LangChain, 2023; Hsieh et al., 2024). As a result, by reducing the label space, LLMs can allocate their attention more effectively, enhancing reasoning processes such as step-by-step thinking (Wei et al., 2023; Kojima et al., 2023), where each step builds upon previous information (Anonymous, 2025).",
+        "Reducing the label space is not a new concept and is well-established in multi-label classification, generally falling into two categories: those that leverage correlations between features and labels through machine learning models (Kumar et al., 2018; Huang et al., 2020), and those that operate independently of the feature space (Moyano et al., 2022). Feature-independent approaches include methods such as label embeddings (Tai & Lin, 2012) or are based on hierarchical or descriptive label relationships (Charte et al., 2014). However, all these approaches have limitations as they typically require labeled training data and are not model-agnostic (Moyano et al., 2022), and thus cannot be readily applied. Moreover, they generate unordered static label spaces that cannot dynamically adapt to generative outputs of LLMs. While the concept of label space reduction has been implicitly demonstrated in RAG systems (Gao et al., 2024), addressing similar challenges, label space reduction strategies for LLMs in the context of zero-shot classification remain, to our knowledge, an underexplored area.",
+        "In this paper, we introduce Label Space Reduction (LSR), a novel approach to tackle the challenges of large label spaces in zero-shot multi-classification tasks. The presented method makes two key contributions: First, we develop an innovative iterative system that refines the classification label space by ranking and reducing the label space, significantly improving zero-shot multi-classification accuracy by enabling LLMs to focus on the most relevant options. Second, we propose a cost-efficient solution that distils the LSR process into a probabilistic classifier, addressing the computational overhead of LSR while preserving classification accuracy and enabling efficient inference."
+      ],
+      "subsections": []
+    },
+    "2 Related Work": {
+      "paragraphs": [
+        "Our work builds upon three key research areas, namely zero-shot classification with LLMs, extreme multi-label classification, and sampling strategies used in language model decoding."
+      ],
+      "subsections": [
+        {
+          "title": "2.1 Zero-shot Classification with LLMs",
+          "paragraphs": [
+            "While initially developed for text classification, LLMs have demonstrated remarkable zero-shot classification capabilities across diverse domains, including image classification through vision-language models (Radford et al., 2021; Alayrac et al., 2022), tabular data classification (Hegselmann et al., 2023), time series classification (Zhang et al., 2024b), and even audio classification (Latif et al., 2023). Early work demonstrated that providing task descriptions and class definitions in natural language could guide models to make reasonable predictions (Kojima et al., 2022; Wei et al., 2022b). This capability was further enhanced through prompt engineering techniques (Sahoo et al., 2024) and the development of instruction-tuned models (Chung et al., 2022). While these approaches have shown promising results, their performance can be sensitive to prompt design and may struggle with nuanced category distinctions. More recent work has focused on improving model reasoning through popular techniques like chain-of-thought reasoning (Wei et al., 2023; Kojima et al., 2023) and combining robustness methods such as self-consistency (Wang et al., 2023). However, these approaches do not fundamentally address the challenges posed by large-scale classification tasks with long context requirements."
+          ]
+        },
+        {
+          "title": "2.2 Extreme Multi-label Classification",
+          "paragraphs": [
+            "There are notable connections between our work and extreme multi-label classification (XMC), a field that addresses classification problems involving thousands to millions of classes (Bhatia et al., 2015; Mittal et al., 2022; Zhu & Zamani, 2024). While XMC tasks have traditionally been approached in a supervised manner, researchers have also explored zero-shot XMC methods (Chang et al., 2020). Early approaches relied on retrieval-based techniques such as TF-IDF (Salton & Buckley, 1988) and BM25 (Robertson & Zaragoza, 2009) to match input texts with label embeddings. A major advancement occurred when Reimers & Gurevych (2019b) demonstrated the effectiveness of dense embeddings for retrieval, which were subsequently applied to various XMC tasks (You et al., 2019; Chang et al., 2020; Jiang et al., 2021). More recent work has focused on LLM-based approaches, emphasizing true zero-shot settings where test labels are entirely unseen, unlike generalized zero-shot settings that may include seen labels. For example, ICXML (Zhu & Zamani, 2024) adopts a hybrid generation-and-retrieval approach, first generating demonstrations with an LLM and then aligning the outputs with available labels to create a shortlist of candidates. LMTX (Zhang et al., 2024a) achieved state-of-the-art performance by employing an LLM as a teacher to iteratively train a bi-encoder. However, these approaches still incorporate retrieval-based components and impose an arbitrary label-space cut-off, effectively constraining the LLM’s performance to that of the underlying embedding model. Moreover, we propose a solution that prioritize the role of the LLM as a reasoner for classification, which is applicable to solving classification tasks beyond just text classification."
+          ]
+        },
+        {
+          "title": "2.3 Sampling Strategies",
+          "paragraphs": [
+            "Language model decoding is the problem of generating text by selecting tokens from the model’s predicted probability distribution. Early methods like greedy selection and random sampling often led to repetitive or incoherent outputs. Beam search and temperature-based sampling (Ficler & Goldberg, 2017) improved diversity and quality but failed to address the long tail of irrelevant and low-probability tokens, which can collectively hold significant probability mass (Holtzman et al., 2020). This realization led to the development of more distribution-aware sampling strategies. Top-k sampling (Fan et al., 2018) limits choices to the k most probable tokens, while nucleus (Top-p) sampling (Holtzman et al., 2020) selects tokens whose cumulative probability exceeds p. More recently, Min-p sampling (Nguyen et al., 2024) enforces a minimum probability threshold to maintain coherence. Our implementation leverages these distribution-aware thresholds to filter out low-probability classes."
+          ]
+        }
+      ]
+    },
+    "3 Methodology": {
+      "paragraphs": [
+        "Addressing shortcomings of current methods, we present our LSR methodology, which consists of three distinct phases that operate in an iterative process. In this section, we detail each phase of the process, as illustrated in Figure 1."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Problem Definition",
+          "paragraphs": [
+            "Let 𝒳\\mathcal{X} denote the input space and 𝒴={1,…,K}\\mathcal{Y}=\\{1,\\ldots,K\\} be a finite label space comprising KK distinct classes. Given an unlabeled dataset 𝒟={x1,…,xn}\\mathcal{D}=\\{x_{1},\\ldots,x_{n}\\} where xi∈𝒳x_{i}\\in\\mathcal{X} consisting of nn samples, we aim to improve the zero-shot classification performance of an LLM for these nn samples, considering the following constraints:",
+            "• Single-label Multi-Classification Each sample xi∈𝒟x_{i}\\in\\mathcal{D} corresponds to exactly one class-label yi∈𝒴y_{i}\\in\\mathcal{Y}",
+            "• Closed-world Assumption The complete set of possible unseen classes 𝒴\\mathcal{Y} is known and fixed a priori",
+            "• Unlabeled Data Access to a collection of unlabeled samples 𝒟\\mathcal{D} which can be used for training",
+            "Single-label Multi-Classification Each sample xi∈𝒟x_{i}\\in\\mathcal{D} corresponds to exactly one class-label yi∈𝒴y_{i}\\in\\mathcal{Y}",
+            "Closed-world Assumption The complete set of possible unseen classes 𝒴\\mathcal{Y} is known and fixed a priori",
+            "Unlabeled Data Access to a collection of unlabeled samples 𝒟\\mathcal{D} which can be used for training",
+            "These constraints represent a common and practical set of conditions found in many real-world zero-shot classification scenarios. The key challenge lies in optimizing classification performance without labeled examples or external knowledge (such as label descriptions or hierarchical relationships), while minimizing token usage and enabling deployment on consumer hardware."
+          ]
+        },
+        {
+          "title": "3.2 Data Representation and Preprocessing",
+          "paragraphs": [
+            "The framework operates on dual representations of the data:",
+            "1. Numerical view: Xn​u​m∈ℝn×dX_{num}\\in\\mathbb{R}^{n\\times d}, where dd is the feature dimensionality",
+            "2. Semantic view: Xs​e​m={s1,…,sn}X_{sem}=\\{s_{1},...,s_{n}\\}, where sis_{i} is the natural language description of xix_{i}",
+            "Numerical view: Xn​u​m∈ℝn×dX_{num}\\in\\mathbb{R}^{n\\times d}, where dd is the feature dimensionality",
+            "Semantic view: Xs​e​m={s1,…,sn}X_{sem}=\\{s_{1},...,s_{n}\\}, where sis_{i} is the natural language description of xix_{i}",
+            "The aim of this dual representation approach is to find a statistical correlation between an LLM’s predictions and the underlying feature distributions of a novel task. This framework can be applied to classification tasks with arbitrary data types, provided that the data can be represented both numerically and described semantically in natural language."
+          ]
+        },
+        {
+          "title": "3.3 Initial Classification",
+          "paragraphs": [
+            "The LLM starts generating initial pseudo-labels y^0\\hat{y}_{0} through:",
+            "where p​r​o​m​p​tt​e​m​p​l​a​t​eprompt_{template} includes Chain-of-Thought (CoT) reasoning (Wei et al., 2023; Kojima et al., 2023) which improves preformance and makes better use of the reduced label space. Initially, all candidate labels are presented as a list of options in the prompt, and the model is tasked to categorize the sample. The full prompt template can be found in Appendix G."
+          ]
+        },
+        {
+          "title": "3.4 Probabilistic Classifier",
+          "paragraphs": [
+            "Based on these pseudo-labels, we train a classifier CC on (Xn​u​m,y^0)(X_{num},\\hat{y}_{0}) that outputs probability distributions over classes:",
+            "The model is first trained using a hold-out validation strategy to prevent overfitting, then retrained on the complete dataset using the same hyperparameters. By training on the LLM’s pseudo-labels, we measure the agreement between predictions based on the underlying feature distributions, effectively quantifying the model’s certainty for each class."
+          ]
+        },
+        {
+          "title": "3.5 Ranking and Selection",
+          "paragraphs": [
+            "For any given sample x∈Dx\\in D, the labels are ranked based on their predicted probabilities according to R​(x)R(x):",
+            "Next, the labels are selected based on the adaptive threshold following Min-p sampling, which includes all labels whose probability exceeds a fraction pp of the maximum probability:",
+            "We propose an adapted version of Min-p, denoted as Min-p+, which includes the LLM’s current prediction y^t\\hat{y}_{t} at iteration tt during the refinement process:",
+            "The threshold pp is optimized to achieve a target average dimensionality kk in the reduced label space. Since pp is an indirect parameter that affects the final dimensionality, it is more intuitive to control kk directly. This relationship can be expressed as:",
+            "where wiw_{i} is a class-balancing weight inversely proportional to the frequency of y^t\\hat{y}_{t}. While kk represents an average, the number of candidate labels adapts dynamically per sample, where instances with higher uncertainty naturally receive more candidate labels and vice versa. A detailed comparison of thresholding on the label space following different sampling strategies is provided in Appendix B."
+          ]
+        },
+        {
+          "title": "3.6 Iterative Refinement",
+          "paragraphs": [
+            "Our iterative refinement approach, outlined in Algorithm 1, consists of multiple steps that progressively improve classification accuracy. The process begins by obtaining initial predictions from the LLM (line 4), which are used as pseudo-labels to train a baseline classifier (line 8). In each subsequent iteration, we create a reduced label space by integrating the classifier’s confidence scores with the LLM’s previous predictions (lines 9-11). The LLM then generates new predictions (line 6), but instead of considering all possible labels, it focuses on a filtered set of ranked candidates for each sample. This filtered approach enables more focused CoT reasoning by limiting the LLM’s attention to fewer plausible options. The classifier is then retrained using these refined predictions (line 8). The process continues until reaching a predetermined number of iterations ii (lines 2-13), where a higher number of iterations typically leads to convergence, at which point no significant changes can be observed in the label space. This iterative process creates a feedback loop where the LLM and classifier help improve each other’s performance and potentially correct initial misclassifications with more focused reasoning.",
+            "The final predictions y^final\\hat{y}_{\\text{final}} are determined through majority voting (line 14):",
+            "By aggregating predictions from previous iterations, we provide robustness against individual iteration errors. Furthermore, aggregation helps mitigate issues when the process fails to reach proper convergence and circumvents the need for complex stopping criteria."
+          ]
+        },
+        {
+          "title": "3.7 Practical Inference",
+          "paragraphs": [
+            "While the complete iterative methodology described above is valuable for offline evaluation and benchmarking, repeated training cycles during live inference may be impractical for real-world applications. For example, in a system monitoring customer support tickets that need to be classified and routed every few minutes, frequent model retraining would introduce unacceptable costs and latency. Therefore, we propose two alternative strategies:",
+            "Full Inference This approach reuses the saved classifiers from every iteration to generate rankings, following the established methodology. While this maintains the benefits of LSR and reduces computational overhead, it has two main limitations: the classifier probabilities are not calibrated with new test samples, and each iteration requires an LLM call. Due to these constraints, we do not explore this approach further in this paper.",
+            "Direct Inference Alternatively, we propose to train a final classifier Cf​i​n​a​lC_{final} on the combined LLM predictions from all iterations, effectively distilling an LLM ensemble into a single classifier that remains frozen during deployment.",
+            "For a new sample xx, we can then directly use the classifier’s probabilities to make predictions:",
+            "Our experiments show that making an additional LLM prediction on the reduced set of labels from Cf​i​n​a​lC_{final} (using Min-p sampling from Equation 3 and class-weighting based on the classifier’s predictions) only improves performance when dealing with undersampled classes. Thus, direct inference only requires a trained classifier for inference, which allows for the use of larger LLMs or additional test-time scaling techniques during the iterative training phase, enhancing performance at a one-time fixed cost."
+          ]
+        }
+      ]
+    },
+    "4 Experimental Setup": {
+      "paragraphs": [
+        "In this section we describe the datasets, evaluation metrics and implementation details used in our experiments."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Datasets",
+          "paragraphs": [
+            "We evaluate our method on seven diverse benchmark datasets, including five text classification datasets from the MTEB benchmark (Muennighoff et al., 2023) (Amazon Massive Scenario, Amazon Massive Intent, Banking77, Mtop Domain, Mtop Intent), a text classification dataset (DBpedia111https://www.kaggle.com/datasets/danofer/dbpedia-classes), and a tabular classification dataset (Crime222Police Department Incident Reports: Historical 2003 to May 2018, https://datasf.org/opendata/). We refer to Appendix A for detailed descriptions. All datasets contain a substantial number of classes (ranging from 11 to 102) with medium-sized sample sets (2974-4386 samples)."
+          ]
+        },
+        {
+          "title": "4.2 Model Selection and Configuration",
+          "paragraphs": [
+            "Large Language Models Our framework primarily uses Llama-3.1-70B-Instruct (Llama Team, 2024), accessed through the DeepInfra API333https://deepinfra.com, due to its reproducibility and open-weight nature, which enables verification and replication of our results. We selected this model and other recent open-weight models including Gemma-2-27b-it (Gemma Team, 2024) and Qwen-2.5-72B-Instruct(Qwen Team, 2024), as well as the closed-source Claude-3.5-Sonnet(old) (Anthropic, 2024), to ensure a diverse representation of model architectures and training approaches. Classification is performed in batches of 10 randomly selected samples, and we instruct the LLM to apply CoT reasoning. To ensure deterministic behavior, we set the temperature parameter to 0. The template for the prompt is shown in Appendix G.",
+            "Text Embeddings To obtain numerical values for the classification tasks, dense text embeddings are generated using the open-source BGE-large-en-v1.5 (Xiao & Liu, 2023) Sentence-BERT (SBERT) model (355M parameters, 1.34GB serialized). Through binary quantization in Sentence Transformers (Reimers & Gurevych, 2019a), we compress the vectors from 1024 to 128 dimensions to speed up classifier training.",
+            "Classifier For classification, we utilize CatBoost (Prokhorenkova et al., 2018), a gradient boosting framework that demonstrates state-of-the-art performance on structured data (Borisov et al., 2021), while being light-weight (<<1MB when serialized). We use default parameters with l​r=0.1lr=0.1 and d​e​p​t​h=3depth=3. To mitigate overfitting, we use a stratified hold-out validation set, reserving 20% of the data for early stopping while maintaining the original class distribution. Class imbalance is addressed through class weights during training. After determining the optimal number of iterations through early stopping criteria, we retrain the classifier on the complete dataset.",
+            "Both BGE-large-en-v1.5 and Catboost models were evaluated on standard consumer-grade computing hardware (Intel Core i7-1365U processor @ 5.2 GHz, 16GB DDR4 RAM, running Windows 11)."
+          ]
+        },
+        {
+          "title": "4.3 Data Preparation",
+          "paragraphs": [
+            "Our methodology requires both numerical and semantic representations of the data. Here we detail the preparation process for each view.",
+            "Numerical View For text classification tasks, numerical text embeddings are generated using BAAI/bge-large-en-v1.5, which produces 128-dimensional feature vectors as input to the classifier. For tabular classification tasks using the Crime dataset, which contains both semantic and numerical features, we treat all semantic features as numerical through categorical encoding. Additionally, we extract the hour of the day from the Time variable as a new feature. In total we obtain 6 features (Description, Police District, Resolution, Address, Day of Week, Hour of Day).",
+            "Semantic View To create the semantic representation, we convert all contextual features, whether originally semantic or numerical, into a list of key-value pairs that can be directly incorporated into the prompt. Examples of these representations are provided with the prompt template in Appendix G."
+          ]
+        }
+      ]
+    },
+    "5 Metrics and Evaluation": {
+      "paragraphs": [
+        "Our goal is to measure classification performance, where we assume all classes are of equal importance. Therefore, we evaluate our method using the Macro F1-score, as it treats all classes equally, regardless of their frequency in the dataset:",
+        "where KK is the number of classes, and p​r​e​c​i​s​i​o​niprecision_{i} and r​e​c​a​l​lirecall_{i} are computed for each class ii.",
+        "It’s important to note that while our method involves training during test time, this training occurs exclusively on pseudo-labels generated by the LLM, maintaining the zero-shot nature of our approach. The reported scores are computed against the ground truth labels of the test set."
+      ],
+      "subsections": []
+    },
+    "6 Experiments": {
+      "paragraphs": [
+        "In this section, we present experimental results and key findings of our proposed method. Each experiment was conducted only once to limit expenses without compromising insights."
+      ],
+      "subsections": [
+        {
+          "title": "6.1 Label Space Reduction",
+          "paragraphs": [
+            "We analyze how varying the label space size (k) affects the performance of Llama-3.1-70B across multiple datasets. We measure performance using Macro F1-scores, calculated through majority voting over 15 iterations. For consistency, each experiment with different kk values begins with the same zero-shot LLM predictions, starting from randomly shuffled labels in the prompt. Our results follow the complete experimental methodology outlined in Section 3.",
+            "Iterations Our analysis reveals two key observations from Figure 2. First, the macro-F1 scores show an initial boost after the first iteration, with the most significant gains occurring within the first five iterations, followed by convergence around the tenth iteration. This early convergence pattern suggests that, while our framework supports extended iterations, substantial performance benefits can be achieved with minimal computational overhead. This behavior is consistent across all values of kk, with the Amazon Massive Intent dataset (k=1.5k=1.5) being a notable exception. Second, we observe distinct performance patterns between different types of datasets. Datasets with rare classes, such as Amazon Massive Scenario/Intent (see Appendix A), exhibit more volatile performance across iterations. In contrast, datasets with more balanced class distributions, (e.g., Banking77, Crime, and DBpedia) demonstrate smoother performance curves and generally achieve better results. This disparity can be attributed to the data-driven nature of the process: under-represented classes may not be ranked effectively and, in extreme cases, the ground truth might be excluded from the selected labels altogether. When this occurs, these classes are not predicted by the LLM and cannot be reintroduced in subsequent iterations. The case of Amazon Massive Intent (k=1.5k=1.5) exemplifies this phenomenon, where performance gains are initially rapid but errors gradually accumulate for difficult classes, rather than resolving them.",
+            "Ranking As shown in Table 1, our method also demonstrates improvements even without reduction (k=F​u​l​lk=Full) as a substantial portion of the performance gain stems from the label ranking process alone, despite the LLM not being explicitly instructed to consider label order. This effect is most evident with Mtop Domain, where we observe improvements from ranking but none from reduction, given its already small label space (K=11K=11). On average, label ranking accounts for 78.6% of the maximum performance gain, while the reduction of the label space contributes to the remaining 21.4% (calculated from Table 1, Average Gaink=fullAverage Gaink=2.0\\frac{\\text{Average Gain}_{k=\\text{full}}}{\\text{Average Gain}_{k=2.0}}). While ranking proves effective, it differs fundamentally from typical embedding-based ranking approaches (Karpukhin et al., 2020), which produce static, non-adaptive rankings. In contrast, our classifier is a data-driven ranker which adapts to the task at test-time. These rankings are calibrated across samples and iteratively refined based on the current top prediction from that ranking. For a more detailed analysis and comparison with embedding-based rankings, see Appendix F.",
+            "Selection Our experiments demonstrate that the optimal value of kk varies across tasks. We hypothesize that this variation in optimal label space size is related to the semantic similarity between labels. When labels are more semantically similar, a larger label space may be necessary to effectively distinguish between closely related options. This hypothesis is supported by the difference observed in Table 1 between Amazon Massive Scenario and Amazon Massive Intent classifications, where Intent, being a more fine-grained classification of Scenario, requires a larger optimal kk. Through empirical analysis across datasets, we found that kk reaches an optimum at k=2k=2 and k=5k=5, consistently yielding the highest average performance improvements. The range k∈[2,5]k\\in[2,5] appears to provide a good balance between exploration and exploitation, suggesting these values as practical defaults for zero-shot applications.",
+            "Majority Voting The use of majority voting across iterations in our method resembles aspects of Self-Consistency (SC) (Wang et al., 2023), which has similarly demonstrated improvements in zero-shot performance at test time. We therefore conducted a comparison with CoT-SC using a temperature of 0.7 and 15 resamples to ensure an equal comparison before majority voting, as shown in Table 1. While CoT-SC showed a modest average absolute improvement of 1.6%, our method achieved substantially higher gains of up to 7.0% on average. Note that these averages are indicative and are highly dependent on the task. We hypothesize that CoT-SC could be complementary to our technique, as its performance gains originate from a different source, i.e., from sampling different reasoning paths of the model with a high temperature (Wang et al., 2023). With additional resources, further experiments could evaluate the extent of this complementarity.",
+            "We conduct a comprehensive evaluation of LSR with different sized LLMs and capabilities to demonstrate its general applicability. In this setup, we set k=2k=2, which we determined to be an optimal value. The results are reported in Table 2 and a figure can also be found in Appendix D.",
+            "Our experiments empirically validate that LSR consistently improves performance across all LLMs and datasets tested. On average, Llama-3.1-70B gains 7.0%, Gemma-2-27b gains 5.1%, Qwen2.5-72B gains 4.9%, and Claude-3.5-Sonnet gains 3.3% across all datasets. The magnitude of improvement varies, as the potential for improvement is inversely related to the baseline performance on a given task. This can be attributed to task difficulty: for example, all models score 95% or higher on Mtop Domain and already saturate the benchmark. Additionally, model capability plays a role, as we generally observe smaller performance improvements from more capable models like Qwen2.5-72B and Claude-3.5-Sonnet. A notable exception is DBpedia, where all models gain at least 11% using LSR. This leads us to hypothesize that more capable models can inherently handle larger label spaces more effectively. Conversely, less capable models show more substantial performance gains from LSR. This finding has important implications, as our method could enable smaller, more accessible models to achieve performance levels comparable to larger, more resource-intensive models."
+          ]
+        },
+        {
+          "title": "6.2 Direct Inference",
+          "paragraphs": [
+            "We evaluate the direct inference approach outlined in Section 3.7 using pseudo-labels accumulated from 15 iterations of Llama-3.1-70B-Instruct with k=2.0k=2.0, we train a CatBoost classifier with a 20% stratified hold-out set to prevent overfitting.",
+            "This classifier demonstrates performance (Table 4 in Appendix C) comparable to the offline methodology (k=2.0k=2.0 in Table 1), namely within 0.5% absolute points difference, except for Mtop Intent where the classifier shows 2.2% lower performance. This could be attributed to epistimic uncertainty or noise in the training data, possibly due to inconsistent labeling by the LLM or inadequate feature representations. Interestingly, when making additional LLM predictions using the classifier’s rankings, we observe decreased performance across most metrics (Table 4), except for Mtop Intent which now improves, to within 0.6% of the offline performance. These results show that the classifier actually exceeds the LLM’s zero-shot capabilities, as we effectively distilled knowledge from multiple LLM outputs.",
+            "While these results are promising for offline evaluation and benchmarking purposes, our goal is to deploy a frozen classifier for inference. Therefore, we evaluate the classifier’s performance on a separate test set of equal size and class distribution to simulate a real-world deployment scenario. Our experiments (Unseen Data in Table 4 of Appendix C) reveal that the classifier’s performance degrades substantially across most datasets in this scenario, though mostly maintaining positive improvements. For instance, the improvement margin decreases from +8.1% to +2.3% for Crime, and in the most severe case, decreases from +14.7% to -3.4% for DBpedia. This performance degradation can be attributed to two main factors. First, there is a distribution shift. Changes in zero-shot LLM performance indicate that the test data distribution differs from the training data, affecting the classifier’s effectiveness. Second, there are generalization challenges. This is particularly evident in datasets with limited samples per class. For example, in Mtop Intent, 41 classes have fewer than 5 samples, including 15 classes with just one sample, making it difficult for the classifier to generalize effectively.",
+            "Interestingly, we find that adding an extra LLM inference step helps mitigate performance degradation as it is less susceptible to distribution shift due to extensive pre-training and zero-shot capabilities. This is evidenced by improvements across all datasets, with gains improving from 2.3% to 5.8% for Crime and -3.4% to +6.5% for DBpedia. While this approach can be effective during a cold-start, we recommend collecting a minimum number of samples per class (using pseudo-labels) to improve the classifier’s generalization to unseen data. Nevertheless, challenges related to generalization and distribution shifts are inherent to data-driven approaches and should be carefully considered during real-world deployment."
+          ]
+        }
+      ]
+    },
+    "7 Conclusion": {
+      "paragraphs": [
+        "In this paper we present a novel method for improving zero-shot classification performance of LLMs through iterative ranking and reduction of the label space. Our results demonstrate that optimizing the label space significantly improves LLM accuracy in classification tasks. Although the process is computationally intensive, we address this limitation through distillation, resulting in a cost-effective classifier that outperforms standard LLM zero-shot classification. An interesting direction for future work is to explore the impact of different classifiers and numerical representation models. Furthermore, the current reliance on empirically determined parameters also suggests opportunities for automated parameter selection. Another promising avenue for future research is extending this approach to multi-label classification, which would further generalize the applicability of our method in real-world scenarios. Ultimately, these findings advance the field of zero-shot learning and provide a promising direction for developing more efficient and effective classification systems."
+      ],
+      "subsections": []
+    },
+    "Impact Statement": {
+      "paragraphs": [
+        "This paper presents work whose goal is to advance the field of Machine Learning. There are many potential societal consequences of our work, none which we feel must be specifically highlighted here."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Dataset Characteristics": {
+      "paragraphs": [
+        "We evaluate our method on seven diverse datasets spanning different classification tasks and domains (see Table 3). The selection includes standard text classification benchmarks and a tabular classification task, with each dataset containing a substantial number of classes to properly evaluate LSR. Due to budgetary constraints, we create subsets of some of the larger datasets.",
+        "[Table: Table 3: Characteristics of 7 classification datasets across multiple domains. Key attributes include task type, domain, language, sample size, number of classes, and class balance distribution.]"
+      ],
+      "subsections": [
+        {
+          "title": "A.1 MTEB Datasets",
+          "paragraphs": [
+            "Five datasets (Amazon Massive Scenario, Amazon Massive Intent, Banking77, Mtop Domain, Mtop Intent) were selected from the MTEB leaderboard444https://huggingface.co/spaces/mteb/leaderboard, covering text classification in customer service, finance and virtual assistant domains. The MTEB benchmark (Muennighoff et al., 2023) contains numerous datasets, from which we specifically selected those with a large number of classes (>10). We report results on the test sets of these datasets. The second test set mentioned in Section 6.2, is a subset of the MTEB training data."
+          ]
+        },
+        {
+          "title": "A.2 Crime Dataset",
+          "paragraphs": [
+            "The Crime tabular dataset is derived from the San Francisco Police Department’s incident reports555Police Department Incident Reports: Historical 2003 to May 2018, https://datasf.org/opendata/. It consists of a subset of up to 100 randomly selected samples per class (where available) across 37 distinct crime categories and includes seven key features: Category, Description, Day of Week, Police District, Resolution, Address, and Time. This tabular dataset presents a unique challenge in combining textual and categorical information for classification."
+          ]
+        },
+        {
+          "title": "A.3 DBpedia Dataset",
+          "paragraphs": [
+            "DBpedia (Lehmann et al., 2015), derived from structured content extracted from Wikipedia, provides a classification challenge for encyclopedia articles. While a simpler 14-class variant is commonly used in NLP benchmarks (Zhang et al., 2015), we specifically use a more challenging hierarchical version available on Kaggle666https://www.kaggle.com/datasets/danofer/dbpedia-classes that contains three levels with 9, 70, and 219 classes respectively. Our evaluation uses a balanced subset of the data, containing 50 random samples per class where available, focusing on the second level (L2) of the hierarchical structure which consists of 70 classes. Although the data has an inherent hierarchical structure, our method treats all classes independently and does not utilize these hierarchical relationships."
+          ]
+        }
+      ]
+    },
+    "Appendix B Comparison of Sampling Strategies": {
+      "paragraphs": [
+        "We analyze the thresholds of different sampling strategies for the label selection process. In this analysis, we use LLM (Llama-3.1-70B) predictions to train the classifier and obtain probability-based rankings. Performance is measured using Hit@k metric using Equation 11, which is also referred to as the “hit rate”. The hit rate represents the percentage of instances where the ground truth label appears in the reduced label space, which may vary from sample to sample depending on the strategy.",
+        "We compare five strategies:",
+        "• Top-k: Selects a fixed number kk of highest probable labels",
+        "• Top-p (nucleus sampling): Includes labels until the cumulative probability exceeds threshold pp",
+        "• Min-p: Selects labels whose probabilities exceed a fraction of the highest probability",
+        "• Min-p+: Our adaptation of Min-p that includes the most recent LLM prediction",
+        "• Min-p+ (w): Min-p+ with class-weighted label space",
+        "As illustrated in Figure 3, common sampling strategies exhibit notable limitations. Top-k sampling, while straightforward, is suboptimal due to its fixed selection size that fails to adapt to varying probability distributions, often including irrelevant low-probability classes. Top-p sampling, though more distribution-aware, is limited by its hard probability cutoff, which can arbitrarily exclude classes with similar probabilities that fall just below the threshold.",
+        "Min-p sampling offers a more effective approach to label selection by implementing an adaptive threshold relative to the highest probability. In our methodology, we adapt Min-p sampling with two key modifications. We include the current LLM prediction to increase stability throughout the iteration. Additionally, we introduce class weighting of the label space to address cases where probabilities are more uniformly distributed, as unweighted approaches tend to select many labels in these situations, skewing the average selection size towards challenging cases. By weighting the label space according to class frequencies, we achieve better balance between easy and difficult classes, leading to improved hit rates.",
+        "[Figure: Figure 3: Hit rates of sampling strategies across reduced label space sizes (kk). Results show the percentage of true labels inside the reduced space using Llama-3.1-70B during the first iteration of LSR.]"
+      ],
+      "subsections": []
+    },
+    "Appendix C Direct Inference": {
+      "paragraphs": [
+        "[Table: Table 4: Results of LSR with direct inference. Llama-3.1-70B w/ LSR is distilled into a probabilistic classifier (Catboost). All macro-F1 scores show gains over zero-shot baseline predictions on two different test sets.]"
+      ],
+      "subsections": []
+    },
+    "Appendix D LSR Performance Across Different LLMs": {
+      "paragraphs": [
+        "[Figure: Figure 4: Performance of LSR (k=2k=2) with various LLMs. Lines show macro-F1 scores over 15 iterations, starting from zero-shot baseline predictions.]"
+      ],
+      "subsections": []
+    },
+    "Appendix E Data Requirement Analysis": {
+      "paragraphs": [
+        "We examine the data requirements by varying the size of the unlabeled dataset used for test-time training, while maintaining the complete test set for consistent evaluation. Using stratified sampling to preserve the original class distributions, we create three representative subsets at 25%, 50%, and 75% of the initial dataset. For each subset, we reserve 20% as a validation set to prevent overfitting during training, following the methodology.",
+        "For balanced datasets (Banking77, Crime, DBpedia), we observe a clear positive correlation between data availability and performance improvement, as shown in Table 5. However, the marginal benefits vary across datasets. Banking77 and Crime shows diminishing returns when data availability increases from 75% to 100%, indicating that our methodology can be effective even with relatively small amounts of data. Notable improvements are observed with as little as 25% of the full dataset (approximately 10 samples per class). In contrast, DBpedia demonstrates consistent performance gains with increased data availability (see Figure 5), suggesting that larger unlabeled datasets could yield further improvements.",
+        "For unbalanced datasets, the relationship between data availability and performance is more complex. When minority classes have very few samples, sometimes just single instances or none after splitting the subset, performance metrics can show significant variability due to poor generalization as highlighted in Section 6.2. While LSR still shows positive improvements in such cases, we recommend ensuring a minimum number of instances per class before applying LSR. The key focus should be on adequately representing the underlying sample distribution rather than achieving a specific total sample size.",
+        "[Figure: Figure 5: Results of LSR with varying unlabeled subset sizes for training. Lines show macro-F1 scores over 15 iterations, with k=2k=2 using Llama-3.1-70B.]",
+        "[Table: Table 5: Effect of data size on LSR. Results show the gain in macro-F1 scores of Llama-3.1-70B between zero-shot predictions and after 15 iterations with k=2k=2.]"
+      ],
+      "subsections": []
+    },
+    "Appendix F Label Space Ranking Comparison": {
+      "paragraphs": [
+        "We compare the zero-shot rankings of the classifier (Catboost) during LSR with k=F​u​l​lk=Full (which ranks without reducing the label space), to that of the embedding model used in the numerical view. For the latter, we obtain rankings by calculating the cosine similarity between the input and label embeddings. We evaluate using the hit rate as defined in Equation 11 and investigate the Top-k candidates.",
+        "From Figure 6, we observe that the classifier-based rankings and classification accuracy (Hit@1) significantly outperform the embedding model across all evaluated datasets.",
+        "This finding supports our architectural choice to avoid embedding models for ranking. Since the quality of results would be constrained by the embedding model’s initial candidate selection, any errors at this stage would be impossible to recover in subsequent refinement steps. While computationally more intensive, and at risk of retrieval issues associated with long contexts, the ability to process labels within the context window and directly leverage the LLM’s knowledge base and reasoning capabilities leads to superior performance.",
+        "Figure 6 reveals that the hit rate does not reach 100% for all datasets when kk is equal to the full label space, particularly evident in the DBpedia dataset. This occurs when certain classes are not predicted by the LLM, and thus the classifier cannot incorporate them during training. Furthermore, we observe that while the rankings are properly optimized among the top candidates, this optimization does not extend across all class-labels in the label space, unlike what we observe for the embedding-based rankings. While our current implementation with LSR prioritizes top candidates, future work could focus on improving the consistency of rankings across the entire label space.",
+        "[Figure: Figure 6: Comparison of zero-shot ranking performance between classifier-based (CatBoost) with LSR and embedding-based (BAAI/bge-large-en-v1.5) approaches across different datasets. The hit rate (Hit@k) is shown for varying numbers of top-k candidates, demonstrating consistently better performance of the classifier-based approach trained on LLM (Llama-3.1-70B) pseudo-labels. Note, the embedding approach is only applicable to text classification tasks.]"
+      ],
+      "subsections": []
+    },
+    "Appendix G Prompt Template": {
+      "paragraphs": [
+        "Prompt template for general classification tasks",
+        "Example input Crime dataset",
+        "Example input Banking77 dataset"
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "Alayrac et al. (2022) Alayrac, J.-B., Donahue, J., Luc, P., Miech, A., Barr, I., Hasson, Y., Lenc, K., Mensch, A., Millicah, K., Reynolds, M., et al. Flamingo: a visual language model for few-shot learning. In Proceedings of the 36th International Conference on Neural Information Processing Systems, NIPS ’22, Red Hook, NY, USA, 2022. Curran Associates Inc. ISBN 9781713871088.",
+    "An et al. (2024) An, C., Zhang, J., Zhong, M., Li, L., Gong, S., Luo, Y., Xu, J., and Kong, L. Why does the effective context length of llms fall short? ArXiv, abs/2410.18745, 2024. URL https://api.semanticscholar.org/CorpusID:273549240.",
+    "Anonymous (2025) Anonymous. Retrieval head mechanistically explains long-context factuality. In The Thirteenth International Conference on Learning Representations, 2025. URL https://openreview.net/forum?id=EytBpUGB1Z.",
+    "Anthropic (2024) Anthropic. Claude-3.5-sonnet technical report, 2024. URL https://www-cdn.anthropic.com/fed9cc193a14b84131812372d8d5857f8f304c52/Model_Card_Claude_3_Addendum.pdf.",
+    "Bhatia et al. (2015) Bhatia, K., Jain, H., Kar, P., Varma, M., and Jain, P. Sparse local embeddings for extreme multi-label classification. In Cortes, C., Lawrence, N., Lee, D., Sugiyama, M., and Garnett, R. (eds.), Advances in Neural Information Processing Systems, volume 28. Curran Associates, Inc., 2015. URL https://proceedings.neurips.cc/paper_files/paper/2015/file/35051070e572e47d2c26c241ab88307f-Paper.pdf.",
+    "Bommasani et al. (2021) Bommasani, R., Hudson, D. A., Adeli, E., Altman, R., Arora, S., von Arx, S., Bernstein, M. S., Bohg, J., Bosselut, A., Brunskill, E., et al. On the opportunities and risks of foundation models. ArXiv, abs/2108.07258, 2021. URL https://api.semanticscholar.org/CorpusID:237091588.",
+    "Borisov et al. (2021) Borisov, V., Leemann, T., Seßler, K., Haug, J., Pawelczyk, M., and Kasneci, G. Deep neural networks and tabular data: A survey. IEEE Transactions on Neural Networks and Learning Systems, 35:7499–7519, 2021. URL https://api.semanticscholar.org/CorpusID:238353897.",
+    "Brown et al. (2020) Brown, T. B., Mann, B., Ryder, N., Subbiah, M., Kaplan, J., Dhariwal, P., Neelakantan, A., Shyam, P., Sastry, G., Askell, A., et al. Language models are few-shot learners. CoRR, abs/2005.14165, 2020. URL https://arxiv.org/abs/2005.14165.",
+    "Chang et al. (2020) Chang, W.-C., Yu, H.-F., Zhong, K., Yang, Y., and Dhillon, I. Taming pretrained transformers for extreme multi-label text classification. Proceedings of the 26th ACM SIGKDD International Conference on Knowledge Discovery & Data Mining, pp. 3163–3171, 2020.",
+    "Charte et al. (2014) Charte, F., Rivera, A. J., del Jesús, M. J., and Herrera, F. Li-mlc: A label inference methodology for addressing high dimensionality in the label space for multilabel classification. IEEE Transactions on Neural Networks and Learning Systems, 25:1842–1854, 2014. URL https://api.semanticscholar.org/CorpusID:7427312.",
+    "Chung et al. (2022) Chung, H. W., Hou, L., Longpre, S., Zoph, B., Tay, Y., Fedus, W., Li, E., Wang, X., Dehghani, M., Brahma, S., et al. Scaling instruction-finetuned language models. ArXiv, abs/2210.11416, 2022. URL https://api.semanticscholar.org/CorpusID:253018554.",
+    "Fan et al. (2018) Fan, A., Lewis, M., and Dauphin, Y. Hierarchical neural story generation, 2018. URL https://arxiv.org/abs/1805.04833.",
+    "Ficler & Goldberg (2017) Ficler, J. and Goldberg, Y. Controlling linguistic style aspects in neural language generation. In Brooke, J., Solorio, T., and Koppel, M. (eds.), Proceedings of the Workshop on Stylistic Variation, pp. 94–104, Copenhagen, Denmark, September 2017. Association for Computational Linguistics. doi: 10.18653/v1/W17-4912. URL https://aclanthology.org/W17-4912/.",
+    "Gao et al. (2024) Gao, Y., Xiong, Y., Gao, X., Jia, K., Pan, J., Bi, Y., Dai, Y., Sun, J., Wang, M., and Wang, H. Retrieval-augmented generation for large language models: A survey, 2024. URL https://arxiv.org/abs/2312.10997.",
+    "Gemma Team (2024) Gemma Team. Gemma 2: Improving open language models at a practical size, 2024. URL https://arxiv.org/abs/2408.00118.",
+    "Hegselmann et al. (2023) Hegselmann, S., Buendia, A., Lang, H., Agrawal, M., Jiang, X., and Sontag, D. Tabllm: Few-shot classification of tabular data with large language models. In International Conference on Artificial Intelligence and Statistics, pp. 5549–5581. PMLR, 2023.",
+    "Holtzman et al. (2020) Holtzman, A., Buys, J., Du, L., Forbes, M., and Choi, Y. The curious case of neural text degeneration. In International Conference on Learning Representations, 2020. URL https://openreview.net/forum?id=rygGQyrFvH.",
+    "Hsieh et al. (2024) Hsieh, C.-P., Sun, S., Kriman, S., Acharya, S., Rekesh, D., Jia, F., and Ginsburg, B. RULER: What’s the real context size of your long-context language models? In First Conference on Language Modeling, 2024. URL https://openreview.net/forum?id=kIoBbc76Sy.",
+    "Huang et al. (2020) Huang, J., Zhang, P., Zhang, H., Li, G., and Rui, H. Multi-label learning via feature and label space dimension reduction. IEEE Access, 8:1–1, 01 2020. doi: 10.1109/ACCESS.2020.2969238.",
+    "Jiang et al. (2021) Jiang, T., Liu, D., and Yang, L. Lightxml: Transformer with dynamic negative sampling for high-performance extreme multi-label text classification. Proceedings of the AAAI Conference on Artificial Intelligence, 35(14):13252–13260, 2021.",
+    "Kamradt (2023) Kamradt, G. Needle in a haystack - pressure testing llms. https://github.com/gkamradt/LLMTest_NeedleInAHaystack, 2023. URL https://github.com/gkamradt/LLMTest_NeedleInAHaystack.",
+    "Karpukhin et al. (2020) Karpukhin, V., Oguz, B., Min, S., Lewis, P., Wu, L., Edunov, S., Chen, D., and Yih, W.-t. Dense passage retrieval for open-domain question answering. In Webber, B., Cohn, T., He, Y., and Liu, Y. (eds.), Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing (EMNLP), pp. 6769–6781, Online, November 2020. Association for Computational Linguistics. doi: 10.18653/v1/2020.emnlp-main.550. URL https://aclanthology.org/2020.emnlp-main.550/.",
+    "Kojima et al. (2022) Kojima, T., Gu, S. S., Reid, M., Matsuo, Y., and Iwasawa, Y. Large language models are zero-shot reasoners. In Proceedings of the 36th International Conference on Neural Information Processing Systems, NIPS ’22, Red Hook, NY, USA, 2022. Curran Associates Inc. ISBN 9781713871088.",
+    "Kojima et al. (2023) Kojima, T., Gu, S. S., Reid, M., Matsuo, Y., and Iwasawa, Y. Large language models are zero-shot reasoners, 2023. URL https://arxiv.org/abs/2205.11916.",
+    "Kumar et al. (2018) Kumar, V., Pujari, A. K., Padmanabhan, V., and Kagita, V. R. Group preserving label embedding for multi-label classification. CoRR, abs/1812.09910, 2018. URL http://arxiv.org/abs/1812.09910.",
+    "LangChain (2023) LangChain. Multi-needle in a haystack, 2023. URL https://blog.langchain.dev/multi-needle-in-a-haystack/. LangChain Blog.",
+    "Latif et al. (2023) Latif, S., Shoukat, M., Shamshad, F., Usama, M., Ren, Y., CuayÃ¡huitl, H., Wang, W., Zhang, X., Togneri, R., Cambria, E., et al. Sparks of large audio models: A survey and outlook, 2023. URL https://arxiv.org/abs/2308.12792.",
+    "Lehmann et al. (2015) Lehmann, J., Isele, R., Jakob, M., Jentzsch, A., Kontokostas, D., Mendes, P. N., Hellmann, S., Morsey, M., Van Kleef, P., Auer, S., et al. Dbpedia–a large-scale, multilingual knowledge base extracted from wikipedia. Semantic web, 6(2):167–195, 2015.",
+    "Liu et al. (2024) Liu, N. F., Lin, K., Hewitt, J., Paranjape, A., Bevilacqua, M., Petroni, F., and Liang, P. Lost in the middle: How language models use long contexts. Transactions of the Association for Computational Linguistics, 12:157–173, 2024. doi: 10.1162/tacl˙a˙00638. URL https://aclanthology.org/2024.tacl-1.9/.",
+    "Llama Team (2024) Llama Team. The llama 3 herd of models, 2024. URL https://arxiv.org/abs/2407.21783.",
+    "Mittal et al. (2022) Mittal, A., Dahiya, K., Malani, S., Ramaswamy, J., Kuruvilla, S., Ajmera, J., Chang, K.-H., Agarwal, S., Kar, P., and Varma, M. Multi-modal Extreme Classification. In 2022 IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), pp. 12383–12392, New Orleans, LA, USA, June 2022. IEEE. ISBN 978-1-66546-946-3. doi: 10.1109/CVPR52688.2022.01207. URL https://ieeexplore.ieee.org/document/9878672/.",
+    "Moyano et al. (2022) Moyano, J. M., Luna, J. M., and Ventura, S. Reducing the label space a predefined ratio for a more efficient multilabel classification. IEEE Access, 10, 07 2022. doi: 10.1109/ACCESS.2022.3192642.",
+    "Muennighoff et al. (2023) Muennighoff, N., Tazi, N., Magne, L., and Reimers, N. Mteb: Massive text embedding benchmark, 2023. URL https://arxiv.org/abs/2210.07316.",
+    "Nguyen et al. (2024) Nguyen, M., Baker, A., Neo, C., Roush, A., Kirsch, A., and Shwartz-Ziv, R. Turning up the heat: Min-p sampling for creative and coherent llm outputs, 2024. URL https://arxiv.org/abs/2407.01082.",
+    "Peysakhovich & Lerer (2023) Peysakhovich, A. and Lerer, A. Attention sorting combats recency bias in long context language models. ArXiv, abs/2310.01427, 2023. URL https://api.semanticscholar.org/CorpusID:263609111.",
+    "Prokhorenkova et al. (2018) Prokhorenkova, L., Gusev, G., Vorobev, A., Dorogush, A. V., and Gulin, A. Catboost: unbiased boosting with categorical features. In Bengio, S., Wallach, H., Larochelle, H., Grauman, K., Cesa-Bianchi, N., and Garnett, R. (eds.), Advances in Neural Information Processing Systems, volume 31. Curran Associates, Inc., 2018. URL https://proceedings.neurips.cc/paper_files/paper/2018/file/14491b756b3a51daac41c24863285549-Paper.pdf.",
+    "Qwen Team (2024) Qwen Team. Qwen2.5: A party of foundation models, September 2024. URL https://qwenlm.github.io/blog/qwen2.5/.",
+    "Radford et al. (2021) Radford, A., Kim, J. W., Hallacy, C., Ramesh, A., Goh, G., Agarwal, S., Sastry, G., Askell, A., Mishkin, P., Clark, J., et al. Learning transferable visual models from natural language supervision. CoRR, abs/2103.00020, 2021. URL https://arxiv.org/abs/2103.00020.",
+    "Reimers & Gurevych (2019a) Reimers, N. and Gurevych, I. Sentence-bert: Sentence embeddings using siamese bert-networks. In Proceedings of the 2019 Conference on Empirical Methods in Natural Language Processing. Association for Computational Linguistics, 11 2019a. URL https://arxiv.org/abs/1908.10084.",
+    "Reimers & Gurevych (2019b) Reimers, N. and Gurevych, I. Sentence-bert: Sentence embeddings using siamese bert-networks. arXiv preprint arXiv:1908.10084, 2019b.",
+    "Robertson & Zaragoza (2009) Robertson, S. and Zaragoza, H. The probabilistic relevance framework: Bm25 and beyond. Foundations and Trends in Information Retrieval, 3(4):333–389, 2009.",
+    "Sahoo et al. (2024) Sahoo, P., Singh, A. K., Saha, S., Jain, V., Mondal, S. S., and Chadha, A. A systematic survey of prompt engineering in large language models: Techniques and applications. ArXiv, abs/2402.07927, 2024. URL https://api.semanticscholar.org/CorpusID:267636769.",
+    "Salton & Buckley (1988) Salton, G. and Buckley, C. Term-weighting approaches in automatic text retrieval. Information processing & management, 24(5):513–523, 1988.",
+    "Tai & Lin (2012) Tai, F. and Lin, H.-T. Multilabel classification with principal label space transformation. Neural Computation, 24:2508–2542, 09 2012. doi: 10.1162/NECO˙a˙00320.",
+    "Wang et al. (2019) Wang, W., Zheng, V. W., Yu, H., and Miao, C. A survey of zero-shot learning: Settings, methods, and applications. ACM Trans. Intell. Syst. Technol., 10(2), January 2019. ISSN 2157-6904. doi: 10.1145/3293318. URL https://doi.org/10.1145/3293318.",
+    "Wang et al. (2023) Wang, X., Wei, J., Schuurmans, D., Le, Q., Chi, E., Narang, S., Chowdhery, A., and Zhou, D. Self-consistency improves chain of thought reasoning in language models, 2023. URL https://arxiv.org/abs/2203.11171.",
+    "Wei et al. (2022a) Wei, J., Bosma, M., Zhao, V., Guu, K., Yu, A. W., Lester, B., Du, N., Dai, A. M., and Le, Q. V. Finetuned language models are zero-shot learners. In International Conference on Learning Representations, 2022a. URL https://openreview.net/forum?id=gEZrGCozdqR.",
+    "Wei et al. (2022b) Wei, J., Wang, X., Schuurmans, D., Bosma, M., Ichter, B., Xia, F., Chi, E. H., Le, Q. V., and Zhou, D. Chain-of-thought prompting elicits reasoning in large language models. In Proceedings of the 36th International Conference on Neural Information Processing Systems, NIPS ’22, Red Hook, NY, USA, 2022b. Curran Associates Inc. ISBN 9781713871088.",
+    "Wei et al. (2023) Wei, J., Wang, X., Schuurmans, D., Bosma, M., Ichter, B., Xia, F., Chi, E., Le, Q., and Zhou, D. Chain-of-thought prompting elicits reasoning in large language models, 2023. URL https://arxiv.org/abs/2201.11903.",
+    "Xian et al. (2017) Xian, Y., Lampert, C. H., Schiele, B., and Akata, Z. Zero-shot learningâ€”a comprehensive evaluation of the good, the bad and the ugly. IEEE Transactions on Pattern Analysis and Machine Intelligence, 41:2251–2265, 2017. URL https://api.semanticscholar.org/CorpusID:4852047.",
+    "Xiao & Liu (2023) Xiao, S. and Liu, Z. Bge: Baai general embedding. https://github.com/FlagOpen/FlagEmbedding, 2023.",
+    "You et al. (2019) You, R., Zhang, Z., Wang, Z., Dai, S., Mamitsuka, H., and Zhu, S. Attentionxml: Label tree-based attention-aware deep model for high-performance extreme multi-label text classification. Advances in Neural Information Processing Systems, 32, 2019.",
+    "Zhang et al. (2024a) Zhang, J., Ullah, N., and Babbar, R. Zero-shot learning over large output spaces : Utilizing indirect knowledge extraction from large language models. ArXiv, abs/2406.09288, 2024a. URL https://api.semanticscholar.org/CorpusID:270440731.",
+    "Zhang et al. (2015) Zhang, X., Zhao, J., and LeCun, Y. Character-level convolutional networks for text classification. In Advances in neural information processing systems, volume 28, 2015.",
+    "Zhang et al. (2024b) Zhang, X., Chowdhury, R. R., Gupta, R. K., and Shang, J. Large Language Models for Time Series: A Survey. In Proceedings of the Thirty-ThirdInternational Joint Conference on Artificial Intelligence, pp. 8335–8343, Jeju, South Korea, August 2024b. International Joint Conferences on Artificial Intelligence Organization. ISBN 978-1-956792-04-1. doi: 10.24963/ijcai.2024/921. URL https://www.ijcai.org/proceedings/2024/921.",
+    "Zhu & Zamani (2024) Zhu, Y. and Zamani, H. Icxml: An in-context learning framework for zero-shot extreme multi-label classification, 2024. URL https://arxiv.org/abs/2311.09649."
+  ]
+}

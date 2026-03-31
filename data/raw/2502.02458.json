@@ -1,0 +1,293 @@
+{
+  "title": "SAISA: Towards Multimodal Large Language Modelswith Both Training and Inference Efficiency",
+  "authors": "Qianhao Yuan1,2,,Yanjiang Liu1,2,∗,Yaojie Lu1,Hongyu Lin1,Ben He1,2,Xianpei Han1,Le Sun11Chinese Information Processing Laboratory, Institute of Software, Chinese Academy of Sciences2University of Chinese Academy of Sciences{yuanqianhao2024,liuyanjiang2021,luyaojie,hongyu}@iscas.ac.cnbenhe@ucas.ac.cn,{xianpei,sunle}@iscas.ac.cnThese authors contributed equally",
+  "abstract": "Multimodal Large Language Models (MLLMs) mainly fall into two architectures, each involving a trade-off between training and inference efficiency: embedding space alignment (e.g., LLaVA-1.5) is inefficient during inference, while cross-attention space alignment (e.g., Flamingo) is inefficient in training. this paper, we compare these two architectures and identify the key factors for building efficient MLLMs. A primary difference between them lies in how attention is applied to visual tokens, particularly in their interactions with each other. To investigate whether attention among visual tokens is necessary, we propose a new self-attention mechanism, NAAViT (No Attention Among Visual Tokens), h eliminates this type of attention. Our pilot experiment on LLaVA-1.5 shows that attention among visual tokens is highly redundant. , we introduce SAISA (Self-Attention Input Space Alignment), a novel architecture that enhance both training and inference efficiency. SAISA directly aligns visual features with the input spaces of NAAViT self-attention blocks, reducing computational overhead in both self-attention blocks and feed-forward networks (FFNs). Using the same configuration as LLaVA-1.5, SAISA reduces inference FLOPs by 66% and training budget by 26%, while achieving superior performance in terms of accuracy. Comprehensive ablation studies further validate the effectiveness of SAISA across various LLMs and visual encoders. The code and model will be publicly available at https://github.com/icip-cas/SAISA.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Multimodal Large Language Models (MLLMs) [44, 34, 5, 6, 12] have shown impressive capabilities in understanding and processing visual information. They typically build on pre-trained Large Language Models (LLMs) [45, 11, 4, 56] and align visual features with the LLMs. There are two primary architectures for aligning visual and text modalities: embedding space alignment and cross-attention space alignment. Embedding space alignment, e.g., LLaVA [33, 34], introduces a projector to align visual features with the LLM embedding space and feeds the visual and text tokens into the LLM. Cross-attention space alignment, e.g., Flamingo [2], inserts cross-attention blocks and aligns visual features with the attention spaces of these blocks.",
+        "However, despite the promising performance of these MLLMs, they involve a trade-off between training and inference efficiency. On the one hand, MLLMs with embedding space alignment exhibit training efficiency, since they introduce only a small number of new parameters to the pre-trained LLMs. For example, LLaVA-1.5-7B is trained in 108 GPU hours from Vicuna-7B [11]. However, this architecture significantly increases the number of input tokens, and the computational cost of self-attention grows quadratically with the number of tokens, leading to inefficiency during inference. On the other hand, MLLMs with cross-attention space alignment achieve inference efficiency, since they do not require unrolling visual tokens, but they are inefficient during training for introducing a large number of new parameters to the pre-trained LLM. In this paper, we take a step towards building MLLMs with efficiency during both training and inference.",
+        "In this paper, we perform a thorough analysis of these two architectures, identifing key factors for building MLLMs with both training and inference efficiency. To optimize training efficiency, the key factor is minimizing the number of new parameters and employ modules in the pre-trained LLMs for interaction between visual and text modalities. For improving inference efficiency, the main focus is reducing the computational costs associated with visual tokens, particularly in attention blocks and feed-forward networks (FFNs). Building on the analysis of these factors, we introduce NAAViT (No Attention Among Visual Tokens), a self-attention mechanism which eliminates attention among visual tokens to enhance efficiency. Since attention among visual tokens contributes significantly to the quadratically growing computational cost in self-attention blocks, we investigate whether this type of attention is truly essential for MLLMs. Our pilot experiment on LLaVA-1.5 demonstrates that NAAViT outperforms vanilla self-attention, indicating that attention among visual tokens is highly redundancy.",
+        "Based on the findings above, we introduce SAISA (Self-Attention Input Space Alignment), an architecture for MLLMs with efficiency during both training and inference. As illustrated in Figure 2(c), SAISA employs NAAViT self-attention blocks for multimodal interaction and directly aligns visual features with the input spaces of these blocks. SAISA not only reduces the computational overhead of self-attention blocks but also significantly lowers the computational cost of FFNs by eliminating the need to apply FFNs to visual tokens. We train SAISA on the same data as LLaVA-1.5 and validate its effectiveness on various LLMs and visual encoders. As shown in Figure 1, SAISA outperforms LLaVA-1.5 in terms of performance, training efficiency, and inference efficiency. Using Vicuna-7B-v1.5 [11] as LLM and CLIP-ViT-L/14-336 [46] as visual encoder, SAISA reduces training budget by 26% and inference FLOPs by 66%, while delivering superior performance. Moreover, SAISA is orthogonal to and compatible with projectors to down-sample visual tokens, e.g. perceiver resampler [21] and Q-Former [29, 12], and visual token pruning mechanisms, e.g. FastV [8] and LLaVA-PruMerge [49].",
+        "We summarize our contributions as follows.",
+        "• Based on our analysis of current MLLM architectures, we propose NAAViT to enhance efficiency of MLLMs, revealing the redundancy of self-attention in MLLMs.",
+        "• We introduce SAISA, an architecture for building MLLMs with both training and inference efficiency by eliminating the computational cost of attention among visual tokens and FFNs on visual tokens.",
+        "• We validate the effectiveness of SAISA through comprehensive ablation studies across various LLMs and visual encoders."
+      ],
+      "subsections": []
+    },
+    "2 Analyzing Current MLLM Architectures": {
+      "paragraphs": [
+        "In this section, we analyze the two most common architectures to align visual features with the language model, and summarize key factors for building efficient MLLMs."
+      ],
+      "subsections": [
+        {
+          "title": "Embedding Space Alignment.",
+          "paragraphs": [
+            "As illustrated in Figure 2(a), models with this architecture introduce a projector to align visual tokens with the text token embedding space. They concatenate the aligned visual tokens and text tokens, and then feed them into the LLM. Notable models with this architecture include LLaVA-1.5 [34], Qwen-VL [5], BLIP-2 [29], InstructBLIP [12], MiniGPT-4 [60] and MiniGPT-v2 [6]. These models introduce only a small number of new parameters to the pre-trained LLMs, allowing training MLLMs from the LLMs with minimal budget.",
+            "However, the concatenated token sequence leads to inefficiency during inference. When the number of visual and text tokens is vv and tt respectively, the computational complexity of self-attention in LLM is 𝒪​((v+t)2)\\mathcal{O}((v+t)^{2}). This complexity consists of three components, 𝒪​(v2)\\mathcal{O}(v^{2}) for the attention among visual tokens, 𝒪​(v​t)\\mathcal{O}(vt) for the interaction between text and visual tokens, and 𝒪​(t2)\\mathcal{O}(t^{2}) for the attention among text tokens. Typically, MLLMs use hundreds or even thousands of visual tokens. For examples, LLaVA-1.5 uses 576 visual tokens for a single image, and Sphinx [32] uses 2,890 visual tokens. In contrast, the number of text tokens is much smaller in most VL tasks. The average numbers of text tokens in MMMU [58], POPE [30] and ScienceQA IMG [37] are 142, 68, and 210, respectively. As a result, the attention among visual tokens dominates the quadratic computational overhead. Moreover, since the FFNs of the LLM have a large hidden layer dimension, applying FFNs to visual tokens also brings substantial computational costs."
+          ]
+        },
+        {
+          "title": "Cross-Attention Space Alignment.",
+          "paragraphs": [
+            "As illustrated in Figure 2(b), models with this architecture insert cross-attention blocks and FFNs into the language model, and align visual features with the attention spaces of these cross-attention blocks. Notable models with this architecture include Flamingo [2] and OpenFlamingo [3]. In these models, the attention operation consists of only two components, the interaction between text and visual modalities with complexity 𝒪​(v​t)\\mathcal{O}(vt) in the cross-attention blocks, and the attention among text tokens with complexity 𝒪​(t2)\\mathcal{O}(t^{2}) in the self-attention blocks. Compared to embedding space alignment, there is no attention among visual features in the language model. By not executing attention among visual tokens and not applying FFNs to visual tokens, these models are more efficient during inference.",
+            "However, the inserted cross-attention blocks and FFNs introduce a large number of new parameters to the pre-trained language model. As a result, training an MLLM with this architecture requires a large amount of data. For example, OpenFlamingo-9B adds 2 billion parameters to Llama-7B [55], and requires training data with 180M samples. In terms of model capabilities, previous work [13] finds that models utilizing this architecture perform worse than those using embedding space alignment when trained on the same data.",
+            "Based on the analyses above, we summarize the key factors for building efficient MLLMs as follows:",
+            "• Reducing the number of new parameters and employing pre-trained modules for multimodal interaction lead to efficiency during training.",
+            "• Reducing computations related to visual tokens, including those in attention blocks and FFNs, leads to efficiency during inference.",
+            "Reducing the number of new parameters and employing pre-trained modules for multimodal interaction lead to efficiency during training.",
+            "Reducing computations related to visual tokens, including those in attention blocks and FFNs, leads to efficiency during inference."
+          ]
+        }
+      ]
+    },
+    "3 No Attention Among Visual Tokens": {
+      "paragraphs": [
+        "In this section, we propose NAAViT (No Attention Among Visual Tokens) self-attention and perform a pilot experiment to investigate whether attention among visual tokens is necessary for MLLMs."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Preliminary",
+          "paragraphs": [
+            "In a self-attention block, the input visual-text token sequence is formed as X=[V,T]∈ℝ(v+t)×hX=[V,T]\\in\\mathbb{R}^{(v+t)\\times h}, where [⋅,⋅][\\cdot,\\cdot] denotes concatenation along the sequence dimension. To derive the query, key, and value representations, three linear layers are applied to obtain XqX_{q}, XkX_{k}, and XvX_{v}, respectively:",
+            "Then, the attention operation is executed as:",
+            "Typically, a causal attention mask is applied and queries can only attend to keys preceding them in the sequence. The outputs are multiplied by another linear layer WOW_{O} to update the hidden states through a residual connection:"
+          ]
+        },
+        {
+          "title": "Vanilla Self-Attention.",
+          "paragraphs": [
+            "In a self-attention block, the input visual-text token sequence is formed as X=[V,T]∈ℝ(v+t)×hX=[V,T]\\in\\mathbb{R}^{(v+t)\\times h}, where [⋅,⋅][\\cdot,\\cdot] denotes concatenation along the sequence dimension. To derive the query, key, and value representations, three linear layers are applied to obtain XqX_{q}, XkX_{k}, and XvX_{v}, respectively:",
+            "Then, the attention operation is executed as:",
+            "Typically, a causal attention mask is applied and queries can only attend to keys preceding them in the sequence. The outputs are multiplied by another linear layer WOW_{O} to update the hidden states through a residual connection:"
+          ]
+        },
+        {
+          "title": "3.2 NAAViT",
+          "paragraphs": [
+            "As analyzed in Section 2, embedding space alignment achieves superior performance and training efficiency, making it the most popular architecture in MLLMs recently. However, this architecture is inefficient during inference, largely attributable to the computational overhead of self-attention among visual tokens. In contrast, cross-attention space alignment does not perform attention among visual tokens in the language model, leading to inference efficiency. A question arises here: Is attention among visual tokens necessary for MLLMs?",
+            "To answer this question, we propose NAAViT (No Attention Among Visual Tokens), which eliminates attention among visual tokens. We illustrate the architecture of NAAViT in Figure 3. Specifically, for the visual-text token sequence X=[V,T]∈ℝ(v+t)×hX=[V,T]\\in\\mathbb{R}^{(v+t)\\times h}, queries XqX_{q}, keys XkX_{k} and values XvX_{v} are obtained as:",
+            "The attention operation is executed as Equation 2, but with NAAViT attention mask, where the queries can attend to visual tokens and text tokens preceding them.",
+            "When the number of visual and text tokens is vv and tt respectively, the vanilla self-attention exhibit a computational complexity of 𝒪​((v+t)2)\\mathcal{O}((v+t)^{2}) for the attention operation in Equation 2. By eliminating the attention among visual tokens, NAAViT reduces the complexity to 𝒪​(t​(v+t))\\mathcal{O}(t(v+t)). Furthermore, since NAAViT reduces the query length from v+tv+t to tt, it also significantly reduces computational costs associated with linear layers WQW_{Q} and WOW_{O}."
+          ]
+        },
+        {
+          "title": "3.3 Pilot Experiment",
+          "paragraphs": [
+            "We train a model under the same configurations as LLaVA-1.5-7B, but replace the vanilla self-attention blocks with NAAViT self-attention blocks.",
+            "In Table 1, we compare NAAViT and vanilla self-attention on multiple MLLM benchmarks, including MMMU [58], MMBench [35], MMBench-CN [35], POPE [30], ScienceQA IMG [37] and OK-VQA [41]. Despite eliminating the attention among visual tokens, the model employing NAAViT outperforms the one using vanilla self-attention. Given that NAAViT substantially reduces computational overhead, it offers a favorable balance between performance and efficiency.",
+            "In conclusion, attention among visual tokens is highly redundant for building MLLMs. In the following section, we introduce SAISA (Self-Attention Input Space Alignment) for efficient MLLMs based on NAAViT."
+          ]
+        }
+      ]
+    },
+    "4 SAISA": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "4.1 Architecture",
+          "paragraphs": [
+            "As mentioned earlier, besides the attention operation, another factor that contributes to inference inefficiency is applying FFNs to visual tokens. Based on NAAViT, which eliminates the attention among visual tokens, we propose SAISA (Self-Attention Input Space Alignment), an architecture for further enhancing MLLM efficiency. In SAISA, we also eliminate FFNs’ computations on visual tokens.",
+            "We illustrate the SAISA architecture in Figure 2(c). SAISA contains a visual encoder to extract visual features, a projector, and an LLM. Each layer of the LLM consists of a self-attention block and an FFN. We utilize NAAViT in the self-attention blocks. The purpose of the projector is to directly align the visual features with the input spaces of different self-attention blocks in the LLM.",
+            "Specifically, we assume nn is the number of layers in the LLM, hh is the hidden size of the LLM, dd is the dimension of visual features, vv is the number of visual tokens, and tt is the number of text tokens.",
+            "For an input image II, we first employ the visual encoder VE to extract visual features:",
+            "Then, we use the projector P to directly align the visual features with the input spaces of different NAAViT self-attention blocks:",
+            "For the ii-th NAAViT self-attention block NAAViTi, we input the aligned visual features Vi∈ℝv×hV_{i}\\in\\mathbb{R}^{v\\times h} and hidden states of the text tokens Ti∈ℝt×hT_{i}\\in\\mathbb{R}^{t\\times h}:",
+            "Notably, the NAAViT self-attention block only outputs the text tokens’ hidden states HiH_{i} for the subsequent FFN, and we apply the FFN to update the text tokens:"
+          ]
+        },
+        {
+          "title": "4.2 Projector",
+          "paragraphs": [
+            "Since each LLM layer operates in distinct self-attention spaces, the projector must flexibly align the visual features with each of the spaces. For simplicity, we employ distinct two-layer MLPs for each layer of the LLM. When the LLM has nn layers, the projector contains nn MLPs. Following LLaVA-1.5 [34], we set the intermediate size of each MLP to be the same as the hidden state size of the LLM.",
+            "Specifically, for the ii-th layer in the LLM, the projector is executed as:",
+            "where ZZ is the visual features from the visual encoder, φ\\varphi is the activation function like GELU [16], Wi,1∈ℝd×hW_{i,1}\\in\\mathbb{R}^{d\\times h} and Wi,2∈ℝh×hW_{i,2}\\in\\mathbb{R}^{h\\times h} are the weight matrices of the two fully connected layers."
+          ]
+        },
+        {
+          "title": "4.3 Training Procedure",
+          "paragraphs": [
+            "The training procedure of SAISA consists of two stages: pre-training and fine-tuning.",
+            "The objective of pre-training is to transform an LLM into an MLLM with a foundational comprehension of images, providing an initialization for the multimodal fine-tuning stage. Following LLaVA-1.5, only the multimodal projector is trainable during this stage. To improve training efficiency, we further reduce the number of trainable parameters. Specifically, we train a shared MLP for all layers of the LLM.",
+            "The objective of fine-tuning is to enable the model to follow visual instructions from users. As an initialization, we replicate the pre-trained shared MLP NN times to initialize the MLPs in the projector, where NN denotes the number of layers of the LLM. Following LLaVA-1.5, we utilize visual instruction data to train the model, and both the LLM and the projector are trainable during this stage."
+          ]
+        },
+        {
+          "title": "Pre-training.",
+          "paragraphs": [
+            "The objective of pre-training is to transform an LLM into an MLLM with a foundational comprehension of images, providing an initialization for the multimodal fine-tuning stage. Following LLaVA-1.5, only the multimodal projector is trainable during this stage. To improve training efficiency, we further reduce the number of trainable parameters. Specifically, we train a shared MLP for all layers of the LLM."
+          ]
+        },
+        {
+          "title": "Fine-tuning.",
+          "paragraphs": [
+            "The objective of fine-tuning is to enable the model to follow visual instructions from users. As an initialization, we replicate the pre-trained shared MLP NN times to initialize the MLPs in the projector, where NN denotes the number of layers of the LLM. Following LLaVA-1.5, we utilize visual instruction data to train the model, and both the LLM and the projector are trainable during this stage."
+          ]
+        },
+        {
+          "title": "4.4 Comparison of Computational Cost",
+          "paragraphs": [
+            "In this section, we compare the computational costs of SAISA and LLaVA-1.5. We consider the computations of the LLM and the projector, as the computations of the visual encoder are identical in comparison. We consider the computations of the self-attention blocks and the FFNs in the LLM.",
+            "For LLM with nn layers, we assume hh is the hidden state size, mm is the intermediate size of the FFNs, tt is the number of text tokens, and vv is the number of visual tokens. To comprehensively consider LLMs with and without grouped query attention (GQA) [1], we assume kk is the output dimension of key/value matrices. For the projector, we assume dd is the dimension of the input visual features.",
+            "For LLaVA-1.5, the FLOPs of the LLM are calculated as 2​n​(t+v)​h​(2​h+3​m+2​k)+4​n​(t+v)2​h2n(t+v)h(2h+3m+2k)+4n(t+v)^{2}h, and the FLOPs of the projector are 2​v​h​d+2​v​h22vhd+2vh^{2}. The total FLOPs are 2​n​(t+v)​h​(2​h+3​m+2​k)+4​N​(t+v)2​h+2​v​h​d+2​v​h22n(t+v)h(2h+3m+2k)+4N(t+v)^{2}h+2vhd+2vh^{2}",
+            "For SAISA, visual tokens are multiplied only by key and value matrices, and the key-value sequence length is vv in the attention operation. Therefore, the FLOPs of the LLM can be estimated by 2​n​t​h​(2​h+3​m+2​k)+4​n​v​h​k+4​n​t​(t+v)​h2nth(2h+3m+2k)+4nvhk+4nt(t+v)h. The FLOPs of the projector are 2​n​v​h​d+2​n​v​h22nvhd+2nvh^{2}. The total FLOPs are 2​n​t​h​(2​h+3​m+2​k)+4​n​v​h​k+4​n​t​(t+v)​h+2​n​v​h​d+2​n​v​h22nth(2h+3m+2k)+4nvhk+4nt(t+v)h+2nvhd+2nvh^{2}.",
+            "Figure 4(b) compares the FLOPs of SAISA and LLaVA-1.5 with different numbers of tokens, based on Vicuna-7B-v1.5 [11]. SAISA achieves a higher computational efficiency than LLAVA-1.5 when processing the same numbers of tokens. For example, SAISA’s FLOPs are only 34% of LLaVA-1.5’s when using CLIP-ViT-L/14-336 [46] as visual encoder and the number of text tokens is 64."
+          ]
+        }
+      ]
+    },
+    "5 Experiments": {
+      "paragraphs": [
+        "In this section, we conduct comprehensive experiments to compare SAISA with existing MLLMs. Furthermore, we perform a series of ablation experiments to further validate the effectiveness of the SAISA architecture."
+      ],
+      "subsections": [
+        {
+          "title": "5.1 Setups",
+          "paragraphs": [
+            "To make an apple-to-apple comparison between SAISA and LLaVA-1.5 [34], we use the same settings as LLaVA-1.5. Specifically, we employ Vicuna-7B-v1.5 [11] as the default LLM and CLIP-ViT-L/14-336 [46] as the default visual encoder.",
+            "We utilize the same training data as LLaVA-1.5. During pre-training, we adopt the pre-train dataset with 558k samples from LLaVA [33]. This stage takes around 1.5 hours on 8 A800 (80G) GPUs. During fine-tuning, we use the mixture instruction-following dataset from LLaVA-1.5. The dataset contains 665k samples from LLaVA-Instruct [33], ShareGPT [50], VQAv2, GQA [18], OK-VQA [41], OCR-VQA [43], A-OKVQA [48], TextCaps [51], RefCOCO [24, 40], and Visual Genome [25]. This stage takes around 8.5 hours on 8 A800 (80G) GPUs. The total training budget of SAISA is approximately 80 GPU hours."
+          ]
+        },
+        {
+          "title": "Model Configuration.",
+          "paragraphs": [
+            "To make an apple-to-apple comparison between SAISA and LLaVA-1.5 [34], we use the same settings as LLaVA-1.5. Specifically, we employ Vicuna-7B-v1.5 [11] as the default LLM and CLIP-ViT-L/14-336 [46] as the default visual encoder."
+          ]
+        },
+        {
+          "title": "Training Details.",
+          "paragraphs": [
+            "We utilize the same training data as LLaVA-1.5. During pre-training, we adopt the pre-train dataset with 558k samples from LLaVA [33]. This stage takes around 1.5 hours on 8 A800 (80G) GPUs. During fine-tuning, we use the mixture instruction-following dataset from LLaVA-1.5. The dataset contains 665k samples from LLaVA-Instruct [33], ShareGPT [50], VQAv2, GQA [18], OK-VQA [41], OCR-VQA [43], A-OKVQA [48], TextCaps [51], RefCOCO [24, 40], and Visual Genome [25]. This stage takes around 8.5 hours on 8 A800 (80G) GPUs. The total training budget of SAISA is approximately 80 GPU hours."
+          ]
+        },
+        {
+          "title": "5.2 Main Results",
+          "paragraphs": [
+            "The performance on benchmarks is shown in Table 2, Table 3 and Table 5, and the result of the inference latency test is shown in Table 6.",
+            "We evaluate SAISA on a range of benchmarks, including: (1) comprehensive benchmarks for instruction-following MLLMs such as MMMU [58], MME [15], MMBench [35], MMBench-CN [35], and SEED-bench [27]; (2) hallucination benchmark such as POPE [30], which evaluates MLLMs’ degree of hallucination on three subsets: random, popular, and adversarial; (3) general visual question answering benchmarks such as GQA [18] and ScienceQA IMG [37]; (4) fine-grained visual question answering benchmarks such as OK-VQA [41] and TextVQA [52], OK-VQA requires fine-grained image understanding and spatial understanding, and TextVQA is an OCR-related benchmark; (5) vision-centric MLLM benchmarks such as MMVP [54] and CV-Bench [53]. In the inference latency test, the latency is reported as the time of LLM prefilling during inference with varying numbers of text tokens. Table 2 shows the comparison on the comprehensive benchmarks for instruct-following MLLMs. SAISA outperforms BLIP-2 [29], InstructBLIP [12], MiniGPT-4 [60], MiniGPT-v2[6], Otter [28], Shikra [7], and IDEFICS [19] utilizing LLama-7B and LLama-65B [55] across all these benchmarks. Compared to Qwen-VL-Chat [5] trained on data with 1.4B samples, SAISA performs better on 4 out of 5 benchmarks. Compared to LLaVA-1.5 [34], SAISA performs better on 3 out of 5 benchmarks. Table 3 shows the comparison on the hallucination and visual question answering benchmarks, and Table 5 shows the comparison on vision-centric MLLM benchmarks. Since most previous models do not evaluate performance on vision-centric MLLM benchmarks, we compare SAISA with LLaVA-1.5. SAISA achieves the best overall performance compared to other baseline MLLMs, and strikes the optimal balance between effectiveness and efficiency."
+          ]
+        },
+        {
+          "title": "5.3 Ablation Study",
+          "paragraphs": [
+            "As presented in Table 4, we perform multiple ablation experiments on both LLMs and visual encoders to evaluate the robustness of SAISA. We tune a set of SAISA models using a variety of LLM backbones and visual encoders. The ablated LLMs include Vicuna-7B [11] and two LLMs using grouped query attention (GQA) [1], such as Mistral-7B [22] and Llama3-8B [42]. The ablated visual encoders include two ViT-based [14] visual backbones such as CLIP-ViT-L/14-336 [46] and SigLIP-ViT-SO400M/14-384 [59], and a ConvNeXt-based [36] visual encoder such as ConvNeXt-XXL-1024 from OpenCLIP [20, 47]. The experimental results demonstrate that SAISA consistently achieves superior performance to LLaVA-1.5 across different LLM backbones and visual encoders, while dramatically reducing computational costs.",
+            "As shown in Table 7, we conduct an ablation study to investigate the effects of SAISA’s pre-training strategies. We tune a SAISA model where the full projector (32 MLPs) is tunable during pre-training, and the other settings keep the same as the original SAISA. With more randomly initialized parameters, we observe a performance drop when pre-training the full projector. We attribute this drop to the small amount of pre-training data with only 558k samples. The ablation study demonstrates the effectiveness of our pre-training strategy, which provides a robust initialization for the subsequent fine-tuning stage.",
+            "Previous works find that replacing linear projection with MLP projection improves performance in MLLM [34] and self-supervised learning [9, 10]. We conduct an experiment to investigate the impact of projector designs in SAISA. We tune a model under the same configuration as the original SAISA model but replace the MLPs in the projector with linear layers. Table 8 shows that the model with MLPs in the projector performs better than the model with linear layers, which is consistent with the finding of the previous study [34]. Notably, we note that even the SAISA model with linear layers achieves comparable performance to LLaVA-1.5 with MLP projection. This observation provides additional evidence for the effectiveness of SAISA."
+          ]
+        },
+        {
+          "title": "Ablation on LLMs and Visual Encoders.",
+          "paragraphs": [
+            "As presented in Table 4, we perform multiple ablation experiments on both LLMs and visual encoders to evaluate the robustness of SAISA. We tune a set of SAISA models using a variety of LLM backbones and visual encoders. The ablated LLMs include Vicuna-7B [11] and two LLMs using grouped query attention (GQA) [1], such as Mistral-7B [22] and Llama3-8B [42]. The ablated visual encoders include two ViT-based [14] visual backbones such as CLIP-ViT-L/14-336 [46] and SigLIP-ViT-SO400M/14-384 [59], and a ConvNeXt-based [36] visual encoder such as ConvNeXt-XXL-1024 from OpenCLIP [20, 47]. The experimental results demonstrate that SAISA consistently achieves superior performance to LLaVA-1.5 across different LLM backbones and visual encoders, while dramatically reducing computational costs."
+          ]
+        },
+        {
+          "title": "Ablation on Pre-training Strategies.",
+          "paragraphs": [
+            "As shown in Table 7, we conduct an ablation study to investigate the effects of SAISA’s pre-training strategies. We tune a SAISA model where the full projector (32 MLPs) is tunable during pre-training, and the other settings keep the same as the original SAISA. With more randomly initialized parameters, we observe a performance drop when pre-training the full projector. We attribute this drop to the small amount of pre-training data with only 558k samples. The ablation study demonstrates the effectiveness of our pre-training strategy, which provides a robust initialization for the subsequent fine-tuning stage."
+          ]
+        },
+        {
+          "title": "Ablation on Projector Designs.",
+          "paragraphs": [
+            "Previous works find that replacing linear projection with MLP projection improves performance in MLLM [34] and self-supervised learning [9, 10]. We conduct an experiment to investigate the impact of projector designs in SAISA. We tune a model under the same configuration as the original SAISA model but replace the MLPs in the projector with linear layers. Table 8 shows that the model with MLPs in the projector performs better than the model with linear layers, which is consistent with the finding of the previous study [34]. Notably, we note that even the SAISA model with linear layers achieves comparable performance to LLaVA-1.5 with MLP projection. This observation provides additional evidence for the effectiveness of SAISA."
+          ]
+        }
+      ]
+    },
+    "6 Related Work": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "6.1 Multimodal Large Language Models",
+          "paragraphs": [
+            "Multimodal Large Language Models (MLLMs) are typically built on Large Language Models (LLMs) [11, 42, 22, 55, 56, 4] by aligning visual features generated by visual encoders [46, 59, 20, 36] with the LLMs. There are two most common architectures for this purpose, embedding space alignment and cross-attention space alignment. For embedding space alignment [33, 34, 29, 12, 5, 6, 60], MLLMs align visual features with the text token embedding space via a projector and concatenate the visual and text tokens as the LLM input. These models exhibit efficiency during training due to the small number of new parameters but suffer from inference inefficiency because of the long token sequence. For cross-attention space alignment [2, 26, 3], MLLMs introduce new cross-attention blocks for the interaction between text and visual modalities, and align the visual features with the cross-attention spaces. These models achieve efficiency during inference by eliminating the need to unroll visual tokens, but require a substantial amount of data to train the new parameters. In this paper, we propose SAISA (Self-Attention Input Space Alignment), an architecture for building MLLMs with efficiency during both training and inference."
+          ]
+        },
+        {
+          "title": "6.2 Efficiency Optimization for MLLMs",
+          "paragraphs": [
+            "To reduce the computational cost of MLLMs, previous works mainly fall into two categories: model architecture and inference stage token reduction. For model architecture, Qwen-VL-Chat [5], LLaMA-VID [31], BLIP series [29, 12] and MiniGPT-4 [60] utilize attention-based mechanisms to down-sample visual tokens before they are fed into LLMs. MemVP [23] and VLoRA [38] integrate visual tokens into LLMs’ weights through parameter-efficient fine-tuning (PEFT) such as LoRA [17], but overlook fine-grained visual information and retain limited spatial understanding. EE-MLLM [39] introduces aligners to update visual tokens in the MLLM, but the aligners still involve substantial computational overhead. For inference stage token reduction, FastV [8] and LLaVA-PruMerge [49] focus on certain ”anchor” tokens and prune the other visual tokens. VoCo-LLaMA [57] compresses vision tokens into compressed tokens. In this paper, we investigate redundancy within the LLM architecture of the current mainstream MLLM [34] and propose SAISA, which eliminates redundant computations. SAISA achieves efficiency and maintains fine-grained visual understanding by preserving the original number of visual tokens. Notably, SAISA is orthogonal to and compatible with most previous methods [21, 31, 29, 8, 49, 57, 5, 12, 60]."
+          ]
+        }
+      ]
+    },
+    "7 Conclusion": {
+      "paragraphs": [
+        "In this paper, we take a step towards developing multimodal large language models (MLLMs) with efficiency during both training and inference. To achieve this, we conduct a study of current MLLM architectures and find the key factors for building efficient MLLMs. By integrating these factors and gradually reducing redundant computations, we propose SAISA, an effective and efficient architecture for MLLMs. SAISA demonstrates the ability to dramatically reduce the computational costs of existing MLLMs without compromising their capabilities."
+      ],
+      "subsections": [
+        {
+          "title": "Limitations.",
+          "paragraphs": [
+            "Despite the promising performance and efficiency of SAISA, several limitations must be acknowledged. First, SAISA employs a projector with distinct MLPs for each layer of the LLM backbone for simplicity, introducing a number of parameters that cannot be ignored. The development of a more efficient and effective projector could facilitate the advancement of more powerful MLLMs. Second, SAISA is not yet capable of processing more complicated visual information, such as high-resolution images, multiple images, interleaved text-and-image content, and videos. Third, SAISA is not yet capable of processing more modalities such as audio. Finally, SAISA’s capabilities are limited in following complex real-world instructions and solving problems in specific domains such as medicine. These capabilities could be improved by scaling up pre-training and fine-tuning with high-quality, domain-specific data. "
+          ]
+        }
+      ]
+    }
+  },
+  "appendices": {},
+  "references": [
+    "Ainslie et al. [2023] Joshua Ainslie, James Lee-Thorp, Michiel de Jong, Yury Zemlyanskiy, Federico Lebrón, and Sumit Sanghai. Gqa: Training generalized multi-query transformer models from multi-head checkpoints, 2023.",
+    "Alayrac et al. [2022] Jean-Baptiste Alayrac, Jeff Donahue, Pauline Luc, Antoine Miech, Iain Barr, Yana Hasson, Karel Lenc, Arthur Mensch, Katie Millican, Malcolm Reynolds, Roman Ring, Eliza Rutherford, Serkan Cabi, Tengda Han, Zhitao Gong, Sina Samangooei, Marianne Monteiro, Jacob Menick, Sebastian Borgeaud, Andrew Brock, Aida Nematzadeh, Sahand Sharifzadeh, Mikolaj Binkowski, Ricardo Barreira, Oriol Vinyals, Andrew Zisserman, and Karen Simonyan. Flamingo: a visual language model for few-shot learning, 2022.",
+    "Awadalla et al. [2023] Anas Awadalla, Irena Gao, Josh Gardner, Jack Hessel, Yusuf Hanafy, Wanrong Zhu, Kalyani Marathe, Yonatan Bitton, Samir Gadre, Shiori Sagawa, Jenia Jitsev, Simon Kornblith, Pang Wei Koh, Gabriel Ilharco, Mitchell Wortsman, and Ludwig Schmidt. Openflamingo: An open-source framework for training large autoregressive vision-language models, 2023.",
+    "Bai et al. [2023a] Jinze Bai, Shuai Bai, Yunfei Chu, Zeyu Cui, Kai Dang, Xiaodong Deng, Yang Fan, Wenbin Ge, Yu Han, Fei Huang, Binyuan Hui, Luo Ji, Mei Li, Junyang Lin, Runji Lin, Dayiheng Liu, Gao Liu, Chengqiang Lu, Keming Lu, Jianxin Ma, Rui Men, Xingzhang Ren, Xuancheng Ren, Chuanqi Tan, Sinan Tan, Jianhong Tu, Peng Wang, Shijie Wang, Wei Wang, Shengguang Wu, Benfeng Xu, Jin Xu, An Yang, Hao Yang, Jian Yang, Shusheng Yang, Yang Yao, Bowen Yu, Hongyi Yuan, Zheng Yuan, Jianwei Zhang, Xingxuan Zhang, Yichang Zhang, Zhenru Zhang, Chang Zhou, Jingren Zhou, Xiaohuan Zhou, and Tianhang Zhu. Qwen technical report, 2023a.",
+    "Bai et al. [2023b] Jinze Bai, Shuai Bai, Shusheng Yang, Shijie Wang, Sinan Tan, Peng Wang, Junyang Lin, Chang Zhou, and Jingren Zhou. Qwen-vl: A versatile vision-language model for understanding, localization, text reading, and beyond. arXiv preprint arXiv:2308.12966, 2023b.",
+    "Chen et al. [2023a] Jun Chen, Deyao Zhu, Xiaoqian Shen, Xiang Li, Zechun Liu, Pengchuan Zhang, Raghuraman Krishnamoorthi, Vikas Chandra, Yunyang Xiong, and Mohamed Elhoseiny. Minigpt-v2: large language model as a unified interface for vision-language multi-task learning, 2023a.",
+    "Chen et al. [2023b] Keqin Chen, Zhao Zhang, Weili Zeng, Richong Zhang, Feng Zhu, and Rui Zhao. Shikra: Unleashing multimodal llm’s referential dialogue magic, 2023b.",
+    "Chen et al. [2024] Liang Chen, Haozhe Zhao, Tianyu Liu, Shuai Bai, Junyang Lin, Chang Zhou, and Baobao Chang. An image is worth 1/2 tokens after layer 2: Plug-and-play inference acceleration for large vision-language models, 2024.",
+    "Chen et al. [2020a] Ting Chen, Simon Kornblith, Mohammad Norouzi, and Geoffrey Hinton. A simple framework for contrastive learning of visual representations, 2020a.",
+    "Chen et al. [2020b] Xinlei Chen, Haoqi Fan, Ross Girshick, and Kaiming He. Improved baselines with momentum contrastive learning, 2020b.",
+    "Chiang et al. [2023] Wei-Lin Chiang, Zhuohan Li, Zi Lin, Ying Sheng, Zhanghao Wu, Hao Zhang, Lianmin Zheng, Siyuan Zhuang, Yonghao Zhuang, Joseph E. Gonzalez, Ion Stoica, and Eric P. Xing. Vicuna: An open-source chatbot impressing gpt-4 with 90%* chatgpt quality, 2023.",
+    "Dai et al. [2023] Wenliang Dai, Junnan Li, Dongxu Li, Anthony Meng Huat Tiong, Junqi Zhao, Weisheng Wang, Boyang Li, Pascale Fung, and Steven Hoi. Instructblip: Towards general-purpose vision-language models with instruction tuning, 2023.",
+    "Dai et al. [2024] Wenliang Dai, Nayeon Lee, Boxin Wang, Zhuolin Yang, Zihan Liu, Jon Barker, Tuomas Rintamaki, Mohammad Shoeybi, Bryan Catanzaro, and Wei Ping. Nvlm: Open frontier-class multimodal llms, 2024.",
+    "Dosovitskiy et al. [2021] Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, Dirk Weissenborn, Xiaohua Zhai, Thomas Unterthiner, Mostafa Dehghani, Matthias Minderer, Georg Heigold, Sylvain Gelly, Jakob Uszkoreit, and Neil Houlsby. An image is worth 16x16 words: Transformers for image recognition at scale, 2021.",
+    "Fu et al. [2024] Chaoyou Fu, Peixian Chen, Yunhang Shen, Yulei Qin, Mengdan Zhang, Xu Lin, Jinrui Yang, Xiawu Zheng, Ke Li, Xing Sun, Yunsheng Wu, and Rongrong Ji. Mme: A comprehensive evaluation benchmark for multimodal large language models, 2024.",
+    "Hendrycks and Gimpel [2023] Dan Hendrycks and Kevin Gimpel. Gaussian error linear units (gelus), 2023.",
+    "Hu et al. [2021] Edward J. Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and Weizhu Chen. Lora: Low-rank adaptation of large language models, 2021.",
+    "Hudson and Manning [2019] Drew A. Hudson and Christopher D. Manning. Gqa: A new dataset for real-world visual reasoning and compositional question answering, 2019.",
+    "IDEFICS [2023] IDEFICS. Introducing idefics: An open reproduction of state-of-the-art visual language model. https://huggingface.co/blog/idefics, 2023.",
+    "Ilharco et al. [2021] Gabriel Ilharco, Mitchell Wortsman, Ross Wightman, Cade Gordon, Nicholas Carlini, Rohan Taori, Achal Dave, Vaishaal Shankar, Hongseok Namkoong, John Miller, Hannaneh Hajishirzi, Ali Farhadi, and Ludwig Schmidt. Openclip, 2021. If you use this software, please cite it as below.",
+    "Jaegle et al. [2021] Andrew Jaegle, Felix Gimeno, Andrew Brock, Andrew Zisserman, Oriol Vinyals, and Joao Carreira. Perceiver: General perception with iterative attention, 2021.",
+    "Jiang et al. [2023] Albert Q. Jiang, Alexandre Sablayrolles, Arthur Mensch, Chris Bamford, Devendra Singh Chaplot, Diego de las Casas, Florian Bressand, Gianna Lengyel, Guillaume Lample, Lucile Saulnier, Lélio Renard Lavaud, Marie-Anne Lachaux, Pierre Stock, Teven Le Scao, Thibaut Lavril, Thomas Wang, Timothée Lacroix, and William El Sayed. Mistral 7b, 2023.",
+    "Jie et al. [2024] Shibo Jie, Yehui Tang, Ning Ding, Zhi-Hong Deng, Kai Han, and Yunhe Wang. Memory-space visual prompting for efficient vision-language fine-tuning, 2024.",
+    "Kazemzadeh et al. [2014] Sahar Kazemzadeh, Vicente Ordonez, Mark Matten, and Tamara Berg. Referitgame: Referring to objects in photographs of natural scenes, 2014.",
+    "Krishna et al. [2016] Ranjay Krishna, Yuke Zhu, Oliver Groth, Justin Johnson, Kenji Hata, Joshua Kravitz, Stephanie Chen, Yannis Kalantidis, Li-Jia Li, David A. Shamma, Michael S. Bernstein, and Fei-Fei Li. Visual genome: Connecting language and vision using crowdsourced dense image annotations, 2016.",
+    "LAION [2023] LAION. Openflamingo v2: New models and enhanced training setup. https://laion.ai/blog/open-flamingo-v2/, 2023. Accessed: 2024-05-26.",
+    "Li et al. [2023a] Bohao Li, Rui Wang, Guangzhi Wang, Yuying Ge, Yixiao Ge, and Ying Shan. Seed-bench: Benchmarking multimodal llms with generative comprehension, 2023a.",
+    "Li et al. [2023b] Bo Li, Yuanhan Zhang, Liangyu Chen, Jinghao Wang, Jingkang Yang, and Ziwei Liu. Otter: A multi-modal model with in-context instruction tuning, 2023b.",
+    "Li et al. [2023c] Junnan Li, Dongxu Li, Silvio Savarese, and Steven Hoi. Blip-2: Bootstrapping language-image pre-training with frozen image encoders and large language models, 2023c.",
+    "Li et al. [2023d] Yifan Li, Yifan Du, Kun Zhou, Jinpeng Wang, Wayne Xin Zhao, and Ji-Rong Wen. Evaluating object hallucination in large vision-language models, 2023d.",
+    "Li et al. [2023e] Yanwei Li, Chengyao Wang, and Jiaya Jia. Llama-vid: An image is worth 2 tokens in large language models, 2023e.",
+    "Lin et al. [2023] Ziyi Lin, Chris Liu, Renrui Zhang, Peng Gao, Longtian Qiu, Han Xiao, Han Qiu, Chen Lin, Wenqi Shao, Keqin Chen, Jiaming Han, Siyuan Huang, Yichi Zhang, Xuming He, Hongsheng Li, and Yu Qiao. Sphinx: The joint mixing of weights, tasks, and visual embeddings for multi-modal large language models, 2023.",
+    "Liu et al. [2023] Haotian Liu, Chunyuan Li, Qingyang Wu, and Yong Jae Lee. Visual instruction tuning, 2023.",
+    "Liu et al. [2024a] Haotian Liu, Chunyuan Li, Yuheng Li, and Yong Jae Lee. Improved baselines with visual instruction tuning, 2024a.",
+    "Liu et al. [2024b] Yuan Liu, Haodong Duan, Yuanhan Zhang, Bo Li, Songyang Zhang, Wangbo Zhao, Yike Yuan, Jiaqi Wang, Conghui He, Ziwei Liu, Kai Chen, and Dahua Lin. Mmbench: Is your multi-modal model an all-around player?, 2024b.",
+    "Liu et al. [2022] Zhuang Liu, Hanzi Mao, Chao-Yuan Wu, Christoph Feichtenhofer, Trevor Darrell, and Saining Xie. A convnet for the 2020s, 2022.",
+    "Lu et al. [2022] Pan Lu, Swaroop Mishra, Tony Xia, Liang Qiu, Kai-Wei Chang, Song-Chun Zhu, Oyvind Tafjord, Peter Clark, and Ashwin Kalyan. Learn to explain: Multimodal reasoning via thought chains for science question answering, 2022.",
+    "Ma et al. [2024a] Feipeng Ma, Hongwei Xue, Guangting Wang, Yizhou Zhou, Fengyun Rao, Shilin Yan, Yueyi Zhang, Siying Wu, Mike Zheng Shou, and Xiaoyan Sun. Visual perception by large language model’s weights, 2024a.",
+    "Ma et al. [2024b] Feipeng Ma, Yizhou Zhou, Hebei Li, Zilong He, Siying Wu, Fengyun Rao, Yueyi Zhang, and Xiaoyan Sun. Ee-mllm: A data-efficient and compute-efficient multimodal large language model, 2024b.",
+    "Mao et al. [2016] Junhua Mao, Jonathan Huang, Alexander Toshev, Oana Camburu, Alan Yuille, and Kevin Murphy. Generation and comprehension of unambiguous object descriptions, 2016.",
+    "Marino et al. [2019] Kenneth Marino, Mohammad Rastegari, Ali Farhadi, and Roozbeh Mottaghi. Ok-vqa: A visual question answering benchmark requiring external knowledge, 2019.",
+    "Meta [2024] Meta. Introducing meta llama 3: The most capable openly available llm to date. https://ai.meta.com/blog/meta-llama-3/, 2024. Accessed: 2024-05-26.",
+    "Mishra et al. [2019] Anand Mishra, Shashank Shekhar, Ajeet Kumar Singh, and Anirban Chakraborty. Ocr-vqa: Visual question answering by reading text in images, 2019.",
+    "OpenAI [2023] OpenAI. Gpt-4v(ision) system card. https://cdn.openai.com/papers/GPTV_System_Card.pdf, 2023.",
+    "OpenAI [2024] OpenAI. Gpt-4 technical report, 2024.",
+    "Radford et al. [2021] Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh, Sandhini Agarwal, Girish Sastry, Amanda Askell, Pamela Mishkin, Jack Clark, Gretchen Krueger, and Ilya Sutskever. Learning transferable visual models from natural language supervision, 2021.",
+    "Schuhmann et al. [2022] Christoph Schuhmann, Romain Beaumont, Richard Vencu, Cade Gordon, Ross Wightman, Mehdi Cherti, Theo Coombes, Aarush Katta, Clayton Mullis, Mitchell Wortsman, Patrick Schramowski, Srivatsa Kundurthy, Katherine Crowson, Ludwig Schmidt, Robert Kaczmarczyk, and Jenia Jitsev. Laion-5b: An open large-scale dataset for training next generation image-text models, 2022.",
+    "Schwenk et al. [2022] Dustin Schwenk, Apoorv Khandelwal, Christopher Clark, Kenneth Marino, and Roozbeh Mottaghi. A-okvqa: A benchmark for visual question answering using world knowledge, 2022.",
+    "Shang et al. [2024] Yuzhang Shang, Mu Cai, Bingxin Xu, Yong Jae Lee, and Yan Yan. Llava-prumerge: Adaptive token reduction for efficient large multimodal models, 2024.",
+    "ShareGPT [2023] ShareGPT. https://sharegpt.com/, 2023.",
+    "Sidorov et al. [2020] Oleksii Sidorov, Ronghang Hu, Marcus Rohrbach, and Amanpreet Singh. Textcaps: a dataset for image captioning with reading comprehension, 2020.",
+    "Singh et al. [2019] Amanpreet Singh, Vivek Natarajan, Meet Shah, Yu Jiang, Xinlei Chen, Dhruv Batra, Devi Parikh, and Marcus Rohrbach. Towards vqa models that can read, 2019.",
+    "Tong et al. [2024a] Shengbang Tong, Ellis Brown, Penghao Wu, Sanghyun Woo, Manoj Middepogu, Sai Charitha Akula, Jihan Yang, Shusheng Yang, Adithya Iyer, Xichen Pan, Ziteng Wang, Rob Fergus, Yann LeCun, and Saining Xie. Cambrian-1: A fully open, vision-centric exploration of multimodal llms, 2024a.",
+    "Tong et al. [2024b] Shengbang Tong, Zhuang Liu, Yuexiang Zhai, Yi Ma, Yann LeCun, and Saining Xie. Eyes wide shut? exploring the visual shortcomings of multimodal llms, 2024b.",
+    "Touvron et al. [2023a] Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier Martinet, Marie-Anne Lachaux, Timothée Lacroix, Baptiste Rozière, Naman Goyal, Eric Hambro, Faisal Azhar, Aurelien Rodriguez, Armand Joulin, Edouard Grave, and Guillaume Lample. Llama: Open and efficient foundation language models, 2023a.",
+    "Touvron et al. [2023b] Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, Dan Bikel, Lukas Blecher, Cristian Canton Ferrer, Moya Chen, Guillem Cucurull, David Esiobu, Jude Fernandes, Jeremy Fu, Wenyin Fu, Brian Fuller, Cynthia Gao, Vedanuj Goswami, Naman Goyal, Anthony Hartshorn, Saghar Hosseini, Rui Hou, Hakan Inan, Marcin Kardas, Viktor Kerkez, Madian Khabsa, Isabel Kloumann, Artem Korenev, Punit Singh Koura, Marie-Anne Lachaux, Thibaut Lavril, Jenya Lee, Diana Liskovich, Yinghai Lu, Yuning Mao, Xavier Martinet, Todor Mihaylov, Pushkar Mishra, Igor Molybog, Yixin Nie, Andrew Poulton, Jeremy Reizenstein, Rashi Rungta, Kalyan Saladi, Alan Schelten, Ruan Silva, Eric Michael Smith, Ranjan Subramanian, Xiaoqing Ellen Tan, Binh Tang, Ross Taylor, Adina Williams, Jian Xiang Kuan, Puxin Xu, Zheng Yan, Iliyan Zarov, Yuchen Zhang, Angela Fan, Melanie Kambadur, Sharan Narang, Aurelien Rodriguez, Robert Stojnic, Sergey Edunov, and Thomas Scialom. Llama 2: Open foundation and fine-tuned chat models, 2023b.",
+    "Ye et al. [2024] Xubing Ye, Yukang Gan, Xiaoke Huang, Yixiao Ge, Ying Shan, and Yansong Tang. Voco-llama: Towards vision compression with large language models, 2024.",
+    "Yue et al. [2024] Xiang Yue, Yuansheng Ni, Kai Zhang, Tianyu Zheng, Ruoqi Liu, Ge Zhang, Samuel Stevens, Dongfu Jiang, Weiming Ren, Yuxuan Sun, Cong Wei, Botao Yu, Ruibin Yuan, Renliang Sun, Ming Yin, Boyuan Zheng, Zhenzhu Yang, Yibo Liu, Wenhao Huang, Huan Sun, Yu Su, and Wenhu Chen. Mmmu: A massive multi-discipline multimodal understanding and reasoning benchmark for expert agi, 2024.",
+    "Zhai et al. [2023] Xiaohua Zhai, Basil Mustafa, Alexander Kolesnikov, and Lucas Beyer. Sigmoid loss for language image pre-training, 2023.",
+    "Zhu et al. [2023] Deyao Zhu, Jun Chen, Xiaoqian Shen, Xiang Li, and Mohamed Elhoseiny. Minigpt-4: Enhancing vision-language understanding with advanced large language models, 2023."
+  ]
+}

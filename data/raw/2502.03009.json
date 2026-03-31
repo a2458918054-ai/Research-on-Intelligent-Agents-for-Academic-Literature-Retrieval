@@ -1,0 +1,433 @@
+{
+  "title": "Scaling Laws for Upcycling Mixture-of-Experts Language Models",
+  "authors": "Seng Pei Liew,  \nTakuya Kato,  \nSho TakaseSB IntuitionsTokyo, Japansengpei.liew@sbintuitions.co.jp",
+  "abstract": "Pretraining large language models (LLMs) is resource-intensive, often requiring months of training time even with high-end GPU clusters. There are two approaches of mitigating such computational demands: reusing smaller models to train larger ones (upcycling), and training computationally efficient models like mixture-of-experts (MoE). In this paper, we study the upcycling of LLMs to MoE models, of which the scaling behavior remains underexplored. Through extensive experiments, we identify empirical scaling laws that describe how performance depends on dataset size and model configuration. Particularly, we show that, while scaling these factors improves performance, there is a novel interaction term between the dense and upcycled training dataset that limits the efficiency of upcycling at large computational budgets. Based on these findings, we provide guidance to scale upcycling, and establish conditions under which upcycling outperforms from-scratch trainings within budget constraints.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Large-scale neural network architectures, such as dense transformers (Vaswani et al., 2017), have seen remarkable success across a wide range of tasks, particularly achieving human-level capabilities in natural language processing (Achiam et al., 2023). However, they often demand an enormous amount of computation, imposing challenges of computational efficiency and scalability. Sparse models like mixture-of-experts (MoE) architectures (Shazeer et al., 2017; Lepikhin et al., 2020), have emerged as an alternative achieving better efficiency-performance trade-off via partial activation (routing) of neural parameters when processing the input. Even so, MoE still requires substantial compute power to reach its full potential (Wei et al., 2024; Dai et al., 2024; Yang et al., 2024).",
+        "One direction to further accelerate training convergence is leveraging smaller pretrained models to guide the training of larger MoE models. Komatsuzaki et al. (2022) propose upcycling, which reuses the dense checkpoint to continued pretrain the upcycled MoE. The MoE is expected to specialize and optimize routing rapidly by leveraging the pretrained dense model weights.",
+        "Despite the promise of efficient MoE training via upcycling, the effectiveness and limitations of this technique remain unclear. While some (Wei et al., 2024; He et al., 2024) have already adopted it to training large-scale MoEs, Muennighoff et al. (2024) reported negative results where upcycling can slow down training convergence. We believe these seemingly contradictory conclusions are due to insufficient comprehensive studies and assessments. There is also a lack of guidance on how and when to upcycle MoE, hampering a wider adoption of this technique.",
+        "In this paper, we seek to better understand large language model’s (LLM) upcycling to MoE via a series of controlled experiments, spanning up to a few hundred billion (B) training tokens and models up to 7B total parameters. Specifically, we uncover precise power-law scalings for the language modeling performance (cross-entropy loss) with respect to training dataset size (for both dense and upcycled MoE training), and the model configuration, including the total number of parameters (model size). Building on these results, we provide a framework for assessing when upcycling offers advantages over from-scratch training and how performance gains depend on dataset size and model configuration.",
+        "Main results. The major technical findings of this paper are summarized below. Let D1D_{1}, D2D_{2} be the number of tokens used to train the dense model and upcycled MoE respectively. Denote the cross-entropy test loss of the upcycled MoE by LL. We find that the upcycled MoE satisfies the following relation for a wide range of model configuration:",
+        "where αi\\alpha_{i}’s (i=1,2,3i=1,2,3) are positive scaling exponents, and A,EA,E are constants independent of D1,D2D_{1},D_{2}.",
+        "Moreover, the empirical performance has a power-law scaling with respect to the model size as well as its sparsity (Equation 11). These allow us to quantify the effectiveness and shortcomings of upcycling. Particularly, our empirical results suggest that :",
+        "• Increasing D1D_{1} (sunk cost) reduces the initial losses of the upcycled MoE but results in slower training progress with D2D_{2} (upcycled MoE tokens).",
+        "• Upcycled MoE benefits from increased sparsity and active parameters without noticeable trade-offs. See the left panel in Figure 1.",
+        "• We propose a joint scaling law of dataset and model sizes for Mixtral-like MoE (Jiang et al., 2024) (Equation 12). While we find that the advantage of upcycling diminishes with increasing sunk cost and dense model size (N1N_{1}), upcycling remains effective when D2D_{2} are limited.",
+        "• Particularly, upcycling is beneficial when D2D_{2} remains below a certain threshold, where the pretrained dense model can still accelerate convergence. However, beyond this threshold, from-scratch training of MoE becomes more efficient. The threshold D∗D^{*} is See the right panel of Figure 1.",
+        "Notations. We summarize main notations used in the paper.",
+        "• LL: cross-entropy loss in nat",
+        "• DD: dataset size in token",
+        "• NN: non-embedding model size",
+        "• A,B,FA,B,F: scaling factors of the power law, independent of the variable under consideration",
+        "• EE: irreducible loss of the power law, independent of the variable under consideration",
+        "• α,β,γ\\alpha,\\beta,\\gamma: scaling exponents of the power law, independent of the variable under consideration"
+      ],
+      "subsections": []
+    },
+    "2 Preliminaries": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "2.1 Model details",
+          "paragraphs": [
+            "Dense model. Our dense models are decoder-only transformers pretrained with an autoregressive language modeling objective. The architecture is most similar to Llama2 models (Touvron et al., 2023), incorporating advances such as SwiGLU (Shazeer, 2020) and rotary position embedding (Su et al., 2024). We use the Llama tokenizer of vocabulary size 32,000.",
+            "Mixture-of-Experts. The MoE model in consideration is the same as our dense model, but with all MLP blocks replaced by multiple blocks (experts) with the same configuration (Fedus et al., 2022). A router consisting of a single-layer MLP outputs the routing probability of the tokens to the experts.",
+            "The model configuration has two key parameters: nexpertn_{\\rm expert}, representing the number of experts, and nTopKn_{\\rm TopK}, which specifies how many of the highest-probability experts each token is routed to at each layer. The output of the experts is linearly combined and passed to the next layer.",
+            "The MoE and its corresponding dense model with model size NdenseN_{\\rm dense}, consisting of nexpertn_{\\rm expert} experts, is denoted with a prefix ”nexpertn_{\\rm expert}”, e.g., 8x1B where the dense correspondent is of 1B in model size. We refer to the number of non-embedding model parameters (that is, total number of parameters minus the number of embedding and language modeling head parameters) used for computation per token as the number of active parameters.",
+            "Upcycling. The upcycling scenario assumes that one is given a pretrained dense model and would like to train an MoE with the same configuration but replacing the MLPs with the MoE modules (Komatsuzaki et al., 2022). By replicating the dense model’s MLP weight nexpertn_{\\rm expert} to form the experts, the knowledge from the dense model can be reused to accelerate the training of the MoE compared to training the MoE from scratch (from random parameter initialization). Other modules’ weights are copied from the dense counterparts directly, with the router’s initial weights randomized. See Figure 2 for an illustration of upcycling. We employ this technique for our study."
+          ]
+        },
+        {
+          "title": "2.2 Power-law Ansatz",
+          "paragraphs": [
+            "There is an extensive literature showing that the loss of training deep learning models has a simple power-law behavior: L=AXα+EL=\\frac{A}{X^{\\alpha}}+E, for single variable XX, including model size and dataset size (Hestness et al., 2017, 2019; Rosenfeld et al., 2019; Henighan et al., 2020). 111The actual form we assume is L=A(X+1)α+EL=\\frac{A}{(X+1)^{\\alpha}}+E such that the loss is finite at the limit X→0X\\to 0. However, since the values of XX we consider are often much larger than 1 (10610^{6} or more), we approximate it as L=AXα+EL=\\frac{A}{X^{\\alpha}}+E for notational convenience. We use this ansatz in this work.",
+            "Hoffmann et al. (2022) have shown that when training a dense transformer, the cross-entropy loss is well-described by the following ”Chinchilla” scaling law:",
+            "The first and second terms quantify the limitation of learning due to limited dataset and model sizes respectively. The scaling exponents, α\\alpha, β\\beta control how fast the loss decreases with respect to dataset and model sizes respectively. EE is a constant: it is the irreducible loss representing the inherent entropy of text. All parameters are to be fitted with experimental observations. We also assume Equation 3 for models trained from scratch."
+          ]
+        }
+      ]
+    },
+    "3 Experimental Design and Results": {
+      "paragraphs": [
+        "In this Section, we describe the design of our experiments, before presenting some of the experimental results. Additional details, including ablation studies are available in Appendix A."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Setup",
+          "paragraphs": [
+            "Dense models in consideration. We train a suite of dense models with model sizes 15M, 44M, 0.1B, 0.2B, 0.5B and 1B. The model configuration (number of layers, nlayern_{\\rm layer}, hidden dimension dmodeld_{\\rm model}, and MLP hidden dimension, dmlpd_{\\rm mlp}) used in this paper is summarized in Table LABEL:tab:config of Appendix A.",
+            "We denote N1N_{1} by the dense model’s total number of non-embedding parameters, N2N_{2} by the MoE’s total number of non-embedding active parameters, NtotalN_{\\rm total} by the MoE’s total number of non-embedding parameters. They are given by (ignoring subleading contribution proportional to dmodeld_{\\rm model})",
+            "where the attention and MLP module contribute 4​dmodel24d^{2}_{\\rm model} and 12​dmodel212d^{2}_{\\rm model} parameters respectively per layer.",
+            "Learning rate schedule. We are interested in training models with different numbers of training token budget. Previous work (Hoffmann et al., 2022) used the cosine learning rate (LR) schedule and trained separate models for each number of training token budget, which is resource-consuming. We instead employ the warmup-stable-decay (WSD) learning rate schedule (Bi et al., 2024; Hu et al., 2024), which requires only a single model sweep with a sufficiently large number of training tokens. As the LR is constant for the majority of learning, the saved intermediate model checkpoints can be reused to emulate different numbers of training token budget; the checkpoints are continued-pretrained reusing the optimizer states from the constant LR stage with a new, shorter LR schedule. This reduces substantially the number of new training runs required. In Appendix A.4, we show that the performance of dense and MoE training is on par with the usual cosine LR schedule. The maximum LR value is tuned individually for each model size and for both dense and MoE training.",
+            "Dataset. We use training dataset derived from the CommonCrawl portion of Slimpajama-DC (Shen et al., 2023), containing 368B tokens in total. The test loss is calculated from the default validation set (0.3B tokens) defined therein. In Appendix B, we train models on two different datasets (Japanese language and source code datasets) to study the scaling behavior across datasets."
+          ]
+        },
+        {
+          "title": "3.2 Upcycled Training",
+          "paragraphs": [
+            "Upcycled training is performed by first initializing the MoE with the dense pretrained models as mentioned before. Subsequently, we train the upcycled MoE with standard cross-entropy loss augmented by an auxiliary load-balancing loss with coefficient 10−310^{-3} to minimize expert’s imbalance of activation. See Appendix A.7 for ablation of the coefficient.",
+            "To this end, we obtained three sets of results in total, of which we denote by: dense training (dense model training from scratch), MoE training (MoE training from scratch), upcycled training (MoE training for D2D_{2} tokens where the dense model pretrained for D1D_{1} tokens has been reused)."
+          ]
+        },
+        {
+          "title": "3.3 Training results",
+          "paragraphs": [
+            "We show some of the resulting test loss curves of our upcycling experiments in Figure 3 (see model evaluation with standard benchmarks in Appendix A.9). Some observations can be made from the plot: The reason for (a) is function preservation. As all experts inherit the same weights from the dense model, the output of the MoE module is preserved from the dense model irrespective of the routing at initialization, and therefore the loss is preserved as well. For (b), our intuitive explanation is as follows. The duplicated experts’ weights are already close to the optimal ones when they are upcycled from an overtrained dense model. It is then harder for the experts to diversify and specialize at the MoE training stage to further lower the loss. As we will reveal soon, our proposed scaling law captures these phenomena.",
+            "(a) upcycling from a dense model with more pretrained tokens leads to lower initial losses.",
+            "(b) The more overtrained a dense model is, the smaller the rate of the final loss change of the upcycled MoE becomes (the exponent α\\alpha becomes smaller).",
+            "upcycling from a dense model with more pretrained tokens leads to lower initial losses.",
+            "The more overtrained a dense model is, the smaller the rate of the final loss change of the upcycled MoE becomes (the exponent α\\alpha becomes smaller)."
+          ]
+        }
+      ]
+    },
+    "4 Scaling Laws": {
+      "paragraphs": [
+        "Our ultimate goal is to understand the performance of upcycling with respect to various factors illustrated in Figure 2. However, simultaneously varying all these variables to investigate the scaling behavior is computationally prohibitive. We separately investigate two aspects closely related to upcycling: dataset sizes (Section 4.1) and model configuration (Section 4.2). In the next Section, we further study the joint scaling behavior of dataset and model sizes with a predetermined MoE architecture."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Scaling Law for Dataset Sizes",
+          "paragraphs": [
+            "We fix the model size while varying D1,2D_{1,2} to study the scaling behavior with respect to these variables. To determine the functional form of the scaling law, L​(D1,D2)L(D_{1},D_{2}), we require it to satisfy certain properties:",
+            "Requirement 1. L​(D1,D2)L(D_{1},D_{2}) follows the power law with respect to D2D_{2}, as shown empirically in Figure 4. This aligns with the power-law ansatz, treating upcycling as analogous to standard MoE training with dataset size D2D_{2}, initialized with dense parameters rather than random weights:",
+            "Requirement 2. As D2→0D_{2}\\to 0, the loss should reduce to the power-law scaling behavior of the dense counterpart with respect to D1D_{1}, consistent with the function-preserving initialization of upcycling (see Section 3.3):",
+            "We investigate the following functional forms of power law satisfying these requirements:",
+            "Multiplicative:",
+            "Additive:",
+            "Both forms include an interaction term (α3​log⁡D1\\alpha_{3}\\log D_{1}) in the scaling exponent, capturing the interplay between D1D_{1} and D2D_{2}.",
+            "Empirical comparisons of functional forms. We empirically compare these functional forms, including the special case where D1D_{1} and D2D_{2} have no interaction. The optimization uses the Huber loss (δ=10−3\\delta=10^{-3}) and the BFGS algorithm, fitting the logarithm of the loss via the LogSumExp trick applied to the RHS of Equations 8 and 9. The leave-one-out root mean square error (RMS) serves as the fit metric.",
+            "The fit is performed on a 0.1B dense model upcycled to MoE architectures with nexpert={4,8}n_{\\rm expert}=\\{4,8\\} and nTopK={1,2}n_{\\rm TopK}=\\{1,2\\} , trained on a 5×55\\times 5 grid of D1,D2D_{1},D_{2}. The fitting results are shown in Table 1, where we can see that the multiplicative functional form (with non-zero interaction) achieves consistently the lowest leave-one-out RMS error across the experimented MoE architectures. Henceforth, we adopt Equation 8 in our scaling laws.",
+            "Multiplicative scaling law from empirical observations. To strengthen our proposal for Equation 8, we demonstrate through a bottom-up approach that the multiplicative nature of the scaling law, including the interaction term, arises naturally from empirical data.",
+            "From Figure 4, we observe that the scaling exponent in Equation 7 decreases as D1D_{1} increases. To quantify this relationship, we model the scaling exponent as a function of D1D_{1}, denoted as −α​(D1)-\\alpha(D_{1}). A scatter plot of −α​(D1)-\\alpha(D_{1}) reveals the following logarithmic relationship:",
+            "which fits the data well, as shown in the same Figure. Substituting this expression to Equation 7, we obtain a term of the form D2−E′+γ​log⁡D1D_{2}^{-E^{\\prime}+\\gamma\\log D_{1}}, directly supporting the interaction term in the multiplicative scaling law. This shows that the interaction term is not merely an artifact of theoretical derivation but is essential to explain observed empirical trends. Additionally, we show that the multiplicative dependence, A∝D1−α1A\\propto D_{1}^{-\\alpha_{1}} also arises from empirical observations, as detailed in Appendix C.",
+            "Several quantitative and qualitative observations can be made from the scaling law of dataset sizes. From our fit (Table 8 in Appendix C), we notice a trend α2≳α1≫α3\\alpha_{2}\\gtrsim\\alpha_{1}\\gg\\alpha_{3}. This means that while increasing either of D1D_{1} and D2D_{2} helps improve performance, as upcycled training has a slightly larger exponent (α2\\alpha_{2}), increasing D2D_{2} helps train faster.",
+            "Upcycled MoE has a better head start (effective scaling factor is smaller). Fixing D1D_{1}, we see that the effective scaling factor for D2D_{2} is A​D1−α1AD_{1}^{-\\alpha_{1}}. Increasing D1D_{1} lowers the effective scaling factor, and hence the loss of upcycling. Indeed, fixing D2D_{2}, we see that the model performs better with increasing D1D_{1} in Figure 3.",
+            "Upcycled MoE trains slower with larger sunk cost (effective scaling exponent is smaller). Again fixing D1D_{1}, we see that the effective scaling exponent with respect to D2D_{2} is α2−α3​log⁡D1\\alpha_{2}-\\alpha_{3}\\log D_{1}. This means that the larger the sunk cost (D1D_{1}) is, the loss decreases more slowly with D2D_{2}, indicating diminishing returns from increasing D2D_{2} at higher D1D_{1} values, agreeing with Figure 4’s results."
+          ]
+        },
+        {
+          "title": "4.2 Scaling Law for Model Configuration",
+          "paragraphs": [
+            "Previous Subsection mainly concerns with when to upcycle, i.e., the training tokens used when upcycling. Here, we study how to upcycle the dense model, i.e., the model configuration of the MoE.",
+            "To do this, we define sparsity, P≔Ntotal/N2P\\coloneq N_{\\rm total}/N_{2}, and consider the dependency of the performance on sparsity and active parameter N2N_{2}, of which the variables capture scaling behavior with respect to model parameters and architectural details (nexpertn_{\\rm expert} and nTopKn_{\\rm TopK}). See Equations 4 to 6.",
+            "Using these variables, we hypothesize, similar to Equation 1, the following scaling relation:",
+            "To fit the above equation, we run experiments fixing D1=D2=2.3​BD_{1}=D_{2}=2.3\\text{B}, varying the following: dense model of size {15M, 44M, 0.1B, 0.2B}, nexpert={4,8,16,32}n_{\\rm expert}=\\{4,8,16,32\\} and nTopK={1,2,4}n_{\\rm TopK}=\\{1,2,4\\}. The scatter plot is shown in the left panel of Figure 1.",
+            "We obtain the following values for the exponents using the same fitting procedure in Section 4.2: β1=0.03,β2=0.30,β3=−0.01\\beta_{1}=0.03\\;,\\beta_{2}=0.30\\;,\\beta_{3}=-0.01. See Figure 5 for the fits. Unlike dataset sizes, due to computational constraints, we are unable to generate more data points to make a more precise estimate extending the range of model configuration. Nevertheless, we do not observe performance trade-offs when scaling sparsity and active parameters within the range of our examination, in contrast to the scaling law of dataset sizes. Our work suggests that: Performance of upcycling improves with sparsity and active parameters without noticable trade-offs."
+          ]
+        }
+      ]
+    },
+    "5 Joint Scaling Law": {
+      "paragraphs": [
+        "In this Section, we show that the upcycled MoE follows a joint scaling law with respect to dataset size and model size, provided the MoE architecture is fixed. While increasing sparsity and active parameters generally improves performance as shown before, compute and memory constraints impose practical upper limits. Thus, while scaling MoE configurations as much as possible is theoretically beneficial, practitioners should choose an architecture that aligns with their available compute, memory, and expected training token budget. For our study, we adopt a widely used MoE configuration (nexpert=8,nTopK=2n_{\\rm expert}=8,n_{\\rm TopK}=2), which has been implemented in several large-scale, publicly available models, including Mixtral-8x7B and 8x22B (Jiang et al., 2024), and Sarashina2-8x70B 222https://huggingface.co/sbintuitions/sarashina2-8x70b.",
+        "To establish the scaling law with respect to model size, it is sufficient to consider the dependency solely on N1N_{1} among other definitions (Equations 4, 5, 6), as they are equivalent up to a multiplicative constant, e.g., N2/N1≈1.75N_{2}/N_{1}\\approx 1.75. To determine the scaling law, we require the functional form to satisfy the following, analogous to previous Requirements:",
+        "Requirement 3. LD1,D2​(N1)=BD1,D2​N1−β+ED1,D2L_{D_{1},D_{2}}(N_{1})=B_{D_{1},D_{2}}N_{1}^{-\\beta}+E_{D_{1},D_{2}}.",
+        "Requirement 4. limD2→0​L​(D1,D2,N1)=A​D1−α+B​N1−β+E{\\rm lim}_{D_{2}\\to 0}L(D_{1},D_{2},N_{1})=AD_{1}^{-\\alpha}+BN_{1}^{-\\beta}+E, i.e., approaching the Chinchilla scaling law.",
+        "The straightforward functional form that satisfies these requirements is as follows. 333One could extend this with Equation 11 for a truly unified scaling law including all model configurations, but we avoid doing so in this work as reliably fitting with that many independent variables would require extensive experiments beyond our computational reach.",
+        "Fitting. Towards this end, we fit three separate scaling laws, corresponding to dense, MoE, and upcycled trainings, incorporating dataset and model sizes (the first two are fitted with the functional form of Equation 3). We use the same fitting procedure presented in Section 4.2. As the irreducible loss EE is universal irrespective of scaling laws under consideration, we first estimate EE from a joint fit of dense and MoE scaling laws, then fix it when fitting the upcycling scaling law to reduce overfitting and enhance extrapolation ability.",
+        "In Figure 6, we show that the fitted result of upcycling scaling law extrapolates well, achieving validation RMS error of 0.015. The fitted parameters using all data for all three scaling laws are summarized in Table 2. We consider other fitting possibilities and present more results in Appendix D. For the rest of this Section, we consider the application and implication of the joint scaling law."
+      ],
+      "subsections": [
+        {
+          "title": "5.1 Training MoE from Scratch versus Upcycling",
+          "paragraphs": [
+            "Past studies (Komatsuzaki et al., 2022; Muennighoff et al., 2024) have explored the efficiency of training an MoE from scratch compared to upcycling a dense model. Komatsuzaki et al. (2022) found that upcycling retains an advantage up to 120% of the sunk cost (D1D_{1}). For instance, to match the performance of an upcycled MoE trained with an additional 0.4 trillion (T) tokens after 2T dense tokens, training an MoE from scratch would require 2.4T tokens—effectively saving 2T tokens in upcycled training. Conversely, Muennighoff et al. (2024) reported that training from scratch requires less than 100% of the sunk cost under different settings, indicating that it could be more efficient. These seemingly contradictory results suggest that upcycling efficiency depends on both sunk cost and model size.",
+            "To investigate this, we define D∗D^{*} the number of tokens required for training from scratch to match the performance of an upcycled MoE with the same sunk cost, i.e.,",
+            "Since the above equation involves non-integer polynomial exponents, we solve it numerically and approximate the solution analytically (Equation 2). Figure 1 shows that D∗D^{*} decreases with increasing model size, with D∗D^{*} equal to 4B tokens for an 8x1B model. When D2≲D∗D_{2}\\lesssim D^{*}, the required DMoED_{\\rm MoE} to catch up is more than 100% of D1D_{1}: upcycling remains more efficient than training from scratch. However, for D2≳D∗D_{2}\\gtrsim D^{*}, the efficiency reverses, favoring training from scratch. Our findings indicate that: Upcycling is more efficient than training an MoE from scratch for lower sunk cost and training token budget, but its efficiency diminishes as the sunk cost or model size increases."
+          ]
+        },
+        {
+          "title": "5.2 Compute Allocation and Compute-Optimal Upcycling",
+          "paragraphs": [
+            "Given a fixed total floating-point operation (FLOPs) budget CC, we analyze how to optimally allocate compute between dense training and upcycled training. Specifically, we solve:",
+            "We find that for a given compute budget without any pretrained models, training a compute-optimal dense or MoE model from scratch outperforms the two-stage dense-to-upcycled MoE approach (see Figure 15 in Appendix E.2). This suggests: If no pretrained model exists, direct training is preferable to upcycling for optimal performance.",
+            "In scenarios where a pretrained dense model is already available, we can determine the compute-optimal scaling of MoE upcycling. The compute cost of upcycled training is approximated as C2=6​N2​D2C_{2}=6N_{2}D_{2} (Kaplan et al., 2020). Optimizing the compute leads to the scaling relations (see Appendix E.2 for derivation):",
+            "where αeff≔α2−α3​log⁡D1\\alpha_{\\rm eff}\\coloneq\\alpha_{2}-\\alpha_{3}\\log D_{1}. Notably, as D1D_{1} increases, αeff\\alpha_{\\rm eff} decreases, meaning larger pretrained models require disproportionately more tokens for efficient upcycling.",
+            "For instance, applying this to the Llama2 models (7B, 13B, 70B), which were trained on 2T tokens (Touvron et al., 2023), we estimate that compute-optimal upcycling follows the scaling D2∝N11.8D_{2}\\propto N_{1}^{1.8}, indicating that larger models require nearly quadratic increases in upcycling data.",
+            "Overall, we find that upcycling is inefficient relative to from-scratch trainings when considering compute optimality."
+          ]
+        }
+      ]
+    },
+    "6 Related Work": {
+      "paragraphs": [
+        "Mixture-of experts. While interests in developing open MoE LLMs are relatively recent (Hu et al., 2024; Yang et al., 2024; Dai et al., 2024; Liu et al., 2024; Sun et al., 2024), the use of MoE in deep learning can be traced to early 2010s (Eigen et al., 2013; Bengio et al., 2013). See Cai et al. (2024) for a detailed survey of modern MoE models.",
+        "Upcycling. Leveraging pretrained models to expedite the training of larger dense models is also known as model growth (Chen et al., 2015). In the context of training MoEs reusing dense pretrained models, Komatsuzaki et al. (2022) are the first studying such a scenario with encode-decoder models. There are studies (Hu et al., 2024; Yang et al., 2024; Lo et al., 2024; Wei et al., 2024; Muennighoff et al., 2024; He et al., 2024) offering insights into upcycling decoder-only transformers, systematic investigation has not been presented. Wei et al. (2024) made only a rough recommendation: use upcycling when the budget for training is smaller than twice the budget used for dense training, while we provide a more general guideline.",
+        "Scaling laws. Power-law scaling appears in a variety of natural and human-made phenomena. Scaling studies that are perhaps closest to our work are those considering two-stage training, e.g., transfer learning, fine-tuning, and model growth (Mikami et al., 2022; Zhang et al., 2024a; Du et al., 2024). A notable similar phenomenon in transfer learning is ossification, where pretraining can hurt fine-tuning performance (Hernandez et al., 2021). However, to our knowledge, no prior work incorporates an interaction term (α3\\alpha_{3} in Equation 1) to capture such effects.",
+        "In the context of MoE, Clark et al. (2022) studied how different architectural choices affect MoE’s scaling, while Krajewski et al. (2024) investigated fine-grained experts’ scaling behavior. The latter work fits a joint scaling law with respect to dataset and model sizes, but we find differences in the obtained parameters. It is likely due to several differences in methodology: the largest dense model they experimented with was smaller (85M), and they did not tune the LR for each model size. Nevertheless, our findings that MoE scales better than its dense counterpart with sufficiently large computational budget do agree with theirs."
+      ],
+      "subsections": []
+    },
+    "7 Discussion and Conclusion": {
+      "paragraphs": [
+        "In this paper, we have presented compelling evidence that MoE upcycling follows novel scaling laws with dataset and model configuration, revealing trade-offs due to interactions between dataset sizes.",
+        "Given the complexity of upcycling, deriving a unified scaling law that allows for simultaneous optimization of dataset size and model configuration is beyond our current computational reach. However, our findings still provide practical guidance, as the joint scaling law (Equation 12) enables accurate predictions of upcycling performance once the MoE architecture is fixed. In practice, we recommend selecting the largest viable MoE size and sparsity within compute and memory limits while balancing this choice against the expected training token budget. Once the architecture is set, Equation 12 can guide dataset/model scaling, demonstrating reliable extrapolation of upcycling performance.",
+        "While our empirical formulae successfully capture the observed scaling behavior, the underlying mechanism, particularly the interaction term, remains theoretically unexplained. To our knowledge, formal justification for such interactions is lacking in the literature (Bahri et al., 2024; Paquette et al., 2024). Future work could explore it through optimization dynamics or loss landscape analysis. Additionally, extending our scaling laws to alternative MoE architectures and encoder-decoder models would help assess their generality and implications."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A More on architecture and experimental design": {
+      "paragraphs": [
+        "[Figure: Figure 7: Comparing WSD and cosine schedules of learning rate. Left: we see that different schedules cause little differences between the losses, for both dense and MoE training. Right: the learning rate schedules in use are shown.]",
+        "[Figure: Figure 8: Ablation of LR when upcycling an 8x0.1B MoE. We compare the performance of upcycled training (from a dense model trained for 2B tokens) using constant LR (2×10−42\\times 10^{-4}, LR at the end of dense training), LR used for dense training, and LR used for MoE training. We find that the latter works the best. The training setup follows Table 6. ]",
+        "[Figure: Figure 9: Ablating auxiliary coefficients. Left: Cross-entropy losses, where it can be seen that auxiliary coefficient of 1 performs worst. Right: Load-balancing losses, where the larger the coefficient is, the smaller the load-balancing loss becomes. Setting the coefficient to be 10−310^{-3} gives the right balance between these two losses.]",
+        "[Figure: Figure 10: Ablation of data repetition when upcycling an 8x0.1B MoE. We do not observe notable difference in the loss. The training setup follows Table 6. ]",
+        "[Table: Table 3: Dense models used in our study and their parametric details. Note that dMLPd_{\\rm MLP}, is set to be 4​dmodel4d_{\\rm model}. In the last column, we show the total non-embedding model parameters of the corresponding MoE with 8 experts.]",
+        "[Table: Table 4: Training configuration used throughout the paper.]",
+        "[Table: Table 5: Model-dependent training configuration. ”init. size” refers to the standard deviation of the normal distribution used for initializing the weights. ”Max iter.” refers to the maximum iteration run on the model. The MoE counterpart uses the same configuration except for the learning rate (last column). ]",
+        "[Table: Table 6: Training configuration for ablation studies.]",
+        "[Table: Table 7: Benchmarks’ performance comparison across models. Reported scores are accuracies (normalized by byte length whenever applicable). The first two columns are scores of existing models. The last two columns are evaluation results of models trained in this work. The upcycled 8x1B model is upcycled from the 1B model. Our models are evaluated with the LM Evaluation Harness v0.4.0 library [Gao et al., 2024].]"
+      ],
+      "subsections": [
+        {
+          "title": "A.1 Megatron-LM configuration",
+          "paragraphs": [
+            "Infrastructure. Our experiments are performed on multiple nodes, each consisting of 8 NVIDIA H100 80 GB GPUs, interconnected via InfiniBand HDR. The software we use for training is the Megatron-LM library [Shoeybi et al., 2019].",
+            "We use and modify the Megatron-LM (core v0.8.0) library for our experiments. 444https://github.com/NVIDIA/Megatron-LM Models are trained with data type bfloat16. Except for the largest MoE we train (8x1B), which has tensor parallelism configured to be 2, all models are trained with data and sequence parallelisms only [Korthikanti et al., 2023]. Other optimization libraries used include FlashAttention [Dao et al., 2022] and TransformerEngine. 555https://github.com/NVIDIA/TransformerEngine See the example scripts included in the supplementary material."
+          ]
+        },
+        {
+          "title": "A.2 Model configuration",
+          "paragraphs": [
+            "Let us elaborate more on our architectural choices. The intermediate hidden dimension size, dMLPd_{\\rm MLP}, is set to be 4​dmodel4d_{\\rm model}. We do not implement bias in the linear layers. We also do not use techniques geared for treating training instabilities (which we did not encounter in our study), such as Z-loss or QK normalization. Efficiency-motivated implementations like grouped query attention are not considered as well for simplicity. The number of attention head is chosen to increase with model size following practices in the LLM literature. Other designs of the architecture follow Llama2’s closely [Touvron et al., 2023]. See Table LABEL:tab:config for the model configurations. They are selected such that the ratio nlayer/dmodeln_{\\rm layer}/d_{\\rm model} lies in the range 32 to 64, as in Kaplan et al. [2020]. We use the smaller models for ablation studies."
+          ]
+        },
+        {
+          "title": "A.3 MoE configuration",
+          "paragraphs": [
+            "Let us describe the routing mechanism within the MoE module studied in this work. Denote the number of experts by nexpertn_{\\rm expert}, the number of activated experts by nTopKn_{\\rm TopK}, and the output of expert ii by Oexp,iO_{{\\rm exp},i}. At each layer, the output tokens xx of the attention layer are passed to a router, which consists of a single-layer perceptron with weight WW, responsible for calculating (G1​(x),G2​(x),…,Gnexpert​(x))(G_{1}(x),G_{2}(x),...,G_{n_{\\rm expert}}(x)), where",
+            "The TopK operation ensures that only nexpertn_{\\rm expert} experts are activated for each token, resulting in sparse computation. The output of the MoE module, OMoEO_{\\rm MoE}, is the weighted expert outputs which can be written as follows:",
+            "Note that this is also known as token-choice algorithm. Furthermore, we do not use the token-dropping mechanism as in Fedus et al. [2022]. We also do not study MoE variants such as shared experts [Dai et al., 2024] and fine-grained experts [Krajewski et al., 2024], as upcycling these variants is not straightforward.",
+            "Let us move to discussing the load-balancing loss. It has the form [Fedus et al., 2022]:",
+            "where η\\eta is the coefficient for the auxiliary loss, TT is the number of tokens, Pj,iP_{j,i} the router output probability for token jj to be assigned to token ii, and QiQ_{i} is the number of token assigned to expert ii. We ablate the coefficient in Appendix A.7."
+          ]
+        },
+        {
+          "title": "A.4 Ablation of learning rate schedules",
+          "paragraphs": [
+            "Here, we compare the performances of using WSD and the commonly used learning rate (LR) cosine schedules. Dense model and MoE used in our ablation are 0.1B and 8x44m respectively, with training configuration given in Table 6. We can see from Figure 7 that both schedules yield similar performances.",
+            "[Figure: Figure 7: Comparing WSD and cosine schedules of learning rate. Left: we see that different schedules cause little differences between the losses, for both dense and MoE training. Right: the learning rate schedules in use are shown.]"
+          ]
+        },
+        {
+          "title": "A.5 Training configuration",
+          "paragraphs": [
+            "The common setup of training is shown in Table 4, and the model-dependent setup (warmup iteration, standard deviation of the normal distribution for initializing weights, maximum iteration run, battch size, tuned LR) is shown in Table 5. As described in the main text, we use the WSD schedule for training. The number of warmup steps of the WSD LR schedule is set to be roughly the same as the total model size [Porian et al., 2024]. Linear decay to 10% of the maximum LR value is used in the last stage of the schedule, with the length set to be around 10% of the training length, following Hägele et al. [2024].",
+            "Logarithmically-spaced intermediate checkpoints are saved and used to emulate different numbers of token budget. We also increase both the training length and batch size with model size following common practices without performing precise tuning."
+          ]
+        },
+        {
+          "title": "A.6 Upcycled training’s configuration",
+          "paragraphs": [
+            "We initialize the router weights from a normal distribution with zero mean and variance of 2/5​dmodel2/5d_{\\rm model} [Le Scao et al., 2022, Chowdhery et al., 2023, Zeng et al., 2022] (the same initialization is used for from-scratch trainings).",
+            "Regarding the learning rate (LR) of upcycled training, there are several choices: using the LR at the end of dense training with a constant LR schedule, i.e., treating upcycled training as a kind of fine tuning; using the LR of dense/MoE training [Komatsuzaki et al., 2022, He et al., 2024]. We consider these three choices without retuning the LR. With the other training settings are set to be the same as the one used in training the dense models, including the use of the WSD LR schedule, we find that using the MoE LR leads to better performance. See Figure 8.",
+            "As a side note, we observe that the loss for the constant LR schedule decreases monotonically, while the loss increases initially for other cases; there is a rewarming stage when using the WSD LR schedules, which can also be observed in Figure 3.",
+            "Let us further comment on alternative upcycling methods that could potentially further accelerate training. Adding some form of noises to the dense MLP weights, or modifying partially the weights would intuitively help upcycled training generalize faster. Our preliminary experiments however did not see any advantages of doing so. Note that this observation is also consistent with previous negative reports [Komatsuzaki et al., 2022, Wei et al., 2024, Muennighoff et al., 2024]. Henceforth, we simply copy the weights directly from the dense model to perform upcycled training.",
+            "[Figure: Figure 8: Ablation of LR when upcycling an 8x0.1B MoE. We compare the performance of upcycled training (from a dense model trained for 2B tokens) using constant LR (2×10−42\\times 10^{-4}, LR at the end of dense training), LR used for dense training, and LR used for MoE training. We find that the latter works the best. The training setup follows Table 6. ]"
+          ]
+        },
+        {
+          "title": "A.7 Ablation of auxiliary coefficients for load-balancing loss",
+          "paragraphs": [
+            "The auxiliary loss affects the load-balancing loss (smaller values meaning more balanced expert usage) as well as the cross-entropy loss. We plot these losses in Figure 9 for training a 8x0.1B MoE.",
+            "We see that, setting the coefficient to be too small leads to imbalance in expert usage, while setting the coefficient to be too large interferes with the cross-entropy loss. We set it to around 10−310^{-3} which gives the right balance. We did not make finer tuning of the coefficients and adopted 10−310^{-3} in our experiments.",
+            "[Figure: Figure 9: Ablating auxiliary coefficients. Left: Cross-entropy losses, where it can be seen that auxiliary coefficient of 1 performs worst. Right: Load-balancing losses, where the larger the coefficient is, the smaller the load-balancing loss becomes. Setting the coefficient to be 10−310^{-3} gives the right balance between these two losses.]"
+          ]
+        },
+        {
+          "title": "A.8 Ablation of dataset repetition for upcycling",
+          "paragraphs": [
+            "In our experiments, we have used the same dataset for training both dense and upcycled models, following practices of [He et al., 2024]. As an ablation, we split our dataset to two non-overlapping portions, and perform the two-stage training with the distinct datasets. In Figure 10, we find that the difference in performance is very small. This also aligns with previous investigation on data repetition, where it is shown that there is a little difference in performance up to 4 times of repetition [Muennighoff et al., 2023].",
+            "[Figure: Figure 10: Ablation of data repetition when upcycling an 8x0.1B MoE. We do not observe notable difference in the loss. The training setup follows Table 6. ]"
+          ]
+        },
+        {
+          "title": "A.9 Evaluation with standard benchmarks and comparison with other existing models",
+          "paragraphs": [
+            "We compare the performance of our trained 1B models against existing models with similar sizes, Pythia [Biderman et al., 2023] and TinyLlama [Zhang et al., 2024b], based on standard natural language processing benchmarks, ARC [Clark et al., 2018], lambada [Paperno et al., 2016], logiqa [Liu et al., 2020], piqa [Bisk et al., 2020], sciq [Welbl et al., 2017], and winogrande [Sakaguchi et al., 2021].",
+            "Table 7 shows the results. First, we see that the dense model perform similarly to the open models, indicating that our models have been trained correctly. Second, we see that the upcycled model achieves overall the best performance (note that the total tokens used for dense and upcycled training are around 100B, similar to those under comparison), also indicating that upcycling has progressed correctly and improved the scores."
+          ]
+        },
+        {
+          "title": "A.10 Estimated Total GPU hours",
+          "paragraphs": [
+            "Instead of reporting the actual runtimes on our cluster, which varied in our experiments due to many factors affecting the cluster (number of available nodes, congestion, etc.), we give a theoretical estimate of total GPU hours used for obtaining the joint scaling law, which involves running the largest tested model with most training tokens in this paper.",
+            "The estimate is as follows. We calculate the FLOPs for training the dense, MoE, upcycled MoE models with maximum iterations using the 6​N​D6ND approximation, ignoring the additional FLOPs required to continued pretrain models with shorter iterations (as we can reuse the intermediate checkpoints). We further assume that the per-second TFLOPs of the GPU is 400, and is the same for both dense and MoE models. 666https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/transformer/moe/README.md. Note that MoE requires more GPU memory to store its total model parameters, inducing overhead that may slow down training. We obtain,",
+            "Dense model: 6.14×10176.14\\times 10^{17} FLOPs",
+            "MoE: 1.08×10181.08\\times 10^{18} FLOPs",
+            "Upcycled MoE: 5.38×10185.38\\times 10^{18} FLOPs",
+            "The total GPU hours are henceforth approximately 4,900. We note that the exact total GPU hours used are larger as we have run various additional studies as detailed in the paper. We further note that using the cosine learning rate schedule would cost about twice more GPU hours when varying the number of training token budget."
+          ]
+        }
+      ]
+    },
+    "Appendix B Generalization across other datasets": {
+      "paragraphs": [
+        "We show that the scaling behavior studied in the main text generalizes across datasets in use. Aside from Slimpajama [together2023redpajama, cerebras2023slimpajama, Shen et al., 2023] used in the main text, we test with two additional datasets: Japanese portion of the CommonCrawl corpus, and the Stack code dataset [Kocetkov et al., 2022]. We use a tokenizer of enlarged vocabulary size of 102,400 when training with the former dataset. 777https://huggingface.co/sbintuitions/sarashina2-70b We upcycle a 0.1B model with the training configuration set to the same as those used for the experiments presented in the main text. The results are presented in Figure 11, where the scaling behaves similarly to those presented in Figure 4, suggesting that our scaling law for dataset are independent of dataset in use. We however do not further study scaling law for model configuration and the joint scaling law due to computational constraints.",
+        "[Figure: Figure 11: Scaling behavior generalizes across datasets used. Left: Japanese dataset. Right: Code dataset.]"
+      ],
+      "subsections": []
+    },
+    "Appendix C More results on scaling law for dataset sizes": {
+      "paragraphs": [
+        "[Figure: Figure 12: Top: Fitting plots same as those in Figure 4. Bottom: Fitting scaling factor has power-law behavior. The fitted scaling factors are shown to fit well with Equation 16. ]",
+        "[Table: Table 8: Fitted exponents of the scaling law for dataset sizes across architectures.]"
+      ],
+      "subsections": [
+        {
+          "title": "C.1 Fitting across architectures",
+          "paragraphs": [
+            "Figure 8 shows the fitting of the scaling law for dataset sizes across architectures (fixing dense model size to 0.1B)."
+          ]
+        },
+        {
+          "title": "C.2 More validation of Equation1",
+          "paragraphs": [
+            "We first make an observation from Figure 4 that the slope of the fitted lines, that is, the scaling exponent as in Equation 7 is decreasing with D1D_{1}. Let us consider the scaling factors AA fitted in Figure 4. The scatter plot of AA’s in Figure 12 leads us to deduce that the following relation:",
+            "Indeed, we find that the above equation fits well in the Figure. Substituting it to Equation 7, we obtain at the RHS a term of the form D1−η​D2−αD_{1}^{-\\eta}D_{2}^{-\\alpha}, indicating that Equation 1 arises not only from first principles as in the main text, but from empirical observations as well.",
+            "[Figure: Figure 12: Top: Fitting plots same as those in Figure 4. Bottom: Fitting scaling factor has power-law behavior. The fitted scaling factors are shown to fit well with Equation 16. ]"
+          ]
+        },
+        {
+          "title": "C.3 Bilinear form",
+          "paragraphs": [
+            "We would also like to note that by taking the logarithm of the first term of Equation 8, we have α1​log⁡D1+α2​log⁡D2+α3​log⁡D1​log⁡D2\\alpha_{1}\\log D_{1}+\\alpha_{2}\\log D_{2}+\\alpha_{3}\\log D_{1}\\log D_{2}, which is bilinear in terms of log⁡D1\\log D_{1} and log⁡D2\\log D_{2} (that is, linear with each variable separately), indicating that the multiplicative term with interaction is a natural generalization of the single-variable power law."
+          ]
+        }
+      ]
+    },
+    "Appendix D More Results on the Joint Scaling Law": {
+      "paragraphs": [
+        "[Figure: Figure 13: Upcycled model has power-law behavior with respect to N1N_{1}. ]"
+      ],
+      "subsections": [
+        {
+          "title": "D.1 Validating Requirement 3",
+          "paragraphs": [
+            "We show in Figure 13 that the upcycled model empirically satisfies power-law scaling with respect to N1N_{1}, i.e., Requirement 3, repeated below for convenience.",
+            "Requirement 3. LD1,D2​(N1)=BD1,D2​N1−β+ED1,D2L_{D_{1},D_{2}}(N_{1})=B_{D_{1},D_{2}}N_{1}^{-\\beta}+E_{D_{1},D_{2}}.",
+            "[Figure: Figure 13: Upcycled model has power-law behavior with respect to N1N_{1}. ]"
+          ]
+        },
+        {
+          "title": "D.2 Another functional form satisfying Requirements 3 and 4",
+          "paragraphs": [
+            "For convenience purposes, let us repeat Requirement 4:",
+            "Requirement 4. limD2→0​L​(D1,D2,N1)=A​D1−α+B​N1−β+E{\\rm lim}_{D_{2}\\to 0}L(D_{1},D_{2},N_{1})=AD_{1}^{-\\alpha}+BN_{1}^{-\\beta}+E, i.e., approaching Chinchilla scaling law.",
+            "There is another functional form satisfying Requirement 3 and 4:",
+            "Fitting the above equation however yields negative exponents, which are, empirically, α1=0.10,α2=−0.07,β=−0.08,α3=−0.008\\alpha_{1}=0.10,\\alpha_{2}=-0.07,\\beta=-0.08,\\alpha_{3}=-0.008. We reject the hypothesis of this functional form as the loss is predicted to increase with dataset/model sizes, violating the power-law ansatz as well as empirical observation."
+          ]
+        },
+        {
+          "title": "D.3 Why fitting scaling laws separately?",
+          "paragraphs": [
+            "We provide reasoning on why we fit three scaling laws separately, instead of fitting an unified scaling law which holds for all three dense, MoE from-scratch, and upcycled training scenarios.",
+            "The scaling law for MoE trained from scratch is expected to have parameters different from those for upcycled training (that is, they are not equal to each other at D1→0D_{1}\\to 0), because upcycled MoEs are initialized with identical MLP/expert weights from the dense models, while MoEs trained from-scratch have different initial (random) MLP/expert weights. Thus, we expect them to scale differently.",
+            "Similarly, we expect the scaling law for dense model has parameters different from those for upcycled training at the limit D2→0D_{2}\\to 0. As can be seen from Figure 3, the upcycled training undergoes a rewarming phase in the beginning, where the loss increases initially before decreasing. This causes a deviation from the dense model scaling law at D2→0D_{2}\\to 0, although we still expect it to correlate with the dense model scaling law, i.e., Requirement 2 should hold based on function preservation and (empirical) observations that rewarming does not completely de-correlate the loss behaviors.",
+            "Finally, our preliminary investigations also show that unified scaling law does not fit well. We consequently consider them separately. Moreover, we note that there can be other possibilities of functional forms that we do not explore further."
+          ]
+        }
+      ]
+    },
+    "Appendix E More implication of the Joint Scaling Law": {
+      "paragraphs": [
+        "[Figure: Figure 14: Token budget of from-scratch MoE training and when it catches up with upcycled MoE’s performance. We compare loss-versus-token plots of from-scratch and upcycled MoE trainings at various dense training budgets (sunk costs) and model sizes. Upcycling is considered to be efficient only when DMoE>D_{\\rm MoE}> sunk cost. We observe that the efficiency of upcycling diminishes with sunk cost and model size. ]",
+        "[Figure: Figure 15: Compute-optimal training. Upcycled training performs worse even when D1,D2,N1D_{1},D_{2},N_{1} are allocated optimally, compared to compute-optimal training of dense or MoE models. ]"
+      ],
+      "subsections": [
+        {
+          "title": "E.1 From-scratch training vs Upcycling",
+          "paragraphs": [
+            "We have shown in the main text that upcycling is only effective when the sunk cost or the model size is small. We further visualize this by plotting the losses for model sizes 1B, 7B and 70B, fixing D1D_{1} to various values, with respect to DMoED_{\\rm MoE} and D2D_{2} for from-scratch and upcycled training respectively in Figure 14.",
+            "[Figure: Figure 14: Token budget of from-scratch MoE training and when it catches up with upcycled MoE’s performance. We compare loss-versus-token plots of from-scratch and upcycled MoE trainings at various dense training budgets (sunk costs) and model sizes. Upcycling is considered to be efficient only when DMoE>D_{\\rm MoE}> sunk cost. We observe that the efficiency of upcycling diminishes with sunk cost and model size. ]"
+          ]
+        },
+        {
+          "title": "E.2 More on compute optimality of upcycling",
+          "paragraphs": [
+            "As mentioned in the main text, while training the Mixtral-like MoE from scratch is shown to be more efficient in the long run, it requires more compute (1.75 times larger than dense training). There is a compute-performance trade-off between these stages of training.",
+            "We show in Figure 15 that the optimization results in Section 5.2 that training from scratch can always be considered to be more performant.",
+            "[Figure: Figure 15: Compute-optimal training. Upcycled training performs worse even when D1,D2,N1D_{1},D_{2},N_{1} are allocated optimally, compared to compute-optimal training of dense or MoE models. ]"
+          ]
+        },
+        {
+          "title": "E.3 Derivation of compute-optimal formula",
+          "paragraphs": [
+            "As in the main text, we want to scale N2,D2N_{2},D_{2} optimally, N2opt,D2optN^{\\rm opt}_{2},D^{\\rm opt}_{2}, given a FLOPs budget and fixing D1D_{1}, while minimizing the loss LL, which we write as LD1​(D2,N1)L_{D_{1}}(D_{2},N_{1}). This is equivalent to solving the following:",
+            "where we have used N2=1.75​N1N_{2}=1.75N_{1} and C2=6​N2​D2C_{2}=6N_{2}D_{2}. Solving the above equations leads to",
+            "where",
+            "We can henceforth relate D2optD^{\\rm opt}_{2} and N1optN^{\\rm opt}_{1} via",
+            "and"
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "Achiam et al. (2023) Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Florencia Leoni Aleman, Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal Anadkat, et al. Gpt-4 technical report. arXiv preprint arXiv:2303.08774, 2023.",
+    "Bahri et al. (2024) Yasaman Bahri, Ethan Dyer, Jared Kaplan, Jaehoon Lee, and Utkarsh Sharma. Explaining neural scaling laws. Proceedings of the National Academy of Sciences, 121(27):e2311878121, 2024.",
+    "Bengio et al. (2013) Yoshua Bengio, Nicholas Léonard, and Aaron Courville. Estimating or propagating gradients through stochastic neurons for conditional computation. arXiv preprint arXiv:1308.3432, 2013.",
+    "Bi et al. (2024) Xiao Bi, Deli Chen, Guanting Chen, Shanhuang Chen, Damai Dai, Chengqi Deng, Honghui Ding, Kai Dong, Qiushi Du, Zhe Fu, et al. Deepseek llm: Scaling open-source language models with longtermism. arXiv preprint arXiv:2401.02954, 2024.",
+    "Biderman et al. (2023) Stella Biderman, Hailey Schoelkopf, Quentin Gregory Anthony, Herbie Bradley, Kyle O’Brien, Eric Hallahan, Mohammad Aflah Khan, Shivanshu Purohit, USVSN Sai Prashanth, Edward Raff, et al. Pythia: A suite for analyzing large language models across training and scaling. In International Conference on Machine Learning, pages 2397–2430. PMLR, 2023.",
+    "Bisk et al. (2020) Yonatan Bisk, Rowan Zellers, Jianfeng Gao, Yejin Choi, et al. Piqa: Reasoning about physical commonsense in natural language. In Proceedings of the AAAI conference on artificial intelligence, volume 34, pages 7432–7439, 2020.",
+    "Cai et al. (2024) Weilin Cai, Juyong Jiang, Fan Wang, Jing Tang, Sunghun Kim, and Jiayi Huang. A survey on mixture of experts. arXiv preprint arXiv:2407.06204, 2024.",
+    "Chen et al. (2015) Tianqi Chen, Ian Goodfellow, and Jonathon Shlens. Net2net: Accelerating learning via knowledge transfer. arXiv preprint arXiv:1511.05641, 2015.",
+    "Chowdhery et al. (2023) Aakanksha Chowdhery, Sharan Narang, Jacob Devlin, Maarten Bosma, Gaurav Mishra, Adam Roberts, Paul Barham, Hyung Won Chung, Charles Sutton, Sebastian Gehrmann, et al. Palm: Scaling language modeling with pathways. Journal of Machine Learning Research, 24(240):1–113, 2023.",
+    "Clark et al. (2022) Aidan Clark, Diego de Las Casas, Aurelia Guy, Arthur Mensch, Michela Paganini, Jordan Hoffmann, Bogdan Damoc, Blake Hechtman, Trevor Cai, Sebastian Borgeaud, et al. Unified scaling laws for routed language models. In International conference on machine learning, pages 4057–4086. PMLR, 2022.",
+    "Clark et al. (2018) Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa Schoenick, and Oyvind Tafjord. Think you have solved question answering? try arc, the ai2 reasoning challenge. arXiv preprint arXiv:1803.05457, 2018.",
+    "Dai et al. (2024) Damai Dai, Chengqi Deng, Chenggang Zhao, RX Xu, Huazuo Gao, Deli Chen, Jiashi Li, Wangding Zeng, Xingkai Yu, Y Wu, et al. Deepseekmoe: Towards ultimate expert specialization in mixture-of-experts language models. arXiv preprint arXiv:2401.06066, 2024.",
+    "Dao et al. (2022) Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. Flashattention: Fast and memory-efficient exact attention with io-awareness. Advances in Neural Information Processing Systems, 35:16344–16359, 2022.",
+    "Du et al. (2024) Wenyu Du, Tongxu Luo, Zihan Qiu, Zeyu Huang, Yikang Shen, Reynold Cheng, Yike Guo, and Jie Fu. Stacking your transformers: A closer look at model growth for efficient llm pre-training. arXiv preprint arXiv:2405.15319, 2024.",
+    "Eigen et al. (2013) David Eigen, Marc’Aurelio Ranzato, and Ilya Sutskever. Learning factored representations in a deep mixture of experts. arXiv preprint arXiv:1312.4314, 2013.",
+    "Fedus et al. (2022) William Fedus, Barret Zoph, and Noam Shazeer. Switch transformers: Scaling to trillion parameter models with simple and efficient sparsity. Journal of Machine Learning Research, 23(120):1–39, 2022.",
+    "Gao et al. (2024) Leo Gao, Jonathan Tow, Baber Abbasi, Stella Biderman, Sid Black, Anthony DiPofi, Charles Foster, Laurence Golding, Jeffrey Hsu, Alain Le Noac’h, Haonan Li, Kyle McDonell, Niklas Muennighoff, Chris Ociepa, Jason Phang, Laria Reynolds, Hailey Schoelkopf, Aviya Skowron, Lintang Sutawika, Eric Tang, Anish Thite, Ben Wang, Kevin Wang, and Andy Zou. A framework for few-shot language model evaluation, 07 2024. URL https://zenodo.org/records/12608602.",
+    "Hägele et al. (2024) Alexander Hägele, Elie Bakouch, Atli Kosson, Loubna Ben Allal, Leandro Von Werra, and Martin Jaggi. Scaling laws and compute-optimal training beyond fixed training durations. arXiv preprint arXiv:2405.18392, 2024.",
+    "He et al. (2024) Ethan He, Abhinav Khattar, Ryan Prenger, Vijay Korthikanti, Zijie Yan, Tong Liu, Shiqing Fan, Ashwath Aithal, Mohammad Shoeybi, and Bryan Catanzaro. Upcycling large language models into mixture of experts. arXiv preprint arXiv:2410.07524, 2024.",
+    "Henighan et al. (2020) Tom Henighan, Jared Kaplan, Mor Katz, Mark Chen, Christopher Hesse, Jacob Jackson, Heewoo Jun, Tom B Brown, Prafulla Dhariwal, Scott Gray, et al. Scaling laws for autoregressive generative modeling. arXiv preprint arXiv:2010.14701, 2020.",
+    "Hernandez et al. (2021) Danny Hernandez, Jared Kaplan, Tom Henighan, and Sam McCandlish. Scaling laws for transfer. arXiv preprint arXiv:2102.01293, 2021.",
+    "Hestness et al. (2017) Joel Hestness, Sharan Narang, Newsha Ardalani, Gregory Diamos, Heewoo Jun, Hassan Kianinejad, Md Mostofa Ali Patwary, Yang Yang, and Yanqi Zhou. Deep learning scaling is predictable, empirically. arXiv preprint arXiv:1712.00409, 2017.",
+    "Hestness et al. (2019) Joel Hestness, Newsha Ardalani, and Gregory Diamos. Beyond human-level accuracy: Computational challenges in deep learning. In Proceedings of the 24th symposium on principles and practice of parallel programming, pages 1–14, 2019.",
+    "Hoffmann et al. (2022) Jordan Hoffmann, Sebastian Borgeaud, Arthur Mensch, Elena Buchatskaya, Trevor Cai, Eliza Rutherford, Diego de Las Casas, Lisa Anne Hendricks, Johannes Welbl, Aidan Clark, et al. Training compute-optimal large language models. arXiv preprint arXiv:2203.15556, 2022.",
+    "Hu et al. (2024) Shengding Hu, Yuge Tu, Xu Han, Chaoqun He, Ganqu Cui, Xiang Long, Zhi Zheng, Yewei Fang, Yuxiang Huang, Weilin Zhao, et al. Minicpm: Unveiling the potential of small language models with scalable training strategies. arXiv preprint arXiv:2404.06395, 2024.",
+    "Jiang et al. (2024) Albert Q Jiang, Alexandre Sablayrolles, Antoine Roux, Arthur Mensch, Blanche Savary, Chris Bamford, Devendra Singh Chaplot, Diego de las Casas, Emma Bou Hanna, Florian Bressand, et al. Mixtral of experts. arXiv preprint arXiv:2401.04088, 2024.",
+    "Kaplan et al. (2020) Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B Brown, Benjamin Chess, Rewon Child, Scott Gray, Alec Radford, Jeffrey Wu, and Dario Amodei. Scaling laws for neural language models. arXiv preprint arXiv:2001.08361, 2020.",
+    "Kocetkov et al. (2022) Denis Kocetkov, Raymond Li, Loubna Ben Allal, Jia Li, Chenghao Mou, Carlos Muñoz Ferrandis, Yacine Jernite, Margaret Mitchell, Sean Hughes, Thomas Wolf, et al. The stack: 3 tb of permissively licensed source code. arXiv preprint arXiv:2211.15533, 2022.",
+    "Komatsuzaki et al. (2022) Aran Komatsuzaki, Joan Puigcerver, James Lee-Thorp, Carlos Riquelme Ruiz, Basil Mustafa, Joshua Ainslie, Yi Tay, Mostafa Dehghani, and Neil Houlsby. Sparse upcycling: Training mixture-of-experts from dense checkpoints. arXiv preprint arXiv:2212.05055, 2022.",
+    "Korthikanti et al. (2023) Vijay Anand Korthikanti, Jared Casper, Sangkug Lym, Lawrence McAfee, Michael Andersch, Mohammad Shoeybi, and Bryan Catanzaro. Reducing activation recomputation in large transformer models. Proceedings of Machine Learning and Systems, 5:341–353, 2023.",
+    "Krajewski et al. (2024) Jakub Krajewski, Jan Ludziejewski, Kamil Adamczewski, Maciej Pióro, Michał Krutul, Szymon Antoniak, Kamil Ciebiera, Krystian Król, Tomasz Odrzygóźdź, Piotr Sankowski, et al. Scaling laws for fine-grained mixture of experts. arXiv preprint arXiv:2402.07871, 2024.",
+    "Le Scao et al. (2022) Teven Le Scao, Thomas Wang, Daniel Hesslow, Stas Bekman, M Saiful Bari, Stella Biderman, Hady Elsahar, Niklas Muennighoff, Jason Phang, Ofir Press, Colin Raffel, Victor Sanh, Sheng Shen, Lintang Sutawika, Jaesung Tae, Zheng Xin Yong, Julien Launay, and Iz Beltagy. What language model to train if you have one million GPU hours? In Yoav Goldberg, Zornitsa Kozareva, and Yue Zhang, editors, Findings of the Association for Computational Linguistics: EMNLP 2022, pages 765–782, Abu Dhabi, United Arab Emirates, December 2022. Association for Computational Linguistics. doi: 10.18653/v1/2022.findings-emnlp.54. URL https://aclanthology.org/2022.findings-emnlp.54.",
+    "Lepikhin et al. (2020) Dmitry Lepikhin, HyoukJoong Lee, Yuanzhong Xu, Dehao Chen, Orhan Firat, Yanping Huang, Maxim Krikun, Noam Shazeer, and Zhifeng Chen. Gshard: Scaling giant models with conditional computation and automatic sharding. arXiv preprint arXiv:2006.16668, 2020.",
+    "Liu et al. (2020) Jian Liu, Leyang Cui, Hanmeng Liu, Dandan Huang, Yile Wang, and Yue Zhang. Logiqa: A challenge dataset for machine reading comprehension with logical reasoning. arXiv preprint arXiv:2007.08124, 2020.",
+    "Liu et al. (2024) Liyuan Liu, Young Jin Kim, Shuohang Wang, Chen Liang, Yelong Shen, Hao Cheng, Xiaodong Liu, Masahiro Tanaka, Xiaoxia Wu, Wenxiang Hu, et al. Grin: Gradient-informed moe. arXiv preprint arXiv:2409.12136, 2024.",
+    "Lo et al. (2024) Ka Man Lo, Zeyu Huang, Zihan Qiu, Zili Wang, and Jie Fu. A closer look into mixture-of-experts in large language models. arXiv preprint arXiv:2406.18219, 2024.",
+    "Loshchilov et al. (2017) Ilya Loshchilov, Frank Hutter, et al. Fixing weight decay regularization in adam. arXiv preprint arXiv:1711.05101, 5, 2017.",
+    "Mikami et al. (2022) Hiroaki Mikami, Kenji Fukumizu, Shogo Murai, Shuji Suzuki, Yuta Kikuchi, Taiji Suzuki, Shin-ichi Maeda, and Kohei Hayashi. A scaling law for syn2real transfer: How much is your pre-training effective? In Joint European Conference on Machine Learning and Knowledge Discovery in Databases, pages 477–492. Springer, 2022.",
+    "Muennighoff et al. (2023) Niklas Muennighoff, Alexander Rush, Boaz Barak, Teven Le Scao, Nouamane Tazi, Aleksandra Piktus, Sampo Pyysalo, Thomas Wolf, and Colin A Raffel. Scaling data-constrained language models. Advances in Neural Information Processing Systems, 36:50358–50376, 2023.",
+    "Muennighoff et al. (2024) Niklas Muennighoff, Luca Soldaini, Dirk Groeneveld, Kyle Lo, Jacob Morrison, Sewon Min, Weijia Shi, Pete Walsh, Oyvind Tafjord, Nathan Lambert, et al. Olmoe: Open mixture-of-experts language models. arXiv preprint arXiv:2409.02060, 2024.",
+    "Paperno et al. (2016) Denis Paperno, Germán Kruszewski, Angeliki Lazaridou, Quan Ngoc Pham, Raffaella Bernardi, Sandro Pezzelle, Marco Baroni, Gemma Boleda, and Raquel Fernández. The lambada dataset: Word prediction requiring a broad discourse context. arXiv preprint arXiv:1606.06031, 2016.",
+    "Paquette et al. (2024) Elliot Paquette, Courtney Paquette, Lechao Xiao, and Jeffrey Pennington. 4+ 3 phases of compute-optimal neural scaling laws. arXiv preprint arXiv:2405.15074, 2024.",
+    "Porian et al. (2024) Tomer Porian, Mitchell Wortsman, Jenia Jitsev, Ludwig Schmidt, and Yair Carmon. Resolving discrepancies in compute-optimal scaling of language models. arXiv preprint arXiv:2406.19146, 2024.",
+    "Rosenfeld et al. (2019) Jonathan S Rosenfeld, Amir Rosenfeld, Yonatan Belinkov, and Nir Shavit. A constructive prediction of the generalization error across scales. arXiv preprint arXiv:1909.12673, 2019.",
+    "Sakaguchi et al. (2021) Keisuke Sakaguchi, Ronan Le Bras, Chandra Bhagavatula, and Yejin Choi. Winogrande: An adversarial winograd schema challenge at scale. Communications of the ACM, 64(9):99–106, 2021.",
+    "Shazeer (2020) Noam Shazeer. Glu variants improve transformer. arXiv preprint arXiv:2002.05202, 2020.",
+    "Shazeer et al. (2017) Noam Shazeer, Azalia Mirhoseini, Krzysztof Maziarz, Andy Davis, Quoc Le, Geoffrey Hinton, and Jeff Dean. Outrageously large neural networks: The sparsely-gated mixture-of-experts layer. arXiv preprint arXiv:1701.06538, 2017.",
+    "Shen et al. (2023) Zhiqiang Shen, Tianhua Tao, Liqun Ma, Willie Neiswanger, Zhengzhong Liu, Hongyi Wang, Bowen Tan, Joel Hestness, Natalia Vassilieva, Daria Soboleva, et al. Slimpajama-dc: Understanding data combinations for llm training. arXiv preprint arXiv:2309.10818, 2023.",
+    "Shoeybi et al. (2019) Mohammad Shoeybi, Mostofa Patwary, Raul Puri, Patrick LeGresley, Jared Casper, and Bryan Catanzaro. Megatron-lm: Training multi-billion parameter language models using model parallelism. arXiv preprint arXiv:1909.08053, 2019.",
+    "Su et al. (2024) Jianlin Su, Murtadha Ahmed, Yu Lu, Shengfeng Pan, Wen Bo, and Yunfeng Liu. Roformer: Enhanced transformer with rotary position embedding. Neurocomputing, 568:127063, 2024.",
+    "Sukhbaatar et al. (2024) Sainbayar Sukhbaatar, Olga Golovneva, Vasu Sharma, Hu Xu, Xi Victoria Lin, Baptiste Rozière, Jacob Kahn, Daniel Li, Wen-tau Yih, Jason Weston, et al. Branch-train-mix: Mixing expert llms into a mixture-of-experts llm. arXiv preprint arXiv:2403.07816, 2024.",
+    "Sun et al. (2024) Xingwu Sun, Yanfeng Chen, Yiqing Huang, Ruobing Xie, Jiaqi Zhu, Kai Zhang, Shuaipeng Li, Zhen Yang, Jonny Han, Xiaobo Shu, et al. Hunyuan-large: An open-source moe model with 52 billion activated parameters by tencent. arXiv preprint arXiv:2411.02265, 2024.",
+    "Touvron et al. (2023) Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, et al. Llama 2: Open foundation and fine-tuned chat models. arXiv preprint arXiv:2307.09288, 2023.",
+    "Vaswani et al. (2017) Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Lukasz Kaiser, and Illia Polosukhin. Attention is all you need. arXiv preprint arXiv:1706.03762, 10:S0140525X16001837, 2017.",
+    "Wei et al. (2024) Tianwen Wei, Bo Zhu, Liang Zhao, Cheng Cheng, Biye Li, Weiwei Lü, Peng Cheng, Jianhao Zhang, Xiaoyu Zhang, Liang Zeng, et al. Skywork-moe: A deep dive into training techniques for mixture-of-experts language models. arXiv preprint arXiv:2406.06563, 2024.",
+    "Welbl et al. (2017) Johannes Welbl, Nelson F Liu, and Matt Gardner. Crowdsourcing multiple choice science questions. arXiv preprint arXiv:1707.06209, 2017.",
+    "Yang et al. (2024) An Yang, Baosong Yang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Zhou, Chengpeng Li, Chengyuan Li, Dayiheng Liu, Fei Huang, et al. Qwen2 technical report. arXiv preprint arXiv:2407.10671, 2024.",
+    "Zeng et al. (2022) Aohan Zeng, Xiao Liu, Zhengxiao Du, Zihan Wang, Hanyu Lai, Ming Ding, Zhuoyi Yang, Yifan Xu, Wendi Zheng, Xiao Xia, et al. Glm-130b: An open bilingual pre-trained model. arXiv preprint arXiv:2210.02414, 2022.",
+    "Zhang et al. (2024a) Biao Zhang, Zhongtao Liu, Colin Cherry, and Orhan Firat. When scaling meets llm finetuning: The effect of data, model and finetuning method. arXiv preprint arXiv:2402.17193, 2024a.",
+    "Zhang et al. (2024b) Peiyuan Zhang, Guangtao Zeng, Tianduo Wang, and Wei Lu. Tinyllama: An open-source small language model. arXiv preprint arXiv:2401.02385, 2024b."
+  ]
+}

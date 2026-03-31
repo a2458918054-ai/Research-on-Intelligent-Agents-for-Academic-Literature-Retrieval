@@ -1,0 +1,383 @@
+{
+  "title": "QLESS: A Quantized Approach for Data Valuation and Selection in Large Language Model Fine-Tuning",
+  "authors": "Moses AnantaMuhammad Farid AdilazuardaZayd Muhammad Kawakibi ZuhriAyu PurwariantiAlham Fikri Aji",
+  "abstract": "Fine-tuning large language models (LLMs) is often constrained by the computational costs of processing massive datasets. We propose QLESS (Quantized Low-rank Gradient Similarity Search), which integrates gradient quantization with the LESS framework to enable memory-efficient data valuation and selection. QLESS employs a two-step compression process: first, it obtains low-dimensional gradient representations through LoRA-based random projection; then, it quantizes these gradients to low-bitwidth representations. Experiments on multiple LLM architectures (LLaMA, Mistral, Qwen) and benchmarks (MMLU, BBH, TyDiQA) show that QLESS achieves comparable data selection performance to LESS while reducing memory usage by up to 16x. Even 1-bit gradient quantization preserves data valuation quality. These findings underscore QLESS as a practical, scalable approach to identifying informative examples within strict memory constraints.111Code and data is available at https://github.com/mosesananta/QLESS",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "As Large Language Models (LLMs) continue to scale in size and complexity, their training and fine-tuning demand efficient data management strategies to optimize performance on specific tasks. A pivotal aspect of this optimization is data valuation—the process of identifying influential training data to improve learning outcomes. Gradient-based data valuation methods (Koh & Liang, 2017; Garima et al., 2020; Park et al., 2023), which estimate the contribution of individual training samples to model performance, have proven effective in this regard. However, these approaches face significant scalability challenges: the storage and computation of high-precision gradient data grow disproportionately with the size of the model and dataset, making them impractical for modern LLMs (Kwon et al., 2024; Choe et al., 2024; Xia et al., 2025).",
+        "The LESS framework (Xia et al., 2025) addresses some of these challenges by employing Low-Rank Adaptation (LoRA) for efficient gradient extraction and leveraging random projection to construct a compact gradient datastore. By normalizing and storing these reduced gradients, LESS enables computationally efficient similarity searches for data valuation. However, LESS retains a reliance on high-precision gradient storage, which imposes a considerable memory overhead, particularly for larger models and datasets. This bottleneck motivates a critical question: Can we significantly reduce the precision of stored gradients without sacrificing their utility for influence computation?",
+        "Inspired by gradient compression techniques in distributed and federated learning (Bernstein et al., 2018; Alistarh et al., 2017; Wen et al., 2017), we propose QLESS—an extension of LESS that incorporates absmax-based quantization into the gradient datastore. QLESS replaces the high-precision gradient representation with quantized gradients, allowing us to drastically reduce memory requirements while maintaining the integrity of influence computations. Specifically, we employ a simple absmax-based uniform quantization scheme, which enables efficient storage of randomly projected gradients. The quantized gradients are then normalized during influence calculation, ensuring that the data valuation process remains robust despite reduced precision.",
+        "Our empirical findings demonstrate that QLESS achieves competitive fine-tuning performance even under extreme quantization levels. Notably, 1-bit quantized gradients, despite their minimal precision, frequently perform on par with their 16-bit counterparts in data selection for instruction tuning. This remarkable result challenges conventional assumptions about the trade-offs between precision and efficacy in gradient-based data valuation and raises intriguing questions about the robustness of influence computations under extreme quantization.",
+        "In this paper, we make the following contributions:",
+        "• Quantized Gradient Datastore for Data Valuation: We introduce a novel extension of LESS (Xia et al., 2025) by integrating simple absmax-based quantization into the gradient datastore, achieving substantial memory savings without compromising the accuracy of influence computations.",
+        "• Empirical Validation Across Models and Benchmarks: Through extensive experiments on diverse training datasets (Flan v2 (Longpre et al., 2023), CoT (Wei et al., 2022), Dolly (Conover et al., 2023), and OpenAssistant (Köpf et al., 2023) ) and test datasets (MMLU (Hendrycks et al., 2020), BBH (Suzgun et al., 2023), and TyDiQA (Clark et al., 2020)), we demonstrate the efficacy of QLESS across multiple quantization levels and LLM architectures, including LLaMA2 (Touvron et al., 2023), LLaMA3 (Dubey et al., 2024), Mistral (Jiang et al., 2023), and Qwen (Qwen et al., 2025) models.",
+        "• Exploration of Quantization Trade-offs: We analyze the impact of varying quantization levels (1 to 8-bit) on data valuation accuracy and downstream model performance, identifying cases where extreme quantization achieves unexpectedly robust results.",
+        "QLESS bridges the gap between efficiency and scalability in data valuation for LLMs, offering a practical and resource-efficient solution for instruction tuning."
+      ],
+      "subsections": []
+    },
+    "2 Preliminaries": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "2.1 Gradient-Based Data Valuation",
+          "paragraphs": [
+            "Data valuation methods aim to quantify each training sample’s contribution to a model’s performance. Among these, gradient-based approaches are particularly appealing for large-scale models, as they directly measure how training examples influence parameter updates. A key representative is TracIn (Garima et al., 2020), which evaluates the impact of a training sample zz on a validation sample z′z^{\\prime} by summing the dot products of their gradients across kk checkpoints:",
+            "where ∇ℓ​(z;θi)\\nabla\\ell(z;\\theta_{i}) and ∇ℓ​(z′;θi)\\nabla\\ell(z^{\\prime};\\theta_{i}) are the gradients of the model’s loss at checkpoint ii, and ηi\\eta_{i} is the learning rate. This dot-product summation captures how zz “pushes” the parameters in directions that aid (or impede) performance on z′z^{\\prime}.",
+            "However, storing gradients for multiple checkpoints becomes prohibitive in large language models (LLMs). To address this, approaches like LESS (Xia et al., 2025) apply compression strategies that retain crucial gradient alignments while reducing the memory burden."
+          ]
+        },
+        {
+          "title": "2.2 LESS: Low-Rank Gradient Similarity Search",
+          "paragraphs": [
+            "LESS (Low-Rank Gradient Similarity Search) (Xia et al., 2025) extends gradient-based data valuation by leveraging the parameter efficiency of LoRA (Hu et al., 2021). Instead of computing full-model gradients, LESS focuses on the LoRA parameters, extracting Adam training gradient Γ​(z;θ)\\Gamma(z;\\theta) for each training sample zz. For validation samples z′z^{\\prime}, it uses an SGD validation gradient ∇ℓ​(z′;θ)\\nabla\\ell(z^{\\prime};\\theta) to measure how training samples influence validation performance.",
+            "To handle the high dimensionality of these gradients, LESS applies a randomly initialized linear mapping R:ℝd→ℝkR:\\mathbb{R}^{d}\\to\\mathbb{R}^{k} where k≪dk\\ll d. By the Johnson–Lindenstrauss lemma (Johnson & Lindenstrauss, 1984), this projection approximately preserves pairwise distances or inner products, enabling efficient similarity searches. Concretely, for each training sample zz at checkpoint ii:",
+            "In instruction tuning, each sample zz often spans multiple tokens, so its gradient is an average of token-level gradients. As reported in (Xia et al., 2025), this can disproportionately favor shorter sequences by yielding larger gradient norms. To counteract this bias, LESS normalizes each projected gradient:",
+            "and stores g^z,i\\hat{g}_{z,i} in a gradient datastore. During inference, the influence of zz on a validation sample z′z^{\\prime} is then computed by summing the learning-rate-weighted cosine similarities across NN checkpoints:",
+            "Although LESS significantly reduces dimensionality and computation, storing g^z,i\\hat{g}_{z,i} in floating-point (or even half-precision) remains costly for large datasets, motivating further compression via quantization."
+          ]
+        },
+        {
+          "title": "2.3 Quantization in Distributed and Federated Learning",
+          "paragraphs": [
+            "Quantization—mapping high-precision numerical data to lower bit-width representations—has been widely adopted in distributed and federated learning to mitigate communication overhead (Bernstein et al., 2018; Alistarh et al., 2017; Wen et al., 2017). The core idea is to transform a floating-point vector 𝐱∈ℝk\\mathbf{x}\\in\\mathbb{R}^{k} into a more compact integer or fixed-point format, frequently reducing memory by factors of four, eight, or more.",
+            "A straightforward technique is absmax-based quantization, which scales each vector by its largest absolute value to fit into a specified bit budget bb. Suppose",
+            "and let α=2b−1−1\\alpha=2^{b-1}-1. Each component xmx_{m} is mapped to an integer qmq_{m} via",
+            "This compression technique reduces the memory footprint dramatically, facilitating the storage or transfer of gradient-related data in large-scale systems."
+          ]
+        },
+        {
+          "title": "2.4 Quantized Random Projection (QRP)",
+          "paragraphs": [
+            "Quantized random projection (QRP) combines the dimensionality reduction benefits of random projection with discrete quantization to produce compact vector representations while preserving key geometric relationships. The theoretical foundations of QRP lie in the Johnson–Lindenstrauss lemma (Johnson & Lindenstrauss, 1984) and its quantized variants (Jacques, 2015; Li et al., 2016; Jacques & Cambareri, 2017), which provide guarantees on the approximate preservation of pairwise distances or inner products under random projection and quantization.",
+            "In the conventional random projection pipeline, we map high-dimensional vectors {𝐱i}i=1n⊂ℝd\\{\\mathbf{x}_{i}\\}_{i=1}^{n}\\subset\\mathbb{R}^{d} to a lower-dimensional space ℝk\\mathbb{R}^{k} via a randomly sampled matrix 𝐑∈ℝk×d\\mathbf{R}\\in\\mathbb{R}^{k\\times d} drawn from a suitable distribution (e.g., Gaussian or Rademacher).",
+            "Once the vectors 𝐲i=𝐑𝐱i\\mathbf{y}_{i}=\\mathbf{R}\\mathbf{x}_{i} are projected into ℝk\\mathbb{R}^{k}, a quantization function",
+            "further compresses them into a set of finite levels 𝒞\\mathcal{C}. For instance, binary QRP restricts each dimension to {−1,+1}\\{-1,+1\\} (Charikar, 2002; Li et al., 2006), whereas uniform scalar quantization maps each dimension to uniformly spaced bins (Li et al., 2012, 2014) . The resulting codes 𝐪i=Q​(𝐲i)\\mathbf{q}_{i}=Q(\\mathbf{y}_{i}) can be stored efficiently in low-precision formats, leading to substantial memory and computational savings.",
+            "In gradient-based data valuation for large language models, the principal challenge lies in storing and manipulating massive gradient datasets. Although methods like LESS (Xia et al., 2025) reduce dimensionality via random projection, they typically retain a floating-point representation, which can still be expensive at scale. QRP provides an additional layer of compression on top of random projection, ensuring that large sets of projected gradients remain compact."
+          ]
+        }
+      ]
+    },
+    "3 QLESS: Integrating LESS with Quantization": {
+      "paragraphs": [
+        "Building upon the gradient-based data valuation strategies introduced in the previous section, we now present QLESS, a method that combines the memory-efficient random projection and normalization of LESS with an additional quantization step. The key insight is that even after reducing gradient dimensionality, storing the resulting vectors in floating-point format can be expensive for large datasets. By quantizing each projected gradient, QLESS substantially reduces memory consumption while preserving enough directional information to maintain the effectiveness of influence-based data selection. The full process is visualized in Figure 2."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Quantizing Randomly Projected Gradients",
+          "paragraphs": [
+            "Building on the random projection and normalization strategy in LESS (Xia et al., 2025), QLESS further leverages Quantized Random Projection (QRP; see Section 2.4) to drastically reduce the memory footprint of stored gradients. Specifically, for each training sample zz at checkpoint ii, QLESS computes a LoRA-based gradient Γ​(z;θi)\\Gamma(z;\\theta_{i}) and applies the same random projection",
+            "as in LESS. However, rather than storing gz,ig_{z,i} in floating-point format, QLESS immediately quantizes it using a simple but effective absmax-based scheme, where vectors are compressed after random projection to retain essential geometric information.",
+            "Concretely, let",
+            "for a chosen bit budget b∈{1,2,4,8}b\\in\\{1,2,4,8\\}. Each component gz,i,mg_{z,i,m} is mapped to an integer qz,i,mq_{z,i,m} via",
+            "QLESS stores the integer vector qz,iq_{z,i} together with the single scale factor Sz,iS_{z,i}, reducing memory costs from kk floating-point values to kk bb-bit integers plus one float per gradient vector."
+          ]
+        },
+        {
+          "title": "3.2 Influence Computation with Quantized-Normalized Gradients",
+          "paragraphs": [
+            "During data valuation, QLESS normalizes the quantized representation of gz,ig_{z,i} directly. Each quantized component qz,i,mq_{z,i,m} is normalized as:",
+            "where ‖𝐪z,i‖\\|\\mathbf{q}_{z,i}\\| is the norm of the quantized vector.",
+            "Similarly, validation gradients gz′,ig_{z^{\\prime},i} are quantized and normalized, yielding q^z′,i\\widehat{q}_{z^{\\prime},i}. QLESS computes the influence of a training sample zz on a validation sample z′z^{\\prime} by summing the learning-rate-weighted cosine similarities between the quantized-normalized gradients across NN checkpoints:",
+            "By utilizing QRP (§3.1), QLESS retains the essence of gradient-based data valuation while substantially cutting storage demands. As we will show in our experiments, this approach enables efficient data selection across larger datasets and a broader range of LLM architectures and sizes than would be practical with higher-precision storage."
+          ]
+        }
+      ]
+    },
+    "4 Experiments": {
+      "paragraphs": [
+        "This section describes our experimental setup for evaluating QLESS, focusing on datasets, models, baselines, and the overall pipeline. By adhering to the same framework as LESS, we ensure fair comparisons while isolating the effects of gradient quantization introduced in QLESS."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Experimental Setup",
+          "paragraphs": [
+            "We adopt the same datasets used in LESS to ensure consistency. The training data comprises four major instruction-tuning datasets: Flan v2 (100K examples) (Longpre et al., 2023), Chain-of-Thought (100k examples) (Wei et al., 2022), Dolly (15k examples) (Conover et al., 2023), and OpenAssistant (55K examples) (Köpf et al., 2023), totaling approximately 270K training instances. These datasets span diverse instruction types, from single-turn queries to complex reasoning tasks and multi-turn conversations. For validation and evaluation, we use the same benchmarks as LESS: MMLU (Hendrycks et al., 2020), which tests knowledge across 57 academic subjects, BBH (Suzgun et al., 2023) for assessing complex reasoning capabilities, and TyDiQA (Clark et al., 2020) for evaluating cross-lingual understanding across 11 typologically diverse languages. Following LESS, we construct our validation set 𝒟val\\mathcal{D}_{\\text{val}} using few-shot samples from these benchmarks to guide the data selection process.",
+            "We evaluate QLESS on five language models spanning different architectures and parameter scales: LLaMA2-7B (Touvron et al., 2023), Mistral-7B (Jiang et al., 2023), Qwen2.5-7B (Qwen et al., 2025), LLaMA3.1-8B, and LLaMA3.2-3B (Dubey et al., 2024). This diverse selection enables us to assess the generalizability of our approach across different model families and sizes.",
+            "We compare QLESS against the following baselines:",
+            "1. Random Selection: Randomly sample 5% of the training dataset for instruction tuning. This serves as a lower bound for performance.",
+            "2. LESS (Original): The original LESS framework serves as the main baseline. It involves: Warmup Training: Perform warmup training on a randomly selected 5% subset of the training data 𝒟warmup\\mathcal{D}_{\\text{warmup}} for N=4N=4 epochs. Gradient Feature Extraction: Extract 8192-dimensional gradient features for all training data 𝒟\\mathcal{D} using LoRA-based adaptation with Adam. Data Scoring and Selection: Compute influence scores by measuring gradient alignment with validation gradients. Select the top 5% of training data 𝒟train\\mathcal{D}_{\\text{train}} based on these scores.",
+            "(a) Warmup Training: Perform warmup training on a randomly selected 5% subset of the training data 𝒟warmup\\mathcal{D}_{\\text{warmup}} for N=4N=4 epochs.",
+            "(b) Gradient Feature Extraction: Extract 8192-dimensional gradient features for all training data 𝒟\\mathcal{D} using LoRA-based adaptation with Adam.",
+            "(c) Data Scoring and Selection: Compute influence scores by measuring gradient alignment with validation gradients. Select the top 5% of training data 𝒟train\\mathcal{D}_{\\text{train}} based on these scores.",
+            "(a) Warmup Training: Perform warmup training on a randomly selected 5% subset of the training data 𝒟warmup\\mathcal{D}_{\\text{warmup}} for N=4N=4 epochs.",
+            "(b) Gradient Feature Extraction: Extract 8192-dimensional gradient features for all training data 𝒟\\mathcal{D} using LoRA-based adaptation with Adam.",
+            "(c) Data Scoring and Selection: Compute influence scores by measuring gradient alignment with validation gradients. Select the top 5% of training data 𝒟train\\mathcal{D}_{\\text{train}} based on these scores.",
+            "Random Selection: Randomly sample 5% of the training dataset for instruction tuning. This serves as a lower bound for performance.",
+            "LESS (Original): The original LESS framework serves as the main baseline. It involves:",
+            "(a) Warmup Training: Perform warmup training on a randomly selected 5% subset of the training data 𝒟warmup\\mathcal{D}_{\\text{warmup}} for N=4N=4 epochs.",
+            "(b) Gradient Feature Extraction: Extract 8192-dimensional gradient features for all training data 𝒟\\mathcal{D} using LoRA-based adaptation with Adam.",
+            "(c) Data Scoring and Selection: Compute influence scores by measuring gradient alignment with validation gradients. Select the top 5% of training data 𝒟train\\mathcal{D}_{\\text{train}} based on these scores.",
+            "Warmup Training: Perform warmup training on a randomly selected 5% subset of the training data 𝒟warmup\\mathcal{D}_{\\text{warmup}} for N=4N=4 epochs.",
+            "Gradient Feature Extraction: Extract 8192-dimensional gradient features for all training data 𝒟\\mathcal{D} using LoRA-based adaptation with Adam.",
+            "Data Scoring and Selection: Compute influence scores by measuring gradient alignment with validation gradients. Select the top 5% of training data 𝒟train\\mathcal{D}_{\\text{train}} based on these scores.",
+            "QLESS follows the same experimental pipeline as LESS to ensure a direct and fair comparison. The key distinction is in the gradient datastore construction step:",
+            "• Projected gradients are quantized using absmax-based scaling, reducing storage from 16-bit floating-point precision to bb-bit integers, where b∈{8,4,2,1}b\\in\\{8,4,2,1\\}.",
+            "• During influence computation, the quantized gradients are reconstructed, normalized, and compared with validation gradients using cosine similarity.",
+            "• The top 5% of training samples 𝒟train\\mathcal{D}_{\\text{train}} are selected based on cumulative influence scores.",
+            "Projected gradients are quantized using absmax-based scaling, reducing storage from 16-bit floating-point precision to bb-bit integers, where b∈{8,4,2,1}b\\in\\{8,4,2,1\\}.",
+            "During influence computation, the quantized gradients are reconstructed, normalized, and compared with validation gradients using cosine similarity.",
+            "The top 5% of training samples 𝒟train\\mathcal{D}_{\\text{train}} are selected based on cumulative influence scores.",
+            "All experiments are conducted on 4 NVIDIA A100 GPUs (40GB). Hyperparameters, optimizer settings, learning rates, and batch sizes are identical to LESS and are detailed in Appendix A for reproducibility."
+          ]
+        },
+        {
+          "title": "Datasets.",
+          "paragraphs": [
+            "We adopt the same datasets used in LESS to ensure consistency. The training data comprises four major instruction-tuning datasets: Flan v2 (100K examples) (Longpre et al., 2023), Chain-of-Thought (100k examples) (Wei et al., 2022), Dolly (15k examples) (Conover et al., 2023), and OpenAssistant (55K examples) (Köpf et al., 2023), totaling approximately 270K training instances. These datasets span diverse instruction types, from single-turn queries to complex reasoning tasks and multi-turn conversations. For validation and evaluation, we use the same benchmarks as LESS: MMLU (Hendrycks et al., 2020), which tests knowledge across 57 academic subjects, BBH (Suzgun et al., 2023) for assessing complex reasoning capabilities, and TyDiQA (Clark et al., 2020) for evaluating cross-lingual understanding across 11 typologically diverse languages. Following LESS, we construct our validation set 𝒟val\\mathcal{D}_{\\text{val}} using few-shot samples from these benchmarks to guide the data selection process."
+          ]
+        },
+        {
+          "title": "Models.",
+          "paragraphs": [
+            "We evaluate QLESS on five language models spanning different architectures and parameter scales: LLaMA2-7B (Touvron et al., 2023), Mistral-7B (Jiang et al., 2023), Qwen2.5-7B (Qwen et al., 2025), LLaMA3.1-8B, and LLaMA3.2-3B (Dubey et al., 2024). This diverse selection enables us to assess the generalizability of our approach across different model families and sizes."
+          ]
+        },
+        {
+          "title": "Baselines.",
+          "paragraphs": [
+            "We compare QLESS against the following baselines:",
+            "1. Random Selection: Randomly sample 5% of the training dataset for instruction tuning. This serves as a lower bound for performance.",
+            "2. LESS (Original): The original LESS framework serves as the main baseline. It involves: Warmup Training: Perform warmup training on a randomly selected 5% subset of the training data 𝒟warmup\\mathcal{D}_{\\text{warmup}} for N=4N=4 epochs. Gradient Feature Extraction: Extract 8192-dimensional gradient features for all training data 𝒟\\mathcal{D} using LoRA-based adaptation with Adam. Data Scoring and Selection: Compute influence scores by measuring gradient alignment with validation gradients. Select the top 5% of training data 𝒟train\\mathcal{D}_{\\text{train}} based on these scores.",
+            "(a) Warmup Training: Perform warmup training on a randomly selected 5% subset of the training data 𝒟warmup\\mathcal{D}_{\\text{warmup}} for N=4N=4 epochs.",
+            "(b) Gradient Feature Extraction: Extract 8192-dimensional gradient features for all training data 𝒟\\mathcal{D} using LoRA-based adaptation with Adam.",
+            "(c) Data Scoring and Selection: Compute influence scores by measuring gradient alignment with validation gradients. Select the top 5% of training data 𝒟train\\mathcal{D}_{\\text{train}} based on these scores.",
+            "(a) Warmup Training: Perform warmup training on a randomly selected 5% subset of the training data 𝒟warmup\\mathcal{D}_{\\text{warmup}} for N=4N=4 epochs.",
+            "(b) Gradient Feature Extraction: Extract 8192-dimensional gradient features for all training data 𝒟\\mathcal{D} using LoRA-based adaptation with Adam.",
+            "(c) Data Scoring and Selection: Compute influence scores by measuring gradient alignment with validation gradients. Select the top 5% of training data 𝒟train\\mathcal{D}_{\\text{train}} based on these scores.",
+            "Random Selection: Randomly sample 5% of the training dataset for instruction tuning. This serves as a lower bound for performance.",
+            "LESS (Original): The original LESS framework serves as the main baseline. It involves:",
+            "(a) Warmup Training: Perform warmup training on a randomly selected 5% subset of the training data 𝒟warmup\\mathcal{D}_{\\text{warmup}} for N=4N=4 epochs.",
+            "(b) Gradient Feature Extraction: Extract 8192-dimensional gradient features for all training data 𝒟\\mathcal{D} using LoRA-based adaptation with Adam.",
+            "(c) Data Scoring and Selection: Compute influence scores by measuring gradient alignment with validation gradients. Select the top 5% of training data 𝒟train\\mathcal{D}_{\\text{train}} based on these scores.",
+            "Warmup Training: Perform warmup training on a randomly selected 5% subset of the training data 𝒟warmup\\mathcal{D}_{\\text{warmup}} for N=4N=4 epochs.",
+            "Gradient Feature Extraction: Extract 8192-dimensional gradient features for all training data 𝒟\\mathcal{D} using LoRA-based adaptation with Adam.",
+            "Data Scoring and Selection: Compute influence scores by measuring gradient alignment with validation gradients. Select the top 5% of training data 𝒟train\\mathcal{D}_{\\text{train}} based on these scores."
+          ]
+        },
+        {
+          "title": "Our Method.",
+          "paragraphs": [
+            "QLESS follows the same experimental pipeline as LESS to ensure a direct and fair comparison. The key distinction is in the gradient datastore construction step:",
+            "• Projected gradients are quantized using absmax-based scaling, reducing storage from 16-bit floating-point precision to bb-bit integers, where b∈{8,4,2,1}b\\in\\{8,4,2,1\\}.",
+            "• During influence computation, the quantized gradients are reconstructed, normalized, and compared with validation gradients using cosine similarity.",
+            "• The top 5% of training samples 𝒟train\\mathcal{D}_{\\text{train}} are selected based on cumulative influence scores.",
+            "Projected gradients are quantized using absmax-based scaling, reducing storage from 16-bit floating-point precision to bb-bit integers, where b∈{8,4,2,1}b\\in\\{8,4,2,1\\}.",
+            "During influence computation, the quantized gradients are reconstructed, normalized, and compared with validation gradients using cosine similarity.",
+            "The top 5% of training samples 𝒟train\\mathcal{D}_{\\text{train}} are selected based on cumulative influence scores."
+          ]
+        },
+        {
+          "title": "Implementation Details.",
+          "paragraphs": [
+            "All experiments are conducted on 4 NVIDIA A100 GPUs (40GB). Hyperparameters, optimizer settings, learning rates, and batch sizes are identical to LESS and are detailed in Appendix A for reproducibility."
+          ]
+        },
+        {
+          "title": "4.2 Main Results",
+          "paragraphs": [
+            "The results of our experiments, as summarized in Table 1 and Table 4, highlight the efficacy of QLESS in balancing storage efficiency and downstream model performance across various bit-width configurations. Our analysis focuses on the trade-offs between performance and storage, the generalizability of QLESS across models, and the surprising robustness of extreme quantization.",
+            "Our experiments demonstrate that QLESS achieves competitive performance across all evaluated models and benchmarks while significantly reducing storage requirements compared to LESS. On most benchmarks, QLESS results in comparable or better performance than LESS and the random baselines. Most notably, even with 1-bit quantization, Llama 3.1 8B for example achieves an average score of 65.93, exceeding the random 5% baseline of 64.71, demonstrating the robustness of our approach under extreme quantization.",
+            "QLESS demonstrates a notable reduction in memory requirements while retaining competitive performance relative to LESS, particularly at higher bit-width configurations. For instance, 8-bit QLESS achieves results comparable to LESS on most benchmarks, despite cutting the gradient datastore size from 16.54 GB to around 8.27 GB. As the bit-width is lowered to 4-bit and 2-bit, performance declines moderately but still yields substantial storage savings (around 4.14 GB and 2.07 GB, respectively). Even at 1-bit precision, QLESS remains only a few points behind 16-bit performance while requiring just 1.03 GB of storage, indicating that coarse directional information can be enough for effective data valuation.",
+            "Across TyDiQA, MMLU, and BBH, QLESS at 8-bit precision frequently matches LESS, and 4-bit or 2-bit configurations remain within a tolerable performance gap. Although BBH can be more sensitive to quantization, 1-bit QLESS still performs competitively, confirming its resilience. These results underscore that even extreme compression maintains sufficient gradient information for robust data selection.",
+            "A particularly striking outcome is the effectiveness of 1-bit QLESS, which often attains performance near that of higher-bit variants. This finding challenges the assumption that low-precision representations inevitably undermine gradient-based methods. Our evidence suggests that a uniform quantization scale can preserve enough directional gradient information for credible influence estimation, even under the most aggressive compression setting."
+          ]
+        },
+        {
+          "title": "Overall Performance.",
+          "paragraphs": [
+            "Our experiments demonstrate that QLESS achieves competitive performance across all evaluated models and benchmarks while significantly reducing storage requirements compared to LESS. On most benchmarks, QLESS results in comparable or better performance than LESS and the random baselines. Most notably, even with 1-bit quantization, Llama 3.1 8B for example achieves an average score of 65.93, exceeding the random 5% baseline of 64.71, demonstrating the robustness of our approach under extreme quantization."
+          ]
+        },
+        {
+          "title": "Performance vs. Storage Trade-Off.",
+          "paragraphs": [
+            "QLESS demonstrates a notable reduction in memory requirements while retaining competitive performance relative to LESS, particularly at higher bit-width configurations. For instance, 8-bit QLESS achieves results comparable to LESS on most benchmarks, despite cutting the gradient datastore size from 16.54 GB to around 8.27 GB. As the bit-width is lowered to 4-bit and 2-bit, performance declines moderately but still yields substantial storage savings (around 4.14 GB and 2.07 GB, respectively). Even at 1-bit precision, QLESS remains only a few points behind 16-bit performance while requiring just 1.03 GB of storage, indicating that coarse directional information can be enough for effective data valuation."
+          ]
+        },
+        {
+          "title": "Robustness Across Benchmarks.",
+          "paragraphs": [
+            "Across TyDiQA, MMLU, and BBH, QLESS at 8-bit precision frequently matches LESS, and 4-bit or 2-bit configurations remain within a tolerable performance gap. Although BBH can be more sensitive to quantization, 1-bit QLESS still performs competitively, confirming its resilience. These results underscore that even extreme compression maintains sufficient gradient information for robust data selection."
+          ]
+        },
+        {
+          "title": "Insights into 1-Bit Quantization.",
+          "paragraphs": [
+            "A particularly striking outcome is the effectiveness of 1-bit QLESS, which often attains performance near that of higher-bit variants. This finding challenges the assumption that low-precision representations inevitably undermine gradient-based methods. Our evidence suggests that a uniform quantization scale can preserve enough directional gradient information for credible influence estimation, even under the most aggressive compression setting."
+          ]
+        }
+      ]
+    },
+    "5 Ablation Studies and Analysis": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Effect of QLoRA on Gradient Extraction.",
+          "paragraphs": [
+            "Motivated by the desire to further reduce memory usage during gradient extraction, we replace the standard LoRA with QLoRA (Dettmers et al., 2024) in our QLESS pipeline. Specifically, for model quantization, we employ the LLM int8 approach (8-bit) (Dettmers et al., 2022) and bitsandbytes NF4 (4-bit) (Dettmers et al., 2024), enabling more efficient parameter storage while still preserving key model capabilities. Our primary question is whether QLoRA—when combined with gradient quantization—meaningfully degrades the gradient fidelity required for accurate influence estimation.",
+            "As shown in Table 2 and Table 5, the memory footprint drops from around 32–35 GB down to 22–26 GB for both LLaMA2-7B and Qwen2.5-7B, yet the average performance on TyDiQA, MMLU, and BBH remains close to that of higher-precision baselines. Although there is a minor drop in scores when combining QLoRA with 1-bit or 2-bit gradient quantization, the overall performance remains well above random-selection levels. These results suggest that using QLoRA in tandem with QLESS provides a viable solution for resource-constrained environments, where aggressive quantization of both model and gradients can significantly cut memory costs while preserving sufficient directional information for robust data selection."
+          ]
+        },
+        {
+          "title": "Analyzing Sparsity Effects of Absmax Quantization",
+          "paragraphs": [
+            "While absmax-based quantization effectively compresses gradients, it can induce significant sparsity as bit-width decreases. In particular, most gradient values collapse into the zero bin for 2-bit and 4-bit settings, leading to a heavily sparse representation that degrades dot-product operations crucial for influence computation. This effect arises because the Gaussian-like distribution of gradients under absmax scaling often places a large fraction of values near zero, exacerbating the loss of directional information.",
+            "To counteract this, we explore absmean-based quantization, which shifts the quantization scale to emphasize the mean absolute value rather than the maximum. By pushing values away from zero and closer to the outer bins, absmean-based quantization yields a denser distribution of nonzero entries, thereby preserving more effective gradient directions for similarity calculations. Interestingly, 1-bit quantization does not exhibit the extreme sparsity problem because its representation inherently omits a zero bin. Figure 3 provides visualizations showing how absmax-based quantization leads to severe zero bin occupancy in low-bit regimes and how absmean-based quantization alleviates this issue at the cost of reducing the fidelity of gradient information, especially in 8-bit and 4-bit precision.",
+            "Table 3 compares absmean and absmax quantization for LLaMA2-7B under various bit-widths. At higher precisions (e.g., 16-bit), absmax slightly outperforms absmean on TyDiQA and BBH, resulting in a higher overall average (48.59 vs. 47.80). However, as bit-width decreases to 4-bit and 2-bit, absmean consistently yields better or on-par results across all benchmarks, notably improving TyDiQA scores and maintaining competitive performance on MMLU and BBH. This reversal suggests that absmean’s tendency to push values away from zero is more robust when the quantization granularity is coarse, mitigating the zero-bin effect that degrades similarity computation."
+          ]
+        },
+        {
+          "title": "Empirical results on selected data percentage.",
+          "paragraphs": [
+            "Our main experiments follow LESS (Xia et al., 2025) in selecting only 5% of data for fair comparisons, although there has yet been empirical results on whether or not this is the optimal percentage. We experiment on selecting 0.1%, 0.5%, 1%, 2%, and 10% in addition to 5% of data, selected using QLESS specifically at 16-bit model precision and 1-bit gradient store quantization using Llama 2 7B and Qwen 2.5 7B on the 3 benchmarks.",
+            "The results can be seen in Figure 4. Interestingly, we find that the performance of the models are already obtainable even at 0.5%. Selecting only 0.1% may not be enough, but performance on these benchmarks plateaus starting from 0.5% up to 5% and only goes up slightly at 10%. These results suggest that even with a tighter budget, it is still possible to gain performance with QLESS to some degree."
+          ]
+        }
+      ]
+    },
+    "6 Related Work": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Gradient-based data valuation and selection.",
+          "paragraphs": [
+            "Data valuation techniques have evolved from computationally intensive leave-one-out approaches to gradient-based strategies (Koh & Liang, 2017). TracIn (Garima et al., 2020) measures a training sample’s impact on validation by aligning gradients at multiple checkpoints, offering a tractable alternative to second-order influence functions. Subsequent work refines gradient-based valuation to handle larger models and datasets, incorporating methods such as random projection (Park et al., 2023; Xia et al., 2025) and LoRA-based efficient gradient extraction (Choe et al., 2024; Kwon et al., 2024; Xia et al., 2025). Our QLESS framework furthers this line of research by adding quantization to the gradient datastore, reducing memory overhead without compromising selection effectiveness."
+          ]
+        },
+        {
+          "title": "Efficient fine-tuning and adaptation of LLMs.",
+          "paragraphs": [
+            "Parameter-efficient fine-tuning techniques reduce the overhead of adapting large models by training only a small fraction of parameters. LoRA (Hu et al., 2021), QLoRA (Dettmers et al., 2024), and various adapter-based methods (Zhang et al., 2023; Hyeon-Woo et al., 2022; YEH et al., 2024; Qiu et al., 2023; Liu et al., 2024) significantly lower GPU memory usage during specialization. QLESS leverages these developments by integrating parameter-efficient gradient extraction with quantization-based compression, allowing for more resource-friendly data selection in instruction tuning scenarios."
+          ]
+        },
+        {
+          "title": "Gradient and model compression.",
+          "paragraphs": [
+            "Minimizing communication overhead in distributed and federated learning has sparked a range of gradient compression methods (Dettmers, 2016; Bernstein et al., 2018; Wen et al., 2017; Alistarh et al., 2017; Aji & Heafield, 2017; Wangni et al., 2018; Stich et al., 2018), which reduce precision or introduce sparsity while preserving convergence quality. These strategies are critical for large-scale model training where exchanging high-precision gradients is infeasible. Inspired by these insights, our approach applies quantization to the gradient datastore, substantially reducing storage costs while maintaining effective influence computations for data valuation."
+          ]
+        },
+        {
+          "title": "Quantized Random Projection",
+          "paragraphs": [
+            "Quantized random projection (QRP) is a powerful technique for dimensionality reduction and efficient similarity search. Early works (Achlioptas, 2003; Jacques, 2015) established its theoretical foundations, demonstrating that QRP can preserve pairwise distances while significantly reducing storage requirements. Subsequent studies have refined these guarantees, exploring various quantization schemes and showing that even with aggressive compression, high-dimensional vectors (such as gradients) retain sufficient geometric information for accurate similarity computations (Li et al., 2006, 2016; Jacques & Cambareri, 2017). Despite its success in other domains, QRP’s application to gradient-based data valuation in large language models remains largely unexplored, motivating our development of QLESS."
+          ]
+        }
+      ]
+    },
+    "7 Conclusion": {
+      "paragraphs": [
+        "We propose QLESS, a quantization-enhanced data selection algorithm that extends LESS with gradient compression techniques (§3). QLESS maintains selection effectiveness while dramatically reducing storage requirements through absmax-based quantization of gradient features (§3). Our experiments in §4 demonstrate that even extreme quantization (1-bit) can achieve competitive performance compared to half-precision baselines across multiple model architectures. Looking forward, QLESS could be extended to support dynamic quantization schemes that adapt to gradient distributions during training. The surprising effectiveness of 1-bit representations also suggests investigating theoretical connections between gradient quantization and influence estimation."
+      ],
+      "subsections": [
+        {
+          "title": "7.1 Limitations",
+          "paragraphs": [
+            "Despite QLESS’s strong performance, several limitations warrant discussion. First, while our method substantially reduces storage requirements, the initial gradient computation still entails significant computational overhead. Although using QLoRA can help mitigate this cost, especially for large language models, further research is necessary to lower the overall gradient extraction burden for extensive datasets. Second, our sequential compression approach—applying random projection followed by quantization—may not optimally preserve influence relationships, as joint optimization of dimensionality reduction and precision reduction could potentially retain more information. Finally, the effectiveness of different quantization schemes (e.g., absmax vs. absmean) can vary by bit width, model architecture, and dataset characteristics; thus, practitioners must carefully select and empirically validate suitable strategies for each new scenario."
+          ]
+        }
+      ]
+    },
+    "8 Impact Statement": {
+      "paragraphs": [
+        "This paper presents work whose goal is to advance the field of Machine Learning. There are many potential societal consequences of our work, none which we feel must be specifically highlighted here."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Experimental Details": {
+      "paragraphs": [
+        "All experiments were conducted using the parameter-efficient fine-tuning method LoRA (Hu et al., 2021). We employed a learning rate scheduler with linear warm-up and cosine decay, reaching a peak learning rate of 2×10−52\\times 10^{-5}. Training was carried out for 4 epochs across all selected datasets with a batch size of 128. For the LoRA module, we specified a rank of 64, an α\\alpha value of 256, a dropout rate of 0.1, and learned LoRA matrices for query, key, value, and output projection layers.",
+        "We performed three trials using distinct random seeds. For random selection approaches, this involved selecting three different random subsets from the training dataset. In our approach (QLESS), this meant conducting warmup training with various subsets of the training data and subsequently selecting different subsets for each trial from each warmup-trained model. We maintained consistent optimization seeds across all experiments to ensure reproducibility.",
+        "We followed an evaluation procedure similar to (Xia et al., 2025), focusing on three target tasks. For MMLU, we reported 5-shot accuracy on the test set, averaging results across 57 subtasks. For TyDiQA, we measured 1-shot macro-averaged F1 over all 11 languages using the gold-passage setup. For BBH, we computed the 3-shot exact match score across all tasks, providing chain-of-thought reasoning in each in-context learning example.",
+        "All experiments were conducted on 4 NVIDIA A100 GPUs with 40GB memory. We utilized BFloat16 precision and employed Fully Sharded Data Parallel (FSDP) training with auto-wrapping to optimize memory and computational efficiency. The per-device batch size was set to 1, with gradient accumulation steps adjusted to achieve an effective batch size of 128."
+      ],
+      "subsections": []
+    },
+    "Appendix B Additional Results": {
+      "paragraphs": [
+        "To further validate the effectiveness and generalizability of QLESS, we conducted experiments on two additional large language models: Llama 3.2 3B and Mistral 7B. Table 4 presents the performance of these models, as well as the original Llama 2 7B, across different data selection methods and gradient storage configurations. Table 5 presents the performance of Llama 2 7B under different model and gradient quantization settings.",
+        "[Table: Table 4: Performance of Llama 2 7B, Mistral 7B, and Llama 3.2 3B models with different data selection methods and gradient storage space. Metrics include TyDiQA, MMLU, BBH, and their average in percent (%). Bold and underline denote the best and second best performing setup across selection methods of the same model.]",
+        "[Table: Table 5: Performance of Llama 2 7B under different model and gradient quantization settings across TyDiQA, MMLU, and BBH. The final column presents the average performance across these tasks. Bold and underline denote the best and second best performing setup across model quantization and gradient quantization.]"
+      ],
+      "subsections": []
+    },
+    "Appendix C Qualitative Analysis": {
+      "paragraphs": [
+        "In addition to the quantitative metrics reported above, we examine which specific examples are chosen by QLESS under various quantization levels. Figure 5 shows the distribution of the top 5% selected examples (by influence score) across four instructional datasets (Flan v2, CoT, Dolly, Oasst1) for three validation benchmarks (TyDiQA, MMLU, and BBH). Meanwhile, Tables 6, 7, and 8 present concrete examples selected for each benchmark, illustrating how the chosen samples differ across bit-precision settings.",
+        "[Figure: (a) TyDiQA]",
+        "[Figure: (a) TyDiQA]",
+        "[Figure: (b) MMLU]",
+        "[Figure: (c) BBH]",
+        "[Table: Table 6: Selected sample for TyDiQA validation data]",
+        "[Table: Table 7: Selected sample for MMLU validation data]",
+        "[Table: Table 8: Selected sample for BBH validation data]"
+      ],
+      "subsections": [
+        {
+          "title": "Distribution of Data Sources.",
+          "paragraphs": [
+            "From Figure 5, we observe that the overall composition of the top 5% selected training data remains relatively stable across 16-bit, 8-bit, and 4-bit, and even 1-bit quantizations, showing robustness over extreme quantization. The proportion of each dataset (Flan v2, CoT, Dolly, Oasst1) shift more noticeably at 2-bit, which may be caused by the sparsity effect of quantization (Figure 3). For instance, in BBH (Figure 5 (C)), 2-bit selection draws a larger fraction of examples from Oasst1."
+          ]
+        },
+        {
+          "title": "Granular Example Differences.",
+          "paragraphs": [
+            "For TyDiQA (Table 6), we observe that the 16-bit, 8-bit, and 4-bit variants of QLESS select a highly relevant example that demonstrates the model’s ability to extract factual information from a given passage to answer a question. The 2-bit and 1-bit variants, on the other hand, select examples that test the model’s capacity to combine facts from different sources to answer more complex questions. While these examples are less directly aligned with the original validation example, they still assess important language understanding capabilities. In the case of MMLU (Table 7), the 16-bit, 8-bit, 4-bit, and 1-bit QLESS variants all select a highly relevant example that involves solving a mathematical problem and selecting the correct multiple-choice answer. This aligns well with the problem-solving nature of the original validation example. Interestingly, the 2-bit variant selects a more creative example that tests the model’s ability to generate a descriptive prompt for an image generation task. While less directly relevant, this example still challenges the model’s language understanding and generation abilities. Finally, for BBH (Table 8), all QLESS variants select examples that involve reasoning through a multi-step problem to arrive at a numerical answer. The 16-bit, 8-bit, 4-bit, and 1-bit variants choose a highly relevant example that closely mirrors the step-by-step arithmetic reasoning required in the original validation example. The 2-bit variant, while still testing multi-step reasoning, selects an example that is more focused on logical deduction based on scientific facts."
+          ]
+        },
+        {
+          "title": "Interpretation.",
+          "paragraphs": [
+            "These observations indicate that QLESS largely preserves consistent types of top-ranked examples at 16-bit, 8-bit, 4-bit, and even 1-bit. Only the 2-bit quantization stands out as notably different, likely because the jump in sparsity degrades data valuation precision enough to emphasize distinct prompts. Although our quantitative results in earlier sections show that 2-bit can still perform reasonably well, the shift in selected data highlights the delicate balance between extreme compression and influence fidelity. These qualitative findings reinforce the notion that QLESS is robust to quantization—even down to 1-bit—while hinting that 2-bit may require closer calibration to avoid undesired selection biases."
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "Achlioptas (2003) Achlioptas, D. Database-friendly random projections: Johnson-lindenstrauss with binary coins. Journal of Computer and System Sciences, 66(4):671–687, 2003. ISSN 0022-0000. doi: https://doi.org/10.1016/S0022-0000(03)00025-4. URL https://www.sciencedirect.com/science/article/pii/S0022000003000254. Special Issue on PODS 2001.",
+    "Aji & Heafield (2017) Aji, A. F. and Heafield, K. Sparse communication for distributed gradient descent. In Palmer, M., Hwa, R., and Riedel, S. (eds.), Proceedings of the 2017 Conference on Empirical Methods in Natural Language Processing, pp. 440–445, Copenhagen, Denmark, September 2017. Association for Computational Linguistics. doi: 10.18653/v1/D17-1045. URL https://aclanthology.org/D17-1045/.",
+    "Alistarh et al. (2017) Alistarh, D., Grubic, D., Li, J. Z., Tomioka, R., and Vojnovic, M. Qsgd: communication-efficient sgd via gradient quantization and encoding. In Proceedings of the 31st International Conference on Neural Information Processing Systems, NIPS’17, pp. 1707–1718, Red Hook, NY, USA, 2017. Curran Associates Inc. ISBN 9781510860964.",
+    "Bernstein et al. (2018) Bernstein, J., Wang, Y.-X., Azizzadenesheli, K., and Anandkumar, A. signsgd: Compressed optimisation for non-convex problems. In International Conference on Machine Learning, pp. 560–569. PMLR, 2018.",
+    "Charikar (2002) Charikar, M. S. Similarity estimation techniques from rounding algorithms. In Proceedings of the Thiry-Fourth Annual ACM Symposium on Theory of Computing, STOC ’02, pp. 380–388, New York, NY, USA, 2002. Association for Computing Machinery. ISBN 1581134959. doi: 10.1145/509907.509965. URL https://doi.org/10.1145/509907.509965.",
+    "Choe et al. (2024) Choe, S. K., Ahn, H., Bae, J., Zhao, K., Kang, M., Chung, Y., Pratapa, A., Neiswanger, W., Strubell, E., Mitamura, T., Schneider, J., Hovy, E., Grosse, R., and Xing, E. What is your data worth to gpt? llm-scale data valuation with influence functions, 2024. URL https://arxiv.org/abs/2405.13954.",
+    "Clark et al. (2020) Clark, J. H., Choi, E., Collins, M., Garrette, D., Kwiatkowski, T., Nikolaev, V., and Palomaki, J. TyDi QA: A benchmark for information-seeking question answering in typologically diverse languages. Transactions of the Association for Computational Linguistics, 2020.",
+    "Conover et al. (2023) Conover, M., Hayes, M., Mathur, A., Xie, J., Wan, J., Shah, S., Ghodsi, A., Wendell, P., Zaharia, M., and Xin, R. Free Dolly: Introducing the world’s first truly open instruction-tuned LLM, 2023.",
+    "Dettmers (2016) Dettmers, T. 8-bit approximations for parallelism in deep learning. In ICLR (Poster), 2016. URL http://arxiv.org/abs/1511.04561.",
+    "Dettmers et al. (2022) Dettmers, T., Lewis, M., Belkada, Y., and Zettlemoyer, L. Llm.int8(): 8-bit matrix multiplication for transformers at scale, 2022. URL https://arxiv.org/abs/2208.07339.",
+    "Dettmers et al. (2024) Dettmers, T., Pagnoni, A., Holtzman, A., and Zettlemoyer, L. Qlora: efficient finetuning of quantized llms. In Proceedings of the 37th International Conference on Neural Information Processing Systems, NIPS ’23, Red Hook, NY, USA, 2024. Curran Associates Inc.",
+    "Dubey et al. (2024) Dubey, A., Jauhri, A., Pandey, A., Kadian, A., Al-Dahle, A., Letman, A., Mathur, A., Schelten, A., Yang, A., Fan, A., et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783, 2024.",
+    "Garima et al. (2020) Garima, Liu, F., Kale, S., and Sundararajan, M. Estimating training data influence by tracing gradient descent. In Proceedings of the 34th International Conference on Neural Information Processing Systems, NIPS ’20, Red Hook, NY, USA, 2020. Curran Associates Inc. ISBN 9781713829546.",
+    "Hendrycks et al. (2020) Hendrycks, D., Burns, C., Basart, S., Zou, A., Mazeika, M., Song, D., and Steinhardt, J. Measuring massive multitask language understanding. In International Conference on Learning Representations, 2020.",
+    "Hu et al. (2021) Hu, E. J., Shen, Y., Wallis, P., Allen-Zhu, Z., Li, Y., Wang, S., Wang, L., and Chen, W. Lora: Low-rank adaptation of large language models. arXiv preprint arXiv:2106.09685, 2021.",
+    "Hyeon-Woo et al. (2022) Hyeon-Woo, N., Ye-Bin, M., and Oh, T.-H. Fedpara: Low-rank hadamard product for communication-efficient federated learning. In International Conference on Learning Representations, 2022. URL https://openreview.net/forum?id=d71n4ftoCBy.",
+    "Jacques (2015) Jacques, L. A quantized johnson–lindenstrauss lemma: The finding of buffon’s needle. IEEE Transactions on Information Theory, 61(9):5012–5027, 2015. doi: 10.1109/TIT.2015.2453355.",
+    "Jacques & Cambareri (2017) Jacques, L. and Cambareri, V. Time for dithering: fast and quantized random embeddings via the restricted isometry property. Information and Inference: A Journal of the IMA, 6(4):441–476, 04 2017. ISSN 2049-8764. doi: 10.1093/imaiai/iax004. URL https://doi.org/10.1093/imaiai/iax004.",
+    "Jiang et al. (2023) Jiang, A. Q., Sablayrolles, A., Mensch, A., Bamford, C., Chaplot, D. S., Casas, D. d. l., Bressand, F., Lengyel, G., Lample, G., Saulnier, L., et al. Mistral 7b. arXiv preprint arXiv:2310.06825, 2023.",
+    "Johnson & Lindenstrauss (1984) Johnson, W. B. and Lindenstrauss, J. Extensions of lipschitz mappings into hilbert space. Contemporary mathematics, 26:189–206, 1984.",
+    "Koh & Liang (2017) Koh, P. W. and Liang, P. Understanding black-box predictions via influence functions. In International conference on machine learning, pp. 1885–1894. PMLR, 2017.",
+    "Köpf et al. (2023) Köpf, A., Kilcher, Y., von Rütte, D., Anagnostidis, S., Tam, Z.-R., Stevens, K., Barhoum, A., Duc, N. M., Stanley, O., Nagyfi, R., et al. OpenAssistant conversations–democratizing large language model alignment. 2023.",
+    "Kwon et al. (2024) Kwon, Y., Wu, E., Wu, K., and Zou, J. Datainf: Efficiently estimating data influence in loRA-tuned LLMs and diffusion models. In The Twelfth International Conference on Learning Representations, 2024. URL https://openreview.net/forum?id=9m02ib92Wz.",
+    "Li et al. (2012) Li, M., Rane, S., and Boufounos, P. Quantized embeddings of scale-invariant image features for mobile augmented reality. In 2012 IEEE 14th International Workshop on Multimedia Signal Processing (MMSP), pp. 1–6, 2012. doi: 10.1109/MMSP.2012.6343406.",
+    "Li et al. (2006) Li, P., Hastie, T. J., and Church, K. W. Very sparse random projections. In Proceedings of the 12th ACM SIGKDD International Conference on Knowledge Discovery and Data Mining, KDD ’06, pp. 287–296, New York, NY, USA, 2006. Association for Computing Machinery. ISBN 1595933395. doi: 10.1145/1150402.1150436. URL https://doi.org/10.1145/1150402.1150436.",
+    "Li et al. (2014) Li, P., Mitzenmacher, M., and Shrivastava, A. Coding for random projections. In Xing, E. P. and Jebara, T. (eds.), Proceedings of the 31st International Conference on Machine Learning, volume 32 of Proceedings of Machine Learning Research, pp. 676–684, Bejing, China, 22–24 Jun 2014. PMLR. URL https://proceedings.mlr.press/v32/lie14.html.",
+    "Li et al. (2016) Li, P., Mitzenmacher, M., and Slawski, M. Quantized random projections and non-linear estimation of cosine similarity. In Lee, D., Sugiyama, M., Luxburg, U., Guyon, I., and Garnett, R. (eds.), Advances in Neural Information Processing Systems, volume 29. Curran Associates, Inc., 2016. URL https://proceedings.neurips.cc/paper_files/paper/2016/file/186a157b2992e7daed3677ce8e9fe40f-Paper.pdf.",
+    "Liu et al. (2024) Liu, W., Qiu, Z., Feng, Y., Xiu, Y., Xue, Y., Yu, L., Feng, H., Liu, Z., Heo, J., Peng, S., Wen, Y., Black, M. J., Weller, A., and Schölkopf, B. Parameter-efficient orthogonal finetuning via butterfly factorization. In The Twelfth International Conference on Learning Representations, 2024. URL https://openreview.net/forum?id=7NzgkEdGyr.",
+    "Longpre et al. (2023) Longpre, S., Hou, L., Vu, T., Webson, A., Chung, H. W., Tay, Y., Zhou, D., Le, Q. V., Zoph, B., Wei, J., et al. The flan collection: Designing data and methods for effective instruction tuning. arXiv preprint arXiv:2301.13688, 2023.",
+    "Park et al. (2023) Park, S. M., Georgiev, K., Ilyas, A., Leclerc, G., and Madry, A. Trak: attributing model behavior at scale. In Proceedings of the 40th International Conference on Machine Learning, ICML’23. JMLR.org, 2023.",
+    "Qiu et al. (2023) Qiu, Z., Liu, W., Feng, H., Xue, Y., Feng, Y., Liu, Z., Zhang, D., Weller, A., and Schölkopf, B. Controlling text-to-image diffusion by orthogonal finetuning. In Thirty-seventh Conference on Neural Information Processing Systems, 2023. URL https://openreview.net/forum?id=K30wTdIIYc.",
+    "Qwen et al. (2025) Qwen, :, Yang, A., Yang, B., Zhang, B., Hui, B., Zheng, B., Yu, B., Li, C., Liu, D., Huang, F., Wei, H., Lin, H., Yang, J., Tu, J., Zhang, J., Yang, J., Yang, J., Zhou, J., Lin, J., Dang, K., Lu, K., Bao, K., Yang, K., Yu, L., Li, M., Xue, M., Zhang, P., Zhu, Q., Men, R., Lin, R., Li, T., Tang, T., Xia, T., Ren, X., Ren, X., Fan, Y., Su, Y., Zhang, Y., Wan, Y., Liu, Y., Cui, Z., Zhang, Z., and Qiu, Z. Qwen2.5 technical report, 2025. URL https://arxiv.org/abs/2412.15115.",
+    "Stich et al. (2018) Stich, S. U., Cordonnier, J.-B., and Jaggi, M. Sparsified sgd with memory. In Proceedings of the 32nd International Conference on Neural Information Processing Systems, NIPS’18, pp. 4452–4463, Red Hook, NY, USA, 2018. Curran Associates Inc.",
+    "Suzgun et al. (2023) Suzgun, M., Scales, N., Schärli, N., Gehrmann, S., Tay, Y., Chung, H. W., Chowdhery, A., Le, Q., Chi, E., Zhou, D., et al. Challenging big-bench tasks and whether chain-of-thought can solve them. In Findings of the Association for Computational Linguistics: ACL 2023, pp. 13003–13051, 2023.",
+    "Touvron et al. (2023) Touvron, H., Martin, L., Stone, K., Albert, P., Almahairi, A., Babaei, Y., Bashlykov, N., Batra, S., Bhargava, P., Bhosale, S., et al. Llama 2: Open foundation and fine-tuned chat models. arXiv preprint arXiv:2307.09288, 2023.",
+    "Wangni et al. (2018) Wangni, J., Wang, J., Liu, J., and Zhang, T. Gradient sparsification for communication-efficient distributed optimization. In Bengio, S., Wallach, H., Larochelle, H., Grauman, K., Cesa-Bianchi, N., and Garnett, R. (eds.), Advances in Neural Information Processing Systems, volume 31. Curran Associates, Inc., 2018. URL https://proceedings.neurips.cc/paper_files/paper/2018/file/3328bdf9a4b9504b9398284244fe97c2-Paper.pdf.",
+    "Wei et al. (2022) Wei, J., Wang, X., Schuurmans, D., Bosma, M., Xia, F., Chi, E., Le, Q. V., Zhou, D., et al. Chain-of-thought prompting elicits reasoning in large language models. Advances in Neural Information Processing Systems, 35:24824–24837, 2022.",
+    "Wen et al. (2017) Wen, W., Xu, C., Yan, F., Wu, C., Wang, Y., Chen, Y., and Li, H. Terngrad: ternary gradients to reduce communication in distributed deep learning. In Proceedings of the 31st International Conference on Neural Information Processing Systems, NIPS’17, pp. 1508–1518, Red Hook, NY, USA, 2017. Curran Associates Inc. ISBN 9781510860964.",
+    "Xia et al. (2025) Xia, M., Malladi, S., Gururangan, S., Arora, S., and Chen, D. Less: selecting influential data for targeted instruction tuning. In Proceedings of the 41st International Conference on Machine Learning, ICML’24. JMLR.org, 2025.",
+    "YEH et al. (2024) YEH, S.-Y., Hsieh, Y.-G., Gao, Z., Yang, B. B. W., Oh, G., and Gong, Y. Navigating text-to-image customization: From lyCORIS fine-tuning to model evaluation. In The Twelfth International Conference on Learning Representations, 2024. URL https://openreview.net/forum?id=wfzXa8e783.",
+    "Zhang et al. (2023) Zhang, Q., Chen, M., Bukharin, A., He, P., Cheng, Y., Chen, W., and Zhao, T. Adaptive budget allocation for parameter-efficient fine-tuning. In The Eleventh International Conference on Learning Representations, 2023. URL https://openreview.net/forum?id=lq62uWRJjiY."
+  ]
+}

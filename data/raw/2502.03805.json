@@ -1,0 +1,307 @@
+{
+  "title": "Title not found",
+  "authors": "",
+  "abstract": "Large language models have revolutionized natural language processing but face significant challenges of high storage and runtime costs, due to the transformer architecture’s reliance on self-attention, particularly the large Key-Value (KV) cache for long-sequence inference. Recent efforts to reduce KV cache size by pruning less critical entries based on attention weights remain empirical and lack formal grounding. This paper presents a formal study on identifying critical KV cache entries by analyzing attention output perturbation. Our analysis reveals that, beyond attention weights, the value states within KV entries and pretrained parameter matrices are also crucial. Based on this, we propose a perturbation-constrained selection algorithm that optimizes the worst-case output perturbation to identify critical entries. Evaluations on the Needle-in-a-Haystack test and Longbench benchmark show our algorithm enhances state-of-the-art cache eviction methods. Further empirical analysis confirms that our algorithm achieves lower output perturbations in over 92% attention heads in Llama model, thereby providing a significant improvement over existing methods.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Autoregressive large language models (LLMs) using transformer architecture have excelled in tasks, likes dialogue systems (Yi et al., 2024), chatbots (Achiam et al., 2023), intelligent agents (Wang et al., 2024), and code generation (Gu, 2023). However, the quadratic computational cost inherent in the transformer’s self-attention mechanism poses significant challenges for practical deployment. To mitigate this, LLMs often use a Key-Value (KV) cache, which stores intermediate results from the self-attention mechanism. Each KV cache entry corresponds to the KV states of a past token, thus allowing for the bypassing of recomputation of these tokens during autoregressive generation. However, as sequence lengths increase, the number of KV cache entries expands dramatically. This expansion not only leads to considerable GPU memory overhead but also significantly increases I/O latency, hindering the deployment in real-world applications (Sun et al., 2024a).",
+        "Recent research has identified that only a subset of KV cache entries substantially contribute to the output of the self-attention mechanism (Zhang et al., 2024b; Liu et al., 2024a; Tang et al., 2024a). As a result, many methods, known as cache eviction, have been developed to reduce the KV cache size to fit within a given budget by evicting non-critical entries during inference. These methods effectively save GPU memory and improve subsequent decoding speed. Notably, H2O (Zhang et al., 2024b) and Scissorhands (Liu et al., 2024a) observe a power-law distribution of attention weights: a small fraction of KV cache entries consistently dominates the majority of attention weights, aligning closely with the concept of cache entry criticality during inference. These methods introduce frameworks that leverage accumulated attention weights to identify and preserve critical cache entries. Building on this, subsequent works (Adnan et al., 2024; Li et al., 2024; Feng et al., 2024) have refined attention weight accumulation and added operations like pooling and budget allocation to better preserve key information. However, while these methods generally assume that entries with higher attention weights—determined by the similarity between key states in the KV cache and the target query state—are critical, the identification and characterization of “critical cache entries” remain unformalized.",
+        "This assumption raises two key questions:",
+        " 1. What criteria determine the critical KV cache? 2. Is reliance on attention weights alone sufficient for identifying critical cache entries? ",
+        "In this paper, we define the problem of critical cache identification from the perspective of output perturbation and introduce a theoretical framework to bound the worst-case scenario for optimizing practical perturbation. Specifically, we focus on minimizing attention output perturbation when replacing the full KV cache with only critical entries under a given budget. To quantify this perturbation, we employ the simple L1L_{1} distance and derive its upper bound111We choose the L1L_{1} distance due to its simplicity and effectiveness. More complex metrics, such as the L2L_{2} distance, are equally valid; see Appendix F for related discussions., corresponding to the worst-case perturbation. Our analysis shows that this upper bound is influenced by both the attention weights and the value states projected through the parameter matrix. Based on these insights, we propose a perturbation-constrained selection algorithm that goes beyond mere reliance on attention weights, underscoring the significance of previously overlooked value states and pretrained parameter matrix in identifying critical cache entries.",
+        "We integrate our algorithm into two state-of-the-art (SOTA) cache eviction methods, SnapKV Li et al. (2024) and AdaKV Feng et al. (2024), replacing their reliance on solely attention-weight-based strategies. Through extensive evaluations using Needle-in-a-Haystack tests and 16 datasets from LongBench across two compression scenarios, our algorithm more accurately selects critical cache entries, significantly enhancing post-eviction generation quality under various budget constraints. Further empirical analysis confirms and elucidates the practical benefits of our algorithm: (1) It effectively reduces output perturbation in most attention heads, achieving over 92% heads in the Llama model. (2) Its advantages accumulate across layers, significantly lowering the perturbation in final-layer hidden states. (3) It consistently performs well across various cache sizes, robustly mitigating quality loss under different resource constraints in practical applications. Our contributions can be summarized as follows:",
+        "1. We highlight that current cache eviction methods neglect the crucial problem of identifying critical KV cache entries. To address this, we propose using output perturbation as a criterion for determining criticality. Our analysis shows that attention weights alone are insufficient; the value states projected by the parameter matrix are also essential.",
+        "2. Building on the constraint of the worst-case output perturbation, we propose a novel critical entry selection algorithm. When integrated into SOTA eviction methods, comprehensive evaluations across the Needle-in-a-Haystack test and Longbench benchmark demonstrate its effectiveness in improving generation quality.",
+        "3. Further empirical analysis examines and confirms the benefits of our perturbation-constrained selection algorithm. This analysis also highlights the significant potential for optimizing critical cache selection from the theoretical perspective of output perturbation."
+      ],
+      "subsections": []
+    },
+    "2 Related Works": {
+      "paragraphs": [
+        "Perturbation-based analysis has achieved remarkable success in neural network interpretability and pruning. For example, Catformer Davis et al. (2021) and Admin Liu et al. (2020) utilize output perturbation analysis to create more stable network architectures and enhance training methods. Similarly, pruning techniques Han et al. (2015); Frantar & Alistarh (2023), with Wanda Sun et al. (2024b) as a representative, aim to identify neurons whose removal minimally impacts output, thereby reducing network parameters. In this paper, we present the first analysis of output perturbations aimed at developing more effective selection metrics for cache eviction in efficient LLM inference.",
+        "KV cache eviction aims to retain only critical KV cache entries while evicting non-essential ones to reduce cache size, facilitating efficient long-sequence inference in LLMs. Early methods (Xiao et al., 2023), which preserved recent entries in a sliding window, risked losing important information in long sequences. Techniques like H2O (Zhang et al., 2024b) and Scissorhands (Liu et al., 2024a) used accumulated attention scores to identify key entries, aiming to retain crucial context. Subsequent works refined these methods (Ge et al., 2024b; Adnan et al., 2024; Ge et al., 2024a; Li et al., 2024), with SnapKV (Li et al., 2024) achieving the SOTA performance through introducing observation window-based attention weight accumulation and pooling operations. Recent budget allocation optimization methods (Yang et al., 2024; Zhang et al., 2024a), exemplified by AdaKV (Feng et al., 2024), enhance post-eviction generation by allocating budgets based on attention head characteristics. However, these methods are largely empirical, relying solely on attention weights to identify critical entries. Our paper introduces a novel perturbation-constrained selection algorithm based on in-depth analysis from an output perturbation perspective. This algorithm seamlessly integrates into existing cache eviction methods without altering underlying accumulation processes. In our work, we demonstrate its effectiveness by applying it to SnapKV and AdaKV, all showing consistent improvements in post-eviction generation quality under varying budgets."
+      ],
+      "subsections": []
+    },
+    "3 Critical KV Cache Entry Selection": {
+      "paragraphs": [
+        "For critical cache entry selection, we aim to choose cache entries that effectively represent the entire KV cache during self-attention computation, producing an output that is a close approximation, if not identical. Preliminaries about the relationship between KV cache and generation output are introduced in Section 3.1. Based on that, we formalize the problem of identifying critical cache entries from the perspective of output perturbation (Definition 3.1) in Section 3.2. Subsequently, in Section 3.3, we formalize the output perturbation and derive its upper bound. Then, we propose a two-stage greedy algorithm in Section 3.4 that constrains worst-case perturbations for selecting critical entries, with theoretical analysis provided in Section 3.5. Finally, in Section 3.6 we integrate the algorithm into current SOTA cache eviction methods."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Preliminaries",
+          "paragraphs": [
+            "LLMs utilizing the multi-head self-attention mechanism operate with an autoregressive generation approach. In this setup, each decoding step leverages the most recently generated token to predict the next one. To illustrate this process, we focus on a single attention head as an example. Let X∈ℝn×dX\\in\\mathbb{R}^{n\\times d} denote the embedding matrix for all tokens in the sequence, with x=X−1,:∈ℝ1×dx=X_{-1,:}\\in\\mathbb{R}^{1\\times d} representing the embedding vector of the most recent token, which serves as input at the current time step. The parameter matrices, denoted by WQW^{Q}, WKW^{K}, and WV∈ℝd×dhW^{V}\\in\\mathbb{R}^{d\\times d_{h}} are used to map the token embeddings into their respective Query, Key, and Value states with head dimension dhd_{h} as follows:",
+            "During the decoding phase, the Key and Value states of previously generated tokens (represented by XX) are stored in the KV cache, allowing for the elimination of redundant computation. Accordingly, the query qq, derived from the most recent token xx, attends to the cached Key KK to compute the attention weights AA. These weights are then applied to the cached Value VV, producing an intermediate output. This intermediate result is subsequently transformed into the final output oo of the self-attention mechanism by the output parameter matrix WO∈ℝdh×dW^{O}\\in\\mathbb{R}^{d_{h}\\times d}:"
+          ]
+        },
+        {
+          "title": "3.2 What criteria determine the critical KV cache?",
+          "paragraphs": [
+            "Recent research has demonstrated only a small portion of critical KV cache entries do substantially contribute to the attention output (Zhang et al., 2024b; Liu et al., 2024a). This insight presents promising opportunities to reduce inference costs by evicting a large number of non-critical KV cache entries Li et al. (2024); Zhang et al. (2024a); Feng et al. (2024); Ge et al. (2024b); Adnan et al. (2024); Ge et al. (2024a). However, the key challenge lies in accurately identifying the critical KV cache entries. Ideally, from a high-level perspective, the set of critical KV cache entries should completely represent the entire cache, ensuring for given query state, the selected entries yield the same attention output as the full set of KV pairs. In practice, the number of selected critical cache entries will be constrained by a predefined budget, which is closely tied to the computational resources available in downstream deployments. Consequently, our goal shifts toward minimizing the output perturbation introduced by the replacement. So, the problem can be reformulated as follows.",
+            "Given a critical cache budget bb, the task is to select bb critical KV cache entries ⟨K^,V^⟩\\langle\\hat{K},\\hat{V}\\rangle from a total of nn cache entries ⟨K,V⟩\\langle K,V\\rangle, with the goal of minimizing the perturbation in the attention output oo. By using the L1L_{1} distance ℒ\\mathcal{L} for quantification, the objective is formalized as:",
+            "where o^\\hat{o} represents the attention output produced by the selected ⟨K^,V^⟩\\langle\\hat{K},\\hat{V}\\rangle."
+          ]
+        },
+        {
+          "title": "3.3 Are attention weights sufficient for identifying critical cache entries?",
+          "paragraphs": [
+            "According to Definition 3.1, the goal of identifying critical KV cache entries is to minimize the perturbation ℒ=∥o−o^∥1\\mathcal{L}=\\lVert o-\\hat{o}\\rVert_{1}. To achieve this, we can employ an additive masking ℳ\\mathcal{M} to simulate the removal of non-critical cache entries’ contributions to the final output o^\\hat{o}, thereby altering o^\\hat{o}.",
+            "Thus, the perturbation ℒ\\mathcal{L} can be further expressed as:",
+            "By introducing a mask 𝒩∈ℝn\\mathcal{N}\\in\\mathbb{R}^{n} applied through element-wise multiplication denoted by ⊙\\odot, we can establish the relation between A′A^{\\prime} and AA as follows:",
+            "Let a=q​KT/da=qK^{T}/\\sqrt{d}, we can express the attention weights A′A^{\\prime} under critical cache entries as:",
+            "Considering A=e​x​p​(a)∑i=1ne​x​p​(a)iA=\\frac{exp(a)}{\\sum_{i=1}^{n}exp(a)_{i}}, thus ∑i=1n𝒩i​Ai=∑i=1n𝒩i​e​x​p​(a)i∑i=1ne​x​p​(a)i\\sum_{i=1}^{n}\\mathcal{N}_{i}A_{i}=\\frac{\\sum_{i=1}^{n}\\mathcal{N}_{i}exp(a)_{i}}{\\sum_{i=1}^{n}exp(a)_{i}}. Therefore, A′=𝒩⊙A∑i=1n𝒩i​AiA^{\\prime}=\\frac{\\mathcal{N}\\odot A}{\\sum_{i=1}^{n}\\mathcal{N}_{i}A_{i}}. ∎",
+            "Theorem 3.2 utilizes a multiplicative mask 𝒩\\mathcal{N} to quantifies how their selection impacts the attention weights. However, directly minimizing ℒ\\mathcal{L} for critical cache selection is challenging due to complex matrix operations it requires. Thus we turn to establish an upper bound θ\\theta, as shown in Theorem 3.3.",
+            "The output perturbation ℒ\\mathcal{L} can be bounded by θ\\theta:",
+            "where CC denotes the ∑i=1nAi​∥𝓥i,:∥1\\sum\\nolimits_{i=1}^{n}A_{i}\\lVert\\boldsymbol{\\mathcal{V}}_{i,:}\\rVert_{1} and 𝓥∈ℝn×d=V​WO\\boldsymbol{\\mathcal{V}}\\in\\mathbb{R}^{n\\times d}=VW^{O} denotes all projected values states through parameter matrix WOW^{O}.",
+            "Let 𝓥∈ℝn×d=V​WO\\boldsymbol{\\mathcal{V}}\\in\\mathbb{R}^{n\\times d}=VW^{O} denote all projected value states, thus:",
+            "Given that the multiplicative mask 𝒩\\mathcal{N} is either 0 or 11, the index set i∈[1,n]i\\in[1,n] can be split into I0I_{0} and I1I_{1}, according to its value. Thus:",
+            "Let CC represent ∑i=1nAi​∥𝓥i,:∥1\\sum\\nolimits_{i=1}^{n}A_{i}\\lVert\\boldsymbol{\\mathcal{V}}_{i,:}\\rVert_{1}, a constant independent of the selection of critical entries. We can express ∑i∈I0Ai​∥𝓥i,:∥1\\sum\\nolimits_{i\\in I_{0}}A_{i}\\lVert\\boldsymbol{\\mathcal{V}}_{i,:}\\rVert_{1} as C−∑i∈I1Ai​∥𝓥i,:∥1C-\\sum\\nolimits_{i\\in I_{1}}A_{i}\\lVert\\boldsymbol{\\mathcal{V}}_{i,:}\\rVert_{1}. Thus:",
+            "∎",
+            "We can observe that θ\\theta encompasses not only the attention weights but also the projected value states. This highlights that prior selection methods relying solely on attention weights are suboptimal."
+          ]
+        },
+        {
+          "title": "3.4 Identify critical cache entries by constraining worst-case perturbation.",
+          "paragraphs": [
+            "Drawing on optimization strategies in machine learning, we propose lowering the upper bound of perturbation, effectively constraining the worst-case perturbation and thereby reducing actual perturbations for identifying critical cache entries. However, directly minimizing the upper bound θ\\theta remains non-trivial. To balance both the complexity and selection effectiveness, we introduce a two-stage greedy perturbation-constrained selection Algorithm 1, specifically designed to lower the perturbation upper bound for critical cache entry identification.",
+            "In this algorithm, the total budget bb is divided into two portions based on a hyperparameter α\\alpha. In the first stage, a fraction of the budget, b′=b×αb^{\\prime}=b\\times\\alpha, is allocated to prioritize KV cache entries with high attention weights. In the second stage, the remaining budget, b′′=b−b′b^{\\prime\\prime}=b-b^{\\prime}, is used to consider both the norms of the projected value states and the attention weights 222A small constant ϵ\\epsilon (e.g., 1E-4) is added to attention weights to ensure numerical stability.. This two-stage selection employs a Top-K operation to effectively constrain the worst-case perturbation. To substantiate the effectiveness of our proposed algorithm, we provide a theoretical analysis in the following section."
+          ]
+        },
+        {
+          "title": "3.5 Theoretical analysis of Algorithm1",
+          "paragraphs": [
+            "Our proposed algorithm consists of two stages, referred to as stage 1 and stage 2, which work collaboratively to select critical cache entries. Under the guarantee provided by Assumption 3.4, the selection in stage 1 ensures that stage 2 adheres to the constraints on perturbations, as formalized in Theorem 3.5. Let 𝒩′\\mathcal{N}^{\\prime} and 𝒩′′\\mathcal{N}^{\\prime\\prime} represent the selections from the stage 1 and 2, respectively, satisfying: ∑i=1n𝒩i′=b′\\sum\\nolimits_{i=1}^{n}\\mathcal{N}^{\\prime}_{i}=b^{\\prime} and ∑i=1n𝒩i′′=b′′\\sum\\nolimits_{i=1}^{n}\\mathcal{N}^{\\prime\\prime}_{i}=b^{\\prime\\prime}.Thus, the overall selection is 𝒩=𝒩′+𝒩′′\\mathcal{N}=\\mathcal{N}^{\\prime}+\\mathcal{N}^{\\prime\\prime}.",
+            "In the first stage, a portion of the overall budget b′=b×αb^{\\prime}=b\\times\\alpha is sufficient to collect the cache entries corresponding to the highest attention weights, ensuring their cumulative attention weights σ\\sigma exceed half of the total, i.e., σ=∑i=1n𝒩i′​Ai=∑Topk​(A,b′)>0.5\\sigma=\\sum\\nolimits_{i=1}^{n}\\mathcal{N}^{\\prime}_{i}A_{i}=\\sum\\text{Top}_{k}(A,b^{\\prime})>0.5.",
+            "In this paper, we set α\\alpha in Assumption 3.4 to a fixed value 0.5 based on two key considerations. First, as verified in Appendix A, allocating 50% of the total budget is sufficient to capture enough attention weight in over 99% of attention heads, thereby satisfying Assumption 3.4 across various settings. This is attributed to the power-law distribution of attention weights (Zhang et al., 2024b), where a small fraction of cache entries accounts for the majority of the weights. Second, this choice is both robust and easy to apply across different cache budgets and models. While using different α\\alpha values for specific models, budgets, or attention heads could yield finer optimization, it would also introduce significant search overhead and complicate deployment. Thus, we defer such granular adjustments to future work. Subsequent experiments and visual analyses further confirm that setting α\\alpha to 0.5 is a simple yet effective choice.",
+            "Given the stage 1 selection 𝒩i′\\mathcal{N}^{\\prime}_{i}, the objective 𝒩i′′\\mathcal{N}^{\\prime\\prime}_{i} of stage 2 is to minimize an upper bound θ^\\hat{\\theta} of the output perturbation ℒ\\mathcal{L}, using the remaining budget b′′=b−b′b^{\\prime\\prime}=b-b^{\\prime}.",
+            "From Assumption 3.4, the first stage selection ensures: ∑i=1n𝒩i​Ai>∑i=1n𝒩i′​Ai=σ>0.5\\sum\\nolimits_{i=1}^{n}\\mathcal{N}_{i}A_{i}>\\sum\\nolimits_{i=1}^{n}\\mathcal{N}^{\\prime}_{i}A_{i}=\\sigma>0.5, leading to the inequality: 2−1∑i=1n𝒩i​Ai>2−1σ>02-\\frac{1}{\\sum\\nolimits_{i=1}^{n}\\mathcal{N}_{i}A_{i}}>2-\\frac{1}{\\sigma}>0.",
+            "Let C′=C−(2−1σ)​∑i=1n𝒩i′​Ai​∥𝓥i,:∥1C^{\\prime}=C-\\left(2-\\frac{1}{\\sigma}\\right)\\sum\\nolimits_{i=1}^{n}\\mathcal{N}^{\\prime}_{i}A_{i}\\lVert\\boldsymbol{\\mathcal{V}}_{i,:}\\rVert_{1}, then we can derive a new upper bound θ^\\hat{\\theta} for ℒ\\mathcal{L} factoring by second stage selection 𝒩i′′\\mathcal{N}^{\\prime\\prime}_{i}: θ<C′−(2−1σ)​∑i=1n𝒩i′′​Ai​∥𝓥i,:∥1=θ^\\theta<C^{\\prime}-\\left(2-\\frac{1}{\\sigma}\\right)\\sum\\nolimits_{i=1}^{n}\\mathcal{N}^{\\prime\\prime}_{i}A_{i}\\lVert\\boldsymbol{\\mathcal{V}}_{i,:}\\rVert_{1}=\\hat{\\theta} Thus, minimizing θ^\\hat{\\theta} corresponds to selecting the b′′b^{\\prime\\prime} entries with the highest values of 𝓐i=Ai​∥𝓥​i,:∥1\\boldsymbol{\\mathcal{A}}_{i}=A_{i}\\lVert\\boldsymbol{\\mathcal{V}}{i,:}\\rVert_{1}, as implemented in the stage 2 selection (Algorithm 1). ∎",
+            "Theorem 3.5 demonstrates that our second stage selection directly minimizes an upper bound of output perturbation for identifying critical cache entries. Unlike traditional strategies that rely solely on high attention weights for entry selection, the second stage of our algorithm jointly leverages both the attention weights and the value states projected through the parameter matrix, to directly constrain the worst-case output perturbation."
+          ]
+        },
+        {
+          "title": "3.6 Integrating into SOTA cache eviction methods",
+          "paragraphs": [
+            "We showcase the effectiveness of our algorithm by integrating it into existing cache eviction methods that rely on accumulated attention weights for selecting critical entries. Current SOTA cache eviction workflow is established by SnapKV Li et al. (2024), which introduces an observation window mechanism to stably accumulate attention weights and employs the max pooling operations to avoid missing key information. Subsequent research Zhang et al. (2024a); Feng et al. (2024) highlights the uneven distribution of critical cache entries across different heads, prompting the development of budget allocation strategies. The latest advancement, AdaKV Feng et al. (2024),dynamically detects variations in critical KV cache entries across heads during runtime, allowing for flexible budget scheduling and improving output quality based on SnapKV. These two SOTA methods, SnapKV and AdaKV, can be unified as Algorithm 2, with two main components: budget allocation across heads (line 1) and the observation window and pooling mechanism for attention weight accumulation (lines 2–5). Our algorithm could integrate smoothly by replacing the original solely attention weight-based selection(lines 6-10)."
+          ]
+        }
+      ]
+    },
+    "4 Experiments": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "4.1 Models",
+          "paragraphs": [
+            "We select two advanced open-source LLMs for evaluation: Mistral-7B-Instruct-v0.3 (Mistral-7B) (Jiang et al., 2023) and Llama-3.1-8B-Instruct (Llama-3.1-8B) (Dubey et al., 2024), which support maximum sequence lengths of 32K and 128K, respectively."
+          ]
+        },
+        {
+          "title": "4.2 Compression Scenario",
+          "paragraphs": [
+            "We evaluate performance under two scenarios. The first is regular compression scenario, widely adopted in previous research Li et al. (2024); Feng et al. (2024). In this scenario, question instructions are compressed alongside context, allowing for targeted compression for specific question. The second scenario is more challenging, referred to as context-only compression NVIDIA (2024). Here, only the context is provided during compression, with the problem instruction introduced afterward. This scenario is particularly relevant to more challenging tasks, such as multi-turn QA with long documents, where future questions cannot be anticipated during compression. For details, please refer to Appendix H."
+          ]
+        },
+        {
+          "title": "4.3 Baselines",
+          "paragraphs": [
+            "We integrated our algorithm with two cache eviction methods—SnapKV (Li et al., 2024) and AdaKV (Feng et al., 2024). These represent the current SOTA methods in Top-K-based and budget allocation-optimized eviction, respectively. By comparing the quality of their generated output before and after integration, we demonstrate the performance improvements our algorithm brings to these methods. The hyper-parameter α\\alpha in Algorithm 1 was set to 0.5 for all experiments. Other fundamental settings for SnapKV and AdaKV were kept as originally defined, with a max-pooling kernel size of 7 and an observation window size of 32 Feng et al. (2024). We also included earlier work based on the sliding window approach, such as StreamingLLM (SLM), which discards the KV Cache outside the current window. We use its performance as a reference."
+          ]
+        },
+        {
+          "title": "4.4 Needle-in-a-Haystack Evaluation",
+          "paragraphs": [
+            "In the Needle-in-a-Haystack test, a key sentence (the ”needle”) is inserted within a lengthy context (the ”haystack”) to evaluate the model’s retrieval ability. Given the 32K context window limit of the Mistral model, we set the haystack length to 32K and create 100 test samples. The retrieval score is based on successful retrievals, with a maximum of 100. Following the Ruler settings Hsieh et al. (2024), we conduct two tests: 1. Single-retrieval, where one sentence with a magic number is randomly inserted, requiring retrieval at the end. This simple task sees both full-cache Llama and Mistral scoring 100; 2. Multi-retrieval, where four sentences with magic numbers are inserted, requiring all to be retrieved. Here, full-cache Llama maintains a score of 100, while Mistral scores 97.",
+            "Regular Compression. Figures 1(a), 1(b), 2(a) and 2(b) show the results under regular compression. Whether using SnapKV or AdaKV, the Llama model exhibits strong retrieval capabilities, with only a slight drop in retrieval score in the multi-retrieval task when compressed to 2.5% cache size. Our algorithm improves performance where existing methods show losses and maintains lossless scores in other cases. However, for models like Mistral, which face challenges in handling long-context processing, KV cache compression significantly affects retrieval performance, particularly in the multi-retrieval task. In such cases, integrating our algorithm with existing methods significantly enhances performance. For instance, as shown in Figure 1(b), our approach raises the retrieval score from 84.5 to 95.5 when paired with SnapKV at 20% cache size in the Mistral model. Similarly, in Figure 2(b), integrating with the more advanced AdaKV method achieves a comparable improvement, increasing scores from 91.75 to 96.25.",
+            "Context-only Compression. In the context-only compression scenario, the model is unaware of future questions during compression, making it difficult to assess the importance for specific queries. As a result, both eviction methods on Llama and Mistral models show a significant drop in retrieval scores, as illustrated in Figures 1(c), 1(d), 2(c), and 2(d). In this case, the advantages of our method become particularly evident. Using the advanced AdaKV method as a reference, our algorithm achieves substantial improvements. For the Llama model with a 20% cache size, it raises the single retrieval score from 93 to 100 (Figure 2(c)) and the multi retrieval score from 60.5 to 91.25 (Figure 2(d)). Similarly, for the Mistral model with a 40% cache size, our approach boosts the single retrieval score from 53 to 100 (Figure 2(c)) and the multi-retrieval score from 21.75 to 96 (Figure 2(d)), achieving up to a 4.41x improvement."
+          ]
+        },
+        {
+          "title": "4.5 LongBench Evaluation",
+          "paragraphs": [
+            "For a comprehensive evaluation, we incorperated the real-world task benchmark LongBench, consisting of 16 datasets across six task domains: single-document QA, multi-document QA , summarization, few-shot learning, synthetic, and code generation. For each dataset, we apply the LongBench-recommended metrics for quality assessment. Detailed information for each dataset can be found in Appendix D.",
+            "Overview. Figures 4 and 4 illustrate the average quality loss of different methods across 16 datasets in Longbench. As the cache size increases, the quality loss for all compression methods gradually decreases to near-lossless. Notably, the Top-K eviction methods, SnapKV and AdaKV, consistently outperform the sliding window method, StreamingLLM, in both the regular and context-only compression scenarios. However, these two different compression scenarios exhibit significantly different compression losses. For instance, in Figure 3(c), AdaKV shows only around 1.4% and 2.4% quality loss with a 20% cache size in Llama and Mistral, whereas in Figure 3(d), the more challenging context-only compression scenario results in higher quality losses of 12.9% and 11.8%, respectively. Our method effectively reduces the losses of existing methods in both scenarios. For example, with a 20% cache size in the Llama model, when integrated with SnapKV, our method reduces the losses in both the regular and context-only scenarios from 1.8% and 16% to 0.9% and 13%. When combined with AdaKV, it reduces the original losses of 1.4% and to 13% to 1% and 11%, respectively.",
+            "Task domain analysis Tables 1 present a detailed overview of the Llama model’s scores across various task domains in both regular and context-only compression scenarios when our algorithm is integrated into SnapKV and AdaKV on two cache sizes (20% and 40%). Due to space constraints, the corresponding scores for the Mistral model are available in Appendix C. In the regular compression scenario, where original cache eviction results in minimal loss, all methods achieve scores close to the full cache case. Even in this situation, our algorithm enhances quality in 19 out of 24 task domains with two cache size of two base methods, demonstrating its effectiveness. In the more challenging context-only compression scenario, the quality loss from original SnapKV and AdaKV compression provides ample room for optimization by our algorithm, ultimately achieving higher scores across all 24 task domains. This indicates that our method is task-agnostic for enhancing the quality of existing cache eviction methods."
+          ]
+        },
+        {
+          "title": "4.6 Analysis of Practical Output Perturbation",
+          "paragraphs": [
+            "We empirically evaluate our algorithm’s effectiveness in reducing practical output perturbation using the MultiNews dataset, which comprises 200 summarization samples. Tracking the hidden states of the first, third, and fifth decoding tokens with a 20% cache size, we visualize output perturbations with and without our algorithm using the SnapKV method (additional results in Appendix B).",
+            "Head-wise Analysis: Our algorithm significantly reduces head-wise average output perturbation across all samples in the Llama model, achieving lower perturbations in 92%, 92%, and 95% of attention heads for tokens 1, 2, and 3, respectively (Figure 7).",
+            "Layer-wise Analysis: Figure 7 shows how our algorithm progressively reduces perturbation across layers, leading to substantial decreases in the final layer, which directly impacts the generated token vocabulary distribution.",
+            "Budget-wise Analysis: Figure 7 illustrates that our method effectively lowers output perturbation across different cache sizes from 2.5% to 40%, underscoring its robustness of varying budget constrains in real world application.",
+            "These analyses demonstrate that our method robustly reduces practical output perturbation by theoretically constraining worst-case perturbation by Algorithm 1. This results in the post-eviction output hidden states that are more consistent with those from the full KV cache, thereby enhancing generation consistency and reducing quality loss."
+          ]
+        }
+      ]
+    },
+    "5 Conclusion": {
+      "paragraphs": [
+        "In this paper, we pinpoint a key limitation in current cache eviction methods: the reliance on intuitive heuristics of using attention weights to select critical cache entries for eviction. For the first time, we formalize the problem of critical cache entry selection from the perspective of output perturbation and provide a theoretical analysis. Furthermore, we propose a novel algorithm based on constraining output perturbation in the worst-case for critical cache selection, which is then integrated into existing SOTA cache eviction methods. Comprehensive evaluations using 2 cases of Needle-in-a-Haystack test and 16 datasets from Longbench demonstrate that our algorithm improves the performance of advanced cache eviction methods, across different budget constraints. Further empirical analysis also confirms and explains this benefit from the perspective of practical output perturbation: our algorithm consistently yields lower perturbation compared to previous methods that rely solely on attention weights, in various settings."
+      ],
+      "subsections": []
+    },
+    "Impact Statement": {
+      "paragraphs": [
+        "This paper presents work whose goal is to advance the field of Machine Learning. There are many potential societal consequences of our work, none which we feel must be specifically highlighted here."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Validation of Assumption3.4": {
+      "paragraphs": [
+        "We ensure the reliability of Assumption 3.4 by analyzing the cumulative attention weights of critical KV Cache entries ∑i=1n𝒩​i​A​i\\sum\\nolimits_{i=1}^{n}\\mathcal{N}iA{i} in individual heads. As shown in Figure 8, for varying models and budget levels, the majority of attention heads can effectively accumulate over half of the attention weights. The only exceptions are a few attention heads in the first layer. This is primarily due to the low sparsity of attention weights in certain heads of the first layer, a phenomenon that has been noted in many related studies Tang et al. (2024a); Zhang et al. (2024b; a). This observation aligns with the fact that certain heads in the first layer violate Assumption 3.4, which may lead our algorithm to increase the output perturbation of these heads as shown in Figure 7. However, this is not a significant issue in our current algorithm, as these heads constitute less than 1% of the total, and their negative impact is easily offset by the gains from other heads, resulting in substantial overall benefits. A potential solution to this issue is to set the algorithm’s threshold α\\alpha based on the characteristics of each head to achieve greater benefits. However, considering the additional complexity this approach might introduce, especially given the potential impact of different cache sizes and models, we leave this further optimization for future research.",
+        "[Figure: (a) Llama Cache Size 2.5%]",
+        "[Figure: (a) Llama Cache Size 2.5%]",
+        "[Figure: (b) Llama Cache Size 5%]",
+        "[Figure: (c) Llama Cache Size 10%]",
+        "[Figure: (d) Llama Cache Size 20%]",
+        "[Figure: (e) Mistral Cache Size 2.5%]",
+        "[Figure: (f) Mistral Cache Size 5%]",
+        "[Figure: (g) Mistral Cache Size10%]",
+        "[Figure: (h) Mistral Cache Size 20%]"
+      ],
+      "subsections": []
+    },
+    "Appendix B Additional Empirical Analysis": {
+      "paragraphs": [
+        "Figure 9 provides a visualization of the reduced perturbations achieved by our algorithm across different heads in the Mistral model, demonstrating its continued effectiveness. We then present a more detailed visual analysis to support the conclusions in the main paper. Figures 11 11 illustrate the reduced perturbation when combining AdaKV with our algorithm under various layers and budgets. Clearly, in all scenarios, our algorithm significantly reduces output perturbation of AdaKV after cache eviction, resulting in lower quality loss and improved final generation quality.",
+        "[Figure: (a) Token1 ]",
+        "[Figure: (a) Token1 ]",
+        "[Figure: (b) Token2 ]",
+        "[Figure: (c) Token3 ]",
+        "[Figure: (a) Token 1]",
+        "[Figure: (a) Token 1]",
+        "[Figure: (b) Token 2]",
+        "[Figure: (c) Token 3]",
+        "[Figure: (d) Token1]",
+        "[Figure: (e) Token2]",
+        "[Figure: (f) Token3]"
+      ],
+      "subsections": []
+    },
+    "Appendix C Task Domain Analysis of Longbench Results on Mistral Model": {
+      "paragraphs": [
+        "Table 2 presents the performance of the Mistral model on the LongBench benchmark. It shows that our enhanced cache eviction method improves the quality across various task domains. In the context-only compression scenario, the enhanced method shows improvements in 22 out of 24 task domains, while in the regular compression scenario, 18 domains show improvements, demonstrating a clear advantage."
+      ],
+      "subsections": []
+    },
+    "Appendix D Details of 16 Datasets in Longbench": {
+      "paragraphs": [
+        "As a widely used long-context benchmark Feng et al. (2024); Li et al. (2024); Zhang et al. (2024a), LongBench consists of 16 datasets across six task domains: single-document question answering (QA) (Kočiskỳ et al., 2018; Dasigi et al., 2021), multi-document QA (Yang et al., 2018; Ho et al., 2020; Trivedi et al., 2022), summarization (Huang et al., 2021; Zhong et al., 2021; Fabbri et al., 2019), few-shot learning (Joshi et al., 2017; Gliwa et al., 2019; Li & Roth, 2002), synthetic tasks (Bai et al., 2023), and code generation (Guo et al., 2023; Liu et al., 2023). The average token length across all 16 datasets is 6,711. Table 3 provides detailed information on the 16 datasets in LongBench.",
+        "[Table: Table 2: LongBench results on Mistral model.]",
+        "[Table: Table 3: Details of 16 datasets in LongBench.]"
+      ],
+      "subsections": []
+    },
+    "Appendix E Analysis of Previous Solely Attention Weights-Based Selection from a Perturbation Perspective": {
+      "paragraphs": [
+        "Our algorithm differs from the previous solely attention weights-based selection method primarily in Stage 2. Specifically, by modifying stage 2 of our algorithm to perform the same attention weights-based selection operation as in stage 1, our approach will degrade into the previous method. This modification allows us to conveniently apply perturbation-constrained theory to analyze the earlier attention weights-based selection strategy.",
+        "Theorem E.1 demonstrates that the solely attention weights-based selection strategy is equivalent to minimizing the relaxed upper bound θ^r​e​l​a​x\\hat{\\theta}^{relax}. In contrast, our algorithm optimizes a tighter upper bound, θ^\\hat{\\theta}. While this does not guarantee that our approach will yield a strictly better solution, intuitively, an algorithm designed to optimize a tighter bound often achieves better results. Theorem E.1 also provides some insight into why a critical KV Cache subset can replace the entire KV Cache in cache eviction methods. Due to the power-law distribution of attention weights Zhang et al. (2024b), removing most cache entries with near-zero attention weights has a negligible impact on this upper bound. Consequently, the perturbation to the actual output is also bounded by this upper bound.",
+        "[Figure: (a) Single retrieval Llama]",
+        "[Figure: (a) Single retrieval Llama]",
+        "[Figure: (b) Multi retrieval Llama]",
+        "[Figure: (c) Single retrieval Mistral]",
+        "[Figure: (d) Multi retrieval Mistral]",
+        "[Figure: (e) Single retrieval Llama]",
+        "[Figure: (f) Multi retrieval Llama]",
+        "[Figure: (g) Single retrieval Mistral]",
+        "[Figure: (h) Multi retrieval Mistral]"
+      ],
+      "subsections": []
+    },
+    "Appendix F Choice of Distance Metric": {
+      "paragraphs": [
+        "As demonstrated in preliminary evaluations shown in Figures 13 and 13, both L1L_{1} and L2L_{2} distance-based perturbation-constrained selection algorithms effectively enhance the retrieval scores of original SnapKV and AdaKV. However, we don’t observe notable quality improvements when using the L2L_{2} distance compared to the simpler L1L_{1} distance. Additionally, the L1L_{1} distance provides advantages in terms of simplicity and greater stability in half-precision floating-point computations. Thus, we adopt the L1L_{1} distance metric in this paper for our analysis. Future work could explore more complex distance metrics within our framework, offering a promising research direction."
+      ],
+      "subsections": []
+    },
+    "Appendix G Additional Related Works": {
+      "paragraphs": [
+        "Sparse attention methods Jiang et al. (2024); Tang et al. (2024b); Lv et al. (2024) are conceptually related to the KV cache eviction methods discussed in this paper. While KV cache eviction retains only a small subset of essential KV cache entries, sparse attention methods maintain all entries during inference. However, during computation, only the most critical entries are selectively utilized in the sparse attention mechanism. Consequently, sparse attention methods do not reduce the memory footprint of the KV cache but enhance inference speed and often offer better output quality than cache eviction methods Tang et al. (2024b). Existing sparse attention methods typically rely on approximate estimations of attention weights to identify critical entries Tang et al. (2024b); Lv et al. (2024). Future works could explore integrating our proposed perturbation-constrained selection algorithm to refine these methods by achieving more accurate critical cache entry identification.",
+        "Some adaptive methods in KV cache eviction or sparse attention, such as Ge et al. (2024b); Jiang et al. (2024), employ varying critical cache selection strategies tailored to the characteristics of different attention heads. For example, some heads use attention weights based selection, while others utilize fixed patterns, such as recent window-based or special token-based approaches. Our method can also be applied to enhance performance in the head which according to attention weights-based selection strategies, providing a boost to adaptive methods.",
+        "KV cache quantization refers to the application of quantization techniques to reduce the size of the KV cache by lowering the precision of individual cache entries (Liu et al., 2024b; Hooper et al., 2024). For example, this can involve quantizing the original 16-bit KV cache entries to 4-bit or 2-bit precision. However, these methods typically retain all cache entries, making them fundamentally orthogonal to the cache eviction methods explored in this paper."
+      ],
+      "subsections": []
+    },
+    "Appendix H Prompt Templates for Ruler and Longbench in Regular and Context-only Compression Scenarios": {
+      "paragraphs": [
+        "Below are prompt templates for various tasks. We assess performance under two scenarios: regular compression and context-only compression. We adhere to the input prompt format from KVPress NVIDIA (2024), dividing the input into context and question segments. The question segment is highlighted in green, while other colors represent the context segment. In regular compression, both the context and question segments are input into the model and compressed. For context-only compression, where future questions are unpredictable, only the context segment is input for compression. After compression, the question segment is input for answer generation.",
+        "[Table: Table 4: Single retrieval and multi retrieval templates in Needle-in-A-Haystack tests.]",
+        "[Table: Table 5: LongBench templates. Single-Doc. QA Tasks.]",
+        "[Table: Table 6: LongBench templates. Multi-Doc. QA Tasks.]",
+        "[Table: Table 7: LongBench templates. Summarization Tasks.]",
+        "[Table: Table 8: LongBench templates. Few-shot Learning Tasks.]",
+        "[Table: Table 9: LongBench templates. Synthetic Tasks.]",
+        "[Table: Table 10: LongBench templates. Code Tasks.]"
+      ],
+      "subsections": [
+        {
+          "title": "H.1 NIAH Template",
+          "paragraphs": [
+            "In the Needle-in-A-Haystack task, a keyword, referred to as the ”needle”, is embedded within a lengthy context known as the ”haystack”. The objective of this task is to extract the ”needle” from the ”haystack”, which is composed of essays by Paul Graham Kamradt (2023).",
+            "For the Single Needle-in-A-Haystack(S-NIAH) task, the goal is to retrieve a single ”needle”. Similarly, the Multi-Value Needle-in-A-Haystack(MV-NIAH) task requires the extraction of multiple inserted ”needles”. To prevent models from refusing to answer our questions, we append the answer prefix to the input, prompting the models to generate answers."
+          ]
+        },
+        {
+          "title": "H.2 LongBench Template",
+          "paragraphs": [
+            "The construction of the LongBench template follows the official formats Bai et al. (2024) to evaluate performance under regular compression and context-only compression."
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "Achiam et al. (2023) Achiam, J., Adler, S., Agarwal, S., Ahmad, L., Akkaya, I., Aleman, F. L., Almeida, D., Altenschmidt, J., Altman, S., Anadkat, S., et al. Gpt-4 technical report. arXiv preprint arXiv:2303.08774, 2023.",
+    "Adnan et al. (2024) Adnan, M., Arunkumar, A., Jain, G., Nair, P., Soloveychik, I., and Kamath, P. Keyformer: Kv cache reduction through key tokens selection for efficient generative inference. Proceedings of Machine Learning and Systems, 6:114–127, 2024.",
+    "Bai et al. (2023) Bai, Y., Lv, X., Zhang, J., Lyu, H., Tang, J., Huang, Z., Du, Z., Liu, X., Zeng, A., Hou, L., et al. Longbench: A bilingual, multitask benchmark for long context understanding. arXiv preprint arXiv:2308.14508, 2023.",
+    "Bai et al. (2024) Bai, Y., Lv, X., Zhang, J., Lyu, H., Tang, J., Huang, Z., Du, Z., Liu, X., Zeng, A., Hou, L., Dong, Y., Tang, J., and Li, J. Longbench: A bilingual, multitask benchmark for long context understanding, 2024. URL https://arxiv.org/abs/2308.14508.",
+    "Dasigi et al. (2021) Dasigi, P., Lo, K., Beltagy, I., Cohan, A., Smith, N. A., and Gardner, M. A dataset of information-seeking questions and answers anchored in research papers. arXiv preprint arXiv:2105.03011, 2021.",
+    "Davis et al. (2021) Davis, J. Q., Gu, A., Choromanski, K., Dao, T., Re, C., Finn, C., and Liang, P. Catformer: Designing stable transformers via sensitivity analysis. In Meila, M. and Zhang, T. (eds.), Proceedings of the 38th International Conference on Machine Learning, volume 139 of Proceedings of Machine Learning Research, pp. 2489–2499. PMLR, 18–24 Jul 2021. URL https://proceedings.mlr.press/v139/davis21a.html.",
+    "Dubey et al. (2024) Dubey, A., Jauhri, A., Pandey, A., Kadian, A., Al-Dahle, A., Letman, A., Mathur, A., Schelten, A., Yang, A., Fan, A., et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783, 2024.",
+    "Fabbri et al. (2019) Fabbri, A. R., Li, I., She, T., Li, S., and Radev, D. R. Multi-news: A large-scale multi-document summarization dataset and abstractive hierarchical model. arXiv preprint arXiv:1906.01749, 2019.",
+    "Feng et al. (2024) Feng, Y., Lv, J., Cao, Y., Xie, X., and Zhou, S. K. Ada-kv: Optimizing kv cache eviction by adaptive budget allocation for efficient llm inference, 2024. URL https://arxiv.org/abs/2407.11550.",
+    "Frantar & Alistarh (2023) Frantar, E. and Alistarh, D. Sparsegpt: Massive language models can be accurately pruned in one-shot. In International Conference on Machine Learning, pp. 10323–10337. PMLR, 2023.",
+    "Ge et al. (2024a) Ge, S., Zhang, Y., Liu, L., Zhang, M., Han, J., and Gao, J. Model tells you what to discard: Adaptive KV cache compression for LLMs. In The Twelfth International Conference on Learning Representations, 2024a. URL https://openreview.net/forum?id=uNrFpDPMyo.",
+    "Ge et al. (2024b) Ge, S., Zhang, Y., Liu, L., Zhang, M., Han, J., and Gao, J. Model tells you what to discard: Adaptive kv cache compression for llms, 2024b. URL https://arxiv.org/abs/2310.01801.",
+    "Gliwa et al. (2019) Gliwa, B., Mochol, I., Biesek, M., and Wawer, A. Samsum corpus: A human-annotated dialogue dataset for abstractive summarization. arXiv preprint arXiv:1911.12237, 2019.",
+    "Gu (2023) Gu, Q. Llm-based code generation method for golang compiler testing. In Proceedings of the 31st ACM Joint European Software Engineering Conference and Symposium on the Foundations of Software Engineering, pp. 2201–2203, 2023.",
+    "Guo et al. (2023) Guo, D., Xu, C., Duan, N., Yin, J., and McAuley, J. Longcoder: A long-range pre-trained language model for code completion, 2023. URL https://arxiv.org/abs/2306.14893.",
+    "Han et al. (2015) Han, S., Pool, J., Tran, J., and Dally, W. Learning both weights and connections for efficient neural network. Advances in neural information processing systems, 28, 2015.",
+    "Ho et al. (2020) Ho, X., Duong Nguyen, A.-K., Sugawara, S., and Aizawa, A. Constructing a multi-hop QA dataset for comprehensive evaluation of reasoning steps. In Scott, D., Bel, N., and Zong, C. (eds.), Proceedings of the 28th International Conference on Computational Linguistics, pp. 6609–6625, Barcelona, Spain (Online), December 2020. International Committee on Computational Linguistics. doi: 10.18653/v1/2020.coling-main.580. URL https://aclanthology.org/2020.coling-main.580.",
+    "Hooper et al. (2024) Hooper, C., Kim, S., Mohammadzadeh, H., Mahoney, M. W., Shao, Y. S., Keutzer, K., and Gholami, A. Kvquant: Towards 10 million context length llm inference with kv cache quantization. arXiv preprint arXiv:2401.18079, 2024.",
+    "Hsieh et al. (2024) Hsieh, C.-P., Sun, S., Kriman, S., Acharya, S., Rekesh, D., Jia, F., Zhang, Y., and Ginsburg, B. Ruler: What’s the real context size of your long-context language models? arXiv preprint arXiv:2404.06654, 2024.",
+    "Huang et al. (2021) Huang, L., Cao, S., Parulian, N., Ji, H., and Wang, L. Efficient attentions for long document summarization. arXiv preprint arXiv:2104.02112, 2021.",
+    "Jiang et al. (2023) Jiang, A. Q., Sablayrolles, A., Mensch, A., Bamford, C., Chaplot, D. S., Casas, D. d. l., Bressand, F., Lengyel, G., Lample, G., Saulnier, L., et al. Mistral 7b. arXiv preprint arXiv:2310.06825, 2023.",
+    "Jiang et al. (2024) Jiang, H., Li, Y., Zhang, C., Wu, Q., Luo, X., Ahn, S., Han, Z., Abdi, A. H., Li, D., Lin, C.-Y., Yang, Y., and Qiu, L. Minference 1.0: Accelerating pre-filling for long-context llms via dynamic sparse attention, 2024. URL https://arxiv.org/abs/2407.02490.",
+    "Joshi et al. (2017) Joshi, M., Choi, E., Weld, D. S., and Zettlemoyer, L. Triviaqa: A large scale distantly supervised challenge dataset for reading comprehension, 2017. URL https://arxiv.org/abs/1705.03551.",
+    "Kamradt (2023) Kamradt, G. Needle In A Haystack - pressure testing LLMs. Github, 2023. URL https://github.com/gkamradt/LLMTest_NeedleInAHaystack/tree/main.",
+    "Kočiskỳ et al. (2018) Kočiskỳ, T., Schwarz, J., Blunsom, P., Dyer, C., Hermann, K. M., Melis, G., and Grefenstette, E. The narrativeqa reading comprehension challenge. Transactions of the Association for Computational Linguistics, 6:317–328, 2018.",
+    "Li & Roth (2002) Li, X. and Roth, D. Learning question classifiers. In COLING 2002: The 19th International Conference on Computational Linguistics, 2002.",
+    "Li et al. (2024) Li, Y., Huang, Y., Yang, B., Venkitesh, B., Locatelli, A., Ye, H., Cai, T., Lewis, P., and Chen, D. Snapkv: Llm knows what you are looking for before generation. arXiv preprint arXiv:2404.14469, 2024.",
+    "Liu et al. (2020) Liu, L., Liu, X., Gao, J., Chen, W., and Han, J. Understanding the difficulty of training transformers. In Webber, B., Cohn, T., He, Y., and Liu, Y. (eds.), Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing (EMNLP), pp. 5747–5763, Online, November 2020. Association for Computational Linguistics. doi: 10.18653/v1/2020.emnlp-main.463. URL https://aclanthology.org/2020.emnlp-main.463.",
+    "Liu et al. (2023) Liu, T., Xu, C., and McAuley, J. Repobench: Benchmarking repository-level code auto-completion systems, 2023. URL https://arxiv.org/abs/2306.03091.",
+    "Liu et al. (2024a) Liu, Z., Desai, A., Liao, F., Wang, W., Xie, V., Xu, Z., Kyrillidis, A., and Shrivastava, A. Scissorhands: Exploiting the persistence of importance hypothesis for llm kv cache compression at test time. Advances in Neural Information Processing Systems, 36, 2024a.",
+    "Liu et al. (2024b) Liu, Z., Yuan, J., Jin, H., Zhong, S., Xu, Z., Braverman, V., Chen, B., and Hu, X. Kivi: A tuning-free asymmetric 2bit quantization for kv cache. arXiv preprint arXiv:2402.02750, 2024b.",
+    "Lv et al. (2024) Lv, J., Feng, Y., Xie, X., Jia, X., Peng, Q., and Xie, G. Critiprefill: A segment-wise criticality-based approach for prefilling acceleration in llms, 2024. URL https://arxiv.org/abs/2409.12490.",
+    "NVIDIA (2024) NVIDIA. Kvpress, 2024. URL https://github.com/NVIDIA/kvpress.",
+    "Sun et al. (2024a) Sun, H., Chen, Z., Yang, X., Tian, Y., and Chen, B. Triforce: Lossless acceleration of long sequence generation with hierarchical speculative decoding. arXiv preprint arXiv:2404.11912, 2024a.",
+    "Sun et al. (2024b) Sun, M., Liu, Z., Bair, A., and Kolter, J. Z. A simple and effective pruning approach for large language models. In The Twelfth International Conference on Learning Representations, 2024b. URL https://openreview.net/forum?id=PxoFut3dWW.",
+    "Tang et al. (2024a) Tang, J., Zhao, Y., Zhu, K., Xiao, G., Kasikci, B., and Han, S. Quest: Query-aware sparsity for efficient long-context llm inference. arXiv preprint arXiv:2406.10774, 2024a.",
+    "Tang et al. (2024b) Tang, J., Zhao, Y., Zhu, K., Xiao, G., Kasikci, B., and Han, S. Quest: Query-aware sparsity for efficient long-context llm inference, 2024b. URL https://arxiv.org/abs/2406.10774.",
+    "Trivedi et al. (2022) Trivedi, H., Balasubramanian, N., Khot, T., and Sabharwal, A. Musique: Multihop questions via single-hop question composition. Transactions of the Association for Computational Linguistics, 10:539–554, 2022.",
+    "Wang et al. (2024) Wang, L., Ma, C., Feng, X., Zhang, Z., Yang, H., Zhang, J., Chen, Z., Tang, J., Chen, X., Lin, Y., Zhao, W. X., Wei, Z., and Wen, J. A survey on large language model based autonomous agents. Frontiers of Computer Science, 18(6), March 2024. ISSN 2095-2236. doi: 10.1007/s11704-024-40231-1. URL http://dx.doi.org/10.1007/s11704-024-40231-1.",
+    "Xiao et al. (2023) Xiao, G., Tian, Y., Chen, B., Han, S., and Lewis, M. Efficient streaming language models with attention sinks. arXiv preprint arXiv:2309.17453, 2023.",
+    "Yang et al. (2024) Yang, D., Han, X., Gao, Y., Hu, Y., Zhang, S., and Zhao, H. Pyramidinfer: Pyramid kv cache compression for high-throughput llm inference. Association for Computational Linguistics, 2024.",
+    "Yang et al. (2018) Yang, Z., Qi, P., Zhang, S., Bengio, Y., Cohen, W. W., Salakhutdinov, R., and Manning, C. D. Hotpotqa: A dataset for diverse, explainable multi-hop question answering. arXiv preprint arXiv:1809.09600, 2018.",
+    "Yi et al. (2024) Yi, Z., Ouyang, J., Liu, Y., Liao, T., Xu, Z., and Shen, Y. A survey on recent advances in llm-based multi-turn dialogue systems. arXiv preprint arXiv:2402.18013, 2024.",
+    "Zhang et al. (2024a) Zhang, Y., Gao, B., Liu, T., Lu, K., Xiong, W., Dong, Y., Chang, B., Hu, J., Xiao, W., et al. Pyramidkv: Dynamic kv cache compression based on pyramidal information funneling. arXiv preprint arXiv:2406.02069, 2024a.",
+    "Zhang et al. (2024b) Zhang, Z., Sheng, Y., Zhou, T., Chen, T., Zheng, L., Cai, R., Song, Z., Tian, Y., Ré, C., Barrett, C., et al. H2o: Heavy-hitter oracle for efficient generative inference of large language models. Advances in Neural Information Processing Systems, 36, 2024b.",
+    "Zhong et al. (2021) Zhong, M., Yin, D., Yu, T., Zaidi, A., Mutuma, M., Jha, R., Awadallah, A. H., Celikyilmaz, A., Liu, Y., Qiu, X., et al. Qmsum: A new benchmark for query-based multi-domain meeting summarization. arXiv preprint arXiv:2104.05938, 2021."
+  ]
+}

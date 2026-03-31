@@ -1,0 +1,285 @@
+{
+  "title": "Transformers Boost the Performance of Decision Trees on Tabular Data across Sample Sizes",
+  "authors": "Mayuka Jayawardhana1, Renbo Tu2, Samuel Dooley3, Valeriia Cherepanova4,Andrew Gordon Wilson5, Frank Hutter6, Colin White7, Tom Goldstein1, Micah Goldblum81University of Maryland,2University of Toronto,3Meta,4Amazon,5New York University,6University of Freiburg,7Abacus.AI,8Columbia UniversityCorrespondence to:mayukaj@umd.edu,micah.g@columbia.edu.",
+  "abstract": "Large language models (LLMs) perform remarkably well on tabular datasets in zero- and few-shot settings, since they can extract meaning from natural language column headers that describe features and labels. Similarly, TabPFN, a recent non-LLM transformer pretrained on numerous tables for in-context learning, has demonstrated excellent performance for dataset sizes up to a thousand samples. In contrast, gradient-boosted decision trees (GBDTs) are typically trained from scratch on each dataset without benefiting from pretraining data and must learn the relationships between columns from their entries alone since they lack natural language understanding. LLMs and TabPFN excel on small tabular datasets where a strong prior is essential, yet they are not competitive with GBDTs on medium or large datasets, since their context lengths are limited. In this paper, we propose a simple and lightweight approach for fusing large language models and TabPFN with gradient-boosted decision trees, which allows scalable GBDTs to benefit from the natural language capabilities and pretraining of transformers. We name our fusion methods LLM-Boost and PFN-Boost, respectively. While matching or surpassing the performance of the transformer at sufficiently small dataset sizes and GBDTs at sufficiently large sizes, LLM-Boost and PFN-Boost outperform both standalone components on a wide range of dataset sizes in between. We demonstrate state-of-the-art performance against numerous baselines and ensembling algorithms. We find that PFN-Boost achieves the best average performance among all methods we test for all but very small dataset sizes. We release our code at https://github.com/MayukaJ/LLM-Boost.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Tabular data, or spreadsheets, constitute a large portion of real-world machine learning problems [4]. Tabular data comprise (a) columns, each containing a different feature or label; (b) rows, each containing an individual data sample; and (c) column headers describing the content of each column, often in the form of text.",
+        "Gradient-boosted decision trees (GBDTs), such as XGBoost [6], LightGBM [22], and CatBoost [27], have remained the de facto machine learning algorithms for analyzing tabular data over the past decade [24]. They are efficient to train even on a CPU, they achieve competitive performance on a wide variety of datasets and sample sizes, and they can be deployed via user-friendly packages accessible to non-experts. However, gradient-boosted decision trees have two major drawbacks: (a) They only ingest the row features in a table and not the column headers, which may contain useful text descriptions. For example, one may not need training data to anticipate that a hospital patient’s weight is useful for predicting occurrences of heart disease. Instead of leveraging column headers, from which a human might intuit relationships between columns, GBDTs have to learn these relationships from scratch from the feature values themselves. (b) GBDTs are trained from scratch on each dataset, instead of benefiting from vast prior experience on other datasets, a staple of foundation models.",
+        "In contrast to gradient-boosted decision trees, large language models (LLMs) can parse and extract meaning from column headers, enabling them to achieve performance superior to GBDTs on very small tabular datasets with interpretable headers [18]. LLMs can even make accurate zero-shot predictions solely by applying natural language understanding to column headers without in-context training samples at all [18]. Despite their ability to parse column headers, LLMs are severely limited by their limited context length and high fine-tuning costs.",
+        "TabPFN [19] is a tabular transformer, pretrained on a vast number of synthetic tables, that can simultaneously perform in-context learning on an entire trainset and make predictions for the entire testset all in a single forward pass. Similarly to LLMs, TabPFN performance is very strong on small datasets, but it suffers from context-length limitations and can only handle datasets with up to 1000 samples. Therefore, LLMs and TabPFN cannot easily make use of large sample sizes, whereas GBDTs scale well to massive datasets.",
+        "In this paper, we combine the strengths of gradient-boosted decision trees and recent transformers to build models that simultaneously benefit from pretraining and textual column headers while scaling to much larger tabular datasets than LLMs and TabPFN could alone. Our method LLM-Boost, uses LLM predictions as a starting point for GBDTs, and then learns the residuals from the LLM predictions to the label. This technique allows us to not only use the column headers for a strong prior but also benefits from the inductive bias and scalability of decision tree algorithms. In our experiments, LLM-Boost showcases state-of-the-art performance, outcompeting strong baselines including both single models and other ensemble approaches, across a large range of dataset sizes. LLM-Boost excels at small and medium sized datasets that are too large for LLMs yet not large enough that column headers are not beneficial. Motivated by the strong performance of TabPFN, we apply the same boosting approach swapping out LLMs for TabPFN. Importantly, we find that our boosted TabPFN combination, PFN-Boost, achieves the top performance among all methods we consider outside of the very small dataset regime where our boosted LLMs reign supreme. We summarize our contributions as follows.",
+        "• We propose LLM-Boost: a novel yet simple and easy-to-implement boosting mechanism that combines LLMs, which ingest semantic column headers, with GBDTs that can scale to massive datasets.",
+        "• We further propose PFN-Boost, where we instead fuse TabPFN and GBDTs for performance gains over GBDTs alone across dataset sizes without using column headers.",
+        "• We conduct thorough experiments across numerous datasets and sample sizes, comparing to strong baselines. LLM-Boost and PFN-Boost demonstrate consistently strong performance."
+      ],
+      "subsections": []
+    },
+    "2 Related Work": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "2.1 GBDTs for Tabular Data",
+          "paragraphs": [
+            "Gradient boosted decision tree algorithms such as XGBoost [6], Catboost [27] and LightGBM [22] offer state-of-the-art or near state-of-the-art performance on many tabular tasks [16]. Compared to deep learning models with similar performance, GBDTs offer faster training and inference speeds even without GPUs, are easy to tune, and are more straightforward to interpret. However, when compared to deep learning models, tree based models do not generalize as well to diverse unseen data and are not as robust to uninformative features [16]. Recently, TabPFN [19], a transformer for tabular in-context learning has demonstrated superior performance on small datasets [24]. In our work, we adopt GBDTs as a base model due to their ability to benefit from large volumes of data, and we augment them with TabPFN and LLMs using boosting."
+          ]
+        },
+        {
+          "title": "2.2 Boosting",
+          "paragraphs": [
+            "Boosting is an ensembling technique for combining multiple weak learners to form a single strong prediction model [13]. Boosting algorithms are sequential processes whereby new learners are progressively added to predict the residual error of the current ensemble until the error becomes sufficiently small. Gradient boosting additionally provides a mechanism to update the new learners using an arbitrary differentiable loss function via gradient descent [14]. Although there are implementation differences in the GBDT algorithms mentioned above, they share the fundamental process of making predictions using an ensemble of weak decision tree models."
+          ]
+        },
+        {
+          "title": "2.3 LLMs for Tabular Data",
+          "paragraphs": [
+            "Large language models (LLMs) are trained on vast and diverse datasets, enabling them to solve a wide variety of problems, especially in zero- or few-shot settings [18]. Recent works have successfully repurposed LLMs for tabular data related tasks such as table understanding [7], tabular representation learning [21, 5], time series forecasting [17], and quantitative reasoning [30].",
+            "Repurposing LLMs for tabular prediction tasks requires data serialization and prompt engineering. Data serialization is required as LLMs are sequence to sequence models. While direct serialization of the values in a row is possible, converting rows into meaningful human-readable sentences containing the row values and the column headers together aids the LLM in understanding the rows. Prompt engineering methods such as task descriptions and in-context examples as well as fine-tuning the LLM on the tabular prediction task itself can improve the model’s domain-specific abilities.",
+            "Although approaches such as in-context examples and task specific fine-tuning enable the model to see more tabular examples, they come with drawbacks. LLMs are bottle-necked by context length limits, so it is difficult to provide more than a few in-context examples. Additionally, fine-tuning requires considerable computational overhead, even on simple tabular prediction tasks, and often underperforms alternatives such as GBDTs on larger datasets [9, 18].",
+            "Alternatively, LLMs have been used for automatic feature engineering in the tabular domain. Lightweight models, such as GBDTs, that are then trained on the augmented set of features have demonstrated superior performance to those trained on the original features [20, 25]. While this approach is computationally efficient at inference-time compared to our proposed procedure which uses the LLM during inference, the LLM typically only utilizes a small fraction of the table’s samples to generate new features. Additionally, this approach usually requires powerful API models to be effective [20]."
+          ]
+        },
+        {
+          "title": "2.4 TabPFN",
+          "paragraphs": [
+            "TabPFN [19] is a tabular transformer which is pretrained to approximate Bayesian inference on synthetic datasets drawn from a prior. TabPFN performs in-context learning on the whole trainset, which does not require any parameter updates during inference and can make predictions for the entire testset conditioned on the entire trainset in a single forward pass. Superior speed and performance of TabPFN make it ideal for datasets with up to 1000 samples. In fact, TabPFN alone surpasses Amazon’s AutoGluon [11], an automated ensembling framework with support for multiple model classes including GBDTs. However, dataset size limitations remain a significant downside when adopting this approach."
+          ]
+        },
+        {
+          "title": "2.5 Ensembling Different Model Classes for Tabular Data",
+          "paragraphs": [
+            "Due to the contrasting strengths and weaknesses of tree-based algorithms, simple neural networks, and LLMs for tabular data, practitioners often use ensembles to benefit from the strengths of each. In addition to averaging their outputs, another popular ensemble approach is feature stacking [12, 23], where predictions of one model are used as input features for the next."
+          ]
+        }
+      ]
+    },
+    "3 Method": {
+      "paragraphs": [
+        "In this section, we detail our boosting framework. We depict the LLM-Boost algorithm in Figure 1 as PFN-Boost consists of the same steps. Broadly, LLM-Boost and PFN-Boost first take a tabular dataset and extract transformer model scores, or logits, for each row of the table. We then augment a GBDT model by seeding it with the transformer’s logits so that it learns the residuals. When we perform this procedure, we must carefully tune a scaling parameter so that the GBDT is not overly reliant on these transformer predictions but simultaneously does not ignore them. Our approach is equivalent to replacing the first tree of the GBDT ensemble with the static prediction of the transformer, which need to be pre-computed only once for inference and training. We then fit the GBDT to the residuals and evaluate the combined model’s classification performance. We detail our pipeline in the following sections."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Extracting Transformer Scores",
+          "paragraphs": [
+            "In the case of LLM-Boost the first step is to extract the LLM predictions for each row of a given tabular dataset. We create simple natural language, few-shot prompts utilizing the prompt generation and serialization tools developed by Slack and Singh [28]. The prompts are designed so that an instruction-tuned LLM will output one of the classification labels for each row of data. An example prompt for the UCI adult income dataset is given in Figure 2.",
+            "We take the negative of the language modelling loss (mean reduced cross-entropy) of each classification label with the language model output as the language model’s un-normalized prediction score for that class (SCORELLM\\text{SCORE}_{\\text{LLM}}). Note that each classification label can contain multiple words. For example, ‘Greater than 50K’ and ‘Less than or equal to 50K’ for the Adult dataset. Thus, the loss calculation can be over a different number of tokens for each class, which is why we use mean reduction. The exact loss extraction process will differ slightly depending on whether it is a Masked LLM or a Causal LLM. Finally, we center these raw scores around zero by subtracting the mean of the scores. When implementing PFN-Boost, it is straight-forward to extract TabPFN scores as the model directly outputs un-normalized raw prediction scores."
+          ]
+        },
+        {
+          "title": "3.2 Boosting Transformer Scores",
+          "paragraphs": [
+            "Once we have the transformer (LLM or TabPFN) scores, we use them to kickstart a GBDT. GBDT algorithms sequentially construct weak decision trees, where each tree is optimized to fit the residual error of the preceding ensemble. The input to the first tree is usually a constant value for all classes [6]. Our approach is simply to replace this constant value with the transformer scores so that the GBDT algorithm learns the residual of the transformer prediction. This method can also be thought of as replacing the first tree in the ensemble with the transformer, during both training and inference. See Figure 1 for a representation of this procedure."
+          ]
+        },
+        {
+          "title": "3.3 The Scaling Parameter",
+          "paragraphs": [
+            "We use a scaling parameter ss to scale the transformer scores before passing them on to the GBDT algorithm. By setting the scaling parameter to zero, our method is equivalent to the standalone GBDT; by making the scaling parameter very large, our method outputs predictions arbitrarily close to those of the transformer. In our experiments, we tune this hyperparameter using Optuna [2]. We find that for intermediate values of this hyperparameter, we can often achieve performance that exceeds both the GBDT and the transformer. Refer to Appendix F for an example.",
+            "The predictions of the ensemble consisting of the first ii trees are now",
+            "where p​r​e​d(a,b)pred_{(a,b)} is the sum of the predictions of all the trees from aa to bb; ss denotes the aforementioned scaling parameter that can take values [0,∞)[0,\\infty); SCORETransformer\\text{SCORE}_{\\text{Transformer}} denotes the raw prediction of the LLM (or TabPFN) which is a vector in the case of classification (See 1); and CC denotes a constant which can be added to make SCORETransformer\\text{SCORE}_{\\text{Transformer}} centered around 0 for numerical stability. Each tree i is progressively optimized so that p​r​e​d(0,i)pred_{(0,i)} minimized following the standard gradient boosting procedure."
+          ]
+        }
+      ]
+    },
+    "4 Experiments and Ablations": {
+      "paragraphs": [
+        "Our primary experiments focus on boosting XGBoost [6] with TabPFN [19] and Qwen-2.5-72B-Instruct [31] predictions. Qwen-2.5-72B-Instruct is a powerful and recent open source LLM with instruction tuning.",
+        "We additionally perform ablations on different GBDT and LLM model combinations as our boosting framework is agnostic with respect to both the precise LLM and GBDT. In addition to Qwen-2.5-72B-Instruct, we also include Flan-T5-XXL [8] with approximately 11 billion parameters and the 8 billion parameter Llama-3-8B-Instruct [1] model as a drop-in replacement. We show that LLM-Boost outperforms baselines even when seeded with these smaller LLMs. Together, we conduct ablations including the GBDTs XGBoost [6] and LightGBM [22], and including seeding mechanisms Qwen-2.5, Flan-T5-XXL, Llama-3-8B, and TabPFN."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Datasets and Data Preparation",
+          "paragraphs": [
+            "For our experiments, we adopt the UCI [10] datasets used by Slack and Singh [28] together with the public tabular datasets used by Hegselmann et al. [18] (TabLLM). We filter out the datasets which have more than 5 classes from the UCI datasets as few shot LLM performance is generally poor when the number of classes are high. The final 16 datasets used after filtering are listed in Table 1. As described in section 3.1 We prepare the data for few-shot (in-context) inference utilizing the tools developed by Slack and Singh [28]. We sub-sample our datasets to much smaller sizes so that we have sufficient granularity to bridge the few-shot regime where LLMs/TabPFN excel at and the large dataset regime where GBDTs are better. We chose the sample sizes 10, 25, 50, 100, 200 and 500 for applicable datasets in addition to running the experiments on the full dataset."
+          ]
+        },
+        {
+          "title": "4.2 Hyperparameter Optimization",
+          "paragraphs": [
+            "One of the benefits of using GBDT based methods is the ability to perform many rounds of hyperparameter optimization (HPO) with a low computation budget. HPO is well-known to increase the performance of tabular models [15] and is often included as part of the GBDT pipeline. We perform HPO using Optuna [2]. We use separate validation folds so that test data is new used for HPO trials. The hyperparameter search spaces used for our GBDT experiments are listed in Appendix A.",
+            "For best results, we find that the scaling hyperparameter ss should be independently tuned after tuning the standard GBDT hyperparameters. We find that this makes the tuning process more stable and guarantees improvement in validation loss when including scaling. We tune the GBDT hyperparameters for 100 Optuna trials and tune the scaling parameter for an additional 30 trials. Importantly, for our other ensembling baselines described in Section 4.4, we tune the GBDT hyperparameters for 130 Optuna trials to keep the total HPO trials consistent."
+          ]
+        },
+        {
+          "title": "4.3 Compute Resources",
+          "paragraphs": [
+            "A major advantage of LLM-Boost is its lightweight overhead. The computational resources required for our boosting process, disregarding LLM inference costs, is the same as that required for running HPO on GBDTs. Specifically, the boosting process can be performed on CPU. Full hyperparameter tuning only takes up to 4 hours for the largest datasets on CPU. For few-shot LLM inference (Flan-T5-XXL and Llama-3-8B-Instruct) we use 4 RTX A4000 GPUs. Inference on the largest datasets we tested takes up to 18 hours to precompute. Importantly, this significantly less resource intensive compared to supervised fine-tuning of LLMs for tabular tasks. Further, PFN-Boost is very lightweight as TabPFN inference itself is very fast, even on CPU. As a result, the full PFN-Boost pipeline is only slightly slower than running HPO for the standalone GBDT itself."
+          ]
+        },
+        {
+          "title": "4.4 Baselines",
+          "paragraphs": [
+            "To validate our method, we first consider selecting the raw transformer (LLM/TabPFN) and GBDT models as baselines. However, on average LLM-Boost and PFN-Boost performs much better than either the GBDT or the transformer model alone. Therefore, we utilize two strong and widely-used ensembling baselines and compare our approach against them. The first baseline is Selection, i.e., selecting the best performing model out of the GBDT and transformer based on validation performance. The other is Stacking, i.e., appending transformer scores as additional features for GBDTs. Additionally, we use TabLLM [18], a LLM finetuning framework, as a baseline for LLM-based tabular predictors and Amazon’s AutoGluon [11], a widely-used lightweight ensembling algorithm, as a baseline for tabular ensemble methods."
+          ]
+        }
+      ]
+    },
+    "5 Results": {
+      "paragraphs": [
+        "In this section, we only present the aggregate performance statistics of LLM-Boost and PFN-Boost compared to baselines for brevity and straightforward comparison. Please see Appendix B for detailed results for each combination of models and datasets. We calculate the rank and z-score between the three methods for each dataset at each train sample size based on AUC. Then, we average the rank and z-score across datasets of a given sample size to illustrate the variation in relative performance between the three methods across training sample sizes.",
+        "Average rank is an intuitive metric that is common in the tabular domain. Naturally, a lower value on this metric is better. However, it is a coarse metric because some models may obtain similar performance across all datasets and yet have very different average ranks. On the other hand, averaging AUC across datasets conveys the magnitudes by which one model outperforms another, but this metric can be dominated by a small number of datasets where the performance across models has a high variance. The average z-score metric described below mitigates this effect.",
+        "The z-score for a model on a single dataset is calculated as z=a−μσz=\\frac{a-\\mu}{\\sigma}, the number of standard deviations a model’s performance is away from the mean computed across all methods considered in that experience. A negative z-score implies that the given method’s performance is below the mean of all methods. A higher positive z-score implies better performance. We then average a single model’s z-scores over all datasets and obtain an average z-score for that model. We include average rank results in Appendix C, and we instead focus on average AUC and average z-score in the main body.",
+        "Further, in our experiments comparing LLM-Boost and PFN-Boost with TabLLM [18] and AutoGluon [11], we find our methods perform better in a majority of the sample sizes tested. Also, note that TabLLM requires fine-tuning a large language model, whereas our method can even be run on CPU only and requires no fine-tuning. We include these results in Appendices D and E, respectively.",
+        "Note: Some of the datasets we use for our experiments have less than 250 samples. Therefore, results we show on dataset sizes larger than 250 are for a subset of these datasets, in some cases leading to curves that appear non-monotone. A detailed list of experiments for each dataset and size are included in the Appendix B."
+      ],
+      "subsections": [
+        {
+          "title": "5.1 PFN-Boost",
+          "paragraphs": [
+            "Figure 3 showcases the exceptionally strong performance of PFN-Boost, which combines XGBoost with TabPFN, across all sample sizes. We obtain average z-score, rank, and AUC by taking the mean of the row-wise z-score, rank, and AUC across all datasets at each sample size shown in Table 3, where each experiment (row) is averaged over 5 seeds and the standard errors are displayed. For the full-dataset experiments where the training set size is greater than 1000, we randomly select 1000 samples to input into TabPFN, which is the standard procedure from the original work. Further details are found in Appendix B. As stated in Section 4, the model selection baseline is based on the validation performance of each model. All final XGBoost, stacking, and PFN-Boost results are obtained after HPO."
+          ]
+        },
+        {
+          "title": "5.2 LLM-Boost",
+          "paragraphs": [
+            "Figure 4 showcases the performance of LLM-Boost combining XGBoost with Qwen-2.5-72B-Instruct, utilizing average z-score and AUC for all datasets at each sample size.",
+            "Our full results are given in Table 4 where each experiment is averaged over 5 seeds. Additionally, we conduct ablation experiments to determine the variation of LLM-Boost performance with LLM size and the number of few shot examples in Appendix G."
+          ]
+        },
+        {
+          "title": "5.3 PFN-Boost vs LLM-Boost",
+          "paragraphs": [
+            "Figure 5 presents a direct AUC comparison between boosted and non-boosted Qwen-2.5-72B-Instruct and TabPFN. Our experiments makes it clear that PFN-Boost yields better results than LLM-Boost except in the smallest dataset sizes. This result is expected as TabPFN is a much stronger standalone model that can use up to 1000 in-context examples, while the LLM can only use far fewer. Although using a stronger or fine-tuned LLM might result in better performance, we conclude that PFN-Boost is better suited in instances where data sample size is not severely limited."
+          ]
+        },
+        {
+          "title": "5.4 Other boosting combinations",
+          "paragraphs": [
+            "We perform further LLM-Boost experiments with XGBoost+Flan-T5-XXL, XGBoost+Llama-3-8B-Instruct and LightGBM+Flan-T5-XXL, in order to study sensitivity of LLM-Boost to the choice of language model and GBDT algorithm. These results can be found in Figures 9, 10, and 11, respectively. Although LLM-Boost still outperforms baselines when used with smaller language models, we find it more difficult to design prompts that consistently yield the class label exactly, especially for Llama-3-8B. Therefore, the performance of the Llama-3 model is comparatively lower, leading to lower LLM-Boost performance gains as well. The LightGBM experiments yield superior results compared to baselines in the small dataset sizes. However, the performance gain for LLM-Boost is not as pronounced compared to the XGBoost experiments."
+          ]
+        },
+        {
+          "title": "5.5 Ablating the value of column headers by shuffling them",
+          "paragraphs": [
+            "LLMs perform well in the few-shot tabular setting as they are able to make use of the column headers (column names), which are valuable metadata that traditional tabular models cannot parse. To investigate the importance of meaningful column headers for LLM-Boost, we conduct an experiment where we randomly shuffle the column headers between columns and compare performance degradation. Once the column headers are shuffled, all semantic meaning of a column disappears because it is no longer corresponding to the appropriate value. We conduct this experiment on the Adult dataset and we provide our boosted/standalone performance for both shuffled and direct column headers in Figure 6. We see there that the column headers are especially useful when the dataset size is small, yet the LLM provides an advantage over XGBoost alone for very small dataset sizes, even when the column headers are shuffled. This could be due to the LLM inferring the column headers from the data itself, which is especially straightforward for categorical columns. As the dataset size grows, eventually all models perform comparably well."
+          ]
+        }
+      ]
+    },
+    "6 Discussion and Conclusion": {
+      "paragraphs": [
+        "In this paper, we show how to combine the benefits of powerful tabular transformer models and GDBTs for data-efficient predictions on tabular datasets. LLM-Boost and PFN-Boost outperform the transformers and GDBTs individually as well as ensemble baselines, adaptively focusing on the strengths of each method. In this final section, we close by discussing the limitations of our work as well as promising directions for future research.",
+        "When to use LLM-Boost? LLM-Boost showcases state-of-the-art performance on classification datasets with upto 100 samples. In order to optimally benefit from fusing a language model to decision trees, we need semantically meaningful column headers. When such column headers are unavailable or the dataset size is larger, our variant PFN-Boost which combines TabPFN with GBDTs is highly effective.",
+        "Limitations. While we present promising performance on a slice of tabular datasets, we enumerate several limitations:",
+        "• The biggest drawback that restricts LLM-Boost is the necessity for interpretable text descriptors as column headers, namely column headers from which LLMs can extract meaning. Accordingly, some datasets may require prompt engineering.",
+        "• Language models are big in parameter count and slow, and they require GPUs for large-scale use. During training, LLM outputs can be pre-computed and re-used across all GBDT training runs with various hyperparameter configurations. After this one-time cost, training is no more expensive than GBDT training. For very large datasets, pre-computing LLM outputs may become a non-trivial cost. However, the costs of TabPFN are negligible compared to LLM costs.",
+        "• Common GBDT libraries are implemented in C++, accompanied by APIs in other languages such as Python. Maintaining high-speed training while simultaneously modifying the code for LLM-Boost and PFN-Boost may require implementing it in the original C++.",
+        "Future work. We finally present several promising directions for future research:",
+        "• Data scientists interact with tabular datasets, analyzing variable names, for example to engineer new features, and employing tools such as gradient-boosted decision trees. Our work is a first step towards automating this predictive modeling pipeline. A next step is to expand the capabilities of LLMs, for a full stack of data science functionality such as data visualization, hypothesis testing, and even suggesting valuable features to use.",
+        "• We only use three-shot prompting for the language model, but long-context methods may unlock the ability to feed far more training samples into the LLM. This possibility raises the question, will we still need XGBoost as LLMs gain the capability to ingest more data?",
+        "• Our boosting mechanism is model agnostic and may be expanded with other high performing tabular architectures such as Tabnet [3] SAINT [29], NODE [26] and FT-Transformer [15] in addition to LLMs."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Hyperparameter search spaces": {
+      "paragraphs": [
+        "[Table: Table 2: Hyperparameter search spaces for our XGBoost and LightGBM experiments.]"
+      ],
+      "subsections": []
+    },
+    "Appendix B Full Results": {
+      "paragraphs": [
+        "Full experimental results for all of our boosting combinations can be found here. Each AUC result is obtained after 130 rounds of HPO. For LLM-Boost, we perform HPO on the GBDT parameters for 100 Optuna [2] trials followed by an additional 30 trials for the scaling parameter. For the selection and stacking baselines, we perform HPO for 130 Optuna trials on the GBDT parameters. For each experiment, we randomly sub-sample train/val splits as well as sample HPO initilization over 5 different seeds and report mean AUC with standard error. However, we do not perform LLM inference over multiple few-shot train samples due to computational costs. Summarized averaged row-wise rank and z-score metrics as well as Average AUC for each boosting combinations are given in Appendix Section C.",
+        "[Table: Table 3: Full AUC results for our XGBoost + TabPFN experiments.]",
+        "[Table: Table 4: Full accuracy results for our XGBoost + Qwen-2.5-72B-Instruct experiments.]",
+        "[Table: Table 5: Full accuracy results for our XGBoost + Flan-T5-XXL experiments]",
+        "[Table: Table 6: Full accuracy results for our XGBoost + Llama-3-8B-Instruct experiments.]",
+        "[Table: Table 7: Full AUC results for our LightGBM + Flan-T5-XXL experiments.]"
+      ],
+      "subsections": []
+    },
+    "Appendix C Summarised Results": {
+      "paragraphs": [
+        "[Figure: ((a)) ]",
+        "[Figure: ((a)) ]",
+        "[Figure: ((b)) ]",
+        "[Figure: ((c)) ]",
+        "[Figure: ((a)) ]",
+        "[Figure: ((a)) ]",
+        "[Figure: ((b)) ]",
+        "[Figure: ((c)) ]",
+        "[Figure: ((a)) ]",
+        "[Figure: ((a)) ]",
+        "[Figure: ((b)) ]",
+        "[Figure: ((c)) ]",
+        "[Figure: ((a)) ]",
+        "[Figure: ((a)) ]",
+        "[Figure: ((b)) ]",
+        "[Figure: ((c)) ]",
+        "[Figure: ((a)) ]",
+        "[Figure: ((a)) ]",
+        "[Figure: ((b)) ]",
+        "[Figure: ((c)) ]"
+      ],
+      "subsections": []
+    },
+    "Appendix D Comparison with TabLLM": {
+      "paragraphs": [
+        "[Figure: Figure 12: AUC comparison between TabLLM and LLM-Boost (Flan-T5-XXL+XGBoost) over different dataset sizes. LLM-Boost performs better than TabLLM in a majority of the dataset sizes without any finetuning. Performance of TabLLM was taken from the original work. LLM-Boost experiments were seeded with the same 5 seeds used by TabLLM for selecting train and validation splits. Full results are shown in Table 8.]",
+        "[Table: Table 8: Full AUC results table for TabLLM [18] and LLM-Boost.]"
+      ],
+      "subsections": []
+    },
+    "Appendix E Comparison with AutoGluon": {
+      "paragraphs": [
+        "[Figure: ((a)) ]",
+        "[Figure: ((a)) ]",
+        "[Figure: ((b)) ]",
+        "[Figure: ((c)) ]",
+        "[Table: Table 9: Full AUC results table for AutoGluon [11] and LLM-Boost.]"
+      ],
+      "subsections": []
+    },
+    "Appendix F Example illustrating the importance of the scaling parameter for LLM-Boost": {
+      "paragraphs": [
+        "For LLM-Boost, the predictions of the ensemble consisting of the first ii trees are",
+        "The following figure highlights the importance of tuning the scaling parameter ss for our boosting framework.",
+        "[Figure: Figure 14: LLM-Boost with intermediate scaling parameter values may lead to better performance than either standalone model. When the scaling parameter is close to 0, the performance of XGBoost + Flan-T5-XXL approaches that of XGBoost alone, since the seed values in LLM-Boost are negligent. As the scaling parameter increases, we approach the raw performance of the LLM. We observe how with LLM-Boost, intermediate scaling values result in better performance than either the individual LLM or GBDT algorithm.]"
+      ],
+      "subsections": []
+    },
+    "Appendix G Model size and number of few-shot samples": {
+      "paragraphs": [
+        "To test out whether the performance of LLM-Boost is sensitive to the raw performance of the LLM, we conduct several experiments to analyze the impact of the LLM model size and the number of few-shot samples included in the LLM’s prompt. These results can be found in Figure 15. We use different model sizes from the Flan-T5 model family to maintain as close as possible to an apples to apples comparison as different models might perform differently depending on how the prompt is engineered. Boosted performance generally improved with the model size and number of in-context examples (shots). However, the results for this experiment are not completely conclusive and need to be validated on a more powerful LLM family. We do not experiment with higher number of shots since we run into context length limits for certain datasets.",
+        "[Figure: Figure 15: LLM-Boost performs better with larger LLMs and more in-context examples. The figure on the left illustrates the change in LLM-Boost performance with model size. The figure on the right showcases the change in LLM-Boost performance with varying number of few-shot examples.]"
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "AI@Meta [2024] AI@Meta. Llama 3 model card, 2024. URL https://github.com/meta-llama/llama3/blob/main/MODEL_CARD.md.",
+    "Akiba et al. [2019] Takuya Akiba, Shotaro Sano, Toshihiko Yanase, Takeru Ohta, and Masanori Koyama. Optuna: A next-generation hyperparameter optimization framework. In Proceedings of the 25th ACM SIGKDD International Conference on Knowledge Discovery and Data Mining, 2019.",
+    "Arik and Pfister [2019] Sercan Ömer Arik and Tomas Pfister. Tabnet: Attentive interpretable tabular learning. CoRR, abs/1908.07442, 2019. URL http://arxiv.org/abs/1908.07442.",
+    "Borisov et al. [2022] Vadim Borisov, Tobias Leemann, Kathrin Seßler, Johannes Haug, Martin Pawelczyk, and Gjergji Kasneci. Deep neural networks and tabular data: A survey. IEEE Transactions on Neural Networks and Learning Systems, 2022.",
+    "Chen et al. [2023] Pei Chen, Soumajyoti Sarkar, Leonard Lausen, Balasubramaniam Srinivasan, Sheng Zha, Ruihong Huang, and George Karypis. Hytrel: Hypergraph-enhanced tabular data representation learning. In A. Oh, T. Neumann, A. Globerson, K. Saenko, M. Hardt, and S. Levine, editors, Advances in Neural Information Processing Systems, volume 36, pages 32173–32193. Curran Associates, Inc., 2023. URL https://proceedings.neurips.cc/paper_files/paper/2023/file/66178beae8f12fcd48699de95acc1152-Paper-Conference.pdf.",
+    "Chen and Guestrin [2016] Tianqi Chen and Carlos Guestrin. Xgboost: A scalable tree boosting system. In Proceedings of the 22nd acm sigkdd international conference on knowledge discovery and data mining, pages 785–794, 2016.",
+    "Chen [2023] Wenhu Chen. Large language models are few (1)-shot table reasoners. In Findings of the Association for Computational Linguistics: EACL 2023, pages 1120–1130, 2023.",
+    "Chung et al. [2022] Hyung Won Chung, Le Hou, Shayne Longpre, Barret Zoph, Yi Tay, William Fedus, Eric Li, Xuezhi Wang, Mostafa Dehghani, Siddhartha Brahma, Albert Webson, Shixiang Shane Gu, Zhuyun Dai, Mirac Suzgun, Xinyun Chen, Aakanksha Chowdhery, Sharan Narang, Gaurav Mishra, Adams Yu, Vincent Zhao, Yanping Huang, Andrew Dai, Hongkun Yu, Slav Petrov, Ed H. Chi, Jeff Dean, Jacob Devlin, Adam Roberts, Denny Zhou, Quoc V. Le, and Jason Wei. Scaling instruction-finetuned language models, 2022. URL https://arxiv.org/abs/2210.11416.",
+    "Dinh et al. [2022] Tuan Dinh, Yuchen Zeng, Ruisu Zhang, Ziqian Lin, Michael Gira, Shashank Rajput, Jy yong Sohn, Dimitris Papailiopoulos, and Kangwook Lee. LIFT: Language-interfaced fine-tuning for non-language machine learning tasks. In Alice H. Oh, Alekh Agarwal, Danielle Belgrave, and Kyunghyun Cho, editors, Advances in Neural Information Processing Systems, 2022. URL https://openreview.net/forum?id=s_PJMEGIUfa.",
+    "Dua and Graff [2017] Dheeru Dua and Casey Graff. Uci machine learning repository, 2017. URL http://archive.ics.uci.edu/ml.",
+    "Erickson et al. [2020a] Nick Erickson, Jonas Mueller, Alexander Shirkov, Hang Zhang, Pedro Larroy, Mu Li, and Alexander Smola. Autogluon-tabular: Robust and accurate automl for structured data. arXiv preprint arXiv:2003.06505, 2020a.",
+    "Erickson et al. [2020b] Nick Erickson, Jonas Mueller, Alexander Shirkov, Hang Zhang, Pedro Larroy, Mu Li, and Alexander Smola. Autogluon-tabular: Robust and accurate automl for structured data. arXiv preprint arXiv:2003.06505, 2020b.",
+    "Freund and Schapire [1997] Yoav Freund and Robert E Schapire. A decision-theoretic generalization of on-line learning and an application to boosting. Journal of computer and system sciences, 55(1):119–139, 1997.",
+    "Friedman [2001] Jerome H. Friedman. Greedy function approximation: A gradient boosting machine. The Annals of Statistics, 29(5):1189 – 1232, 2001. doi: 10.1214/aos/1013203451. URL https://doi.org/10.1214/aos/1013203451.",
+    "Gorishniy et al. [2021] Yury Gorishniy, Ivan Rubachev, Valentin Khrulkov, and Artem Babenko. Revisiting deep learning models for tabular data. In A. Beygelzimer, Y. Dauphin, P. Liang, and J. Wortman Vaughan, editors, Advances in Neural Information Processing Systems, 2021. URL https://openreview.net/forum?id=i_Q1yrOegLY.",
+    "Grinsztajn et al. [2022] Leo Grinsztajn, Edouard Oyallon, and Gael Varoquaux. Why do tree-based models still outperform deep learning on typical tabular data? In Thirty-sixth Conference on Neural Information Processing Systems Datasets and Benchmarks Track, 2022. URL https://openreview.net/forum?id=Fp7__phQszn.",
+    "Gruver et al. [2023] Nate Gruver, Marc Anton Finzi, Shikai Qiu, and Andrew Gordon Wilson. Large language models are zero-shot time series forecasters. In Thirty-seventh Conference on Neural Information Processing Systems, 2023. URL https://openreview.net/forum?id=md68e8iZK1.",
+    "Hegselmann et al. [2023] Stefan Hegselmann, Alejandro Buendia, Hunter Lang, Monica Agrawal, Xiaoyi Jiang, and David Sontag. Tabllm: Few-shot classification of tabular data with large language models. In International Conference on Artificial Intelligence and Statistics, pages 5549–5581. PMLR, 2023.",
+    "Hollmann et al. [2023a] Noah Hollmann, Samuel Müller, Katharina Eggensperger, and Frank Hutter. TabPFN: A transformer that solves small tabular classification problems in a second. In The Eleventh International Conference on Learning Representations, 2023a. URL https://openreview.net/forum?id=cp5PvcI6w8_.",
+    "Hollmann et al. [2023b] Noah Hollmann, Samuel Müller, and Frank Hutter. Large language models for automated data science: Introducing caafe for context-aware automated feature engineering. In A. Oh, T. Naumann, A. Globerson, K. Saenko, M. Hardt, and S. Levine, editors, Advances in Neural Information Processing Systems, volume 36, pages 44753–44775. Curran Associates, Inc., 2023b. URL https://proceedings.neurips.cc/paper_files/paper/2023/file/8c2df4c35cdbee764ebb9e9d0acd5197-Paper-Conference.pdf.",
+    "Iida et al. [2021] Hiroshi Iida, Dung Thai, Varun Manjunatha, and Mohit Iyyer. TABBIE: Pretrained representations of tabular data. In Kristina Toutanova, Anna Rumshisky, Luke Zettlemoyer, Dilek Hakkani-Tur, Iz Beltagy, Steven Bethard, Ryan Cotterell, Tanmoy Chakraborty, and Yichao Zhou, editors, Proceedings of the 2021 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, pages 3446–3456, Online, June 2021. Association for Computational Linguistics. doi: 10.18653/v1/2021.naacl-main.270. URL https://aclanthology.org/2021.naacl-main.270.",
+    "Ke et al. [2017] Guolin Ke, Qi Meng, Thomas Finley, Taifeng Wang, Wei Chen, Weidong Ma, Qiwei Ye, and Tie-Yan Liu. Lightgbm: A highly efficient gradient boosting decision tree. Advances in neural information processing systems, 30, 2017.",
+    "Levin et al. [2023] Roman Levin, Valeriia Cherepanova, Avi Schwarzschild, Arpit Bansal, C. Bayan Bruss, Tom Goldstein, Andrew Gordon Wilson, and Micah Goldblum. Transfer learning with deep tabular models. In The Eleventh International Conference on Learning Representations, 2023. URL https://openreview.net/forum?id=b0RuGUYo8pA.",
+    "McElfresh et al. [2024] Duncan McElfresh, Sujay Khandagale, Jonathan Valverde, Vishak Prasad C, Ganesh Ramakrishnan, Micah Goldblum, and Colin White. When do neural nets outperform boosted trees on tabular data? Advances in Neural Information Processing Systems, 36, 2024.",
+    "Nam et al. [2024] Jaehyun Nam, Kyuyoung Kim, Seunghyuk Oh, Jihoon Tack, Jaehyung Kim, and Jinwoo Shin. Optimized feature generation for tabular data via llms with decision tree reasoning, 2024. URL https://arxiv.org/abs/2406.08527.",
+    "Popov et al. [2019] Sergei Popov, Stanislav Morozov, and Artem Babenko. Neural oblivious decision ensembles for deep learning on tabular data. ArXiv, abs/1909.06312, 2019. URL https://api.semanticscholar.org/CorpusID:202573030.",
+    "Prokhorenkova et al. [2018] Liudmila Prokhorenkova, Gleb Gusev, Aleksandr Vorobev, Anna Veronika Dorogush, and Andrey Gulin. Catboost: unbiased boosting with categorical features. Advances in neural information processing systems, 31, 2018.",
+    "Slack and Singh [2023] Dylan Slack and Sameer Singh. Tablet: Learning from instructions for tabular data. arXiv, 2023.",
+    "Somepalli et al. [2021] Gowthami Somepalli, Micah Goldblum, Avi Schwarzschild, C Bayan Bruss, and Tom Goldstein. Saint: Improved neural networks for tabular data via row attention and contrastive pre-training. arXiv preprint arXiv:2106.01342, 2021.",
+    "Sui et al. [2023] Yuan Sui, Jiaru Zou, Mengyu Zhou, Xinyi He, Lun Du, Shi Han, and Dongmei Zhang. Tap4llm: Table provider on sampling, augmenting, and packing semi-structured data for large language model reasoning. CoRR, abs/2312.09039, 2023. URL https://doi.org/10.48550/arXiv.2312.09039.",
+    "Team [2024] Qwen Team. Qwen2.5: A party of foundation models, September 2024. URL https://qwenlm.github.io/blog/qwen2.5/."
+  ]
+}

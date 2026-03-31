@@ -1,0 +1,541 @@
+{
+  "title": "Preference learning made easy:Everything should be understood through win rate",
+  "authors": "Lily H. ZhangRajesh Ranganath",
+  "abstract": "Preference learning, or the task of aligning generative models to preference comparison data, has yet to reach the conceptual maturity of classification, density estimation, etc. To close this gap, this work presents a framework to understand preference learning starting from the sampling distribution of pairwise preference data. First, we prove that the only evaluation of a generative model that respects both preferences and prevalences in the data distribution is a form of win rate, justifying win rate as the focal point to understand preference learning. We then analyze preference learning methods as win rate optimization (WRO) or non-WRO. We present novel instances of WRO beyond existing examples (RLHF, NLHF) and identify two key theoretical benefits of all such methods. We prove that common non-WRO methods like DPO and SFT on preferred samples lack these properties and suggest ways to mitigate such theoretical limitations. We also show that WRO underperforms in practice due optimization difficulties and that optimization success predicts performance better than choices which affect the objective’s solution. Our analysis highlights best practices for existing methods and provides recommendations for future research, guided by the principle that one should either align non-WRO methods more closely with WRO or improve the optimization of WRO objectives.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Learning from preference data, often referred to as human feedback, has emerged as a key step in training large language models, particularly given the success of reinforcement learning from human feedback (RLHF) (Christiano et al., 2017) on state-of-the-art and high-profile language models such as GPT-4 (OpenAI, 2024). The goal of learning from preference data is to finetune powerful base language models to output generations more in line with human preferences (Stiennon et al., 2020; Ouyang et al., 2022), motivated by the fact that pretraining on internet-scale data has enabled large language models to exhibit fluent generations of text (Minaee et al., 2024) but not necessarily responses aligned with what humans prefer to see.",
+        "In recent years, the landscape of algorithms and evaluations for preference learning has grown significantly (Kaufmann et al., 2023; Jiang et al., 2024), resulting in a complex and often fragmented field that can pose challenges for practitioners and researchers deciding where to focus their efforts. Whereas well-established machine learning tasks such as classification are grounded in principles such as maximum likelihood, preference learning lacks such a unifying conceptual foundation. To advance the field, we thus first ask: what underlying principles underpin preference learning?",
+        "We address this question by developing a framework starting from the sampling distribution implied by pairwise preference data. We first tackle the question of evaluating a model under the preference learning paradigm. We show that the only evaluation of a generative model rooted in the preference data sampling distribution itself is a form of win rate we call hh-win rate; any other notions of good either do not evaluate the model or respect the preference data, or are based on assumptions outside of either (Section 3). From this insight, we introduce a win rate-centric framework for understanding the landscape of preference learning methods. Given hh-win rate is the only relevant evaluation without additional assumptions, we relate common preference learning algorithms to directly optimizing for win rate, dividing the preference learning space into win rate optimization (WRO) and non-WRO objectives. In Section 4, we generalize the space of WRO beyond existing methods in the literature and identify two theoretical benefits of such methods: (1) win rate-correspondence, i.e., optimizing the objective corresponds to optimizing for hh-win rate; and (2) win rate-consistency, i.e., the solution can achieve the maximum win rate possible over a competitor as regularization strength goes to zero. In Section 5, we show that direct preference optimization (DPO) and other direct alignment algorithms (Rafailov et al., 2024a) fail win rate-correspondence, and that supervised finetuning (SFT) on preferred samples additionally fails win rate-consistency. In Section 6, we show that despite their theoretical benefits, WRO methods underperform relative to expectations due to difficulties in optimization, which has a much more significant effect on performance than other design choices that distinguish WRO methods from each other. We conclude with takeaways for current practice and future research in preference learning (Section 7).",
+        "Our contributions can be summarized as follows:",
+        "1. We prove that the only evaluation of a generative model grounded in the preference data distribution is win rate. This result justifies using win rate as the focal point to understand the landscape of preference learning.",
+        "2. We present a win rate-centric framework to understand preference learning. Under this framework, we: introduce win rate-correspondence and consistency and show that WRO methods satisfy both while non-WRO do not; highlight the central role of optimization success for the performance; motivate best practices for existing methods (e.g., win rate checkpointing with direct alignment algorithms, multiple seeds with WRO algorithms, inducing diversity for SFT, combining different approaches); and provide recommendations for future research—namely, to focus on better surrogates for or improved optimization of WRO.",
+        "(a) introduce win rate-correspondence and consistency and show that WRO methods satisfy both while non-WRO do not;",
+        "(b) highlight the central role of optimization success for the performance;",
+        "(c) motivate best practices for existing methods (e.g., win rate checkpointing with direct alignment algorithms, multiple seeds with WRO algorithms, inducing diversity for SFT, combining different approaches); and",
+        "(d) provide recommendations for future research—namely, to focus on better surrogates for or improved optimization of WRO.",
+        "(a) introduce win rate-correspondence and consistency and show that WRO methods satisfy both while non-WRO do not;",
+        "(b) highlight the central role of optimization success for the performance;",
+        "(c) motivate best practices for existing methods (e.g., win rate checkpointing with direct alignment algorithms, multiple seeds with WRO algorithms, inducing diversity for SFT, combining different approaches); and",
+        "(d) provide recommendations for future research—namely, to focus on better surrogates for or improved optimization of WRO."
+      ],
+      "subsections": []
+    },
+    "2 Related Work": {
+      "paragraphs": [
+        "Our work is most closely related to previous work in win rate evaluation and optimization as well as analysis of RLHF and preference learning objectives."
+      ],
+      "subsections": [
+        {
+          "title": "Win rate evaluation and optimization.",
+          "paragraphs": [
+            "Win rate is already a central evaluation in preference learning (Li et al., 2023b; Zheng et al., 2024); however, our work goes further and proves that it is the only evaluation grounded in the sampling distribution itself, thus motivating its use as the central object to understand the rest of the preference learning landscape. Several works have proposed methods that perform some form of win rate optimization (Munos et al., 2023; Swamy et al., 2024; Rosset et al., 2024), including as a minimax optimization with a dynamic (rather than fixed) opponent model. Our work provides a more general framework to characterize the landscape of win rate optimization (WRO) methods beyond the specific instances that currently exist in the literature. Moreover, our analysis points to the theoretical merit of these approaches, while our experiments demonstrate the implementation bottlenecks of them."
+          ]
+        },
+        {
+          "title": "Analyzing RLHF, DPO, and other preference learning methods.",
+          "paragraphs": [
+            "Our work is related to work that seeks to better understand RLHF, DPO, and other existing methods in preference learning (e.g., best-of-n). Examples include benchmarking generalization and diversity (Kirk et al., 2024), comparing on- vs off-policy approaches (Tajwar et al., 2024), investigating length bias (Singhal et al., 2024), and disentangling design choices empirically (Ivison et al., 2024). For RLHF in particular, existing works consider the complexity of proximal policy optimization (Ahmadian et al., 2024), vanishing gradients (Razin et al., 2024b), reward model overoptimization (Zhu et al., 2024), or limitations of the Bradley-Terry assumption to relate preferences to rewards (Wang et al., 2024b; Azar et al., 2023; Munos et al., 2023). For DPO, there exists not only large space of alternative direct alignment algorithms (e.g., (Zhao et al., 2023; Azar et al., 2023; Xu et al., 2024a; Huang et al., 2024; Pal et al., 2024; Xu et al., 2024b)) but also works which analyze its limited ability to flip rankings (Chen et al., 2024) or the decrease in chosen and rejected log probabilities (Razin et al., 2024a). Gui et al. (2024) show that the target distribution of best-of-n for different choices of nn yields a win rate vs. KL divergence curve close to that of RLHF’s for different choices of divergence constraint; Theorem 5.1 of this work generalizes their win rate result for best-of-2 from a deterministic to an arbitrary preference environment. Azar et al. (2023) present a family of Ψ\\Psi-Preference Optimization objectives, show that RLHF falls within this family, and propose Identity Preference Optimization (IPO); this work presents a larger family of WRO objectives beyond Ψ\\Psi-Preference Optimization and categorizes Ψ\\Psi-Preference Optimization and IPO separately into WRO and non-WRO objectives, highlighting the theoretical benefits of the former and theoretical limitations of the latter."
+          ]
+        }
+      ]
+    },
+    "3 What evaluations make sense for preference learning?": {
+      "paragraphs": [
+        "In this section, we analyze how to evaluate a generative model under the preference learning landscape. Various evaluations have been used in the preference learning literature, from win rate (Li et al., 2023b) and reward (Ahmadian et al., 2024) to implicit reward accuracy (Rafailov et al., 2024a) and ranking accuracy (Chen et al., 2024). Here, we critically assess what evaluations are meaningful under the pairwise preference comparisons data itself.",
+        "We first describe the underlying sampling distribution of the pariwise comparison data used in preference learning (Section 3.1). Then we define and motivate two important conditions for an evaluation function, preference-consistency and prevalence-consistency, and prove that the only evaluations that satisfy both conditions is a form of win rate we call hh-win rate (Section 3.2). This result justifies win rate as the singular focus in preference learning."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 The Sampling Distribution",
+          "paragraphs": [
+            "The goal of preference learning is to learn a generative model that performs well in a given context. However, whereas typical maximum likelihood training employs samples from the distribution of interest, the setup of preference learning does not: only samples from generative model competitors (sometimes the same model) and their relative preference within a pair are available.",
+            "The sampling distribution for preferences consists of input x, candidate outputs y0\\textbf{y}_{0} and y1\\textbf{y}_{1}, and a label ℓ∈{0,1}\\ell\\in\\{0,1\\} denoting which of y0\\textbf{y}_{0} or y1\\textbf{y}_{1} is preferred. Let ℓ=1\\ell=1 denote that y1\\textbf{y}_{1} is preferred, and ℓ=0\\ell=0 denote that y0\\textbf{y}_{0} is preferred. Then, the overall sampling distribution can be defined as follows:",
+            "A sampling distribution for (pairwise) preference learning is a distribution over input x∈𝒳\\textbf{x}\\in\\mathcal{X}, candidate outputs y0,y1∈𝒴\\textbf{y}_{0},\\textbf{y}_{1}\\in\\mathcal{Y}, and preference label ℓ∈{0,1}\\ell\\in\\{0,1\\} defined by: 1, 2, and 3 are user-specified distributions; 1 denotes the inputs of interest, and 2 and 3 are the candidate competitors one chooses to evaluate. 4 is only distribution that cannot be directly specified; rather, it is defined by the environment in which the user chooses to collect the preferences.",
+            "1. Query distribution: p​(x)p(\\textbf{x})",
+            "2. Generation competitor 0: p​(y0|x)p(\\textbf{y}_{0}\\,|\\,\\textbf{x})",
+            "3. Generation competitor 1: p​(y1|x)p(\\textbf{y}_{1}\\,|\\,\\textbf{x})",
+            "4. Preference classifier: p​(ℓ|x,y0,y1)p(\\ell\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1}).",
+            "Query distribution: p​(x)p(\\textbf{x})",
+            "Generation competitor 0: p​(y0|x)p(\\textbf{y}_{0}\\,|\\,\\textbf{x})",
+            "Generation competitor 1: p​(y1|x)p(\\textbf{y}_{1}\\,|\\,\\textbf{x})",
+            "Preference classifier: p​(ℓ|x,y0,y1)p(\\ell\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1}).",
+            "Generation competitor 0 and 1 can be the same distribution and often are in existing open-source preference datasets (Lambert et al., 2023; Ethayarajh et al., 2022)."
+          ]
+        },
+        {
+          "title": "3.2 Win Rate is the Only Evaluation that can Matter",
+          "paragraphs": [
+            "The goal of preference learning is to learn some generative model p∗​(y|x)p^{*}(\\textbf{y}\\,|\\,\\textbf{x}) that performs well under the preference environment for a given query distribution (we refer to this as the query-preference environment). Learning such a generative model requires a definition of what is good.",
+            "Consider an evaluation function ϕ\\phi which maps a generative model p​(y|x)p(\\textbf{y}\\,|\\,\\textbf{x}), query-preference environment ℰ=(p​(x),p​(ℓ|x,y0,y1))\\mathcal{E}=(p(\\textbf{x}),p(\\ell\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1})), and anchor distribution p​(y0|x)p(\\textbf{y}_{0}\\,|\\,\\textbf{x}) to a scalar: ϕp​(y0|x)​(p​(y|x),ℰ)∈ℝ\\phi_{p(\\textbf{y}_{0}\\,|\\,\\textbf{x})}(p(\\textbf{y}\\,|\\,\\textbf{x}),\\mathcal{E})\\in\\mathbb{R}.111 We will optionally write ϕp​(y0|x)\\phi_{p(\\textbf{y}_{0}\\,|\\,\\textbf{x})} as ϕ\\phi when the anchor is clear from context. Intuitively, ϕ\\phi should respect properties of the preference sampling distribution. We formalize criterion for ϕ\\phi below.",
+            "Any evaluation function ϕ\\phi is grounded in a given preference distribution if",
+            "1. (ϕ\\phi is preference-consistent): given query environment p​(x)=𝟙​[x=x′]p(\\textbf{x})=\\mathbbm{1}\\left[\\textbf{x}=\\textbf{x}^{\\prime}\\right], generative model p​(y|x)=𝟙​[y=y′]p(\\textbf{y}\\,|\\,\\textbf{x})=\\mathbbm{1}\\left[\\textbf{y}=\\textbf{y}^{\\prime}\\right], anchor distribution p​(y0|x)=𝟙​[y0=y0′]p(\\textbf{y}_{0}\\,|\\,\\textbf{x})=\\mathbbm{1}\\left[\\textbf{y}_{0}=\\textbf{y}_{0}^{\\prime}\\right], and strictly increasing function hh:",
+            "2. (ϕ\\phi is prevalence-consistent): for a,b≥0a,b\\geq 0 and a+b=1a+b=1: for generator p​(y|x)=a​p1​(y|x)+b​p2​(y|x)p(\\textbf{y}\\,|\\,\\textbf{x})=ap_{1}(\\textbf{y}\\,|\\,\\textbf{x})+bp_{2}(\\textbf{y}\\,|\\,\\textbf{x}): for query distribution p​(x)=a​p1​(x)+b​p2​(x)p(\\textbf{x})=ap_{1}(\\textbf{x})+bp_{2}(\\textbf{x}), letting ℰi=(pi​(x),p​(ℓ=1|x,y0,y1))\\mathcal{E}_{i}=(p_{i}(\\textbf{x}),p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1})): for anchor distribution p​(y0|x)=a​p1​(y0|x)+b​p2​(y0|x):p(\\textbf{y}_{0}\\,|\\,\\textbf{x})=ap_{1}(\\textbf{y}_{0}\\,|\\,\\textbf{x})+bp_{2}(\\textbf{y}_{0}\\,|\\,\\textbf{x}):",
+            "(a) for generator p​(y|x)=a​p1​(y|x)+b​p2​(y|x)p(\\textbf{y}\\,|\\,\\textbf{x})=ap_{1}(\\textbf{y}\\,|\\,\\textbf{x})+bp_{2}(\\textbf{y}\\,|\\,\\textbf{x}):",
+            "(b) for query distribution p​(x)=a​p1​(x)+b​p2​(x)p(\\textbf{x})=ap_{1}(\\textbf{x})+bp_{2}(\\textbf{x}), letting ℰi=(pi​(x),p​(ℓ=1|x,y0,y1))\\mathcal{E}_{i}=(p_{i}(\\textbf{x}),p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1})):",
+            "(c) for anchor distribution p​(y0|x)=a​p1​(y0|x)+b​p2​(y0|x):p(\\textbf{y}_{0}\\,|\\,\\textbf{x})=ap_{1}(\\textbf{y}_{0}\\,|\\,\\textbf{x})+bp_{2}(\\textbf{y}_{0}\\,|\\,\\textbf{x}):",
+            "(a) for generator p​(y|x)=a​p1​(y|x)+b​p2​(y|x)p(\\textbf{y}\\,|\\,\\textbf{x})=ap_{1}(\\textbf{y}\\,|\\,\\textbf{x})+bp_{2}(\\textbf{y}\\,|\\,\\textbf{x}):",
+            "(b) for query distribution p​(x)=a​p1​(x)+b​p2​(x)p(\\textbf{x})=ap_{1}(\\textbf{x})+bp_{2}(\\textbf{x}), letting ℰi=(pi​(x),p​(ℓ=1|x,y0,y1))\\mathcal{E}_{i}=(p_{i}(\\textbf{x}),p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1})):",
+            "(c) for anchor distribution p​(y0|x)=a​p1​(y0|x)+b​p2​(y0|x):p(\\textbf{y}_{0}\\,|\\,\\textbf{x})=ap_{1}(\\textbf{y}_{0}\\,|\\,\\textbf{x})+bp_{2}(\\textbf{y}_{0}\\,|\\,\\textbf{x}):",
+            "(ϕ\\phi is preference-consistent): given query environment p​(x)=𝟙​[x=x′]p(\\textbf{x})=\\mathbbm{1}\\left[\\textbf{x}=\\textbf{x}^{\\prime}\\right], generative model p​(y|x)=𝟙​[y=y′]p(\\textbf{y}\\,|\\,\\textbf{x})=\\mathbbm{1}\\left[\\textbf{y}=\\textbf{y}^{\\prime}\\right], anchor distribution p​(y0|x)=𝟙​[y0=y0′]p(\\textbf{y}_{0}\\,|\\,\\textbf{x})=\\mathbbm{1}\\left[\\textbf{y}_{0}=\\textbf{y}_{0}^{\\prime}\\right], and strictly increasing function hh:",
+            "(ϕ\\phi is prevalence-consistent): for a,b≥0a,b\\geq 0 and a+b=1a+b=1:",
+            "(a) for generator p​(y|x)=a​p1​(y|x)+b​p2​(y|x)p(\\textbf{y}\\,|\\,\\textbf{x})=ap_{1}(\\textbf{y}\\,|\\,\\textbf{x})+bp_{2}(\\textbf{y}\\,|\\,\\textbf{x}):",
+            "(b) for query distribution p​(x)=a​p1​(x)+b​p2​(x)p(\\textbf{x})=ap_{1}(\\textbf{x})+bp_{2}(\\textbf{x}), letting ℰi=(pi​(x),p​(ℓ=1|x,y0,y1))\\mathcal{E}_{i}=(p_{i}(\\textbf{x}),p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1})):",
+            "(c) for anchor distribution p​(y0|x)=a​p1​(y0|x)+b​p2​(y0|x):p(\\textbf{y}_{0}\\,|\\,\\textbf{x})=ap_{1}(\\textbf{y}_{0}\\,|\\,\\textbf{x})+bp_{2}(\\textbf{y}_{0}\\,|\\,\\textbf{x}):",
+            "for generator p​(y|x)=a​p1​(y|x)+b​p2​(y|x)p(\\textbf{y}\\,|\\,\\textbf{x})=ap_{1}(\\textbf{y}\\,|\\,\\textbf{x})+bp_{2}(\\textbf{y}\\,|\\,\\textbf{x}):",
+            "for query distribution p​(x)=a​p1​(x)+b​p2​(x)p(\\textbf{x})=ap_{1}(\\textbf{x})+bp_{2}(\\textbf{x}), letting ℰi=(pi​(x),p​(ℓ=1|x,y0,y1))\\mathcal{E}_{i}=(p_{i}(\\textbf{x}),p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1})):",
+            "for anchor distribution p​(y0|x)=a​p1​(y0|x)+b​p2​(y0|x):p(\\textbf{y}_{0}\\,|\\,\\textbf{x})=ap_{1}(\\textbf{y}_{0}\\,|\\,\\textbf{x})+bp_{2}(\\textbf{y}_{0}\\,|\\,\\textbf{x}):",
+            "Preference-consistency ensures that the evaluation can be reduced to an increasing function of the preference classifier in the base case where query, model, and anchor distributions are all a single deterministic value. The transformation function hh dictates that the evaluation need not exactly equal the preference probability, just that the evaluation should be higher when the preference probability is higher. Prevalence-consistency ensures that the contribution of p​(ℓ=1|x,y0,y1)p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1}) for a given (x,y0,y1)(\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1}) gets weighted appropriately by its prevalence in the query environment, anchor distribution, and generative model, respectively.",
+            "What are the consequences if these properties are not met? If preference-consistency is not satisfied, a model can be assigned a high value under ϕ\\phi even if it only outputs a dispreferred response according to the ground truth preference. For prevalence-consistency, if 2a is not satisfied, then ϕ\\phi weights preferences according to a distribution that is not how the model generates; if 2b is not satisfied, then ϕ\\phi does not reflect the chosen queries; and if 2c is not satisfied, then ϕ\\phi does not compare to the chosen anchor.",
+            "The only evaluation that satisfies Definition 3.2 is a form of win rate:",
+            "ϕ\\phi is grounded, as defined in Definition 3.2, if and only if",
+            "for choice of strictly increasing function h.",
+            "See Appendix B for proof. Proposition 3.3 is the win rate of the generator p​(y|x)p(\\textbf{y}\\,|\\,\\textbf{x}) against an anchor distribution p​(y0|x)p(\\textbf{y}_{0}\\,|\\,\\textbf{x}) under the query-preference environment ℰ\\mathcal{E}, for some choice of order-preserving transformation function hh. When hh is the identity, we have vanilla win rate, which we will refer to as win rate or Win Ratep​(y0|x)​[p​(y|x)]\\text{Win Rate}_{p(\\textbf{y}_{0}\\,|\\,\\textbf{x})}[p(\\textbf{y}\\,|\\,\\textbf{x})]. Often it is estimated via samples from the preference classifier, i.e., 𝔼p​(x,y,y0)​ℓ,\\mathbb{E}_{p(\\textbf{x},\\textbf{y},\\textbf{y}_{0})}\\ell, where ℓ∼p​(ℓ|x,y0,y)\\ell\\sim p(\\ell\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}) (Li et al., 2023b). When hh is any other strictly increasing function, we have an hh-variant of win rate, which we will refer to as hh-Win Rate.",
+            "Different hh-variants can stretch preference probabilities in some regions while contracting them in others, effectively prioritizing certain preference probability differences over others in the evaluation of generator vs. anchor. Note that placing non-identity functions f,gf,g in any other position, i.e., 𝔼p​(x)​f⋅𝔼p​(y|x)​g⋅𝔼p​(y0|x)​[h⋅p​(ℓ=1|x,y0,y)]\\mathbb{E}_{p(\\textbf{x})}f\\cdot\\mathbb{E}_{p(\\textbf{y}\\,|\\,\\textbf{x})}g\\cdot\\mathbb{E}_{p(\\textbf{y}_{0}\\,|\\,\\textbf{x})}[h\\cdot p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y})], breaks prevalence-consistency of query and generator respectively.",
+            "What about other evaluations? Proposition 3.3 proves that all other evaluations either break preference- or prevalance-consistency. For instance, reward and ranking accuracy, typically computed on offline data, do not respect model prevalences given the pairs in the computation may be unlikely overall under the model; empirically, they have also been shown to correlate little with win rate (Rafailov et al., 2024a). Average reward 𝔼p​(x,y)​r​(x,y)\\mathbb{E}_{p(\\textbf{x},\\textbf{y})}r(\\textbf{x},\\textbf{y}) is equivalent to a translated logit-Win Rate under the Bradley-Terry assumption p​(ℓ=1|x,y0,y)=σ​[r​(x,y)−r​(x,y0)]p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y})=\\sigma[r(\\textbf{x},\\textbf{y})-r(\\textbf{x},\\textbf{y}_{0})] (Azar et al., 2023), but the underlying preference environment need not satisfy this assumption.222Note that the Bradley Terry assumption suggests not only transitivity but a functional relationship in the preference probabilities, e.g., if AA is preferred over BB with probability .6 and BB is preferred over CC with probability .7.7, then the Bradley-Terry assumption states that AA must be preferred over CC with probability ≈0.778\\approx 0.778.",
+            "Given the insight that the only evaluation grounded in preference data alone is hh-win rate with respect to some anchor distribution, we next analyze common preference learning algorithms based on how they relate to optimizing for win rate. In Section 4, we characterize the space of Win Rate Optimization (WRO) objectives, highlighting existing and new methods that fall under this family, and discuss their theoretical benefits. In Section 5, we analyze instances of non-WRO methods and their limitations."
+          ]
+        }
+      ]
+    },
+    "4 Preference Learning through the Lens of Win Rate Optimization": {
+      "paragraphs": [
+        "In this section, we characterize the space of objectives which directly optimize for win rate, discussing both Win Rate Optimization (WRO) objectives (Section 4.1) and games (Section 4.2). Then, we identify the theoretical benefits shared by all methods in the WRO family (Section 4.3)."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Win Rate Optimization Objectives",
+          "paragraphs": [
+            "The fact that Proposition 3.3 is the only grounded evaluation immediately provides an objective 𝒪h​(θ){\\mathcal{O}}_{h}(\\theta) to optimize:",
+            "WRO can be optimized by using score function/policy gradients (Mohamed et al., 2020a; Weng, 2018). The solution to any objective in this family is the generator that maximizes the hh-win rate over a given anchor.",
+            "KL-constrained RLHF is KL-regularized WRO with hh=logit and the Bradley-Terry assumption to estimate the preference classifier via a reward function (Azar et al., 2023). However, many other WRO instances exist, e.g., for any combination of hh, anchor distribution, and estimate of p​(ℓ=1|x,y0,y1)p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1}) or 𝔼p​(y0|x)​[h⋅p​(ℓ=1|x,y0,y1)]\\mathbb{E}_{p(\\textbf{y}_{0}\\,|\\,\\textbf{x})}[h\\cdot p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1})] yields a different WRO objective.333For instance, 𝔼p​(y0|x)​[h⋅p​(ℓ=1|x,y0,y1)]\\mathbb{E}_{p(\\textbf{y}_{0}\\,|\\,\\textbf{x})}[h\\cdot p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1})] can estimated by learning the preference distribution p​(ℓ=1|x,y0,y1)p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1}) from data and estimating the expectation with samples from the anchor or training a model to estimate this expectation directly, removing the need to additionally sample from p​(y0|x)p(\\textbf{y}_{0}\\,|\\,\\textbf{x}) during the policy optimization step. The RLHF setting of WRO in particular (namely, choice of hh = logit and BT assumption) also allows the expectation over the anchor p​(y0|x)p(\\textbf{y}_{0}\\,|\\,\\textbf{x}) to be dropped, i.e., maxp​(y1|x)⁡𝔼p​(y1|x)​𝔼p​(y0|x)​[h⋅p​(ℓ=1|x,y0,y1)]=maxp​(y1|x)⁡𝔼p​(y1|x)​[r​(x,y)]\\max_{p(\\textbf{y}_{1}\\,|\\,\\textbf{x})}\\mathbb{E}_{p(\\textbf{y}_{1}\\,|\\,\\textbf{x})}\\mathbb{E}_{p(\\textbf{y}_{0}\\,|\\,\\textbf{x})}[h\\cdot p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1})]=\\max_{p(\\textbf{y}_{1}\\,|\\,\\textbf{x})}\\mathbb{E}_{p(\\textbf{y}_{1}\\,|\\,\\textbf{x})}[r(\\textbf{x},\\textbf{y})], thus requiring only that a reward model be estimated. Different choices of hh and anchor yield different optimal solutions in general. When the BT assumption holds, however, all objectives in Section 4.1 maximize all hh-variants of win rate for all anchors.",
+            "(informal) Under the Bradley-Terry assumption, all objectives in Section 4.1 with strictly increasing hh share the same optimal solution. This solution maximizes win rate overall all possible anchor distributions.",
+            "See Appendix C for proof."
+          ]
+        },
+        {
+          "title": "4.2 Win Rate Optimization Games",
+          "paragraphs": [
+            "The choice of anchor need not be a fixed up front. Instead, the anchor distribution could also optimize for its own win rate, resulting in a family of WRO games:",
+            "Nash Learning from Human Feedback (Munos et al., 2023) is one instance of a WRO game with hh=identity (and additional KL regularization); the choice of hh leads to an antisymmetric, constant-sum game. However, WRO games need not be anti-symmetric or constant sum; for instance, a WRO game with h=logh=\\log is neither. Different choices of hh dictate a different prioritization of preference probabilities to target, and it is not obvious that hh=identity, the specific setting considered in Munos et al. (2023), should be the only WRO game to consider. After all, aligning to preferences is not inherently a constant sum endeavor."
+          ]
+        },
+        {
+          "title": "4.3 Benefits of Win Rate Optimization",
+          "paragraphs": [
+            "Letting ϕh​(θ)\\phi_{h}(\\theta) denote the hh-win rate, ϕh​(pθ​(y|x))\\phi_{h}(p_{\\theta}(\\textbf{y}\\,|\\,\\textbf{x})), two benefits of WRO objectives 𝒪h​(θ)\\mathcal{O}_{h}(\\theta) are: Win rate-correspondence makes gradient-based optimization practical, while win rate-consistency ensures that the loss itself does not exhibit fundamental limitations with respect to its optimal solution.444For readers interested in the precedence for these properties, win rate-correspondence and consistency are closely linked to Question 2 in (Steinwart, 2007) and ℋ\\mathcal{H}-consistency (Awasthi et al., 2021) respectively. Both properties follow trivially for WRO from the fact that 𝒪=ϕ\\mathcal{O}=\\phi. These properties need not hold for non-WRO (see Section 5).",
+            "1. (Win rate-correspondence): Improving the objective improves hh-win rate:",
+            "2. (Win rate-consistency): The optimum of the objective maximizes hh-win rate:",
+            "(Win rate-correspondence): Improving the objective improves hh-win rate:",
+            "(Win rate-consistency): The optimum of the objective maximizes hh-win rate:",
+            "As p​(ℓ=1|x,y0,y1)p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1}) is typically estimated from data, to prevent overfitting to it one can regularize with with a divergence penalty D​(pθ,pref)D(p_{\\theta},p_{\\text{ref}}) with regularization parameter β\\beta:",
+            "Options for DD include sequence-level reverse KL, chi-sq, or a sum of token-level divergences (Azar et al., 2023; Huang et al., 2024; Rafailov et al., 2024b).",
+            "Optimizing WRO with reverse KL regularization is equivalent to minimizing the reverse KL divergence between the model and the target distribution pWRO-KL∗​(y|x)∝pref​(y|x)​exp⁡(1β​𝔼p​(y0|x)​[h⋅p​(ℓ=1|x,y0,y)])p^{*}_{\\text{WRO-KL}}(\\textbf{y}\\,|\\,\\textbf{x})\\propto p_{\\text{ref}}(\\textbf{y}\\,|\\,\\textbf{x})\\exp(\\frac{1}{\\beta}\\mathbb{E}_{p(\\textbf{y}_{0}|\\textbf{x})}[h\\cdot p(\\ell=1|\\textbf{x},\\textbf{y}_{0},\\textbf{y})]); see Azar et al. (2023) or Section D.1 for derivation. As such, the reverse-KL regularized WRO objective is a form of black-box variational inference (Ranganath et al., 2014).",
+            "Regularized-WRO 𝒪h,β​(θ)\\mathcal{O}_{h,\\beta}(\\theta) does not satisfy win rate-correspondence nor consistency in general but modified versions of both: 1. (regularized win rate-correspondence): Improving the objective implies either an improvement in hh-win rate or divergence to the reference, i.e., the regularization term; and 2. (regularized win rate-consistency): θ∗=arg⁡maxθ⁡𝒪h,β​(θ)\\theta^{*}=\\arg\\max_{\\theta}\\mathcal{O}_{h,\\beta}(\\theta) maximizes hh-win rate for all distributions with divergence within M​(β)=D​(pθ∗,pref)M(\\beta)=D(p_{\\theta^{*}},p_{\\text{ref}})."
+          ]
+        },
+        {
+          "title": "Regularization.",
+          "paragraphs": [
+            "As p​(ℓ=1|x,y0,y1)p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1}) is typically estimated from data, to prevent overfitting to it one can regularize with with a divergence penalty D​(pθ,pref)D(p_{\\theta},p_{\\text{ref}}) with regularization parameter β\\beta:",
+            "Options for DD include sequence-level reverse KL, chi-sq, or a sum of token-level divergences (Azar et al., 2023; Huang et al., 2024; Rafailov et al., 2024b).",
+            "Optimizing WRO with reverse KL regularization is equivalent to minimizing the reverse KL divergence between the model and the target distribution pWRO-KL∗​(y|x)∝pref​(y|x)​exp⁡(1β​𝔼p​(y0|x)​[h⋅p​(ℓ=1|x,y0,y)])p^{*}_{\\text{WRO-KL}}(\\textbf{y}\\,|\\,\\textbf{x})\\propto p_{\\text{ref}}(\\textbf{y}\\,|\\,\\textbf{x})\\exp(\\frac{1}{\\beta}\\mathbb{E}_{p(\\textbf{y}_{0}|\\textbf{x})}[h\\cdot p(\\ell=1|\\textbf{x},\\textbf{y}_{0},\\textbf{y})]); see Azar et al. (2023) or Section D.1 for derivation. As such, the reverse-KL regularized WRO objective is a form of black-box variational inference (Ranganath et al., 2014).",
+            "Regularized-WRO 𝒪h,β​(θ)\\mathcal{O}_{h,\\beta}(\\theta) does not satisfy win rate-correspondence nor consistency in general but modified versions of both: 1. (regularized win rate-correspondence): Improving the objective implies either an improvement in hh-win rate or divergence to the reference, i.e., the regularization term; and 2. (regularized win rate-consistency): θ∗=arg⁡maxθ⁡𝒪h,β​(θ)\\theta^{*}=\\arg\\max_{\\theta}\\mathcal{O}_{h,\\beta}(\\theta) maximizes hh-win rate for all distributions with divergence within M​(β)=D​(pθ∗,pref)M(\\beta)=D(p_{\\theta^{*}},p_{\\text{ref}})."
+          ]
+        }
+      ]
+    },
+    "5 Preference Algorithms that are not WRO": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "5.1 DPO fails win rate-correspondence",
+          "paragraphs": [
+            "Direct Preference Optimization (DPO) (Rafailov et al., 2024c) shares the same target distribution as RLHF but employs a different objective to optimize for that target. Denoting pθ​(ℓ|x,y0,y1)p_{\\theta}(\\ell\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1}) as pℓ,θp_{\\ell,\\theta} and q​(x,y0,y1)q(\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1}) as some distribution of offline data, DPO is",
+            "where pℓ,θp_{\\ell,\\theta} is parametrized to include a language model inside of it. Namely, pℓ,θ​(ℓ=1|x,y0,y1)p_{\\ell,\\theta}(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1}) is",
+            "DPO fails win rate-correspondence, as better (i.e., lower) DPO loss does not necessarily mean better (i.e., higher) win rate. This correspondence fails for two reasons:",
+            "1. Using offline data breaks prevalence-consistency. For instance, a model change that improves the ranking of responses yA,yBy_{A},y_{B} in the offline data but moves more mass overall to generate dispreferred responses not covered in the offline data will improve DPO loss but hurt win rate. Even sampling from the initial model is not sufficient (see Appendix F for an example), as prevalence-consistency of the generator does not hold throughout training.",
+            "2. Even if we satisfy prevalence-consistency by switching to a fully online setting555This would consist of sampling from the appropriate query, generator, and anchor distributions throughout training. Guo et al. (2024); Calandriello et al. (2024) do this but use 𝔼stop-gradient​(pθ​(y|x))\\mathbb{E}_{\\text{stop-gradient}(p_{\\theta}(\\textbf{y}\\,|\\,\\textbf{x}))} instead of 𝔼pθ​(y|x)\\mathbb{E}_{p_{\\theta}(\\textbf{y}\\,|\\,\\textbf{x})} as a loss; as evaluations both are the same., win rate correspondence still does not hold; see Figure 1 for a visualization. This is because the likelihood of preference distribution as in Equation 3 is not an hh-win rate: −𝔼pθ​(x,y0,y1)​[𝔼pℓ​log⁡pℓ,θ]≠𝔼pθ​(x,y0,y1)​[h⋅pℓ]\\scalebox{0.75}[1.0]{$-$}\\mathbb{E}_{p_{\\theta}(\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1})}[\\mathbb{E}_{p_{\\ell}}\\log p_{\\ell,\\theta}]\\neq\\mathbb{E}_{p_{\\theta}(\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1})}[h\\cdot p_{\\ell}]. Since prevalence-consistency holds, preference consistency of this online objective must not hold, which can be seen by noting that the argument inside 𝔼pθ​(x,y0,y1)\\mathbb{E}_{p_{\\theta}(\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1})} is not a fixed function of pℓp_{\\ell}.",
+            "Using offline data breaks prevalence-consistency. For instance, a model change that improves the ranking of responses yA,yBy_{A},y_{B} in the offline data but moves more mass overall to generate dispreferred responses not covered in the offline data will improve DPO loss but hurt win rate. Even sampling from the initial model is not sufficient (see Appendix F for an example), as prevalence-consistency of the generator does not hold throughout training.",
+            "Even if we satisfy prevalence-consistency by switching to a fully online setting555This would consist of sampling from the appropriate query, generator, and anchor distributions throughout training. Guo et al. (2024); Calandriello et al. (2024) do this but use 𝔼stop-gradient​(pθ​(y|x))\\mathbb{E}_{\\text{stop-gradient}(p_{\\theta}(\\textbf{y}\\,|\\,\\textbf{x}))} instead of 𝔼pθ​(y|x)\\mathbb{E}_{p_{\\theta}(\\textbf{y}\\,|\\,\\textbf{x})} as a loss; as evaluations both are the same., win rate correspondence still does not hold; see Figure 1 for a visualization. This is because the likelihood of preference distribution as in Equation 3 is not an hh-win rate: −𝔼pθ​(x,y0,y1)​[𝔼pℓ​log⁡pℓ,θ]≠𝔼pθ​(x,y0,y1)​[h⋅pℓ]\\scalebox{0.75}[1.0]{$-$}\\mathbb{E}_{p_{\\theta}(\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1})}[\\mathbb{E}_{p_{\\ell}}\\log p_{\\ell,\\theta}]\\neq\\mathbb{E}_{p_{\\theta}(\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1})}[h\\cdot p_{\\ell}]. Since prevalence-consistency holds, preference consistency of this online objective must not hold, which can be seen by noting that the argument inside 𝔼pθ​(x,y0,y1)\\mathbb{E}_{p_{\\theta}(\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1})} is not a fixed function of pℓp_{\\ell}.",
+            "Note that even though DPO is derived to match the target distribution of a regularized-WRO objective, DPO does not satisfy regularized win rate-correspondence either. Namely, it is possible to improve (i.e., decrease) the DPO loss without improving win rate or divergence to the reference model (see Section F.3 for example).",
+            "The insight that DPO fails win rate-correspondence offers an explanation for empirical results such as the loss vs. win rate misalignment observed in Chen et al. (2024); Rafailov et al. (2024a), as well as for why it can helpful to perform very early stopping (e.g., one epoch, far from any evidence of overfitting) rather than model selection with DPO validation loss (Rafailov et al., 2024c), or to choose checkpoints using win rate directly (Yuan et al., 2024).",
+            "The above also applies to direct alignment algorithms (DAA) in general (Azar et al., 2023; Tang et al., 2024; Huang et al., 2024; Ji et al., 2024): the use of offline data means that prevalence-consistency does not hold, and an inner objective f​(x,y0,y1)f(\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1}) in 𝔼q​(x,y0,y1)​f​(x,y0,y1)\\mathbb{E}_{q(\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1})}f(\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1}) other than the preference classifier (including divergence to the true classifier, distance to some function of the true classifier) means that preference-consistency does not hold.",
+            "Even though DPO and other DAA often share the same optimal solution as a regularized-WRO objective (i.e., regularized-win rate consistency holds), these alternative objectives fail win rate-correspondence, complicating their use in training and model selection."
+          ]
+        },
+        {
+          "title": "Takeaways.",
+          "paragraphs": [
+            "Even though DPO and other DAA often share the same optimal solution as a regularized-WRO objective (i.e., regularized-win rate consistency holds), these alternative objectives fail win rate-correspondence, complicating their use in training and model selection."
+          ]
+        },
+        {
+          "title": "5.2 SFT fails win rate-correspondence and consistency",
+          "paragraphs": [
+            "Supervised finetuning (SFT) is often viewed as an initial step for or necessary precursor to other preference learning algorithms (Wang et al., 2024a; Razin et al., 2024b), but it is also a preference learning algorithm itself based on filtering and maximum likelihood estimation.",
+            "Supervised finetuning on preferred samples (sometimes denoted yw\\textbf{y}_{w}) seeks to maximize the likelihood of sample y1\\textbf{y}_{1} when ℓ=1\\ell=1 and y0\\textbf{y}_{0} when ℓ=0\\ell=0. When p​(y1|x)=p​(y0|x)p(\\textbf{y}_{1}\\,|\\,\\textbf{x})=p(\\textbf{y}_{0}\\,|\\,\\textbf{x}), then p​(yw|x)=p​(y1|x,ℓ=1)=p​(y0|x,ℓ=0)p(\\textbf{y}_{w}\\,|\\,\\textbf{x})=p(\\textbf{y}_{1}\\,|\\,\\textbf{x},\\ell=1)=p(\\textbf{y}_{0}\\,|\\,\\textbf{x},\\ell=0) and the SFT loss can be written as follows:",
+            "Like DPO and direct alignment algorithms, this fails win rate-correspondence, as the above expression is not an hh-win rate. What about win rate consistency? The target distribution can be written as",
+            "which tilts the original distribution towards sequences with higher average preference probabilities over the anchor. However, there are limits to the amount of improvement Equation 5 can achieve (see Appendix E for visualization). In fact, we can characterize the exact win rate expected from the SFT target distribution over the original model:",
+            "Let p​(y0|x)p(\\textbf{y}_{0}\\,|\\,\\textbf{x}) be the initial generative model, and pSFT​(y|x)p_{\\text{SFT}}(\\textbf{y}\\,|\\,\\textbf{x}) be the target distribution of SFT on preferred samples (p​(y1|x,ℓ=1)p(\\textbf{y}_{1}\\,|\\,\\textbf{x},\\ell=1), p​(y0|x)=p​(y1|x)p(\\textbf{y}_{0}\\,|\\,\\textbf{x})=p(\\textbf{y}_{1}\\,|\\,\\textbf{x})). Then,",
+            "The theorem states that variance in the average preference probability under the initial model dictates the extent of win rate improvement. Intuitively, one should not expect any possible improvement in win rate if the existing model only outputs sequences which are equally preferred to each other; on the other hand, there is more room for improvement in win rate the more differentially preferred some of the model’s sequences are to others. As long as the model has support over more than two sequences, however, the win rate cannot be maximized. See Appendix G for proof.",
+            "We can generalize Theorem 5.1 to other filtering strategies:",
+            "Let p​(f|x,y1,y0,ℓ)p(f\\,|\\,\\textbf{x},\\textbf{y}_{1},\\textbf{y}_{0},\\ell) be a filter that selects data (f=1f=1) for supervised finetuning, and p​(y0|x)=p​(y1|x)p(\\textbf{y}_{0}\\,|\\,\\textbf{x})=p(\\textbf{y}_{1}\\,|\\,\\textbf{x})). Then, denoting 𝔼p​(ℓ,y0|x)​[p​(f=1|x,y0,y1,ℓ)]\\mathbb{E}_{p(\\ell,\\textbf{y}_{0}\\,|\\,\\textbf{x})}\\left[p(f=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1},\\ell)\\right] as AvgFilter​(x,y1)\\text{AvgFilter}(\\textbf{x},\\textbf{y}_{1}) and 𝔼p​(y0|x)​[p​(ℓ=1|x,y0,y1)]\\mathbb{E}_{p(\\textbf{y}_{0}\\,|\\,\\textbf{x})}\\left[p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1})\\right] as AvgPref​(x,y1)\\text{AvgPref}(\\textbf{x},\\textbf{y}_{1}),",
+            "See Appendix G for proof. Doing SFT on preferred sets the filter as p​(f=1|x,y1,y0,ℓ)=𝟏​[ℓ=1]p(f=1\\,|\\,\\textbf{x},\\textbf{y}_{1},\\textbf{y}_{0},\\ell)=\\mathbf{1}[\\ell=1]. Win rate increases as the denominator of the second term, measuring how often a response is selected, decreases and/or the numerator, measuring how closely the average filter and preference co-vary increases. In other words, both the threshold for filtering as well as the diversity (in preference)666Recall that Covp​(y1|x)​[AvgFilter​(x,y1),AvgPref​(x,y1)]≤Varp​(y1|x)​[AvgFilter​(x,y1)]​Varp​(y1|x)​[AvgPref​(x,y1)]\\text{Cov}_{p(\\textbf{y}_{1}\\,|\\,\\textbf{x})}[\\text{AvgFilter}(\\textbf{x},\\textbf{y}_{1}),\\text{AvgPref}(\\textbf{x},\\textbf{y}_{1})]\\leq\\sqrt{\\text{Var}_{p(\\textbf{y}_{1}\\,|\\,\\textbf{x})}[\\text{AvgFilter}(\\textbf{x},\\textbf{y}_{1})]\\text{Var}_{p(\\textbf{y}_{1}\\,|\\,\\textbf{x})}[\\text{AvgPref}(\\textbf{x},\\textbf{y}_{1})]}. of the initial model matter for improvement possible in a filter + SFT algorithm. This could explain the success of works such as Li et al. (2023a), who use backtranslation to generate a larger set of responses than the model’s original generations and filter a subset for SFT, and Brandfonbrener et al. (2021), who filter based on quantile.",
+            "SFT on preferred samples fails win rate-correspondence and consistency. The improvement possible is a function of the initial model’s diversity in preference. Other filtering strategies with stricter criteria can yield further win rate improvements."
+          ]
+        },
+        {
+          "title": "Takeaways.",
+          "paragraphs": [
+            "SFT on preferred samples fails win rate-correspondence and consistency. The improvement possible is a function of the initial model’s diversity in preference. Other filtering strategies with stricter criteria can yield further win rate improvements."
+          ]
+        }
+      ]
+    },
+    "6 Investigating the Empirical Impact of Different Design Choices": {
+      "paragraphs": [
+        "We next compare WRO and non-WRO experimentally to complement the above theoretical analysis with an empirical one. First, we compare SFT, DPO, and RLHF on equal footing based on how much they are able to improve win rate over the starting model. Moreover, we also compare different variants of KL-regularized WRO, varying hh (identity, log, and logit), β\\beta (1, 0.1, 0.01, 0.001), and the estimation of the preference classifier (perfect and estimated with and without the Bradley Terry assumption)."
+      ],
+      "subsections": [
+        {
+          "title": "6.1 Experimental Setup",
+          "paragraphs": [
+            "We employ Pythia-2.8b (Biderman et al., 2023) as our base model and the OpenAssistant (OASST) (Kopf et al., 2023) and Anthropic Helpfulness and Harmlessness (HH) (Bai et al., 2022) as datasets. We train the base model on the data outputs and use these finetuned models as our initial models. We train an oracle judge model per dataset to estimate p​(ℓ=1|x,y0,y1)p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1}) and relabel the preference annotations using this judge model. We use the same oracle to evaluate win rate after training. See Appendix K for further details on the judge model. We additionally train 1. a reward model on the oracle-labeled judge annotations (accuracy is 82.8 for OASST and 81.36 for HH) and 2. an imperfect judge model (accuracy is 80.47 for OASST and 85.16 for HH). As expected, the BT assumption is helpful for preference classifier estimation in OASST but not in HH, as the OASST directly abides by this assumption (outputs are globally ranked) whereas HH does not explicitly. See Appendix L for additional training and evaluation details.",
+            "Variants of WRO-KL can be implemented via different ψ\\psi in maxθ⁡𝔼p​(x)​𝔼pθ​(y|x)​[ψ​(x,y)−β​log⁡pθ​(y|x)+β​log⁡pref​(y|x)]\\max_{\\theta}\\mathbb{E}_{p(\\textbf{x})}\\mathbb{E}_{p_{\\theta}(\\textbf{y}\\,|\\,\\textbf{x})}[\\psi(\\textbf{x},\\textbf{y})-\\beta\\log p_{\\theta}(\\textbf{y}\\,|\\,\\textbf{x})+\\beta\\log p_{\\text{ref}}(\\textbf{y}\\,|\\,\\textbf{x})], e.g., ψ​(x,y)=𝔼p​(y0|x)​[p​(ℓ=1|x,y0,y)]\\psi(\\textbf{x},\\textbf{y})=\\mathbb{E}_{p(\\textbf{y}_{0}\\,|\\,\\textbf{x})}[p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y})]. We approximate expectations over generator distributions with a single-sample Monte-Carlo estimate. Concretely, for a given query we sample one response each from the current and original model to compute ψ\\psi, which is either a function of 1. the preference probability under the judge model which takes in the pair as input, or 2. the BT preference probability under the reward model which takes each sequence in as input separately. The one exception is WRO-KL-logit-BT (i.e., RLHF), where we drop 𝔼p​(y0|x)​[r​(x,y0)]\\mathbb{E}_{p(\\textbf{y}_{0}|\\textbf{x})}[r(\\textbf{x},\\textbf{y}_{0})] and only optimize r​(x,y)r(\\textbf{x},\\textbf{y}) (see Appendix M for a comparison between keeping and dropping this term). For optimization, we use the PPO algorithm from the TRL library (von Werra et al., 2020)."
+          ]
+        },
+        {
+          "title": "Implementing WRO-KL.",
+          "paragraphs": [
+            "Variants of WRO-KL can be implemented via different ψ\\psi in maxθ⁡𝔼p​(x)​𝔼pθ​(y|x)​[ψ​(x,y)−β​log⁡pθ​(y|x)+β​log⁡pref​(y|x)]\\max_{\\theta}\\mathbb{E}_{p(\\textbf{x})}\\mathbb{E}_{p_{\\theta}(\\textbf{y}\\,|\\,\\textbf{x})}[\\psi(\\textbf{x},\\textbf{y})-\\beta\\log p_{\\theta}(\\textbf{y}\\,|\\,\\textbf{x})+\\beta\\log p_{\\text{ref}}(\\textbf{y}\\,|\\,\\textbf{x})], e.g., ψ​(x,y)=𝔼p​(y0|x)​[p​(ℓ=1|x,y0,y)]\\psi(\\textbf{x},\\textbf{y})=\\mathbb{E}_{p(\\textbf{y}_{0}\\,|\\,\\textbf{x})}[p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y})]. We approximate expectations over generator distributions with a single-sample Monte-Carlo estimate. Concretely, for a given query we sample one response each from the current and original model to compute ψ\\psi, which is either a function of 1. the preference probability under the judge model which takes in the pair as input, or 2. the BT preference probability under the reward model which takes each sequence in as input separately. The one exception is WRO-KL-logit-BT (i.e., RLHF), where we drop 𝔼p​(y0|x)​[r​(x,y0)]\\mathbb{E}_{p(\\textbf{y}_{0}|\\textbf{x})}[r(\\textbf{x},\\textbf{y}_{0})] and only optimize r​(x,y)r(\\textbf{x},\\textbf{y}) (see Appendix M for a comparison between keeping and dropping this term). For optimization, we use the PPO algorithm from the TRL library (von Werra et al., 2020)."
+          ]
+        },
+        {
+          "title": "6.2 Results: Comparing RLHF, DPO, and SFT",
+          "paragraphs": [
+            "Figure 2 compares methods. While SFT performance aligns with expectations, as does DPO performance with more regularization, RLHF substantially underperforms relative to expected given the aforementioned analysis, as does DPO with less regularization. The non-monotonic nature of both point to the influence of factors beyond target distribution for win rate improvements. To test if RLHF underperformance is due to error from using an estimated reward model instead of the true preference classifier, we additionally run a WRO-logit variant with oracle preference classifier, but this performs even worse, suggesting another factor at play."
+          ]
+        },
+        {
+          "title": "6.3 Results: Comparing WRO-KL variants",
+          "paragraphs": [
+            "Table 1 compares different WRO-KL objectives with different choices of hh, β\\beta, and the estimation of the classifier. Notably, no WRO-KL method (i.e., choice of hh) outperforms the others systematically across settings. Moreover, the settings that correspond to better target distributions (using a perfect preference classifier, low β\\beta) do not necessarily yield better win rates empirically. These results suggest that there is a more important consideration than the target distribution implied by the objective, namely the success of optimization. Indeed, we see that training loss correlates more with test win rate across WRO-KL than any of the target distribution design choices p^ℓ,h, or ​β\\hat{p}_{\\ell},h,\\text{ or }\\beta: the p-value of Spearman rank correlation test is 8.27e-5 for train loss vs. win rate, compared to 0.968 and 0.133 for p^ℓ​ and ​β\\hat{p}_{\\ell}\\text{ and }\\beta, and 0.54/0.87/0.87 for all pairs of hh choices under Kolmogorov-Smirnov test. Figure 3 plots train loss vs. test win rate for all WRO-KL variants. Interestingly, even though one would expect the losses for different WRO variants to differ in scale under different choices in hh and β\\beta, there still exists a surprisingly noticeable global trend of better loss corresponding to better win rate."
+          ]
+        }
+      ]
+    },
+    "7 Discussion": {
+      "paragraphs": [
+        "Amidst the complex landscape of aligning language models to human preferences, this work offers a simplifying insight: win rate is the only evaluation that can matter based on preference data alone, and thus all of preference learning should be understood in relation to it. This work takes the first steps to do that (see Appendix A for summary). High level takeaways from the analysis are that WRO is the theoretical ideal (as existing non-WRO fail win rate-correspondence or consistency), but optimization difficulties can lead to its underperformance in practice. Thus, optimization is a first-order factor in the practical success of WRO, while achieving / improving win rate-correspondence and consistency is important for advancing non-WRO."
+      ],
+      "subsections": [
+        {
+          "title": "What does this mean for current practice?",
+          "paragraphs": [
+            "The importance and difficulty of optimization for WRO suggests that strategies to improve optimization success could help, e.g., multiple seeds. The lack of win rate-correspondence in DPO/DAA clarifies the importance of checkpointing with metrics other than loss. And SFT’s dependence on variance (in preference) suggests that increasing preference diversity of generations to annotate could yield gains."
+          ]
+        },
+        {
+          "title": "What’s the value of so many methods?",
+          "paragraphs": [
+            "Interestingly, theory and experiments yield opposing trends: based on win rate-correspondence and consistency, RLHF >> DPO >> SFT; but based on ease of optimization, SFT >> DPO >> RLHF.777SFT >> DPO given failures at low β\\beta and DPO training issues mentioned in Pal et al. (2024); Chen et al. (2024) The fact that no existing method is optimal with respect to both the objective being optimized and ease of optimization suggests why it might be useful to combine methods (to take advantage of different strengths) and develop new ones (to strike a better overall balance)."
+          ]
+        },
+        {
+          "title": "What’s next for preference learning?",
+          "paragraphs": [
+            "Our analysis suggests that the most important improvements in preference learning will likely fall under the umbrella of moving closer to directly optimizing for win rate, either in the objective itself (i.e., coming up with better surrogates for win rate optimization) or the practical optimization of it (e.g., beyond curent policy gradient approaches). How might we make progress? For one, the connection between RLHF / WRO-KL objectives and variational inference suggests the possibility of drawing upon the rich field of probabilistic inference to improve preference learning, from variance reduction techniques (Mohamed et al., 2020b) to alternative optimization objectives and algorithms altogether (Naesseth et al., 2020). Moreover, the strategies and theoretical tools used to understand and develop surrogate objectives for other machine learning tasks (Bridle, 1990; Steinwart, 2007; Awasthi et al., 2022) could provide a useful starting point for developing better objectives for preference learning.",
+            "Several concrete directions appear in Section 4 and Section 5 including non-constant sum WRO games to reflect the fact that aligning to huamn preferences need not be a constant-sum endeavor; fully online versions of DAA or contrastive post-training algorithms to help satisfy prevalence consistency (and fewer degrees of freedom for win rate correspondence failures); and alternative filter-plus-SFT style algorithms that take diversity and filter strength into account for solutions with better win rates. There are probably many more promising ideas to explore—as long as win rate remains the guide."
+          ]
+        }
+      ]
+    },
+    "Acknowledgements": {
+      "paragraphs": [
+        "This work was partly supported by the NIH/NHLBI Award R01HL148248, NSF Award 1922658 NRT-HDR: FUTURE Foundations, Translation, and Responsibility for Data Science, NSF CAREER Award 2145542, ONR N00014-23-1-2634, NSF Award 2404476, Apple, Google, and Meta."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Summary of theoretical contributions": {
+      "paragraphs": [
+        "Below in Table 2, we present a table summarizing the win rate-centric framework introduced in this work, as well as the original source for each insight within the overall framework:",
+        "[Table: Table 2: Summary of the win-rate centric framework introduced in this work. (*) means that the given insight can be attributed to multiple works. Works which generalize DPO and propose alternative direct alignment algorithms: Azar et al. (2023); Huang et al. (2024); Tang et al. (2024); Han et al. (2024). Works that generalize SFT on the preferred sample to more samples include Dong et al. (2023); Gulcehre et al. (2023). †RLHF and NLHF typically include a regularization term and satisfy regularized win rate-correspondence and consistency. Without regularization, win rate-correspondence and consistency are satisfied. ‡DPO only satisfies regularized win rate-consistency (β\\beta must be greater than zero for a meaningful objective) and was constructed specifically with this goal in mind.]"
+      ],
+      "subsections": []
+    },
+    "Appendix B Proposition 3.3 proof": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Proposition 3.3.",
+          "paragraphs": [
+            "Under Definition 2, ϕ\\phi must be",
+            "for some choice of p​(y0|x)p(\\textbf{y}_{0}\\,|\\,\\textbf{x}).",
+            "Property 1 forces ϕ\\phi to be a functional of the preference classifier, while Property 2 forces the preference classifications to be aggregated linearly across query environment, generator, and anchor. Starting from the base case implied by Property 1, we can define ϕ\\phi for query, generator, and anchor distributions which are each a linear combination of two Dirac deltas. Let p​(x)=a​p1​(x)+b​p2​(x)p(\\textbf{x})=ap_{1}(\\textbf{x})+bp_{2}(\\textbf{x}), p​(y|x)=cx​p1​(y|x)+dx​p2​(y|x)p(\\textbf{y}\\,|\\,\\textbf{x})=c_{\\textbf{x}}p_{1}(\\textbf{y}\\,|\\,\\textbf{x})+d_{\\textbf{x}}p_{2}(\\textbf{y}\\,|\\,\\textbf{x}) for each x, and p​(y0|x)=ex​p1​(y0|x)+fx​p2​(y0|x)p(\\textbf{y}_{0}\\,|\\,\\textbf{x})=e_{\\textbf{x}}p_{1}(\\textbf{y}_{0}\\,|\\,\\textbf{x})+f_{\\textbf{x}}p_{2}(\\textbf{y}_{0}\\,|\\,\\textbf{x}); assume all constants yield normalized probability distributions. Then,",
+            "Generalizing to any discrete distribution for query, generator, and anchor, we have Proposition 3.3. ∎"
+          ]
+        }
+      ]
+    },
+    "Appendix C Proposition 4.1 Proof": {
+      "paragraphs": [
+        "We provide both the informal statement in the main paper as well as its formal version."
+      ],
+      "subsections": [
+        {
+          "title": "Proposition 4.1.",
+          "paragraphs": [
+            "(informal) (informal) Under the Bradley-Terry assumption, all objectives in Section 4.1 with strictly increasing hh share the same optimal solution. This solution maximizes win rate overall all possible anchor distributions."
+          ]
+        },
+        {
+          "title": "Proposition 4.1.",
+          "paragraphs": [
+            "(formal) Denote by 𝒫h∗\\mathcal{P}^{*}_{h} the set of distributions p​(y|x)p(\\textbf{y}\\,|\\,\\textbf{x}) that optimize the WRO-hh objective in Section 4.1. Assume a hypothesis class induced by θ∈Θ\\theta\\in\\Theta such that all optima are realizable. Then, for a given anchor distribution p​(y0|x)p(\\textbf{y}_{0}\\,|\\,\\textbf{x}), 𝒫h∗=𝒫h′∗\\mathcal{P}^{*}_{h}=\\mathcal{P}^{*}_{h^{\\prime}} for any strictly increasing hh under the Bradley-Terry assumption with finite rewards. ",
+            "We first introduce the 𝒫reward∗\\mathcal{P}^{*}_{\\text{reward}}, the set of all distributions p​(y|x)p(\\textbf{y}\\,|\\,\\textbf{x}) which for each x place all their probability mass over only the highest-reward sequences or some subset of them. Then, we show that 𝒫reward∗=𝒫h∗\\mathcal{P}^{*}_{\\text{reward}}=\\mathcal{P}^{*}_{h} for any strictly increasing hh and any anchor distribution p​(y0|x)p(\\textbf{y}_{0}\\,|\\,\\textbf{x}). In other words, any maximum-reward distribution preward∗​(y|x)∈𝒫reward∗p^{*}_{\\text{reward}}(\\textbf{y}\\,|\\,\\textbf{x})\\in\\mathcal{P}^{*}_{\\text{reward}} maximizes any WRO objective and vice versa:",
+            "It follows that 𝒫h∗=𝒫h′∗\\mathcal{P}^{*}_{h}=\\mathcal{P}^{*}_{h^{\\prime}} for any strictly increasing hh. ∎"
+          ]
+        }
+      ]
+    },
+    "Appendix D Target distribution derivations": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "D.1 WRO-KL",
+          "paragraphs": [
+            "Here, we show that the WRO-KL objective is equivalent to minimizing the reverse KL divergence of the model and following target distribution:",
+            "Derivation:"
+          ]
+        },
+        {
+          "title": "D.2 RLHF",
+          "paragraphs": [
+            "Here, we show that, under the BT assumption, the RLHF objective is equivalent to minimizing the reverse KL divergence with the following target distribution:"
+          ]
+        }
+      ]
+    },
+    "Appendix E Comparing target distributions": {
+      "paragraphs": [
+        "In Figure 4, we present a visualization of the target distributions of different preference learning objectives. Panel (a) shows an example preference environment defined by the true preference probabilities between responses (left) and initial starting model (right). Panels (b), (c), and (d) visualize the resulting target distribution of different objectives. In each, the figure on the left shows how the average preference probabilities 𝔼p​(y0|x)[p(ℓ=1|x,y0,y1]\\mathbb{E}_{p(\\textbf{y}_{0}\\,|\\,\\textbf{x})}[p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1}] (red dots) are translated into the tilt applied to the starting model, i.e. g​(y,x)g(\\textbf{y},\\textbf{x}) in p∗​(y|x)∝p​(y|x)​g​(y,x)p^{*}(\\textbf{y}\\,|\\,\\textbf{x})\\propto p(\\textbf{y}\\,|\\,\\textbf{x})g(\\textbf{y},\\textbf{x}) (green dots). The figure on the right shows the optimal distribution under the objective. Notably, among the WRO-KL family, the choice of hh can make a substantial difference in the target distribution of the objective (panels b vs. c). Moreover, SFT is limited in how much mass it can put on the preferred sample A, as g​(y,x)g(\\textbf{y},\\textbf{x}) is only the average preference probabilities themselves (panel d).",
+        "[Figure: (a) Initial generator and preference probabilities]",
+        "[Figure: (a) Initial generator and preference probabilities]",
+        "[Figure: (b) WRO-KL, hh= identity, β=0.1\\beta=0.1]",
+        "[Figure: (c) RLHF / DPO, hh= logit, β=0.1\\beta=0.1]",
+        "[Figure: (d) SFT on preferred samples]"
+      ],
+      "subsections": []
+    },
+    "Appendix F DPO win rate-correspondence counterexamples": {
+      "paragraphs": [
+        "[Figure: (a) p​(ℓ=1|x,yb,ya)=.9p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{b},\\textbf{y}_{a})=.9, p​(ℓ=1|x,yc,yb)=.6p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{c},\\textbf{y}_{b})=.6, p​(ℓ=1|x,yc,ya)≈.93p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{c},\\textbf{y}_{a})\\approx.93. p0​(ya|x)=p0​(yb|x)=p0​(yc|x)=1/3p_{0}(\\textbf{y}_{a}\\,|\\,\\textbf{x})=p_{0}(\\textbf{y}_{b}\\,|\\,\\textbf{x})=p_{0}(\\textbf{y}_{c}\\,|\\,\\textbf{x})=1/3.]",
+        "[Figure: (a) p​(ℓ=1|x,yb,ya)=.9p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{b},\\textbf{y}_{a})=.9, p​(ℓ=1|x,yc,yb)=.6p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{c},\\textbf{y}_{b})=.6, p​(ℓ=1|x,yc,ya)≈.93p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{c},\\textbf{y}_{a})\\approx.93. p0​(ya|x)=p0​(yb|x)=p0​(yc|x)=1/3p_{0}(\\textbf{y}_{a}\\,|\\,\\textbf{x})=p_{0}(\\textbf{y}_{b}\\,|\\,\\textbf{x})=p_{0}(\\textbf{y}_{c}\\,|\\,\\textbf{x})=1/3.]",
+        "[Figure: (b) p​(ℓ=1|x,yb,ya)=.9p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{b},\\textbf{y}_{a})=.9, p​(ℓ=1|x,yc,yb)=.9p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{c},\\textbf{y}_{b})=.9, p​(ℓ=1|x,yc,ya)≈.99p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{c},\\textbf{y}_{a})\\approx.99. p0​(ya|x)=p0​(yb|x)=p0​(yc|x)=1/3p_{0}(\\textbf{y}_{a}\\,|\\,\\textbf{x})=p_{0}(\\textbf{y}_{b}\\,|\\,\\textbf{x})=p_{0}(\\textbf{y}_{c}\\,|\\,\\textbf{x})=1/3.]"
+      ],
+      "subsections": [
+        {
+          "title": "F.1 Example where data is sampled from original model",
+          "paragraphs": [
+            "Consider a query environment p​(x)=𝟙​[1]​[x=x′]p(\\textbf{x})=\\mathbbm{1}\\left[1\\right][\\textbf{x}=\\textbf{x}^{\\prime}] and a sample space of three responses, ya,yb,yc\\textbf{y}_{a},\\textbf{y}_{b},\\textbf{y}_{c}. Under the preference environment of interest, ya\\textbf{y}_{a} is preferred over yb\\textbf{y}_{b} and both are very preferred over yc\\textbf{y}_{c}, i.e., ya≻yb≻≻≻yc\\textbf{y}_{a}\\succ\\textbf{y}_{b}\\succ\\succ\\succ\\textbf{y}_{c}. Let starting anchor distribution pref​(y|x)p_{\\text{ref}}(\\textbf{y}\\,|\\,\\textbf{x}) be supported over ya\\textbf{y}_{a} and yb\\textbf{y}_{b} only, where pref​(ya|x′)>pref​(yb|x′)p_{\\text{ref}}(\\textbf{y}_{a}\\,|\\,\\textbf{x}^{\\prime})>p_{\\text{ref}}(\\textbf{y}_{b}\\,|\\,\\textbf{x}^{\\prime}). The dataset is generated from the initial model itself.",
+            "Consider a pθ​(y|x)p_{\\theta}(\\textbf{y}\\,|\\,\\textbf{x}) that ranks ya\\textbf{y}_{a} and yb\\textbf{y}_{b} correctly but places most of its mass on yc\\textbf{y}_{c}. Then, −ℒD​P​O​(pθ​(y|x))\\scalebox{0.75}[1.0]{$-$}\\mathcal{L}_{DPO}(p_{\\theta}(\\textbf{y}\\,|\\,\\textbf{x})) will be high, higher than the ℒDPO​(pref​(y|x))\\mathcal{L}_{\\text{DPO}}(p_{\\text{ref}}(\\textbf{y}\\,|\\,\\textbf{x})), yet pθ​(y|x)p_{\\theta}(\\textbf{y}\\,|\\,\\textbf{x}) will generally output a response that is dispreferred over one generated from pref​(y|x)p_{\\text{ref}}(\\textbf{y}\\,|\\,\\textbf{x}), i.e., yc\\textbf{y}_{c} vs. ya\\textbf{y}_{a} or yb\\textbf{y}_{b}. Note that this example even considers online data (i.e., from the initial model) and no estimation error from finite samples; however, even so, the DPO objective does not respect prevalences from the generator itself, which can also be seen as a failing condition 2 Item 2a."
+          ]
+        },
+        {
+          "title": "F.2 Example where data is sampled in a fully online manner",
+          "paragraphs": [
+            "We now consider the DPO objective for each under a fully online setting, i.e., one response sampled from the anchor, another sampled from the generator, and the ability to obtain the oracle preference probability for every response pair. We show below that even then, DPO does not obey win rate-correspondence.",
+            "Consider a query environment p​(x)=𝟙​[1]​[x=x′]p(\\textbf{x})=\\mathbbm{1}\\left[1\\right][\\textbf{x}=\\textbf{x}^{\\prime}] and a sample space of three responses, ya,yb,yc\\textbf{y}_{a},\\textbf{y}_{b},\\textbf{y}_{c}, where ya≻≻≻yb≻yc\\textbf{y}_{a}\\succ\\succ\\succ\\textbf{y}_{b}\\succ\\textbf{y}_{c} under the preference environment. Let starting anchor distribution pref​(y|x)p_{\\text{ref}}(\\textbf{y}\\,|\\,\\textbf{x}) rank the responses as yb≻yc≻≻≻ya\\textbf{y}_{b}\\succ\\textbf{y}_{c}\\succ\\succ\\succ\\textbf{y}_{a}, i.e., the rank ordering of yb\\textbf{y}_{b} and yc\\textbf{y}_{c} is correct, but ya\\textbf{y}_{a} is very unlikely relative to them even though it is most preferred. In particular, assume a Bradley-Terry preference classifier that greatly prefers ya\\textbf{y}_{a} to yb\\textbf{y}_{b}, i.e., p​(ℓ=1|x,yb,ya)=.9p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{b},\\textbf{y}_{a})=.9, and only mildly prefers yb\\textbf{y}_{b} to yc\\textbf{y}_{c}, i.e., p​(ℓ=1|x,yc,yb)=.6p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{c},\\textbf{y}_{b})=.6. By the BT assumption, p​(ℓ=1|x,yc,ya)≈.93p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{c},\\textbf{y}_{a})\\approx.93. Let the original starting model assign probabilities .1, .5, and .4 respectively to ya,yb,yc\\textbf{y}_{a},\\textbf{y}_{b},\\textbf{y}_{c}—notably, it’s ranking for pairs with ya\\textbf{y}_{a} is very wrong but its ranking for yb\\textbf{y}_{b} vs. yc\\textbf{y}_{c} is correct.",
+            "This is the setting used to generate the plot in Figure 1 in the main paper. We generate points on the plot by sampling p(θ(y|x)p(\\theta(\\textbf{y}\\,|\\,\\textbf{x}) uniformly from the probability simplex. We only plot points whose loss improves upon the initial model (as those are the practical model instances to consider during training), and sample until the plot contains 5000 points.",
+            "We now provide a concrete example of pθ​(y|x)p_{\\theta}(\\textbf{y}\\,|\\,\\textbf{x}) and qθ​(y|x)q_{\\theta}(\\textbf{y}\\,|\\,\\textbf{x}) where −ℒDPO​(pθ)>−ℒDPO​(qθ)\\scalebox{0.75}[1.0]{$-$}\\mathcal{L}_{\\text{DPO}}(p_{\\theta})>\\scalebox{0.75}[1.0]{$-$}\\mathcal{L}_{\\text{DPO}}(q_{\\theta}) yet ϕ​(pθ)<ϕ​(qθ)\\phi(p_{\\theta})<\\phi(q_{\\theta})—in words, pθp_{\\theta} has a better DPO loss but worse win rate than qθq_{\\theta}. Namely, we construct pθp_{\\theta} such that it continues to increase the correct probability gap between yb\\textbf{y}_{b} and yc\\textbf{y}_{c} without adding probability mass to ya\\textbf{y}_{a}, while we construct qθq_{\\theta} to improve the probability of ya\\textbf{y}_{a} but at the expense of a worse probability gap between yb\\textbf{y}_{b} and yc\\textbf{y}_{c}. As a concrete example, set pθ​(ya|x)=.1p_{\\theta}(\\textbf{y}_{a}\\,|\\,\\textbf{x})=.1, pθ​(yb|x)=.6p_{\\theta}(\\textbf{y}_{b}\\,|\\,\\textbf{x})=.6, pθ​(yc|x)=.3p_{\\theta}(\\textbf{y}_{c}\\,|\\,\\textbf{x})=.3, and qθ​(ya|x)=.8q_{\\theta}(\\textbf{y}_{a}\\,|\\,\\textbf{x})=.8, qθ​(yb|x)=.001q_{\\theta}(\\textbf{y}_{b}\\,|\\,\\textbf{x})=.001, qθ​(yc|x)=.199q_{\\theta}(\\textbf{y}_{c}\\,|\\,\\textbf{x})=.199. The online DPO loss for pθp_{\\theta} and qθq_{\\theta} is .51 and .78 respectively. The win rate over the original model, however, is .54 and .67 respectively. The logit-win rate (i.e., hh=logit in Proposition 3.3) is .26 and 1.7 respectively.",
+            "The intuition for large mismatch in this example comes from the differential impact to the DPO loss between improving the ranking of the initially incorrect ya\\textbf{y}_{a} vs. yb\\textbf{y}_{b} vs. the initially correct yb\\textbf{y}_{b} vs. yc\\textbf{y}_{c}—due to the role of the initial model log probability margins on the loss itself—compared to the differential impact to the win rate between increasing the probability over ya\\textbf{y}_{a} versus yb\\textbf{y}_{b}.",
+            "However, this example is just one instance of the mismatch between DPO and win rate; there exist mismatched pairs even when the initial model is uniform over responses, as well as when the BT preference classifier maintains the same probability gap between neighboring examples in the rank order; see Figure 5 for a visualization.",
+            "The more fundamental issue is the fact that Equation 4 inside the DPO loss is meant to approximate the preference classifier, but this approximation is only correct when the model is exactly the target distribution for the objective. Then, even in the online setting where the expectations consider the correct distributions, the estimate of the preference classifier is incorrect, i.e., pθ​(ℓ=1|x,y′,y)≠p​(ℓ=1|x,y′,y)p_{\\theta}(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}^{\\prime},\\textbf{y})\\neq p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}^{\\prime},\\textbf{y}), meaning the DPO objective is not the same as win rate under the preference environment of interest. Namely,",
+            "[Figure: (a) p​(ℓ=1|x,yb,ya)=.9p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{b},\\textbf{y}_{a})=.9, p​(ℓ=1|x,yc,yb)=.6p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{c},\\textbf{y}_{b})=.6, p​(ℓ=1|x,yc,ya)≈.93p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{c},\\textbf{y}_{a})\\approx.93. p0​(ya|x)=p0​(yb|x)=p0​(yc|x)=1/3p_{0}(\\textbf{y}_{a}\\,|\\,\\textbf{x})=p_{0}(\\textbf{y}_{b}\\,|\\,\\textbf{x})=p_{0}(\\textbf{y}_{c}\\,|\\,\\textbf{x})=1/3.]",
+            "[Figure: (a) p​(ℓ=1|x,yb,ya)=.9p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{b},\\textbf{y}_{a})=.9, p​(ℓ=1|x,yc,yb)=.6p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{c},\\textbf{y}_{b})=.6, p​(ℓ=1|x,yc,ya)≈.93p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{c},\\textbf{y}_{a})\\approx.93. p0​(ya|x)=p0​(yb|x)=p0​(yc|x)=1/3p_{0}(\\textbf{y}_{a}\\,|\\,\\textbf{x})=p_{0}(\\textbf{y}_{b}\\,|\\,\\textbf{x})=p_{0}(\\textbf{y}_{c}\\,|\\,\\textbf{x})=1/3.]",
+            "[Figure: (b) p​(ℓ=1|x,yb,ya)=.9p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{b},\\textbf{y}_{a})=.9, p​(ℓ=1|x,yc,yb)=.9p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{c},\\textbf{y}_{b})=.9, p​(ℓ=1|x,yc,ya)≈.99p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{c},\\textbf{y}_{a})\\approx.99. p0​(ya|x)=p0​(yb|x)=p0​(yc|x)=1/3p_{0}(\\textbf{y}_{a}\\,|\\,\\textbf{x})=p_{0}(\\textbf{y}_{b}\\,|\\,\\textbf{x})=p_{0}(\\textbf{y}_{c}\\,|\\,\\textbf{x})=1/3.]"
+          ]
+        },
+        {
+          "title": "F.3 Example that also fails regularized win rate-correspondence",
+          "paragraphs": [
+            "Below is a counterexample to prove that DPO does not obey regularized win rate-correspondence, which is the property that an improvement in the objective implies win rate improvement or a decrease in the divergence to the reference model.",
+            "Consider the setting described in the previous section: query distribution is deterministic with a single prompt x, universe of responses to the query are {ya,yb,yc}\\{\\textbf{y}_{a},\\textbf{y}_{b},\\textbf{y}_{c}\\}, preference classifier follows Bradley-Terry assumption with p​(ℓ=1|x,ya,yb)=.9p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{a},\\textbf{y}_{b})=.9 and p​(ℓ=1|x,yb,yc)=.6p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{b},\\textbf{y}_{c})=.6, and initial model p0​(y|x)p_{0}(\\textbf{y}\\,|\\,\\textbf{x}) has probabilities .1, .5, and .4 over ya,yb, and yc\\textbf{y}_{a},\\textbf{y}_{b},\\text{ and }\\textbf{y}_{c} respectively. Let pθ​(y|x)p_{\\theta}(\\textbf{y}\\,|\\,\\textbf{x}) be and .6, .07, and .33 over ya,yb, and yc\\textbf{y}_{a},\\textbf{y}_{b},\\text{ and }\\textbf{y}_{c}, vs. qθ​(y|x)q_{\\theta}(\\textbf{y}\\,|\\,\\textbf{x}) be .56, .43, and .01 over ya,yb, and yc\\textbf{y}_{a},\\textbf{y}_{b},\\text{ and }\\textbf{y}_{c}. Then, ℒ​(pθ)≈.59<ℒ​(qθ)≈.64\\mathcal{L}(p_{\\theta})\\approx.59<\\mathcal{L}(q_{\\theta})\\approx.64, i.e., pθp_{\\theta} has better DPO loss. However, pθp_{\\theta} has both worse win rate and larger divergence from the initial model, with win rate and logit-win rate of .69 and 1.2 (vs. .70 and 1.3 for qθq_{\\theta}) and reverse-KL divergence of .87 (vs. .86 for qθq_{\\theta}).",
+            "The intuition for this counterexample is that pθp_{\\theta} has slightly more mass on the best response ya\\textbf{y}_{a} than qθq_{\\theta} does, but has qθq_{\\theta} has much more mass on the second best yb\\textbf{y}_{b} than pθp_{\\theta}, which places the remaining mass on yc\\textbf{y}_{c}. In other words, pθp_{\\theta} and qθq_{\\theta} have different strengths. In this specific setting, pθp_{\\theta} gets better DPO loss whereas qθq_{\\theta} gets better win rate over the original model as the small difference in ya\\textbf{y}_{a} mass matters less than larger mass difference between yb\\textbf{y}_{b} and yc\\textbf{y}_{c}. Ultimately, qθq_{\\theta} is slightly closer to the original model, which had most of its mass on yb\\textbf{y}_{b}.",
+            "The broader takeaway is that although DPO has the same target distribution as a regularized WRO objective, the loss is not the same as a linear combination of win rate and explicit regularization term, such that it is possible to improve the DPO objective in a way that does not improve win rate or the regularization."
+          ]
+        }
+      ]
+    },
+    "Appendix G SFT proofs": {
+      "paragraphs": [
+        "We provide results for SFT on the preferred sample in a pair, as well as SFT with arbitrary filtering based on a pair and its preference.",
+        "We first provide a more general setting of the theorems in the main paper (Lemma G.1 and Lemma G.2); then we specialize to the setting in the main paper, where p​(y0|x)=p​(y1|x)p(\\textbf{y}_{0}\\,|\\,\\textbf{x})=p(\\textbf{y}_{1}\\,|\\,\\textbf{x}), i.e., both samples come from the same distribution.",
+        "For SFT on the preferred sample, p​(f=1|x,y1,y0,ℓ)=𝟏​[ℓ=1]p(f=1\\,|\\,\\textbf{x},\\textbf{y}_{1},\\textbf{y}_{0},\\ell)=\\mathbf{1}[\\ell=1]. Other options which decrease the denominator in the second term while maintaining covariance (e.g., quantile filtering based on p​(ℓ=1|x,y,y1)p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y},\\textbf{y}_{1})) have the potential to enable further win rate improvements."
+      ],
+      "subsections": [
+        {
+          "title": "Theorem 5.1.",
+          "paragraphs": [
+            "(Win rate improvement of SFT on preferred sample) Let p​(y0|x)p(\\textbf{y}_{0}\\,|\\,\\textbf{x}) be the initial generative model, and pSFT​(y|x)p_{\\text{SFT}}(\\textbf{y}\\,|\\,\\textbf{x}) be the target distribution of supervised finetuning on preferred samples (p​(y1|x,ℓ=1)p(\\textbf{y}_{1}\\,|\\,\\textbf{x},\\ell=1), p​(y0|x)=p​(y1|x)p(\\textbf{y}_{0}\\,|\\,\\textbf{x})=p(\\textbf{y}_{1}\\,|\\,\\textbf{x})). Then,",
+            "which is less than 1.0 as long as there exist at least three responses in supp​(p​(y|x))\\text{supp}(p(\\textbf{y}\\,|\\,\\textbf{x})) for any x. ",
+            "We first use the result of Lemma G.1 and plug in the condition p​(y0|x)=p​(y1|x)p(\\textbf{y}_{0}\\,|\\,\\textbf{x})=p(\\textbf{y}_{1}\\,|\\,\\textbf{x}):",
+            "∫p​(y0|x)​p​(ℓ=1|x,y0,y1)​𝑑y0\\int p(\\textbf{y}_{0}\\,|\\,\\textbf{x})p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1})d\\textbf{y}_{0} can only take values between 0 and 1. Win rate is maximized for a random variable taking values between zero and one when the variance is .25, but Proposition H.1 proves that this is unachievable as long as ∫p​(y0|x)​p​(ℓ=1|x,y0,y1)​𝑑y0∈(0,1)\\int p(\\textbf{y}_{0}\\,|\\,\\textbf{x})p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1})d\\textbf{y}_{0}\\in(0,1) for any y1\\textbf{y}_{1}. Proposition H.2 shows that ∫p​(y0|x)​p​(ℓ=1|x,y0,y1)​𝑑y0∈(0,1)\\int p(\\textbf{y}_{0}\\,|\\,\\textbf{x})p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1})d\\textbf{y}_{0}\\in(0,1) as long as there exist three or more elements in supp​(p​(y|x))\\text{supp}(p(\\textbf{y}\\,|\\,\\textbf{x})). Thus, as long as there exist at least three responses in supp​(p​(y|x))\\text{supp}(p(\\textbf{y}\\,|\\,\\textbf{x})) for any x, win rate ove the initial model is less than 1. ∎",
+            "Note that under deterministic and transitive preferences that are evenly spaced apart, Theorem 5.1 matches the win rate result in Theorem 2 reported in (Gui et al., 2024) for best-of-n when n=2n=2. In other words, Theorem 5.1 generalizes the best-of-n result to general preference probabilities."
+          ]
+        },
+        {
+          "title": "Theorem 5.2.",
+          "paragraphs": [
+            "(Win rate improvement of filter + SFT) Let p​(f|x,y1,y0,ℓ)p(f\\,|\\,\\textbf{x},\\textbf{y}_{1},\\textbf{y}_{0},\\ell) be a filter that selects data (f=1f=1) for supervised finetuning, and p​(y0|x)=p​(y1|x)p(\\textbf{y}_{0}\\,|\\,\\textbf{x})=p(\\textbf{y}_{1}\\,|\\,\\textbf{x})). Then, denoting 𝔼p​(ℓ,y0|x)​[p​(f=1|x,y0,y1,ℓ)]\\mathbb{E}_{p(\\ell,\\textbf{y}_{0}\\,|\\,\\textbf{x})}\\left[p(f=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1},\\ell)\\right] as AvgFilter​(x,y1)\\text{AvgFilter}(\\textbf{x},\\textbf{y}_{1}) and 𝔼p​(y0|x)​[p​(ℓ=1|x,y0,y1)]\\mathbb{E}_{p(\\textbf{y}_{0}\\,|\\,\\textbf{x})}\\left[p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1})\\right] as AvgPref​(x,y1)\\text{AvgPref}(\\textbf{x},\\textbf{y}_{1}),",
+            "We use the result of Lemma G.2 with the condition p​(y0|x)=p​(y1|x).p(\\textbf{y}_{0}\\,|\\,\\textbf{x})=p(\\textbf{y}_{1}\\,|\\,\\textbf{x}). ∎"
+          ]
+        }
+      ]
+    },
+    "Appendix H Additional SFT Propositions": {
+      "paragraphs": [
+        "Below, Proposition H.1 and Proposition H.2 support Theorem 5.1, the result that the win rate improvement for SFT on preferred samples is limited.",
+        "Since the win-rate is Win Ratep​(y0|x)​[pSFT​(y|x)]=0.5+2​𝔼p​(𝐱)​Varp​(y1|x)​[𝔼p​(y0|x)​[p​(ℓ=1|x,y0,y1)]]\\text{Win Rate}_{p(\\textbf{y}_{0}\\,|\\,\\textbf{x})}[p_{\\text{SFT}}(\\textbf{y}\\,|\\,\\textbf{x})]=0.5+2\\mathbb{E}_{p(\\mathbf{x})}\\text{Var}_{p(\\textbf{y}_{1}\\,|\\,\\textbf{x})}\\left[\\mathbb{E}_{p(\\textbf{y}_{0}\\,|\\,\\textbf{x})}\\left[p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1})\\right]\\right], the former proposition establishes that 𝔼p​(y0|x)​[p​(ℓ=1|x,y0,y1)]\\mathbb{E}_{p(\\textbf{y}_{0}\\,|\\,\\textbf{x})}\\left[p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1})\\right] has to be zero or one in order for win rate to be 1. For a fixed y1\\textbf{y}_{1}, this expectation being one implies",
+        "More plainly, y1\\textbf{y}_{1} must always be preferred over every generation with probability one. By symmetry, the expectation being zero implies that y1\\textbf{y}_{1} must always be dispreferred with probability one over every generation.",
+        "Being always dispreferred or preferred is impossible due to self-comparison, e.g., for a fixed y1\\textbf{y}_{1}, the expectation over p​(y0|x)p(\\textbf{y}_{0}\\,|\\,\\textbf{x}) will include y1\\textbf{y}_{1} in the support when samples are generated from the same model. Omitting self-comparisons, as long as the model has support over more than two generations, 𝔼p​(y0|x)​[p​(ℓ=1|x,y0,y1)]\\mathbb{E}_{p(\\textbf{y}_{0}\\,|\\,\\textbf{x})}\\left[p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1})\\right] must be less than one for at least one y1∈supp​(p​(y1|x))\\textbf{y}_{1}\\in\\text{supp}(p(\\textbf{y}_{1}\\,|\\,\\textbf{x})).",
+        "Since being always determinstically preferred or dispreferred is generally not possible, SFT’s improvement is limited."
+      ],
+      "subsections": []
+    },
+    "Appendix I Expected Win Rate Improvement Expressions": {
+      "paragraphs": [
+        "Below, we present the expected win rate improvement over the original model for WRO-KL objectives. Letting p​(y0|x)=p​(y0′|x)=p​(y0′′|x)p(\\textbf{y}_{0}\\,|\\,\\textbf{x})=p(\\textbf{y}^{\\prime}_{0}\\,|\\,\\textbf{x})=p(\\textbf{y}^{\\prime\\prime}_{0}\\,|\\,\\textbf{x}) and p​(y1|x)=p​(y1′|x)p(\\textbf{y}_{1}\\,|\\,\\textbf{x})=p(\\textbf{y}^{\\prime}_{1}\\,|\\,\\textbf{x}), we have:",
+        "Consequently, assuming the BT assumption holds in the preference environment, the expected win rate improvement for the target of RLHF/DPO is as follows:",
+        "For completion, we write the expected win rate improvement for SFT in the same form, connecting the expressions in this section to the result of Theorem 5.1:"
+      ],
+      "subsections": []
+    },
+    "Appendix J Comparing methods": {
+      "paragraphs": [
+        "In Table 3, we compare various preference learning methods along the axes of target distribution, objective, and the method of estimating the preference classifier. Ideally, we want a method’s target solution is able to put more probability mass over the more preferred sequences; its objective directly seeks to approximate that target over some other goal; and its estimate of the preference classifier is as accurate as possible.",
+        "[Table: Table 3: Comparison of preference learning algorithms along three dimensions of design choices: target distribution, objective, and estimation of the preference classifier. For readability, we substitute the preference classifier distribution p​(ℓ=1|x,y0,y)p(\\ell=1|\\textbf{x},\\textbf{y}_{0},\\textbf{y}) with pclfp_{\\text{clf}}.]"
+      ],
+      "subsections": []
+    },
+    "Appendix K Judge model": {
+      "paragraphs": [
+        "To train the judge model, we finetune a Pythia-2.8b base model using the same pairwise training set used to train all SFT models by simply modifying the prompt to take in x,y0,y1\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1} into account. The prompt template is as follows:",
+        "\\n\\n Human: + <Instruction> + \\n\\n Candidate Response A: + <response a> + \\n\\n Candidate Response B: + <response b> + \\n\\n The better answer is Candidate Response ",
+        "The model is trained with a language modeling loss on the output, which is either ‘A‘ or ‘B‘. For each pair of responses y0,y1\\textbf{y}_{0},\\textbf{y}_{1}, the training set includes two rows, one where y0\\textbf{y}_{0} is Response A, and one where y1\\textbf{y}_{1} is Response A.",
+        "The model is trained using RMSProp with a learning rate of 5e-7 and batch size of 64. The model is trained with a maximum sequence length of 512 and a maximum input length of 511. On the evaluation dataset, the model achieves a per-row classification accuracy of 68.8. (Training the same judge model with a sequence length of 1024 achieves the same accuracy, so we choose to stick with 512 for efficiency.)",
+        "To obtain the preference probability of a pair of outputs, we run a forward pass through the judge model twice, once with each order of output pairs, and average the results.",
+        "To simulate more opinionated preferences in this preference environment, we sharpen the judge preference probabilities with temperature scaling (T=0.2T=0.2) on the logit-transformed probabilities: p​(ℓ=1|x,y0,y1)=σ​(logit ​p^judge​(ℓ=1|x,y0,y1)/T).p(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1})=\\sigma\\left(\\text{logit }\\hat{p}_{\\text{judge}}(\\ell=1\\,|\\,\\textbf{x},\\textbf{y}_{0},\\textbf{y}_{1})/T\\right)."
+      ],
+      "subsections": []
+    },
+    "Appendix L Experiment details": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Dataset processing.",
+          "paragraphs": [
+            "For the Open Assistant dataset (Kopf et al., 2023), we keep only the first turn in each conversation and English-only examples, following Yuan et al. (2024). The dataset only has a train and validation split, so we split the original train set into a train and validation set and leave the validation set for testing / evaluation. The dataset includes multiple candidate responses for each input, all ranked, and to match the pairwise preference learning setup, we create a dataset of all possible pairs for each input. For instance, for a given input with three candidate responses (A, B, C), our paired dataset includes all three pairs (AB, BC, AC). For SHP, we keep only pairs where the score ratio is >2>2, following Rafailov et al. (2024c)."
+          ]
+        },
+        {
+          "title": "Training the initial model.",
+          "paragraphs": [
+            "For each dataset, we finetune the base Pythia-2.8b models on all outputs, preferred and dispreferred. The resulting finetuned models serve as our initial models for preference learning. To train these models, we utilize a batch size of 64 and learning rate of 5e-7 chosen based on hyperparameter sweep between [1e-8, 5e-8, 1e-7, 5e-7, 1e-6] on OASST. Following Rafailov et al. (2024c), we use the RMSProp optimizer with a learning rate warm up of 150 steps and constant learning rate schedule otherwise. We evaluate every 100 steps and choose the best checkpoint based on validation loss."
+          ]
+        },
+        {
+          "title": "SFT and DPO experiments.",
+          "paragraphs": [
+            "SFT and DPO experiments follow the same training configuration as the initial model."
+          ]
+        },
+        {
+          "title": "RL experiments.",
+          "paragraphs": [
+            "We use the implementation of reward model training and PPO from the TRL library (von Werra et al., 2020). For reward model training, we use a batch size of 64, learning rate of 5e-7 for Pythia2.8b, and checkpoint every 100 steps, matching the SFT and DPO experiments. For PPO, we use a learning rate=1e-6 (obtained through a hyperparameter sweep of [1e-7, 5e-7, 1e-6] on OASST), batch size=128, and PPOConfig defaults for all other hyperparameters. We checkpoint every five steps and choose checkpoint with the best policy loss (namely, ignoring the estimation of the value head)."
+          ]
+        },
+        {
+          "title": "Win rate evaluations.",
+          "paragraphs": [
+            "We sample a set of 100 input prompts from the test set of a given dataset (same 100 prompts for all models) and perform win rate evaluation using the oracle judge for the dataset."
+          ]
+        }
+      ]
+    },
+    "Appendix M Exploring optimization benefits of RLHF": {
+      "paragraphs": [
+        "Below, we compare the win rate results when optimizing the RLHF objective versus a non-optimized WRO-KL-BT-logit objective that keeps the 𝔼p​(y0|x)​r​(x,y0)\\mathbb{E}_{p(\\textbf{y}_{0}\\,|\\,\\textbf{x})}r(\\textbf{x},\\textbf{y}_{0}) term. Namely, the RLHF objective we optimize is",
+        "The non-optimized WRO-KL-BT-logit objective we optimize is",
+        "Win rate results can be found in Table 4. All experimental details match that of the main paper.",
+        "[Table: Table 4: Comparison of win rates between RLHF (optimized) and WRO-KL-BT-logit without additional optimization (non-optimized). RLHF’s dropping of the constant in the objective decreases variance in the gradient estimates and generally improves results with small enough β\\beta. However, this change does not yield systematic benefits for every setting, suggesting that there is still room for improvement.]"
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "Ahmadian et al. (2024) Ahmadian, A., Cremer, C., Gallé, M., Fadaee, M., Kreutzer, J., Üstün, A., and Hooker, S. Back to basics: Revisiting reinforce style optimization for learning from human feedback in llms. arXiv, 2024.",
+    "Awasthi et al. (2021) Awasthi, P., Frank, N., Mao, A., Mohri, M., and Zhong, Y. Calibration and consistency of adversarial surrogate losses. Advances in Neural Information Processing Systems, 34:9804–9815, 2021.",
+    "Awasthi et al. (2022) Awasthi, P., Mao, A., Mohri, M., and Zhong, Y. Multi-class h -consistency bounds. NeurIPS, 2022.",
+    "Azar et al. (2023) Azar, M. G., Rowland, M., Piot, B., Guo, D., Calandriello, D., Valko, M., and Munos, R. A general theoretical paradigm to understand learning from human preferences. arXiv, 2023.",
+    "Bai et al. (2022) Bai, Y., Jones, A., Ndousse, K., Askell, A., Chen, A., DasSarma, N., Drain, D., Fort, S., Ganguli, D., Henighan, T., et al. Training a helpful and harmless assistant with reinforcement learning from human feedback. arXiv, 2022.",
+    "Biderman et al. (2023) Biderman, S., Schoelkopf, H., Anthony, Q. G., Bradley, H., O’Brien, K., Hallahan, E., Khan, M. A., Purohit, S., Prashanth, U. S., Raff, E., Skowron, A., Sutawika, L., and van der Wal, O. Pythia: A suite for analyzing large language models across training and scaling. ArXiv, abs/2304.01373, 2023. URL https://api.semanticscholar.org/CorpusID:257921893.",
+    "Brandfonbrener et al. (2021) Brandfonbrener, D., Whitney, W. F., Ranganath, R., and Bruna, J. Quantile filtered imitation learning. arXiv preprint arXiv:2112.00950, 2021.",
+    "Bridle (1990) Bridle, J. Probabilistic interpretation of feedforward classification network outputs, with relationships to statistical pattern recognition. Neurocomputing, 1990.",
+    "Calandriello et al. (2024) Calandriello, D., Guo, D., Munos, R., Rowland, M., Tang, Y., Pires, B. A., Richemond, P. H., Lan, C. L., Valko, M., Liu, T., Joshi, R., Zheng, Z., and Piot, B. Human alignment of large language models through online preference optimisation, 2024. URL https://arxiv.org/abs/2403.08635.",
+    "Chen et al. (2024) Chen, A., Malladi, S., Zhang, L. H., Chen, X., Zhang, Q., Ranganath, R., and Cho, K. Preference learning algorithms do not learn preference rankings. NeurIPS, 2024.",
+    "Christiano et al. (2017) Christiano, P. F., Leike, J., Brown, T. B., Martic, M., Legg, S., and Amodei, D. Deep reinforcement learning from human preferences. ArXiv, abs/1706.03741, 2017.",
+    "Dong et al. (2023) Dong, H., Xiong, W., Goyal, D., Zhang, Y., Chow, W., Pan, R., Diao, S., Zhang, J., Shum, K., and Zhang, T. Raft: Reward ranked finetuning for generative foundation model alignment. TMLR, 2023.",
+    "Ethayarajh et al. (2022) Ethayarajh, K., Choi, Y., and Swayamdipta, S. Understanding dataset difficulty with v-usable information. In ICML, 2022.",
+    "Gui et al. (2024) Gui, L., Gârbacea, C., and Veitch, V. Bonbon alignment for large language models and the sweetness of best-of-n sampling. NeurIPS, 2024.",
+    "Gulcehre et al. (2023) Gulcehre, C., Paine, T. L., Srinivasan, S., Konyushkova, K., Weerts, L., Sharma, A., Siddhant, A., Ahern, A., Wang, M., Gu, C., Macherey, W., Doucet, A., Firat, O., and de Freitas, N. Reinforced self-training (rest) for language modeling. arXiv, 2023.",
+    "Guo et al. (2024) Guo, S., Zhang, B., Liu, T., Liu, T., Khalman, M., Llinares, F., Rame, A., Mesnard, T., Zhao, Y., Piot, B., Ferret, J., and Blondel, M. Direct language model alignment from online ai feedback, 2024. URL https://arxiv.org/abs/2402.04792.",
+    "Han et al. (2024) Han, J., Jiang, M., Song, Y., Leskovec, J., Ermon, S., and Xu, M. ff-po: Generalizing preference optimization with ff-divergence minimization. arXiv preprint arXiv:2410.21662, 2024.",
+    "Huang et al. (2024) Huang, A., Zhan, W., Xie, T., Lee, J. D., Sun, W., Krishnamurthy, A., and Foster, D. J. Correcting the mythos of kl-regularization: Direct alignment without overoptimization via chi-squared preference optimization, 2024. URL https://arxiv.org/abs/2407.13399.",
+    "Ivison et al. (2024) Ivison, H., Wang, Y., Liu, J., Wu, Z., Pyatkin, V., Lambert, N., Smith, N. A., Choi, Y., and Hajishirzi, H. Unpacking dpo and ppo: Disentangling best practices for learning from preference feedback. NeurIPS, 2024.",
+    "Ji et al. (2024) Ji, H., Lu, C., Niu, Y., Ke, P., Wang, H., Zhu, J., Tang, J., and Huang, M. Towards efficient and exact optimization of language model alignment. arXiv preprint arXiv:2402.00856, 2024.",
+    "Jiang et al. (2024) Jiang, R., Chen, K., Bai, X., He, Z., Li, J., Yang, M., Zhao, T., Nie, L., and Zhang, M. A survey on human preference learning for large language models, 2024. URL https://arxiv.org/abs/2406.11191.",
+    "Kaufmann et al. (2023) Kaufmann, T., Weng, P., Bengs, V., and Hüllermeier, E. A survey of reinforcement learning from human feedback. ArXiv, abs/2312.14925, 2023.",
+    "Kirk et al. (2024) Kirk, R., Mediratta, I., Nalmpantis, C., Luketina, J., Hambro, E., Grefenstette, E., and Raileanu, R. Understanding the effects of rlhf on llm generalisation and diversity. arXiv, 2024.",
+    "Kopf et al. (2023) Kopf, A., Kilcher, Y., von Rutte, D., Anagnostidis, S., Tam, Z. R., Stevens, K., Barhoum, A., Duc, N. M., Stanley, O., Nagyfi, R., Shahul, E., Suri, S., Glushkov, D., Dantuluri, A., Maguire, A., Schuhmann, C., Nguyen, H., and Mattick, A. Openassistant conversations - democratizing large language model alignment. ArXiv, abs/2304.07327, 2023.",
+    "Lambert et al. (2023) Lambert, N., Tunstall, L., Rajani, N., and Thrush, T. Huggingface h4 stack exchange preference dataset. 2023. URL https://huggingface.co/datasets/HuggingFaceH4/stack-exchange-preferences.",
+    "Li et al. (2023a) Li, X., Yu, P., Zhou, C., Schick, T., Levy, O., Zettlemoyer, L., Weston, J., and Lewis, M. Self-alignment with instruction backtranslation. arXiv preprint arXiv:2308.06259, 2023a.",
+    "Li et al. (2023b) Li, X., Zhang, T., Dubois, Y., Taori, R., Gulrajani, I., Guestrin, C., Liang, P., and Hashimoto, T. B. Alpacaeval: An automatic evaluator of instruction-following models. GitHub repository, 2023b.",
+    "Minaee et al. (2024) Minaee, S., Mikolov, T., Nikzad, N., Chenaghlu, M. A., Socher, R., Amatriain, X., and Gao, J. Large language models: A survey. ArXiv, abs/2402.06196, 2024.",
+    "Mohamed et al. (2020a) Mohamed, S., Rosca, M., Figurnov, M., and Mnih, A. Monte carlo gradient estimation in machine learning. JMLR, 2020a.",
+    "Mohamed et al. (2020b) Mohamed, S., Rosca, M., Figurnov, M., and Mnih, A. Monte carlo gradient estimation in machine learning. JMLR, 2020b.",
+    "Munos et al. (2023) Munos, R., Valko, M., Calandriello, D., Azar, M. G., Rowland, M., Guo, Z. D., Tang, Y., Geist, M., Mesnard, T., Michi, A., Selvi, M., Girgin, S., Momchev, N., Bachem, O., Mankowitz, D. J., Precup, D., and Piot, B. Nash learning from human feedback. arXiv, 2023.",
+    "Naesseth et al. (2020) Naesseth, C. A., Lindsten, F., and Blei, D. Markovian score climbing: Variational inference with kl(p||||q). NeurIPS, 2020.",
+    "OpenAI (2024) OpenAI. Gpt-4 technical report. arXiv, 2024.",
+    "Ouyang et al. (2022) Ouyang, L., Wu, J., Jiang, X., Almeida, D., Wainwright, C. L., Mishkin, P., Zhang, C., Agarwal, S., Slama, K., Ray, A., Schulman, J., Hilton, J., Kelton, F., Miller, L. E., Simens, M., Askell, A., Welinder, P., Christiano, P. F., Leike, J., and Lowe, R. J. Training language models to follow instructions with human feedback. ArXiv, abs/2203.02155, 2022.",
+    "Pal et al. (2024) Pal, A., Karkhanis, D., Dooley, S., Roberts, M., Naidu, S., and White, C. Smaug: Fixing failure modes of preference optimisation with dpo-positive, 2024. URL https://arxiv.org/abs/2402.13228.",
+    "Rafailov et al. (2024a) Rafailov, R., Chittepu, Y., Park, R., Sikchi, H., Hejna, J., Knox, B., Finn, C., and Niekum, S. Scaling laws for reward model overoptimization in direct alignment algorithms, 2024a. URL https://arxiv.org/abs/2406.02900.",
+    "Rafailov et al. (2024b) Rafailov, R., Hejna, J., Park, R., and Finn, C. From rr to q∗q^{*}: Your language model is secretly a q-function. COLM, 2024b.",
+    "Rafailov et al. (2024c) Rafailov, R., Sharma, A., Mitchell, E., Manning, C. D., Ermon, S., and Finn, C. Direct preference optimization: Your language model is secretly a reward model. NeurIPS, 36, 2024c.",
+    "Ranganath et al. (2014) Ranganath, R., Gerrish, S., and Blei, D. Black box variational inference. In Artificial intelligence and statistics, pp. 814–822. PMLR, 2014.",
+    "Razin et al. (2024a) Razin, N., Malladi, S., Bhaskar, A., Chen, D., Arora, S., and Hanin, B. Unintentional unalignment: Likelihood displacement in direct preference optimization, 2024a. URL https://arxiv.org/abs/2410.08847.",
+    "Razin et al. (2024b) Razin, N., Zhou, H., Saremi, O., Thilak, V., Bradley, A., Nakkiran, P., Susskind, J., and Littwin, E. Vanishing gradients in reinforcement finetuning of language models. ICLR, 2024b.",
+    "Rosset et al. (2024) Rosset, C., Cheng, C.-A., Mitra, A., Santacroce, M., Awadallah, A., and Xie, T. Direct nash optimization: Teaching language models to self-improve with general preferences, 2024.",
+    "Singhal et al. (2024) Singhal, P., Goyal, T., Xu, J., and Durrett, G. A long way to go: Investigating length correlations in rlhf, 2024. URL https://arxiv.org/abs/2310.03716.",
+    "Steinwart (2007) Steinwart, I. How to compare different loss functions and their risks. Constructive Approximation, 26(2):225–287, 2007. doi: 10.1007/s00365-006-0668-8.",
+    "Stiennon et al. (2020) Stiennon, N., Ouyang, L., Wu, J., Ziegler, D. M., Lowe, R. J., Voss, C., Radford, A., Amodei, D., and Christiano, P. Learning to summarize from human feedback. ArXiv, abs/2009.01325, 2020.",
+    "Swamy et al. (2024) Swamy, G., Dann, C., Kidambi, R., Wu, Z. S., and Agarwal, A. A minimaximalist approach to reinforcement learning from human feedback. ICML, 2024.",
+    "Tajwar et al. (2024) Tajwar, F., Singh, A., Sharma, A., Rafailov, R., Schneider, J., Xie, T., Ermon, S., Finn, C., and Kumar, A. Preference fine-tuning of llms should leverage suboptimal, on-policy data. ICML, 2024.",
+    "Tang et al. (2024) Tang, Y., Guo, Z. D., Zheng, Z., Calandriello, D., Munos, R., Rowland, M., Richemond, P. H., Valko, M., Avila Pires, B., and Piot, B. Generalized preference optimization: A unified approach to offline alignment. ICML, 2024.",
+    "von Werra et al. (2020) von Werra, L., Belkada, Y., Tunstall, L., Beeching, E., Thrush, T., Lambert, N., and Huang, S. Trl: Transformer reinforcement learning. GitHub repository, 2020.",
+    "Wang et al. (2024a) Wang, Z., Hou, L., Lu, T., Wu, Y., Li, Y., Yu, H., and Ji, H. Enabling language models to implicitly learn self-improvement. ICLR, 2024a.",
+    "Wang et al. (2024b) Wang, Z., Nagpal, C., Berant, J., Eisenstein, J., D’Amour, A., Koyejo, S., and Veitch, V. Transforming and combining rewards for aligning large language models. arXiv, 2024b.",
+    "Weng (2018) Weng, L. Policy gradient algorithms. lilianweng.github.io, 2018. URL https://lilianweng.github.io/posts/2018-04-08-policy-gradient/.",
+    "Xu et al. (2024a) Xu, H., Sharaf, A., Chen, Y., Tan, W., Shen, L., Durme, B. V., Murray, K., and Kim, Y. J. Contrastive preference optimization: Pushing the boundaries of llm performance in machine translation. ICML, 2024a.",
+    "Xu et al. (2024b) Xu, J., Lee, A., Sukhbaatar, S., and Weston, J. Some things are more cringe than others: Iterative preference optimization with the pairwise cringe loss, 2024b. URL https://arxiv.org/abs/2312.16682.",
+    "Yuan et al. (2024) Yuan, W., Pang, R. Y., Cho, K., Sukhbaatar, S., Xu, J., and Weston, J. Self-rewarding language models. arXiv, 2024.",
+    "Zhao et al. (2023) Zhao, Y., Joshi, R., Liu, T., Khalman, M., Saleh, M., and Liu, P. J. Slic-hf: Sequence likelihood calibration with human feedback. arXiv, 2023.",
+    "Zheng et al. (2024) Zheng, L., Chiang, W.-L., Sheng, Y., Zhuang, S., Wu, Z., Zhuang, Y., Lin, Z., Li, Z., Li, D., Xing, E., et al. Judging llm-as-a-judge with mt-bench and chatbot arena. NeurIPS, 36, 2024.",
+    "Zhu et al. (2024) Zhu, B., Jordan, M. I., and Jiao, J. Iterative data smoothing: Mitigating reward overfitting and overoptimization in rlhf. arXiv, 2024."
+  ]
+}

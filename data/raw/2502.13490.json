@@ -1,0 +1,337 @@
+{
+  "title": "What are Models Thinking about? Understanding Large Language Model Hallucinations through Model Internal State Analysis",
+  "authors": "Peiran WangByteDance IncYang LiuByteDance IncYunfei LuByteDance IncJue HongByteDance IncYe WuByteDance Inc",
+  "abstract": "Abstract not found",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Large language models (LLM) have been widely adopted across various fields, ranging from natural language processing and generation tasks to specialized applications in healthcare [55, 49, 41], finance [54], and legal services [9, 14]. However, despite its impressive capabilities, a fundamental issue remains: users often lack trust in LLMs due to their tendency to produce “hallucinations” [21, 26]. Hallucination in the context of LLMs refers to the phenomenon where the model generates content that appears plausible but is factually inaccurate or misaligned with the provided context. This can result in responses that sound coherent and authoritative, yet introduce misleading or completely false information [34].",
+        "Traditional hallucination detection methods usually focus on post-processing analysis of generated outputs, including checking the factual accuracy of responses through external RAGs [12, 38, 3, 28], adding prefix/suffix/system prompts according to prompt engineering [15], and self-consistency checking by generating multiple outputs [16, 33, 37]. However, these methods have some inherent limitations. The reliance on external databases will introduce additional complexity and computational overhead, especially when a large-scale external knowledge base is required [3]. Furthermore, the external base may not always be up-to-date or comprehensive, limiting their effectiveness in detecting certain hallucinations. Also, the prompt engineering-based methods will introduce additional prompts, which may lead to a decrease in response quality [15]. At last, since these methods all use external methods for post-generation intervention, there is a lack of understanding of the source of hallucinations.",
+        "Recent studies have begun exploring the use of LLM’s internal state for hallucination detection and intervention to overcome the limitations of hallucination detection and intervention methods based on external bases. The internal state of LLM, including attention weights [2, 8, 57], layer representation [2, 22, 6, 5, 47, 11, 1, 17], logits [42, 17], etc., provides a state representation of the model’s reasoning process during content generation. By analyzing these internal states, signs of hallucination can be detected before the content is fully generated, thereby achieving real-time intervention and reducing computational costs. Since no external intervention is required, this series of methods usually requires low computational overhead while allowing private models to be deployed locally (no cloud third-party services are required). Most importantly, these methods have become more interpretable, opening up new research ideas.",
+        "However, existing work based on internal states focuses on using a certain internal state for detection. They also did not provide sufficient transferability analysis. There is a lack of a systematic understanding of how large model hallucinations are generated during the internal inference processes.",
+        "To meet this gap, we propose HaluProbe, a framework that systematically extracts the internal states from the large language model inference and provides a deep understanding of the generation of hallucinations in it. Specifically, we make three key contributions:",
+        "• We divided LLMs’ inference process into three stages: understanding, query, and generation, and extracted 8 features from these three stages.",
+        "• We did a systematical analysis for all three stages’s internal states of inference, including understanding, query, and generation. We provide deep analysis both for solely inference and for inference with RAG.",
+        "• We conducted comprehensive experiments to assess different features’ abilities in hallucination detection. We also considered the transferability across different types of hallucinations.",
+        "The rest of the paper is organized as follows: We first introduce the preliminary background knowledge in §2, and summarize current works about hallucination detection and mitigation in §6. Then we introduce the whole design in §3. Next, we provide a deep understanding and observation about different inner states’ modes in hallucinated response in §4. The systematical detection performance analysis is stated in §5. At last, we discuss the limitation and future work in §7."
+      ],
+      "subsections": []
+    },
+    "2 Preliminary": {
+      "paragraphs": [
+        "In this section, we first explore the preliminary definition of LLM hallucination (§2.1) and the process of LLM inference (§2.2)."
+      ],
+      "subsections": [
+        {
+          "title": "2.1 LLM Hallucination",
+          "paragraphs": [
+            "LLM hallucination definition. Hallucination in large language models (LLMs) refers to the generation of content that is inconsistent with reality or factual information [51, 43, 21]. While this generated content may sound plausible, it is often based on patterns learned from training data rather than actual facts. The issue of hallucination significantly impacts the practical applications of LLMs, especially in scenarios requiring high accuracy and reliability, such as healthcare, legal contexts, and journalism [59].",
+            "LLM hallucination types. Hallucinations in large language models can be categorized into two types:",
+            "[1] Input-conflicting hallucination: This occurs when the content generated by the model deviates from the user’s task instruction or input [51, 43]. For instance, if a user asks for a dinner recipe, the model might mistakenly provide a lunch suggestion.",
+            "[2] Context-conflicting hallucination: In multi-turn generation or lengthy content, models may exhibit self-contradictions [51, 21, 59]. This type arises when models lose track of the context or fail to maintain consistency throughout the conversation. For example, a model might introduce the current NBA commissioner, Adam Silver, but later refer to a former commissioner, David Stern.",
+            "Input-conflicting hallucination: This occurs when the content generated by the model deviates from the user’s task instruction or input [51, 43]. For instance, if a user asks for a dinner recipe, the model might mistakenly provide a lunch suggestion.",
+            "Context-conflicting hallucination: In multi-turn generation or lengthy content, models may exhibit self-contradictions [51, 21, 59]. This type arises when models lose track of the context or fail to maintain consistency throughout the conversation. For example, a model might introduce the current NBA commissioner, Adam Silver, but later refer to a former commissioner, David Stern.",
+            "Potential causes of LLM hallucination. Causes of hallucinations can be analyzed from several perspectives:",
+            "[1] Data-related issues: The training data for LLMs is often collected from the internet, containing significant amounts of outdated, inaccurate, or biased information [51, 43, 59]. These data quality issues can lead to the generation of hallucinated content .",
+            "[2] Limitations of the training process: Models learn language patterns by predicting the next word rather than understanding the content deeply [43, 21, 23]. Additionally, misalignment during fine-tuning (for example, through reinforcement learning from human feedback, or RLHF) can contribute to hallucinations .",
+            "[3] Randomness in the inference stage: During content generatce inconsistent or contextually irrelevant outputs due to randomness in sampling strategies or decoding methods [51, 21, 23].",
+            "Data-related issues: The training data for LLMs is often collected from the internet, containing significant amounts of outdated, inaccurate, or biased information [51, 43, 59]. These data quality issues can lead to the generation of hallucinated content .",
+            "Limitations of the training process: Models learn language patterns by predicting the next word rather than understanding the content deeply [43, 21, 23]. Additionally, misalignment during fine-tuning (for example, through reinforcement learning from human feedback, or RLHF) can contribute to hallucinations .",
+            "Randomness in the inference stage: During content generatce inconsistent or contextually irrelevant outputs due to randomness in sampling strategies or decoding methods [51, 21, 23]."
+          ]
+        },
+        {
+          "title": "2.2 LLM Inference Process",
+          "paragraphs": [
+            "During the inference process of a large-scale Transformer model such as Llama, the whole process can be divided into several key stages (see Figure 1).",
+            "Input processing. The first is the input processing stage, in which the input text is tokenized and converted into a format that the model can understand, generating corresponding token IDs [36]. Subsequently, these token IDs are input into the embedding layer to form word embeddings, which provide the basis for the model’s subsequent understanding. In this way, the text information is effectively converted into numerical representations for subsequent calculations [10].",
+            "Understanding. The next understanding stage processes the input tokens through a multi-head self-attention mechanism [52, 4, 53]. This mechanism calculates the similarity between tokens and generates contextual representations to capture long-range dependencies [56]. This process enables the model to fully understand the semantics of each token in a specific context and provide rich semantic information for the subsequent query stage [44, 4].",
+            "Query. In the query stage, the model further processes the contextual representations generated in the understanding stage through a feedforward network [60, 35]. The feedforward network contains two linear transformations and nonlinear activation functions (such as ReLU) to generate new feature representations. The goal of this stage is to extract higher-level abstract information, improve the model’s expressiveness, and lay the foundation for the final generation process.",
+            "Generation. The generation stage is the core of reasoning. The model converts the output of the query stage into the probability distribution of the next token through linear transformation and softmax function. In this process, the model uses contextual information to determine the most likely next token and generates a continuous text sequence. The decoding strategy of this stage, such as greedy search or beam search, directly affects the quality and coherence of the generated text.",
+            "Post processing. Finally, in the post-processing stage, the generated token ID sequence is converted back to a readable text format. By merging subwords or words and removing special tokens, the output of the model is converted into human-understandable language. This stage ensures the readability of the generated content and enables users to interact directly with the model output. Through the close combination of these stages, the Transformer model realizes an effective reasoning process from input to output."
+          ]
+        }
+      ]
+    },
+    "3 Proposed Scheme:HaluProbe": {
+      "paragraphs": [
+        "Our proposed scheme consists of three parts: (1) Internal state extraction (§3.1): HaluProbe extracts internal states during the inference, and stores them locally. (2) Token selection (§3.2): HaluProbe selects target tokens for next stage feature extraction. (3) Feature extraction (§3.3): HaluProbe extracts target features from the internal states, we also discuss different feature selection and token selection for better analysis."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Internal State Extraction",
+          "paragraphs": [
+            "Following the definition of §2.2, HaluProbe first extracts three types of internal state from the three stages during inference:",
+            "Understanding: attention. Attention is the internal state in which LLMs understand the input context. We extract each attention score matrix from each transformer layer’s head for each token tt as:",
+            "where αl,h,i{\\alpha}_{l,h,i} denotes the ll-th layer’s hh-th head’s attention score for token tt on token ii.",
+            "Query: layer representation. The query stage involves processing contextual representations through a feedforward network to derive higher-level abstractions. We capture the layer representation matrices from each transformer layer for each token tt as follows:",
+            "where γl,i\\gamma_{l,i} represents the ll-th layer’s layer representation for token tt during the query phase.",
+            "Generation: logit. In the generation stage, the model transforms layer representations into logits, converting these outputs into probabilities via the softmax function to determine the likelihood of each next token. Each logit score for token tt is calculated as:",
+            "where ιl,i\\iota_{l,i} denotes the ll-th layer’s logit score for token tt in the generation phase, representing the raw output before applying the softmax."
+          ]
+        },
+        {
+          "title": "3.2 Token Selection",
+          "paragraphs": [
+            "Unlike previous external methods to detect hallucinations, internal state-based detection relies heavily on selecting tokens. Each internal state including attention, layer representation, and logit is highly relying on tokens. Thus we provided five different token selection methods inspired from previous works:",
+            "All tokens selection. Aggregate the features of all tokens (e.g., max, mean) and then input the aggregated result into the i​s​_​h​a​l​uis\\_halu function to determine if the entire response is hallucinatory.",
+            "where tit_{i} represents each token in the response, NN is the total number of tokens, and ff is an aggregation function (e.g., max, mean).",
+            "Per token selection. Apply the i​sh​a​l​uis_{h}alu function individually to each token. If any token is identified as hallucinatory, the entire response is considered hallucinatory.",
+            "Last token selection. Apply the i​sh​a​l​uis_{h}alu function only to the last token, using its result to determine if the entire response is hallucinatory.",
+            "where tNt_{N} is the last token in the response.",
+            "First token selection. Apply the i​sh​a​l​uis_{h}alu function only to the first token, using its result to determine if the entire response is hallucinatory.",
+            "where t1t_{1} is the first token in the response.",
+            "Sliced window selection. Divide all tokens into multiple sliding windows, where each window contains ww consecutive tokens and slides with a stride ss. Apply the i​sh​a​l​uis_{h}alu function to each window. If any window is identified as hallucinatory, the entire response is considered hallucinatory.",
+            "where MM is the number of windows, ww is the window size, and kk is the starting index of each window (ranging from 1 to N−w+1N-w+1). The symbol ⋁\\bigvee denotes a logical OR operation. If any token group within a window is identified as hallucinatory, the entire response is considered hallucinatory.",
+            "We provided examples for each token selection method in Figure 2."
+          ]
+        },
+        {
+          "title": "3.3 Feature Extraction",
+          "paragraphs": [
+            "We extract three groups of features from the extracted layer representations:",
+            "Attention lookback ratio. For each token tt, we calculate the lookback ratio for each layer and attention head hh, defined as the proportion of attention score directed to previous tokens among all attention scores for that token:",
+            "The lookback ratio quantifies the model’s focus on historical context. When a model generates hallucinations, it may overlook parts of the contextual information, so a low Lookback Ratio might indicate insufficient use of historical context during generation.",
+            "Attention allocation sharpness. Attention allocation sharpness reflects the concentration of the attention distribution for each token. By computing the entropy of token tt’s attention distribution in layer ll and head hh, we obtain the Sharpness:",
+            "where",
+            "Attention allocation sharpness indicates whether the model’s attention is focused on a few important tokens. Low entropy suggests more concentrated attention, helping us understand if the model might be overly focused on particular tokens, potentially leading to hallucination.",
+            "Last layer layer representation. The last layer representation is extracted directly from the layer representation of the last layer for each token: where γL,t∈Rd\\gamma_{L,t}\\in R^{d} represents the layer representation vector of the LL-th (last) layer for the token tt. Here: The layer representation in the last layer represents the model’s final contextual embedding, which directly influences the generated output. Analyzing this layer representation can help identify potential causes of hallucinations in the generated content.",
+            "• dd is the dimensionality of the model’s layer representations (typically the size of the embedding dimension).",
+            "• LL is the total number of transformer layers in the model.",
+            "dd is the dimensionality of the model’s layer representations (typically the size of the embedding dimension).",
+            "LL is the total number of transformer layers in the model.",
+            "Activation map The activation map at layer ll for a token tt is computed from the layer representation γl,t∈Rd\\gamma_{l,t}\\in R^{d} as follows:",
+            "1. Linear Transformation: where W1∈Rm×dW_{1}\\in R^{m\\times d} is the weight matrix, mm is the intermediate dimensionality of the feed-forward network, and b1∈Rmb_{1}\\in R^{m} is the bias vector.",
+            "2. Non-linear Activation: where al,t∈Rma_{l,t}\\in R^{m} is the activation map, and GELU denotes the Gaussian Error Linear Unit activation function.",
+            "Linear Transformation:",
+            "where W1∈Rm×dW_{1}\\in R^{m\\times d} is the weight matrix, mm is the intermediate dimensionality of the feed-forward network, and b1∈Rmb_{1}\\in R^{m} is the bias vector.",
+            "Non-linear Activation:",
+            "where al,t∈Rma_{l,t}\\in R^{m} is the activation map, and GELU denotes the Gaussian Error Linear Unit activation function.",
+            "The resulting activation map al,ta_{l,t} illustrates the degree of activation for mm neurons in the feed-forward network at layer ll for token tt.",
+            "Activation entropy Activation entropy is calculated as the entropy of the activation states in each layer, capturing the distribution of activations:",
+            "where",
+            "Activation entropy reflects the dispersion or concentration of the model’s activation states. Low entropy indicates focused activation on a few tokens, which could signify overconfidence in certain tokens, potentially leading to hallucination.",
+            "Min token probs Min token probs represent the lowest softmax probability across tokens in each layer’s logit output:",
+            "Low probability values indicate a lack of confidence in certain tokens. These extremely low probabilities can help identify potential points of hallucination risk.",
+            "Max token ranks Max token ranks represent the rank of the token with the lowest probability across a sequence within each layer’s softmax logits:",
+            "The token with the lowest rank may indicate low-priority content during generation. High-rank values suggest that the model may hallucinate by producing low-priority tokens in the sequence.",
+            "Joint token probs. Joint token probs represent the product of probabilities of all tokens within a sequence in each layer’s softmax logits:",
+            "Joint token probs provides a measure of overall confidence in generating the sequence. A low joint probability suggests low model confidence in the entire sequence, which could result in hallucinated content."
+          ]
+        }
+      ]
+    },
+    "4 Understanding Internal State": {
+      "paragraphs": [
+        "In this section, we provide an understanding of how the internal state changes during the lens of LLM inference (§4.1), inference with RAG (§4.2)."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Understanding through Lens of Inference",
+          "paragraphs": [
+            "Method. We experimented to compare internal states that differ from the factual output and hallucinated output across the whole inference process. Specifically, we used 2 datasets: HaluEval for factual hallucination generation, and CNNDM for faithful hallucination generation. We collected the internal states of tested models using the 2 datasets and computed the extracted features. At last, we compared internal states between hallucinated output and factual output. The results are shown in Table 1.",
+            "Results on attention states. The lookback ratio (LR) measures the proportion of attention directed toward previous tokens. In the HaluEval dataset, both factual (ℱ\\mathcal{F}) and hallucinated (ℋ\\mathcal{H}) outputs exhibit overlapping trends across attention heads (h∈Hh\\in H) and attention layers (l∈Ll\\in L), implying that LRl,h\\text{LR}_{l,h} does not effectively distinguish between ℱ\\mathcal{F} and ℋ\\mathcal{H}. However, in the CNNDM dataset, LRl,h\\text{LR}_{l,h} demonstrates a clearer separation, with ℱ\\mathcal{F} maintaining higher and more stable values compared to ℋ\\mathcal{H} (LRl,hℱ>LRl,hℋ,∀l,h\\text{LR}^{\\mathcal{F}}_{l,h}>\\text{LR}^{\\mathcal{H}}_{l,h},\\forall l,h). This suggests that hallucinations in CNNDM are associated with reduced attention to prior context, making LR a more sensitive feature for hallucination detection in this dataset.",
+            "The attention entropy (ℰl\\mathcal{E}_{l}) quantifies the concentration of attention distributions. For HaluEval, results show that ℱ\\mathcal{F} exhibits lower entropy (ℰlℱ<ℰlℋ\\mathcal{E}_{l}^{\\mathcal{F}}<\\mathcal{E}_{l}^{\\mathcal{H}}), indicating more focused attention, whereas ℋ\\mathcal{H} outputs have higher entropy, reflecting dispersed attention. Aggregated across layers (ℰ¯l\\bar{\\mathcal{E}}_{l}), this trend persists. In CNNDM, although ℰlℋ>ℰlℱ\\mathcal{E}_{l}^{\\mathcal{H}}>\\mathcal{E}_{l}^{\\mathcal{F}}, the distinction is less pronounced. These results suggest that ℰl\\mathcal{E}_{l} robustly captures the dispersion of attention in ℋ\\mathcal{H}, particularly for HaluEval.",
+            "In summary, LR is dataset-sensitive, effectively distinguishing hallucinations in CNNDM but not in HaluEval, whereas ℰl\\mathcal{E}_{l} consistently differentiates between ℋ\\mathcal{H} and ℱ\\mathcal{F} in both datasets, highlighting dispersed attention as a hallmark of hallucinations.",
+            "Results on activation states. The hidden states (hl,th_{l,t}) represent activation values at layer ll for token tt. Across both datasets, factual and hallucinated outputs exhibit overlapping trends in h¯l,t\\bar{h}_{l,t}, indicating that h¯l,tℱ≈h¯l,tℋ\\bar{h}_{l,t}^{\\mathcal{F}}\\approx\\bar{h}_{l,t}^{\\mathcal{H}}. This overlap suggests that hl,th_{l,t} lacks sensitivity to the nuanced differences introduced by hallucinations.",
+            "Activation sharpness (SlS_{l}) measures the concentration of activations across layers. In both datasets, SlℱS_{l}^{\\mathcal{F}} and SlℋS_{l}^{\\mathcal{H}} follow nearly identical trends, with a consistent decrease after the 20th layer (∀l>20,Slℱ≈Slℋ\\forall l>20,S_{l}^{\\mathcal{F}}\\approx S_{l}^{\\mathcal{H}}). This similarity suggests that activation sharpness fails to capture hallucination-specific patterns. The uniformity in S¯l\\bar{S}_{l} across ℱ\\mathcal{F} and ℋ\\mathcal{H} implies that these features reflect general activation dynamics rather than hallucination-induced variations.",
+            "Thus, neither hl,th_{l,t} nor SlS_{l} effectively distinguishes between hallucinations and factual outputs, underscoring their limited utility for this task.",
+            "Results on logit states. The minimum token probability (min⁡(Pl,t)\\min(\\text{P}_{l,t})) captures the model’s confidence in its least likely predicted token. In HaluEval, min⁡(Pl,tℋ)<min⁡(Pl,tℱ)\\min(\\text{P}_{l,t}^{\\mathcal{H}})<\\min(\\text{P}_{l,t}^{\\mathcal{F}}), but the difference is slight, whereas in CNNDM, this disparity is more pronounced (∀l,min⁡(Pl,tℋ)≪min⁡(Pl,tℱ)\\forall l,\\min(\\text{P}_{l,t}^{\\mathcal{H}})\\ll\\min(\\text{P}_{l,t}^{\\mathcal{F}})), indicating greater uncertainty in hallucinated outputs.",
+            "The joint token probability (∏tPl,t\\prod_{t}\\text{P}_{l,t}) reflects cumulative confidence. In HaluEval, ∏tPl,tℱ≈∏tPl,tℋ\\prod_{t}\\text{P}_{l,t}^{\\mathcal{F}}\\approx\\prod_{t}\\text{P}_{l,t}^{\\mathcal{H}}, while in CNNDM, hallucinated outputs exhibit lower joint probabilities (∏tPl,tℋ<∏tPl,tℱ\\prod_{t}\\text{P}_{l,t}^{\\mathcal{H}}<\\prod_{t}\\text{P}_{l,t}^{\\mathcal{F}}) in later layers.",
+            "The maximum token rank (max⁡(Rl,t)\\max(\\text{R}_{l,t})) indicates the rank of the least confident token. In HaluEval, max⁡(Rl,t)\\max(\\text{R}_{l,t}) trends for ℱ\\mathcal{F} and ℋ\\mathcal{H} largely overlap (max(Rl,tℱ≈max(Rl,tℋ)\\max(\\text{R}_{l,t}^{\\mathcal{F}}\\approx\\max(\\text{R}_{l,t}^{\\mathcal{H}})), but in CNNDM, hallucinated outputs consistently exhibit higher ranks (max(Rl,tℋ)>max(Rl,tℱ\\max(\\text{R}_{l,t}^{\\mathcal{H}})>\\max(\\text{R}_{l,t}^{\\mathcal{F}}).",
+            "The Jensen-Shannon Divergence (JSD) measures distribution divergence. In both datasets, JSD trends for ℱ\\mathcal{F} and ℋ\\mathcal{H} are nearly identical (JSDl,tℱ≈JSDl,tℋ\\text{JSD}_{l,t}^{\\mathcal{F}}\\approx\\text{JSD}_{l,t}^{\\mathcal{H}}), indicating limited sensitivity to hallucination-specific variations.",
+            "In conclusion, logit features such as min⁡(Pl,t)\\min(\\text{P}_{l,t}) and max⁡(Rl,t)\\max(\\text{R}_{l,t}) are more effective in CNNDM than in HaluEval, reflecting the stronger correlation between reduced confidence and hallucinations in CNNDM. However, features like ∏tPl,t\\prod_{t}\\text{P}_{l,t} and JSD show limited efficacy across both datasets."
+          ]
+        },
+        {
+          "title": "4.2 Impact of RAG during Inference",
+          "paragraphs": [
+            "Method. We utilized the HaluEval dataset to investigate the effect of RAG on LLM inference. For each question, the answer was converted into a retrieval-augmented knowledge base (RAG) to assist the LLM. Internal states, including attention scores, hidden states, and logits, were extracted during inference under two settings: with and without RAG. Features such as attention lookback ratio, activation entropy, and token probabilities were computed and compared between the two conditions, focusing on correct responses to analyze how RAG influences the model’s reasoning process and mitigates hallucinations.",
+            "Results on attention states. The lookback ratio (LRl,h\\text{LR}_{l,h}) reflects the model’s focus on prior tokens. At the head level, the figure shows the distribution of LRl,h\\text{LR}_{l,h} across all 1024 attention heads (h∈Hh\\in H), while at the layer level, it aggregates over the 32 heads per layer (l∈Ll\\in L). The results indicate that LR¯lRAG\\bar{\\text{LR}}_{l}^{\\text{RAG}} (with RAG) is more consistent and slightly higher than LR¯lnon-RAG\\bar{\\text{LR}}_{l}^{\\text{non-RAG}} (without RAG), particularly across deeper layers (l>10l>10). This consistency arises because RAG provides external context, enhancing backward focus and enabling effective utilization of retrieved information. Without RAG, the model depends entirely on internal context, leading to greater variability (Var​(LR¯lnon-RAG)>Var​(LR¯lRAG)\\text{Var}(\\bar{\\text{LR}}_{l}^{\\text{non-RAG}})>\\text{Var}(\\bar{\\text{LR}}_{l}^{\\text{RAG}})).",
+            "The attention entropy (ℰl,h\\mathcal{E}_{l,h}) quantifies the diversity of attention distributions. At the head level, ℰl,hRAG\\mathcal{E}_{l,h}^{\\text{RAG}} is consistently higher than ℰl,hnon-RAG\\mathcal{E}_{l,h}^{\\text{non-RAG}}, and at the layer level, the average entropy ℰ¯lRAG\\bar{\\mathcal{E}}_{l}^{\\text{RAG}} also demonstrates broader focus compared to ℰ¯lnon-RAG\\bar{\\mathcal{E}}_{l}^{\\text{non-RAG}}. This is because RAG enriches attention mechanisms with external knowledge, allowing attention to be allocated across a wider set of tokens (ℰl,hRAG>ℰl,hnon-RAG,∀l,h\\mathcal{E}_{l,h}^{\\text{RAG}}>\\mathcal{E}_{l,h}^{\\text{non-RAG}},\\forall l,h). Conversely, without RAG, attention is constrained to narrower contexts, resulting in lower entropy values.",
+            "Results on activation states. The hidden states (hl,th_{l,t}) represent the activation magnitudes across neurons for token tt at layer ll. At the neuron level, the distribution of Avg​(hl,t)\\text{Avg}(h_{l,t}) shows that RAG stabilizes activations, reducing variability (Var​(hl,tRAG)<Var​(hl,tnon-RAG)\\text{Var}(h_{l,t}^{\\text{RAG}})<\\text{Var}(h_{l,t}^{\\text{non-RAG}})). At the layer level, the average activations (h¯l\\bar{h}_{l}) are consistently higher with RAG (h¯lRAG>h¯lnon-RAG\\bar{h}_{l}^{\\text{RAG}}>\\bar{h}_{l}^{\\text{non-RAG}}) due to the additional context provided by RAG, which enhances the magnitude and consistency of neuron activations. Without RAG, activations are unstable, occasionally exhibiting outliers.",
+            "Activation sharpness (SlS_{l}), which reflects the concentration of activation values, is higher in earlier layers (l≤10l\\leq 10) for both RAG and non-RAG settings. However, the decline in sharpness is more gradual with RAG, maintaining sharper activations (SlRAG>Slnon-RAG,∀l>10S_{l}^{\\text{RAG}}>S_{l}^{\\text{non-RAG}},\\forall l>10). This phenomenon suggests that RAG helps preserve activation focus across deeper layers, likely due to the inclusion of external context. Without RAG, sharpness deteriorates more rapidly as activations diffuse across the network.",
+            "Results on logit states. The minimum token probability (min⁡(Pl,t)\\min(\\text{P}_{l,t})) represents the model’s confidence in its least likely predicted token. Both the head-level and layer-level trends show that min⁡(Pl,t)\\min(\\text{P}_{l,t}) increases sharply in later layers (l>10l>10). The difference between RAG and non-RAG settings is negligible (min(Pl,tRAG≈min(Pl,tnon-RAG)\\min(\\text{P}_{l,t}^{\\text{RAG}}\\approx\\min(\\text{P}_{l,t}^{\\text{non-RAG}})), indicating that this feature is primarily influenced by internal computations rather than external context.",
+            "The joint token probability (∏tPl,t\\prod_{t}\\text{P}_{l,t}) reflects overall confidence in generating a sequence. Across layers, ∏tPl,tRAG>∏tPl,tnon-RAG\\prod_{t}\\text{P}_{l,t}^{\\text{RAG}}>\\prod_{t}\\text{P}_{l,t}^{\\text{non-RAG}}, with the gap being more pronounced in later layers (l>15l>15). This improvement arises from RAG’s ability to provide richer context, enhancing the model’s cumulative confidence in token generation.",
+            "The average distribution divergence (Davg\\text{D}_{\\text{avg}}) measures uncertainty by comparing predicted and reference distributions. In both RAG and non-RAG settings, Davg\\text{D}_{\\text{avg}} decreases consistently across layers (l>5l>5), showing that uncertainty is reduced through layer-wise refinement. The difference between RAG and non-RAG is minimal (DavgRAG≈Davgnon-RAG\\text{D}_{\\text{avg}}^{\\text{RAG}}\\approx\\text{D}_{\\text{avg}}^{\\text{non-RAG}}), suggesting that uncertainty reduction is primarily driven by internal processes.",
+            "The maximum token rank (max⁡(Rl,t)\\max(\\text{R}_{l,t})) captures the relative position of the least confident token in the ranking. Across layers, max⁡(Rl,t)\\max(\\text{R}_{l,t}) decreases consistently, reflecting growing confidence in top predictions. There is no significant distinction between RAG and non-RAG (max(Rl,tRAG≈max(Rl,tnon-RAG)\\max(\\text{R}_{l,t}^{\\text{RAG}}\\approx\\max(\\text{R}_{l,t}^{\\text{non-RAG}})), indicating that token ranking is predominantly determined by internal model dynamics."
+          ]
+        }
+      ]
+    },
+    "5 HaluProbe’s Performance on Detection": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "5.1 Datasets",
+          "paragraphs": [
+            "To evaluate the performance of HaluProbe in detecting hallucinations, we utilized three datasets from distinct domains: CNN/Daily Mail (CNNDM), Natural Questions (NQ), and HaluEval. These datasets provide diverse scenarios, including summarization, question answering, and factuality evaluation, ensuring comprehensive testing of the proposed framework.",
+            "CNN/Daily Mail (CNNDM) [18]. This dataset is widely used for text summarization tasks. It consists of over 300,000 unique news articles from CNN and the Daily Mail, each paired with human-generated abstractive summaries. The dataset is divided into 286,817 training pairs, 13,368 validation pairs, and 11,487 test pairs. The average length of source documents in the training set is 766 words, while the summaries average 53 words. Hallucinations in this context are identified when generated summaries include content inconsistent with the original articles, emphasizing the model’s ability to maintain fidelity in summarization tasks.",
+            "Natural Questions (NQ) [25]. This question-answering dataset contains real user queries issued to the Google search engine, paired with corresponding Wikipedia pages. Each example includes a long answer (a paragraph) and, if applicable, a short answer (one or more entities) annotated by human annotators. The dataset comprises 307,373 training examples, 7,830 development examples, and 7,842 test examples. Hallucinations in NQ are defined as generated answers deviating from or contradicting the provided ground-truth answers, focusing on the factual correctness of responses.",
+            "HaluEval [27]. A specialized dataset designed to evaluate the factuality of language model outputs. It includes 5,000 general user queries with ChatGPT responses and 30,000 task-specific examples from three tasks: question answering, knowledge-grounded dialogue, and text summarization. For general user queries, the dataset adopts the 52K instruction tuning dataset from Alpaca. This dataset serves as a benchmark for testing both factual and hallucinated responses across multiple scenarios, offering a comprehensive evaluation of the model’s detection capabilities."
+          ]
+        },
+        {
+          "title": "5.2 Ablation Study on Different Features",
+          "paragraphs": [
+            "Method. To analyze the effectiveness of various features in distinguishing hallucinated and factual outputs, we conducted an ablation study. In this experiment, we isolated each feature group (logit, attention, and activation) as the sole input to the detection model and evaluated their classification performance on the HaluEval and CNNDM datasets. Specifically, accuracy, recall for hallucinated outputs (Recall(Halu)), and recall for factual outputs (Recall(Fact)) were measured to assess the contribution of each feature. This approach enables a detailed comparison of feature importance and their respective strengths in different scenarios.",
+            "Results. From Table 3, several observations can be made. Among the logit features, Joint Probability achieves the highest Recall(Halu) (0.72) on HaluEval, indicating its effectiveness in detecting hallucinations. However, its Recall(Fact) is relatively low (0.37), making it less reliable for balanced detection. In contrast, Lookback Ratio, an attention-based feature, performs consistently well across both datasets, achieving high accuracy (0.75 on HaluEval and 0.83 on CNNDM) and balanced recall values, suggesting its robustness in both hallucination and factual scenarios. Activation-based features, particularly the Hidden State, show strong performance on HaluEval (accuracy of 0.76 and balanced recall values), but their efficacy diminishes on CNNDM, likely due to dataset-specific differences. Interestingly, some features like Attention Sharpness and Activation Entropy, while insightful during the understanding phase, demonstrate limited utility in actual classification, reflecting their inability to effectively capture discriminative information. These results suggest that while logit features excel in identifying hallucinations, attention-based features provide more consistent performance across datasets, making them suitable for general scenarios."
+          ]
+        },
+        {
+          "title": "5.3 Comparison between Different Token Selection Strategies",
+          "paragraphs": [
+            "Method. To evaluate the impact of different token selection strategies on detection performance, we conducted experiments using various strategies, including All Token, First Token, Last Token, Per Token, and Sliced Window with different window sizes. For each strategy, all extracted features were used as inputs to the detection model. The metrics reported in Table 5 include accuracy scores on both the CNNDM and HaluEval datasets, allowing for a comprehensive comparison of the effectiveness of different token selection methods.",
+            "Results. The results in Table 5 reveal that the Sliced Window strategy consistently outperforms others, achieving the highest accuracy (e.g., 0.87 on HaluEval with Window(4, 2)), due to its ability to maintain uniform token input sizes across samples. This ensures that the detection model receives structured and balanced information. On the other hand, the Per Token strategy, while intuitive, performs worse (e.g., 0.68 on CNNDM) likely due to noisy labeling issues rather than inherent flaws in the method itself. The First Token and Last Token strategies exhibit the lowest performance, as they fail to capture sufficient context for accurate classification. These findings suggest that while sliced window methods provide a structured and balanced approach suitable for diverse scenarios, the effectiveness of Per Token could be improved with more refined labeling processes."
+          ]
+        },
+        {
+          "title": "5.4 Transferbility Study",
+          "paragraphs": [
+            "Methd. To evaluate the transferability of different internal state features, we conducted experiments using CNNDM and HaluEval as training datasets and tested their performance on CNNDM, HaluEval, and NQ, a benchmark dataset designed for question answering with a focus on fidelity-related hallucinations. For each experiment, we trained models using one dataset and evaluated the effectiveness of individual features on the remaining datasets to assess their cross-dataset generalizability.",
+            "Results. The results in Table 6 highlight several key findings. First, certain features trained on CNNDM, such as Lookback Ratio and Joint Probability, exhibit strong transferability to NQ, achieving relatively high accuracy scores (e.g., 0.66 and 0.61, respectively). This suggests that these features capture generalizable patterns that extend beyond the CNNDM dataset. However, features trained on HaluEval demonstrate poor transferability to CNNDM and NQ, with a significant drop in accuracy (e.g., Key Token Attention Ratio and Hidden State dropping to around 0.50). This discrepancy indicates that the features extracted from HaluEval are highly dataset-specific and may reflect idiosyncratic patterns rather than generalizable characteristics.",
+            "The lack of transferability between CNNDM and HaluEval is particularly notable. This suggests that the two datasets encode fundamentally different patterns of hallucination and factuality, potentially due to variations in text length, domain, or the nature of the hallucination tasks. These results highlight the importance of selecting datasets that align closely with the target domain when designing hallucination detection models and the challenges of building universally transferable feature-based systems."
+          ]
+        },
+        {
+          "title": "5.5 System Overhead",
+          "paragraphs": [
+            "Method. To evaluate the computational efficiency and storage requirements of different features, we measured the theoretical storage overhead, theoretical computational complexity, and actual computation time under the sliced window setting with a window size of 8. The theoretical metrics are expressed in terms of the number of tokens in the window (ww), the number of attention heads (HH), the number of layers (LL), the dimensionality of hidden states (dd), and the intermediate dimensionality in feed-forward layers (mm). These measurements allow us to quantify the resource demands for extracting each feature and to identify potential bottlenecks in real-world applications.",
+            "Results. The theoretical results, as shown in Table 7, provide a detailed breakdown of storage and computation costs for features from attention, activation, and logit states. Actual computation time will be discussed once experimental data is finalized."
+          ]
+        }
+      ]
+    },
+    "6 Related Work": {
+      "paragraphs": [
+        "In this section, we summarize current LLM hallucination detection (§6.1) and mitigation methods (§6.2), and categorize them based on internal ways and external ways."
+      ],
+      "subsections": [
+        {
+          "title": "6.1 LLM Hallucinations Detection",
+          "paragraphs": [
+            "Some previous works aim to detect hallucinated responses during LLM inference. We divided them into 2 types: external and internal.",
+            "External. Some works detect the hallucinations from the external response. [39, 46, 20] utilizes RAG or KG to find the closest response from a ground-truth dataset, and compare it with the response from LLM to detect potential hallucinations. Considering the high computing and storage cost, some lightweight external methods have also been proposed: [5] propose new EigenScore metrics to evaluate responses’ self-consistency. [58, 45] check the keywords within the response to check factuality. [24] use semantics entropy from multiple queries to detect.",
+            "Internal. Recently, researchers have tried to discover hallucination pattern within LLM inference process. Most works directly use hidden states[2, 5, 47, 11, 1] as the classification features, while activation state is also taken into consideration [6, 22, 17]. Some works [8, 57] also use attention as the classification feature since they have better interpretability. Some researchers discover that the hallucinated tokens have lower token probability, and use it as a feature [42, 17]."
+          ]
+        },
+        {
+          "title": "6.2 LLM Hallucinations Mitigation",
+          "paragraphs": [
+            "Previous works have proposed several methods to mitigate hallucinations in LLMs. We divided previous mitigation methods into 3 types: external, model-based, and internal.",
+            "External. Most works try to use external knowledge or inference paradigms to mitigate. The most direct methods utilize outside knowledge to enhance LLMs’ ability to generate factual responses, which can be categorized into knowledge graph-based [48, 32], and RAG-based [29, 50]. LLMs’ ability to self-debug their response is also used to mitigate hallucinations [7, 13]. Some works also optimize the inference process of LLM, like dividing the task into sub-tasks [40], building a chain for more robust reasoning [32, 29]. Multi-agent paradigm is also considered in hallucination mitigation [19], since the debate across multiple agents can enhance the response from a single agent.",
+            "Model. Some works also aim at modifying models’ weights for mitigation. [30, 29, 50] addresses this issue by introducing a new dataset to fine-tune the model. Some works aim to use full parameter fine-tuning [50], while other works aim to use LoRA for more lightweight fine-tuning [30, 29]. Besides fine-tuning, model editing is also a popular model-level hallucination mitigation method [35], where developers or admins can only modify a few neural connections within the MLP layer to achieve accurate fact modification.",
+            "Internal. Considering previous external methods and model methods’ drawbacks on high cost and potential threat to catastrophic forgetting, some internal methods have been proposed. Internal methods mainly focus on lightly modifying the decoding process of LLM without changing model weight. [1, 6] discover potential mode within hidden state, and utilize it to mitigate hallucination. [8] finds the significant difference between factual response and hallucinated response within attention scores, and intervenes attention score in the decoding process. [31] propose to use a new layer to intervene in logit output for better response."
+          ]
+        }
+      ]
+    },
+    "7 Limitation & Discussion": {
+      "paragraphs": [
+        "Limited transferability. Based on the transferability experiments and insights from the RAG analysis, it is evident that the internal features of LLMs differ greatly across different scenarios. This lack of consistency results in poor cross-dataset generalizability. For example, features trained on CNNDM fail to perform well on HaluEval and vice versa, highlighting the dataset-specific nature of these features. This presents a significant challenge in developing universally applicable detection systems.",
+        "Potential explainability. Despite the limitations, the proposed approach offers a promising avenue for explainability. Attention-based features, such as Lookback Ratio, and logit-based features, such as Joint Token Probabilities, provide interpretable insights into the model’s reasoning process. These features allow researchers to better understand why certain outputs are classified as hallucinated, thereby enhancing trust in the system and opening up new possibilities for debugging and model refinement."
+      ],
+      "subsections": []
+    },
+    "8 Conclusion": {
+      "paragraphs": [
+        "In this work, we proposed and evaluated a comprehensive framework for understanding and detecting hallucinations in large language models through internal state analysis. Our experiments demonstrated the potential of using attention, activation, and logit-based features to distinguish between hallucinated and factual outputs. However, challenges remain, including high computational costs, limited transferability of features across datasets, and the need for more efficient and generalizable detection strategies. Despite these limitations, the approach shows promise for improving the explainability of hallucination detection, especially through interpretable features like attention and logits. Future work will focus on optimizing feature extraction for real-time applications and exploring methods to enhance feature transferability across diverse scenarios."
+      ],
+      "subsections": []
+    },
+    "Ethics Consideration": {
+      "paragraphs": [
+        "This study does not involve significant ethical concerns. The research is conducted using publicly available datasets (e.g., CNNDM, HaluEval), ensuring compliance with their usage policies and avoiding using private or sensitive data. No live systems were tested, and the methodology avoids actions that could harm users or disrupt services. Furthermore, the study emphasizes responsible reporting and discusses safeguards to prevent potential misuse of the findings. Ethical principles, including beneficence, justice, and respect for privacy, are inherently upheld in this research."
+      ],
+      "subsections": []
+    },
+    "Open Science": {
+      "paragraphs": [
+        "To promote transparency and reproducibility in research, we commit to sharing the source code, datasets, and implementation details of our proposed framework, HaluProbe. Upon acceptance, all relevant artifacts will be made publicly available on a trusted repository (e.g., GitHub or Zenodo) under an open-source license. This includes:",
+        "1. The complete codebase for HaluProbe, covering inner state extraction, feature computation, and hallucination detection.",
+        "2. Instructions for reproducing the experiments, including the preprocessing of datasets and evaluation metrics.",
+        "3. A detailed README file to guide users in replicating the results.",
+        "We believe that open science fosters collaboration and innovation, and we aim to contribute to the broader research community by ensuring the accessibility and usability of our work."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Prompt templates": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "A.1 Hallucination judgement prompt",
+          "paragraphs": [
+            "$document is the original document text for the faithful hallucinated question. $gt_response is the ground-truth response for the question. $response is target LLM’s response towards the question.",
+            "$question is the original question text for the factual hallucinated question. $gt_response is the ground-truth response for the question. $response is target LLM’s response towards the question.",
+            "[SVG Content: Prompt Template of Labeling Process for Faithful Hallucination Benchmark You will be provided with a document and a proposed summary. Your task is to determine if the proposed summary can be directly inferred from the document. If the summary contains any information not found in the document, it is considered false. Even if the summary is different from a ground truth summary, it might still be true, as long as it doesn’t contain false information. For each proposed summary, explain why it is true or false based on the information from the document. Focus only on the original document’s content, disregarding any external context. After your explanation, give your final conclusion as **Conclusion: True** if the proposed summary is completely accurate based on the document, or **Conclusion: False** if it contains any incorrect or unsupported information. If your conclusion is ’False’, identify the exact phrases or name entities from the summary that is incorrect by stating **Problematic Spans: [the inaccurate text spans from the summary, in Python list of strings format]**. # Document #: $document # Ground Truth Summary #: $gt_response # Proposed Summary #: $response Write your explanation first, and then give your final conclusion as **Conclusion: True** if the proposed summary is completely accurate based on the document, or **Conclusion: False** if it contains any incorrect or unsupported information. Add **Problematic Spans: [the exact inaccurate text spans from the summary, in a list of strings]** if your conclusion is ’False’.]",
+            "[SVG Content: Prompt Template of Labeling Process for Factual Hallucination Benchmark You will be provided with a question (along with the groundtruth answer) and a proposed answer. Your task is to determine if the proposed answer align with the groundtruth answer. If the answer is not aligned with the groundtruth answer, it is considered false. Even if the answer is not totally the same with ground truth answer, it might still be true (For example, it is just a difference in expression or an alias for some nouns.). For each proposed answer, explain why it is true or false based on the given question and the groundtruth answer. After your explanation, give your final conclusion as **Conclusion: True** if the proposed answer is completely accurate, or **Conclusion: False** if it contains any incorrect or unsupported information. If your conclusion is ’False’, identify the exact phrases or name entities from the answer that is incorrect by stating **Problematic Spans: [the inaccurate text spans from the answer, in Python list of strings format]**. It should only include the exact wrong phrases or name entities but not the full sentence. Avoid to include the whole sentence. # Question #: $question # Ground Truth Summary #: $gt_response # Proposed Summary #: $response Write your explanation first, and then give your final conclusion as **Conclusion: True** if the proposed answer is completely accurate, or **Conclusion: False** if it contains any incorrect or unsupported information. Add **Problematic Spans: [the exact inaccurate text spans from the answer, in a list of strings]** if your conclusion is ’False’.]"
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "[1] Azaria, A., and Mitchell, T. The internal state of an llm knows when it’s lying. arXiv preprint arXiv:2304.13734 (2023).",
+    "[2] Beigi, M., Shen, Y., Yang, R., Lin, Z., Wang, Q., Mohan, A., He, J., Jin, M., Lu, C.-T., and Huang, L. Internalinspector: Robust confidence estimation in llms through internal states. arXiv preprint arXiv:2406.12053 (2024).",
+    "[3] Belyi, M., Friel, R., Shao, S., and Sanyal, A. Luna: An evaluation foundation model to catch language model hallucinations with high accuracy and low cost. arXiv preprint arXiv:2406.00975 (2024).",
+    "[4] Chefer, H., Gur, S., and Wolf, L. Transformer interpretability beyond attention visualization. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition (2021), pp. 782–791.",
+    "[5] Chen, C., Liu, K., Chen, Z., Gu, Y., Wu, Y., Tao, M., Fu, Z., and Ye, J. Inside: Llms’ internal states retain the power of hallucination detection. arXiv preprint arXiv:2402.03744 (2024).",
+    "[6] Chen, S., Xiong, M., Liu, J., Wu, Z., Xiao, T., Gao, S., and He, J. In-context sharpness as alerts: An inner representation perspective for hallucination mitigation. arXiv preprint arXiv:2403.01548 (2024).",
+    "[7] Chen, X., Lin, M., Schärli, N., and Zhou, D. Teaching large language models to self-debug. In The Twelfth International Conference on Learning Representations (2024).",
+    "[8] Chuang, Y.-S., Qiu, L., Hsieh, C.-Y., Krishna, R., Kim, Y., and Glass, J. Lookback lens: Detecting and mitigating contextual hallucinations in large language models using only attention maps. arXiv preprint arXiv:2407.07071 (2024).",
+    "[9] Cui, J., Li, Z., Yan, Y., Chen, B., and Yuan, L. Chatlaw: Open-source legal large language model with integrated external knowledge bases. CoRR (2023).",
+    "[10] Dar, G., Geva, M., Gupta, A., and Berant, J. Analyzing transformers in embedding space. arXiv preprint arXiv:2209.02535 (2022).",
+    "[11] Duan, H., Yang, Y., and Tam, K. Y. Do llms know about hallucination? an empirical investigation of llm’s hidden states. arXiv preprint arXiv:2402.09733 (2024).",
+    "[12] Gao, Y., Xiong, Y., Gao, X., Jia, K., Pan, J., Bi, Y., Dai, Y., Sun, J., Wang, M., and Wang, H. Retrieval-augmented generation for large language models: A survey. arXiv preprint arXiv:2312.10997 (2023).",
+    "[13] Gou, Z., Shao, Z., Gong, Y., yelong shen, Yang, Y., Duan, N., and Chen, W. CRITIC: Large language models can self-correct with tool-interactive critiquing. In The Twelfth International Conference on Learning Representations (2024).",
+    "[14] Guha, N., Nyarko, J., Ho, D., Ré, C., Chilton, A., Chohlas-Wood, A., Peters, A., Waldon, B., Rockmore, D., Zambrano, D., et al. Legalbench: A collaboratively built benchmark for measuring legal reasoning in large language models. Advances in Neural Information Processing Systems 36 (2024).",
+    "[15] Hanna, E., and Levic, A. Comparative analysis of language models: hallucinations in chatgpt: Prompt study, 2023.",
+    "[16] Harrington, F., Rosenthal, E., and Swinburne, M. Mitigating hallucinations in large language models with sliding generation and self-checks. Authorea Preprints (2024).",
+    "[17] He, J., Gong, Y., Lin, Z., Zhao, Y., Chen, K., et al. Llm factoscope: Uncovering llms’ factual discernment through measuring inner states. In Findings of the Association for Computational Linguistics ACL 2024 (2024), pp. 10218–10230.",
+    "[18] Hermann, K. M., Kocisky, T., Grefenstette, E., Espeholt, L., Kay, W., Suleyman, M., and Blunsom, P. Teaching machines to read and comprehend. Advances in neural information processing systems 28 (2015).",
+    "[19] Hong, S., Zhuge, M., Chen, J., Zheng, X., Cheng, Y., Wang, J., Zhang, C., Wang, Z., Yau, S. K. S., Lin, Z., Zhou, L., Ran, C., Xiao, L., Wu, C., and Schmidhuber, J. MetaGPT: Meta programming for a multi-agent collaborative framework. In The Twelfth International Conference on Learning Representations (2024).",
+    "[20] Hu, H., Sun, Y., and Zhang, Q. Lrp4rag: Detecting hallucinations in retrieval-augmented generation via layer-wise relevance propagation, 2024.",
+    "[21] Huang, L., Yu, W., Ma, W., Zhong, W., Feng, Z., Wang, H., Chen, Q., Peng, W., Feng, X., Qin, B., et al. A survey on hallucination in large language models: Principles, taxonomy, challenges, and open questions. arXiv preprint arXiv:2311.05232 (2023).",
+    "[22] Ji, Z., Chen, D., Ishii, E., Cahyawijaya, S., Bang, Y., Wilie, B., and Fung, P. Llm internal states reveal hallucination risk faced with a query. arXiv preprint arXiv:2407.03282 (2024).",
+    "[23] Ji, Z., Lee, N., Frieske, R., Yu, T., Su, D., Xu, Y., Ishii, E., Bang, Y. J., Madotto, A., and Fung, P. Survey of hallucination in natural language generation. ACM Computing Surveys 55, 12 (2023), 1–38.",
+    "[24] Kossen, J., Han, J., Razzak, M., Schut, L., Malik, S., and Gal, Y. Semantic entropy probes: Robust and cheap hallucination detection in llms, 2024.",
+    "[25] Kwiatkowski, T., Palomaki, J., Redfield, O., Collins, M., Parikh, A., Alberti, C., Epstein, D., Polosukhin, I., Devlin, J., Lee, K., et al. Natural questions: a benchmark for question answering research. Transactions of the Association for Computational Linguistics 7 (2019), 453–466.",
+    "[26] Li, J., Chen, J., Ren, R., Cheng, X., Zhao, W. X., Nie, J.-Y., and Wen, J.-R. The dawn after the dark: An empirical study on factuality hallucination in large language models. arXiv preprint arXiv:2401.03205 (2024).",
+    "[27] Li, J., Cheng, X., Zhao, W. X., Nie, J.-Y., and Wen, J.-R. Halueval: A large-scale hallucination evaluation benchmark for large language models. arXiv preprint arXiv:2305.11747 (2023).",
+    "[28] Li, J., Yuan, Y., and Zhang, Z. Enhancing llm factual accuracy with rag to counter hallucinations: A case study on domain-specific queries in private knowledge-bases. arXiv preprint arXiv:2403.10446 (2024).",
+    "[29] Li, X., Zhao, R., Chia, Y. K., Ding, B., Joty, S., Poria, S., and Bing, L. Chain-of-knowledge: Grounding large language models via dynamic knowledge adapting over heterogeneous sources. In The Twelfth International Conference on Learning Representations (2024).",
+    "[30] Liu, F., Lin, K., Li, L., Wang, J., Yacoob, Y., and Wang, L. Mitigating hallucination in large multi-modal models via robust instruction tuning. In The Twelfth International Conference on Learning Representations (2024).",
+    "[31] Liu, X., Khalifa, M., and Wang, L. Litcab: Lightweight language model calibration over short- and long-form responses. In The Twelfth International Conference on Learning Representations (2024).",
+    "[32] LUO, L., Li, Y.-F., Haf, R., and Pan, S. Reasoning on graphs: Faithful and interpretable large language model reasoning. In The Twelfth International Conference on Learning Representations (2024).",
+    "[33] Manakul, P., Liusie, A., and Gales, M. J. Selfcheckgpt: Zero-resource black-box hallucination detection for generative large language models. arXiv preprint arXiv:2303.08896 (2023).",
+    "[34] McKenna, N., Li, T., Cheng, L., Hosseini, M. J., Johnson, M., and Steedman, M. Sources of hallucination by large language models on inference tasks. arXiv preprint arXiv:2305.14552 (2023).",
+    "[35] Meng, K., Bau, D., Andonian, A., and Belinkov, Y. Locating and editing factual associations in gpt, 2023.",
+    "[36] Mickus, T., Paperno, D., and Constant, M. How to dissect a muppet: The structure of transformer embedding spaces. Transactions of the Association for Computational Linguistics 10 (2022), 981–996.",
+    "[37] Mündler, N., He, J., Jenko, S., and Vechev, M. Self-contradictory hallucinations of large language models: Evaluation, detection and mitigation. arXiv preprint arXiv:2305.15852 (2023).",
+    "[38] Niu, C., Wu, Y., Zhu, J., Xu, S., Shum, K., Zhong, R., Song, J., and Zhang, T. Ragtruth: A hallucination corpus for developing trustworthy retrieval-augmented language models. arXiv preprint arXiv:2401.00396 (2023).",
+    "[39] Niu, C., Wu, Y., Zhu, J., Xu, S., Shum, K., Zhong, R., Song, J., and Zhang, T. Ragtruth: A hallucination corpus for developing trustworthy retrieval-augmented language models, 2024.",
+    "[40] Pan, L., Wu, X., Lu, X., Luu, A. T., Wang, W. Y., Kan, M.-Y., and Nakov, P. Fact-checking complex claims with program-guided reasoning, 2023.",
+    "[41] Peng, C., Yang, X., Chen, A., Smith, K. E., PourNejatian, N., Costa, A. B., Martin, C., Flores, M. G., Zhang, Y., Magoc, T., et al. A study of generative large language model for medical research and healthcare. NPJ digital medicine 6, 1 (2023), 210.",
+    "[42] Quevedo, E., Yero, J., Koerner, R., Rivas, P., and Cerny, T. Detecting hallucinations in large language model generation: A token probability approach. arXiv preprint arXiv:2405.19648 (2024).",
+    "[43] Rawte, V., Sheth, A., and Das, A. A survey of hallucination in large foundation models. arXiv preprint arXiv:2309.05922 (2023).",
+    "[44] Rigotti, M., Miksovic, C., Giurgiu, I., Gschwind, T., and Scotton, P. Attention-based interpretability with concept transformers. In International conference on learning representations (2021).",
+    "[45] Sadat, M., Zhou, Z., Lange, L., Araki, J., Gundroo, A., Wang, B., Menon, R. R., Parvez, M. R., and Feng, Z. Delucionqa: Detecting hallucinations in domain-specific question answering, 2023.",
+    "[46] Su, W., Tang, Y., Ai, Q., Wang, C., Wu, Z., and Liu, Y. Mitigating entity-level hallucination in large language models, 2024.",
+    "[47] Su, W., Wang, C., Ai, Q., Hu, Y., Wu, Z., Zhou, Y., and Liu, Y. Unsupervised real-time hallucination detection based on the internal states of large language models. arXiv preprint arXiv:2403.06448 (2024).",
+    "[48] Sun, J., Xu, C., Tang, L., Wang, S., Lin, C., Gong, Y., Ni, L., Shum, H.-Y., and Guo, J. Think-on-graph: Deep and responsible reasoning of large language model on knowledge graph. In The Twelfth International Conference on Learning Representations (2024).",
+    "[49] Thirunavukarasu, A. J., Ting, D. S. J., Elangovan, K., Gutierrez, L., Tan, T. F., and Ting, D. S. W. Large language models in medicine. Nature medicine 29, 8 (2023), 1930–1940.",
+    "[50] Tian, K., Mitchell, E., Yao, H., Manning, C. D., and Finn, C. Fine-tuning language models for factuality. In The Twelfth International Conference on Learning Representations (2024).",
+    "[51] Tonmoy, S., Zaman, S., Jain, V., Rani, A., Rawte, V., Chadha, A., and Das, A. A comprehensive survey of hallucination mitigation techniques in large language models. arXiv preprint arXiv:2401.01313 (2024).",
+    "[52] Vaswani, A. Attention is all you need. Advances in Neural Information Processing Systems (2017).",
+    "[53] Vig, J., and Belinkov, Y. Analyzing the structure of attention in a transformer language model. arXiv preprint arXiv:1906.04284 (2019).",
+    "[54] Wu, S., Irsoy, O., Lu, S., Dabravolski, V., Dredze, M., Gehrmann, S., Kambadur, P., Rosenberg, D., and Mann, G. Bloomberggpt: A large language model for finance. arXiv preprint arXiv:2303.17564 (2023).",
+    "[55] Yang, X., Chen, A., PourNejatian, N., Shin, H. C., Smith, K. E., Parisien, C., Compas, C., Martin, C., Costa, A. B., Flores, M. G., et al. A large language model for electronic health records. NPJ digital medicine 5, 1 (2022), 194.",
+    "[56] Yeh, C., Chen, Y., Wu, A., Chen, C., Viégas, F., and Wattenberg, M. Attentionviz: A global view of transformer attention. IEEE Transactions on Visualization and Computer Graphics (2023).",
+    "[57] Yuksekgonul, M., Chandrasekaran, V., Jones, E., Gunasekar, S., Naik, R., Palangi, H., Kamar, E., and Nushi, B. Attention satisfies: A constraint-satisfaction lens on factual errors of language models. arXiv preprint arXiv:2309.15098 (2023).",
+    "[58] Zhang, T., Qiu, L., Guo, Q., Deng, C., Zhang, Y., Zhang, Z., Zhou, C., Wang, X., and Fu, L. Enhancing uncertainty-based hallucination detection with stronger focus, 2023.",
+    "[59] Zhang, Y., Li, Y., Cui, L., Cai, D., Liu, L., Fu, T., Huang, X., Zhao, E., Zhang, Y., Chen, Y., et al. Siren’s song in the ai ocean: a survey on hallucination in large language models. arXiv preprint arXiv:2309.01219 (2023).",
+    "[60] Zhao, H., Chen, H., Yang, F., Liu, N., Deng, H., Cai, H., Wang, S., Yin, D., and Du, M. Explainability for large language models: A survey. ACM Transactions on Intelligent Systems and Technology 15, 2 (2024), 1–38."
+  ]
+}

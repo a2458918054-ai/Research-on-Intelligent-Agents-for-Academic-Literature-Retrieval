@@ -1,0 +1,537 @@
+{
+  "title": "Self-Regulation and Requesting Interventions",
+  "authors": "So Yeon MinYue WuJimin SunMax KaufmannFahim TajwarYonatan BiskRuslan Salakhutdinov",
+  "abstract": "Human intelligence involves metacognitive abilities like self-regulation, recognizing limitations, and seeking assistance only when needed. While LLM Agents excel in many domains, they often lack this awareness. Overconfident agents risk catastrophic failures, while those that seek help excessively hinder efficiency. A key challenge is enabling agents with a limited intervention budget CC is to decide when to request assistance. In this paper, we propose an offline framework that trains a “helper” policy to request interventions, such as more powerful models or test-time compute, by combining LLM-based process reward models (PRMs) with tabular reinforcement learning. Using state transitions collected offline, we score optimal intervention timing with PRMs and train the helper model on these labeled trajectories. This offline approach significantly reduces costly intervention calls during training. Furthermore, the integration of PRMs with tabular RL enhances robustness to off-policy data while avoiding the inefficiencies of deep RL. We empirically find that our method delivers optimal helper behavior.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Human intelligence is distinguished by metacognitive abilities, particularly self-regulation — the capacity to monitor limitations — and requesting targeted assistance only when needed (Fig 1). By recognizing and communicating uncertainties, individuals can delegate tasks or seek help before failure becomes inevitable. This approach prevents costly mistakes and fosters trust, as admitting uncertainty and asking for help at the right time is reassuring.",
+        "Despite advancements in Large Language Models (LLMs), current AI agents often lack metacognitive awareness. Overconfident agents risk catastrophic errors, while those seeking help excessively are inefficient. Ideally, an AI agent should gauge uncertainty and selectively request assistance, ensuring reliability and efficient use of human effort. While existing AI safety research addresses unintended and malicious behaviors (Gabriel, 2020; Christiano et al., 2017; Bai et al., 2022), reliability with true agency also requires the ability to recognize and communicate limitations.",
+        "A key challenge in training an intervention-requesting agent within a limited intervention budget CC is deciding when to request help. This involves balancing reward design and policy optimization (Fig. 1(b)): overly incentivizing help requests exhausts the budget prematurely, while under-incentivizing them leads to avoiding help altogether. Designing effective reward functions is non-trivial and can require the costly iterations of training, evaluation, and adjustment. Similarly, generating annotated trajectories for supervised fine-tuning under budget constraints is resource-intensive (Fig. 1(c)), as the trajectory space is exponentially large, and even human annotators can struggle to identify optimal intervention timing for every different budget constraint.",
+        "Additionally, collecting data for policy training can be highly expensive, especially when real-world interventions rely on human effort or costly external services. This raises important questions: Can we perform intervention-based data collection once and reuse it across multiple budget constraints? Furthermore, can we also control the number of interventions during training? Even if we train a policy to adhere to the budget CC is during inference, managing intervention usage during training is equally critical.",
+        "To address the challenges of efficient reward-policy search and minimizing intervention costs, we propose an offline and hybrid framework that collects intervention data in a single pass and combines deep scoring functions with classical tabular reinforcement learning (RL). This three-step method (Fig. 4) integrates LLM-based process reward models (PRMs) with tabular RL to enable efficient trajectory generation and policy optimization under both inference and training budget constraints:",
+        "1. Transition Model Collection and PRM Training: We collect state transitions with randomly triggered interventions, approximating environment dynamics. PRMs for the base actor and intervention are learned.",
+        "2. Iterative Reward and Usage/Policy Search: We apply tabular dynamic programming (DP) with PRMs and the transition model to compute optimal trajectories that respect budget constraints. A key output of DP is the expected number of help requests from the initial state. We iterate until reaching the target budget, without having to retrain the policy for each reward configuration.",
+        "3. Policy Training: The annotated trajectories are used to fine-tune the helper policy, enabling it to make effective intervention decisions within budget constraints.",
+        "This offline approach greatly reduces costly intervention calls during training. Its hybrid design leverages PRMs alongside tabular RL, enhancing robustness to off-policy data and avoiding the inefficiencies of deep RL. Empirical results on Situated Instruction Following tasks show that our method—using powerful models and test-time compute (e.g., MCTS) as interventions—achieves performance comparable to a system that employs interventions at every step (e.g., eight per task), yet requires far fewer interventions (e.g., only one per task). By training LLM agents to self-regulate and request assistance judiciously, we take a step toward reliable deployment of LLM-based systems."
+      ],
+      "subsections": []
+    },
+    "2 Related Work": {
+      "paragraphs": [
+        "LLM agents Recent breakthroughs in LLM agents (Yao et al., 2023; Yang et al., 2024; Shinn et al., 2024) have allowed the creation of AI systems which can complete a range of real-world tasks in an open-ended environment (Nakano et al., 2021; Schick et al., 2023; Wang et al., 2024c). Most previous work on training such LLM agents focuses on SFT for tool-use (Schick et al., 2023), prompting closed-source LLMs (Yang et al., 2024; Wang et al., 2024b, c), or applying RL in domains with a clear objective such as code generation or math (Dubey et al., 2024; Chen et al., 2024b). We instead focus on applying RL techniques to an environment with ambiguous instructions (Min et al., 2025). Although previous works attempt to train LLM agents in such environments (Zhai et al., 2024; Gehring et al., 2024), they do not address how to enable them to request interventions, which is the central focus of our work.",
+        "Safe and Trustworthy AI Prior work on AI safety often focuses on value alignment—ensuring AI systems follow human values (Gabriel, 2020; Christiano et al., 2017; Bai et al., 2022)—and AI security—ensuring robustness to adversarial attacks (Hendrycks et al., 2021; Brundage et al., 2018). However, these alone may not guarantee safety in high-stakes contexts, where an agent’s limited capabilities can lead to harmful failures (e.g., prescribing the wrong medicine (Ruan et al., 2024)). We therefore situate our work under the more expansive concpet of Trustworthy AI (Díaz-Rodríguez et al., 2023), which includes the requirement that agents pursue tasks robustly without unintended failures.",
+        "Self-improvement for LLMs Previous work in self-improvement has explored the potential of enhancing LLM responses. Environmental feedback (Gou et al., 2024; Qiao et al., 2024; Liu et al., 2024; Chen et al., 2024a; Anonymous, 2025) and model-generated critiques (Madaan et al., 2023; Wang et al., 2023; Welleck et al., 2023; Lin et al., 2024; Qu et al., 2024) have enabled models to perform better in subsequent iterations. Reward models combined with search algorithms further guide decoding toward better answers (Nakano et al., 2021; Uesato et al., 2022; Zelikman et al., 2022; Xie et al., 2023; Lightman et al., 2024). However, most such methods assume the model can inherently solve the task, with the challenge lying in eliciting that capability. When a task exceeds the model’s ability, intervention of more capable models/augmented compute is needed.",
+        "Confidence Estimation & Meta-cognition. Meta-cognitive agents that recognize their own limitations can guide human trust and seek external knowledge to improve accuracy (Mallen et al., 2023; Asai et al., 2024). Previous work estimates confidence via semantic entropy (Kuhn et al., 2023), logit values (Jiang et al., 2021; Kadavath et al., 2022), direct questioning (Zhou et al., 2023; Lin et al., 2024; Xiong et al., 2024), or conformal prediction (Ren et al., 2023). Although these methods can help decide when to intervene, their estimates are calculated from logits, and may be biased by training data and fail out-of-distribution (Xiao et al., 2022; Zhou et al., 2023). Another approach is learning an RL policy that treats assistance seeking as an action (Chi et al., 2019; Nguyen et al., 2021; Liu et al., 2022; Singh et al., 2022; Xie et al., 2022; Hu et al., 2024). In contrast, we use a process reward model with tabular RL to flexibly adapt to varying budget constraints without additional training."
+      ],
+      "subsections": []
+    },
+    "3 Task and Setup": {
+      "paragraphs": [
+        "Task We use the Situated Instruction Following (SIF) task (Min et al., 2025), which requires finding objects, interacting with humans, and performing household tasks in highly uncertain and dynamic environments (Fig. 2). To the best of our knowledge, SIF is among the most suitable benchmarks for evaluating how well LLM-driven agents handle nuanced and uncertain instructions. The environment and the instructions become uncertain because the speaker’s intent is not always fully specified, and the human may dynamically alter the scene (e.g., placing an object in a different room or moving to a new location). Even advanced models like GPT-4o struggle with these tasks due to such inherent ambiguities (Min et al., 2025).",
+        "Our setup provides perfect visual perception, allowing the agent to receive textual environment descriptions at each step. Its action space includes discrete commands such as Go to Room X and Explore Room X, forming a multi-turn, text-based setting suitable for LLMs. Even with perfect perception, agents must calibrate their uncertainty to interpret ambiguous instructions: humans may move objects around or relocate themselves, forcing the agent to determine whether it should gather more evidence, search additional rooms, or attempt to clarify instructions.",
+        "Following SIF, we use two task types. PnP is a straightforward pick-and-place scenario. S_obj is more challenging: it involves ambiguous human hints, partial observability, and the possibility of objects being moved. We use 1,000 training tasks and 40 validation/test tasks per split.",
+        "Reliable Behaviors We focus on two key strategies that can achieve reliable agent behaviors: self-regulation and requesting interventions (Fig. 2(b)). Self-regulation involves the agent autonomously deciding to stop task execution when it cannot successfully complete the task. This prevents the agent from continuing in scenarios where failure is likely, thereby conserving resources and maintaining reliability. In contrast, requesting interventions refers to the agent making state-wise requests for assistance during specific states within the task, receiving help at critical points.",
+        "Base Actors and Interventions We employ two base actors: GPT-4o-mini (Achiam et al., 2023) and LLaMA 3B (Dubey et al., 2024). LLaMA models are trained on GPT-4o and GPT-4o-mini trajectories for the S_obj and PnP tasks, respectively. For requesting interventions, we employ three kinds of interventions:",
+        "Depth-1 MCTS: A simple Monte Carlo Tree Search approach that, guided by a process reward model, generates up to five candidate actions and selects the best. Details on MCTS implementation are in Appendix A.",
+        "More Powerful Models: For a GPT-4o-mini base actor, we invoke GPT-4o. For a LLaMA 3B base actor, we use a LLaMA 3B with a better performance, that has been fine-tuned on oracle-agent trajectories for the train tasks.",
+        "Oracle: We use oracle trajectories for task-wise intervention results of Sec. 4.3. However, oracle trajectories are static and cannot be used for all settings; details are in Sec. 4.3."
+      ],
+      "subsections": []
+    },
+    "4 Self-Regulation with PRMs and Limitations": {
+      "paragraphs": [
+        "We first address self-regulation: Can an agent stop executing the task if it deems it cannot complete the task (Fig. 1(a))."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Method",
+          "paragraphs": [
+            "We measure the difficulty of a state ss as 1−p​(s)1-p(s), where p​(s)p(s) is the probability of success from ss up to a terminal state. To decide when to self-regulate, we train a Process Reward Model (PRM) by rolling out trajectories of base actors, following the approach of (Wang et al., 2024a). Concretely, a 3B LLaMA model with a scalar head is fine-tuned (SFT) on (state,outcome)(\\text{state},\\text{outcome}) pairs, where the outcome is binary success or failure for the trajectory originating at that state; the PRM is trained to learn p​(s)p(s). Finally, we calibrate the PRM’s threshold using a held-out validation set."
+          ]
+        },
+        {
+          "title": "4.2 Self-Regulation Performance",
+          "paragraphs": [
+            "To evaluate self-regulation performance, we first identify the maximum (1−PRM score)(1-\\text{PRM score}) encountered in a trajectory before the final step. This value serves as a proxy for 1−p​(s)1-p(s) and reflects the PRM’s estimation of the most difficult state in the trajectory. We then set a threshold on this maximum (1−PRM score)(1-\\text{PRM score}) to optimize overall accuracy (binary success/failure) on a held-out validation set. Table 1 reports the accuracy, precision, and recall metrics (labeling task success as 1) on the test set for two base actors, GPT-4o-mini and LLaMA, each with its own separately trained PRM. These results demonstrate high precision and recall, indicating that the PRM score is indeed a strong indicator of p​(s)p(s)."
+          ]
+        },
+        {
+          "title": "4.3 Can PRM Thresholding Work for Multi-Step Intervention Requests?",
+          "paragraphs": [
+            "We now investigate whether the PRM thresholding strategy, which worked for self-regulation, can also be used for multi-step intervention requests. Formally, consider a stochastic process with states s∈𝒮s\\in\\mathcal{S} and transition probabilities P​(s′∣s)P(s^{\\prime}\\mid s). Each state ss, whether terminal or non-terminal, has a probability p​(s)p(s) of eventually leading to task success. At each non-terminal state ss, the helper chooses either help or nohelp. Unlike self-regulation—where the agent simply halts and asks for help once—multi-step interventions occur at each step of the process. In practice, the intervention could come from a more capable model, an MCTS approach, or an oracle actor. The question is whether we can rely on the same measure (1−p​(s))(1-p(s)) from the PRM, without explicitly accounting for the dynamics P​(s′∣s)P(s^{\\prime}\\mid s), to identify states requiring intervention in this more granular setting.",
+            "We consider two settings:",
+            "1. I​(st)I(s_{t}) (a.k.a. State-wise intervention): Interventions are selectively applied to states sts_{t} during the task.",
+            "2. I​(st→T)I(s_{t}\\rightarrow T) (a.k.a. Task-wise intervention): Once a state sts_{t} is identified, the intervention continues for the remainder of the task TT.",
+            "I​(st)I(s_{t}) (a.k.a. State-wise intervention): Interventions are selectively applied to states sts_{t} during the task.",
+            "I​(st→T)I(s_{t}\\rightarrow T) (a.k.a. Task-wise intervention): Once a state sts_{t} is identified, the intervention continues for the remainder of the task TT.",
+            "Details on implementation of I​(st)I(s_{t}) and I​(st→T)I(s_{t}\\rightarrow T) are in Appendix B. Table 5 summarizes the results across different interventions, including oracle actors, larger models, and MCTS. We find the following:",
+            "1. For I​(st→T)I(s_{t}\\to T), PRM scores consistently identify tasks that require help, aligning with self-regulation results.",
+            "2. However, I​(st)I(s_{t}) consistently outperforms I​(st→T)I(s_{t}\\to T). Under similar intervention budgets, intervening selectively at difficult states can be more effective than intervening for all states of difficult tasks.",
+            "3. PRM thresholding is ineffective for I​(st)I(s_{t}).",
+            "For I​(st→T)I(s_{t}\\to T), PRM scores consistently identify tasks that require help, aligning with self-regulation results.",
+            "However, I​(st)I(s_{t}) consistently outperforms I​(st→T)I(s_{t}\\to T). Under similar intervention budgets, intervening selectively at difficult states can be more effective than intervening for all states of difficult tasks.",
+            "PRM thresholding is ineffective for I​(st)I(s_{t}).",
+            "We provide an in-depth discussion of these three points in Appendix B. Here, we highlight why PRM scores are ineffective for I​(st)I(s_{t}). As illustrated in Figure 3, once an intervention briefly reduces the difficulty (and increases p​(s)p(s)), the base actor immediately takes control. Before long, the difficulty surpasses the threshold again, prompting another intervention. This repeated “toggling” between the intervention and the base actor leads to suboptimal performance and illustrates the pitfalls of using only difficulty-based thresholds without accounting for sequential dependencies. Consequently, we cannot rely on the same measure (1−p​(s))(1-p(s)) used in self-regulation without explicitly incorporating transition dynamics (P​(s′∣s))\\bigl{(}P(s^{\\prime}\\mid s)\\bigr{)} to identify states that need intervention in this more granular setting."
+          ]
+        }
+      ]
+    },
+    "5 Method: Requesting Targeted Interventions": {
+      "paragraphs": [
+        "Determining when to ask for help is challenging, especially under a constrained usage budget. Although a PRM can estimate success probabilities, it does not capture how help requests affect future states, highlighting the need for transition dynamics (Sec. 4.3, Fig. 3). Fully accounting for state dynamics, difficulty, usage, and help-asking policies requires searching over both rewards and policies. However, running a complete deep RL pipeline for iterative reward and policy optimization can be prohibitively expensive, requiring substantial training time, many interventions, and extensive hyperparameter tuning. In addition, collecting data for policy training is costly and constrained, prompting the question of how to effectively gather and reuse data across multiple budgets while controlling the number of interventions for collecting training data.",
+        "We propose a method that is both offline, requiring only a single pass of intervention data collection for training, and hybrid, integrating a learned PRM with classical tabular RL. This method keeps usage—the number of times an intervention is used during inference — under the given budget, while finding the optimal policy—deciding whether to request help at non-terminal states. The key components of our method are as follows (Fig. 4): Transition Model Collection, Dynamic Programming (DP) for Usage/Policy Iteration (Fig. 4(a)), Reward Search (Fig. 4(b)), and Final Training (Fig. 4(c)). Their details are explained in Sec. 5.3.",
+        "This approach offers several advantages. First, the DP step is extremely fast, completing in minutes without requiring GPUs or additional intervention requests. We do NOT have to train the policy itself for reward search; we only need to repeat the quick DP process. Second, the off-line nature enables adaptability across budgets. Intervention data only needs to be collected once in the transition model collection, and can be reused to obtain trajectories for different budgets. Third, using learned PRMs with tabular RL enhances robustness while avoiding the inefficiencies of deep RL. The claims on robustness are supported by results of Sec. 6.2."
+      ],
+      "subsections": [
+        {
+          "title": "5.1 Reward Regime and Notations",
+          "paragraphs": [
+            "Agents can request help at non-terminal states to boost success, balancing help costs. We want to maximize task success rate, while calling less than CC interventions in the test set. For this, we define the reward structure as follows:",
+            "Reward Regime At any non-terminal state ss, the helper chooses either help or nohelp. The cost CC is embedded in rr and we aim to find the reward rr, together with the entailing policy, that incurs cost CC.",
+            "• Intermediate states: help: incurs an immediate reward of −r-r. nohelp: immediate reward of 0.",
+            "– help: incurs an immediate reward of −r-r.",
+            "– nohelp: immediate reward of 0.",
+            "• Terminal States: success yields a reward of +1+1 and failure 0.",
+            "– help: incurs an immediate reward of −r-r.",
+            "– nohelp: immediate reward of 0.",
+            "Intermediate states:",
+            "– help: incurs an immediate reward of −r-r.",
+            "– nohelp: immediate reward of 0.",
+            "help: incurs an immediate reward of −r-r.",
+            "nohelp: immediate reward of 0.",
+            "Terminal States: success yields a reward of +1+1 and failure 0.",
+            "Notations Success probability under help/nohelp are denoted",
+            "at state ss. Similarly, we denote state transition dynamics under help/nohelp at state ss as Pnohelp​(s′∣s)P_{\\mathrm{nohelp}}(s^{\\prime}\\mid s), Phelp​(s′∣s)P_{\\mathrm{help}}(s^{\\prime}\\mid s)."
+          ]
+        },
+        {
+          "title": "5.2 Derivaion of Usage/Policy Iteration",
+          "paragraphs": [
+            "Overview We derive the usage/policy iteration algorithm (Fig. 4(a)), effectively equivalent to value iteration, by decomposing the value function into success and usage components. Unlike standard value iteration, usage/policy iteration is offline and integrates PRMs for robust classical RL.",
+            "Summary of Usage/Policy Iteration Derivation The value function Vs​(r)V_{s}(r) for an optimal policy π∗\\pi^{*} represents the expected return from state ss under the reward regime:",
+            "It satisfies the piecewise Bellman Equation",
+            "with Vsterm​(r)=1V_{s_{\\text{term}}}(r)=1 at terminal success states and Vsterm​(r)=0V_{s_{\\text{term}}}(r)=0 at terminal failure states. We can disentangle VsV_{s} into success and usage components:",
+            "Vs​(r)=Ss−r​Ms​(r),whereV_{s}(r)\\;=\\;S_{s}\\;-\\;r\\,M_{s}(r),\\quad\\text{where}",
+            "Ss=𝔼π∗​[∑t=0∞γt​ 1success at time ​t]S_{s}=\\mathbb{E}_{\\pi^{*}}\\Bigl{[}\\sum_{t=0}^{\\infty}\\gamma^{t}\\,1_{\\text{success at time }t}\\Bigr{]} Ms​(r)=𝔼π∗​[∑t=0∞γt​ 1help at time ​t]M_{s}(r)=\\mathbb{E}_{\\pi^{*}}\\Bigl{[}\\sum_{t=0}^{\\infty}\\gamma^{t}\\,1_{\\text{help at time }t}\\Bigr{]}",
+            "This decomposition, together with the piecewise Bellman equation, leads us to the recursive definition of optimal usage and policy.",
+            "Ms​(r)={Mshelp=1+γ​∑s′Phelp​(s′∣s)​Ms′​(r),if ​π​(s)=help,Msnohelp=γ​∑s′Pnohelp​(s′∣s)​Ms′​(r),otherwise.π​(s)=help⇔r<Δ​psΔ​Ms.",
+            "where we denote Δ​ps=phelp​(s)−pnohelp​(s)\\Delta p_{s}=p_{\\text{help}}(s)-p_{\\text{nohelp}}(s) and",
+            "Δ​Ms=phelp​(s)​Mshelp−pnohelp​(s)​Msnohelp.\\Delta M_{s}=p_{\\text{help}}(s)M_{s}^{\\text{help}}-p_{\\text{nohelp}}(s)M_{s}^{\\text{nohelp}}.",
+            "Usage/policy iteration (the boxed equation) is a direct consequence of (i) substituting Vs​(r)=Ss−r​Ms​(r)V_{s}(r)=S_{s}-r\\,M_{s}(r) into the Bellman recursion and (ii) deriving and applying the threshold condition of rr for comparing help vs. nohelp. Please see Appendix C for more detailed derivation.",
+            "Consequences and Explanations Iterating the boxed equation converges to a unique fixed point M∗​(r)M^{*}(r) (Proof in Appendix D). The optimal DP policy π∗​(r)\\pi^{*}(r) is then obtained by determining which branch each state ss selects in the stable solution: help if Δ​ps/Δ​Ms∗>r\\Delta p_{s}/\\Delta M^{*}_{s}>r, and nohelp otherwise. Intuitively, help is optimal precisely if",
+            "(extra success)>r​(extra cost)⟺Δ​ps>r​Δ​Ms∗\\text{(extra success)}\\;>\\;r\\text{(extra cost)}\\Longleftrightarrow\\Delta p_{s}\\;>\\;r\\;\\Delta M^{*}_{s}"
+          ]
+        },
+        {
+          "title": "5.3 Algorithm",
+          "paragraphs": [
+            "An overview of the algorithm to compute the fixed point M∗​(r)M^{*}(r) and π∗​(r)\\pi^{*}(r) is provided in Fig. 4. The process begins with collecting a table of transition dynamics. Using these dynamics and a learned PRM, the algorithm iteratively alternates between reward search (Fig. 4(b)) and usage/policy search (Fig. 4(a)) to converge on the desired solution.",
+            "Phase 1: Exploration and Building Transition Model We collect transitions by randomly triggering interventions using the base actor on training tasks. For each transition, we update the count as follows:",
+            "count[s][a][s′]++.\\texttt{count}[s][a][s^{\\prime}]{+}{+}.",
+            "Specifically, we perform three randomly seeded repetitions of rollouts where interventions are triggered with probabilities of 0.0, 0.1, 0.3, 0.5, 0.7, 0.9, and 1.0 for each task. For scenarios involving multiple interventions (see Table 3), we collect transitions for each intervention individually and additionally for combinations of intervention probabilities, with 0.1/0.1, 0.3/0.3, 0.1/0.3, and 0.3/0.1 per intervention. After exploration, raw counts are normalized to estimate the transition probabilities, where a∈{help,nohelp}a\\in\\{\\text{help},\\text{nohelp}\\}.",
+            "P^​(s′∣s,a)=count​[s]​[a]​[s′]∑xcount​[s]​[a]​[x].\\hat{P}(s^{\\prime}\\mid s,a)=\\frac{\\texttt{count}[s][a][s^{\\prime}]}{\\sum_{x}\\texttt{count}[s][a][x]}.",
+            "Phase 2: Offline DP for Iterative Reward/Policy Search We seek a cost parameter rr that meets usage budget constraint CC (Sec. 5.1). In practice, we can systematically search over possible rr values (e.g. via binary search) and, for each candidate rr, run a fast offline DP to obtain both the expected usage 𝔼​[U]\\mathbb{E}[U] and the associated policy.",
+            "Concretely, for a given rr (see Fig. 4), we initialize usage estimates Mshelp,MsnohelpM^{\\text{help}}_{s},\\,M^{\\text{nohelp}}_{s} and iterate the boxed equation of Sec. 5.2. We then compare 𝔼​[U]=Ms0\\mathbb{E}[U]=M_{s_{0}} with the usage budget or other constraints, and adjust rr as necessary. Since each iteration is purely tabular, it is very fast and does not require new environment rollouts.",
+            "Initialization. Set Ms(0)=0M_{s}^{(0)}=0 (or any other guess) for all states s∈𝒮s\\in\\mathcal{S} collected in Phase 1, and set iteration=0\\texttt{iteration}=0.",
+            "Usage Computation For each state ss, compute",
+            "Policy Computation First, compute Δ​ps,Δ​Ms\\Delta p_{s},\\Delta M_{s} as defined in Sec. 5.2. If Δ​Ms\\Delta M_{s} is (numerically) very close to zero, default to nohelp. Otherwise,",
+            "We iteratively repeat usage computation/policy computation for iteration=1,2,…,max_iters\\texttt{iteration}=1,2,\\dots,\\texttt{max\\_iters} or until we hit the convergence critertion: Δmax<ε\\Delta_{\\max}<\\varepsilon (the tolerance), where",
+            "Δmax=maxs∈𝒮⁡|Ms(iteration)−Ms(iteration−1)|.\\Delta_{\\max}\\;=\\;\\max_{s\\in\\mathcal{S}}\\bigl{|}M_{s}^{(\\texttt{iteration})}\\;-\\;M_{s}^{(\\texttt{iteration}-1)}\\bigr{|}.",
+            "We can obtain the following outcomes from the converged Ms​(r)M_{s}(r). First, the DP policy π∗​(r)\\pi^{*}(r) is then:",
+            "πs∗​(r)={help,if ​Ms​(r)=Mshelp,nohelp,otherwise.\\pi_{s}^{*}(r)\\;=\\;\\begin{cases}\\texttt{help},&\\text{if }M_{s}(r)=M_{s}^{\\text{help}},\\\\[3.0pt] \\texttt{nohelp},&\\text{otherwise}.\\end{cases}",
+            "The expected usage from the start state s0s_{0} is 𝔼​[U]=Ms0​(r)\\mathbb{E}[U]=M_{s_{0}}(r). We compare 𝔼​[U]\\mathbb{E}[U] to the usage budget CC and, if unsatisfactory, adjust rr and re-run the above offline DP. This approach supports quick re-solving for multiple rr values without further data collection.",
+            "Phase 3: Final Policy Training via SFT After deriving tabular π∗​(r)\\pi^{*}(r) for all states s∈𝒮s\\in\\mathcal{S} collected in Phase 1, we train the helper model using standard supervised finetuning (SFT). Concretely, the helper model learns to replicate the DP policy π∗​(r)\\pi^{*}(r)’s help/nohelp decisions from the train tasks for downstream deployment. This helper is plugged in as in Fig. 2(b) and is evaluated on the test set."
+          ]
+        },
+        {
+          "title": "5.4 Extension to Multiple Interventions",
+          "paragraphs": [
+            "Our algorithm extends to multiple intervention types, each with its own budget. The same framework in Sections 5.2/ 5.3 can be applied, with adaptations to handle multiple interventions with individual budget constraints, each with a different cost and expected usage (e.g. r1r_{1}, Ms1M_{s}^{1} for help1 and r2r_{2}, Ms2M_{s}^{2} for help2). In short, we can adapt Phase 2 to select the action with minimal combined cost r1​Ms1+r2​Ms2\\;r_{1}\\,M_{s}^{1}+r_{2}\\,M_{s}^{2}. Details are in Appendix E and results are in Tab. 3."
+          ]
+        }
+      ]
+    },
+    "6 Results": {
+      "paragraphs": [
+        "We provide results for our method, with the LLaMa base actor and better model/MCTS interventions. We plug in our trained helper from Sec. 5, as in Fig. 2(b), to call intervention(s) when the helper chooses help. As baselines, we compare to triggering intervention with random state selection and the PRM state selection in Sec. 4.3."
+      ],
+      "subsections": [
+        {
+          "title": "6.1 Main Results",
+          "paragraphs": [
+            "Results across tasks Table 2 compares our method to baselines in terms of success rate (SR\\mathrm{SR}), path-length weighted success (SPL\\mathrm{SPL}), task execution length (LL), observed intervention usage (UU), and expected intervention usage (𝔼​[U]\\mathbb{E}[U]). We compute 𝔼​[U]\\mathbb{E}[U] by averaging M​(s0)M(s_{0}) for starting states s0s_{0} under π∗\\pi^{*}. Note that 𝔼​[U]\\mathbb{E}[U] is only applicable to our method, since it is not straightforward to know this for other methods. We train our approach using different reward scale values (rr high, mid, low), inducing varying intervention frequencies.",
+            "With just a fraction of the interventions used by a policy that always intervenes (7.8 and 4.5 times on average), our method nearly matches that policy’s performance. For example, in S_obj, we achieve a 62.5%62.5\\% success rate using only 1.01.0 intervention on average, outperforming baselines with similar or higher usage. Moreover, 𝔼​[U]\\mathbb{E}[U] closely matches observed usage, especially for smaller UU (e.g. UU is 0.4 and 𝔼​[U]\\mathbb{E}[U] is also 0.4). They tend to diverge more with higher rr’s, but 𝔼​[U]\\mathbb{E}[U] still provides good expectations of the model’s intervention usage, allowing us to select rr based on training data alone, without exhaustive training and evaluation.",
+            "We find that performance drops at rr high are driven by the base LLaMA actor, not our method. With frequent interventions, the base actor encounters more out-of-distribution (OOD) states and produces invalid actions. Because the base actor was trained only on its own trajectories, these new, intervention-driven states lie outside its familiar distribution and makes the base actor produce invalid actions (for instance, actions not in the allowed set). This explains about 75% of failures at rr high, but under 5% at rr low and 15% at rr mid. We do not observe these anomalies for PnP or other interventions (Table 3), likely because the strategy employed by MCTS or the stronger intervention model remains closer to the base actor’s distribution in those scenarios. Moreover, this behavior does not appear in training tasks, where the success rate at rr high exceeds that at rr mid or rr low (Tab. 4). A likely reason is that repeated interventions on the same tasks the base actor was trained on keeps it in the distribution that the base actor has effectively memorized.",
+            "Results across interventions Table 3 compares our method and baselines on the more challenging S_obj split, evaluating three intervention setups: a better model, MCTS, or both. For multiple interventions, we use the Phase 3 extension from Sec. 5.4 to assign individual budgets. Consequently, we present results with different (r1,r2)(r_{1},r_{2}) configurations, where r1r_{1} controls usage of the better model and r2r_{2} controls MCTS. For baselines for multiple interventions, we randomly select states (10% or 30%) for each intervention, resulting, for example, in 10%,10% and 30%,30%. In the state‐wise PRM thresholding baseline, we calibrate thresholds for 20% and 50% of states and trigger each intervention randomly half of the times. For single interventions, we follow the same protocols as in Table 2.",
+            "In general, the trends from Table 2 hold here as well. First, our method optimally calls interventions, whether MCTS or both, achieving higher performance than baselines while using fewer interventions (e.g., with only 0.5 MCTS calls on average, we match the success rate of a 30% PRM thresholding baseline that uses 2.5 calls). Second, using multiple interventions does not yield substantially better results than a single intervention under similar usage constraints, likely due to strategy clashes (Fig. 3). Nevertheless, our method still outperforms multi-intervention baselines. Finally, we find that 𝔼​[U]\\mathbb{E}[U] remains a reliable predictor of actual usage UU, especially at higher rr values, providing a useful guide for choosing budgets in advance.",
+            "Qualitative example Figure 5 shows an S_obj task execution comparing the base actor to our helper approach, which applies MCTS-based interventions with r=0.5r=0.5 (see Table 3). The primary challenge is locating a stuffed toy in a cluttered environment, where ambiguous descriptions can point to multiple potential locations. The base actor begins by visiting different rooms but soon becomes stuck, repeatedly exploring Room 3. In contrast, our helper detects this stall point and calls for just two well-timed interventions, enabling a shift toward a more effective strategy and resulting in successful task completion."
+          ]
+        },
+        {
+          "title": "6.2 Analysis",
+          "paragraphs": [
+            "A key concern of off-line and tabular state collection is coverage and robustness to unseen states. Table 4 investigates how different training data selections (selecting different outcomes from the DP process) influence the helper model’s performance and intervention usage. We compare two strategies for using the outcomes of the DP (Phase 2) as training data for the helper (Fig. 6):",
+            "All States – Includes every (s,a)(s,a) pair of π∗\\pi^{*}, for all ss collected in Phase 1 (the primary approach in Tables 3 and 2).",
+            "Trajectory Only – Starting from s0s_{0}, follow π∗\\pi^{*} (green arrow of Fig. 6) and use the (s,a)(s,a) pair from this trajectory (the red states only); if π∗\\pi^{*} encounters an unseen state, do not include this task/trajectory for training the helper.",
+            "We then evaluate them under splits of the train set (Fig. 6):",
+            "Seen tasks – The task terminates following π∗\\pi^{*}.",
+            "Unseen tasks – Unseen state encountered while rolling π∗\\pi^{*}.",
+            "Note that we do not have π∗\\pi^{*} on val/test sets (since DP searches for trajectories), and this splitting is only applicable to train tasks. Under Trajectory Only method, the helper policy struggles in Unseen tasks – showing high intervention usage (U)(U), low success rates (SR), and a large discrepancy between realized and expected usage (e.g., 5.45.4 vs. 1.141.14). By contrast, All States maintains better alignment between UU and 𝔼​[U]\\mathbb{E}[U] alongside higher SR. Broader sampling in Phase I could further improve performance for Unseen tasks."
+          ]
+        }
+      ]
+    },
+    "7 Conclusion": {
+      "paragraphs": [
+        "We introduce an offline framework that uses classical RL combined with LLM-based PRMs to train a helper model for targeted intervention requests. By collecting transition probabilities offline and annotating tasks with optimal help-seeking strategies, our approach effectively balances performance and cost, as demonstrated in Situated Instruction Following tasks. These results show a step towards LLM agents that can self-regulate and request for interventions."
+      ],
+      "subsections": []
+    },
+    "Impact Statement": {
+      "paragraphs": [
+        "This paper focuses on enhancing the reliability of large language model (LLM) agents, with particular attention to their ability to self-regulate and ask for targeted interventions. This paper has potential societal implications regarding safety and reliability of LLM agents. Beyond these considerations, we have not identified any additional consequences that require further discussion."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A MCTS Implementation Details": {
+      "paragraphs": [
+        "We train a separate PRM to get Q​(s,a)Q(s,a) (the PRM in Sec. 4.1 takes only ss as input) to judge the compatibility of action aa with state ss. The UCT score c×ln⁡N​(s)N​(s,a)c\\times\\sqrt{\\frac{\\ln N(s)}{N(s,a)}} is calculated from N​(s)N(s) and N​(s,a)N(s,a) that count the number of times state ss has been visited and (s,a)(s,a) has been proposed in the current task.",
+        "We propose five actions aa from a the base actor but with temperature 1.0 (we use 0.0 without MCTS), and we use c=0.25c=0.25. In steps where MCTS is not used (in case wehre it is applied to selected states as in Tab. 3), we update the chosen N​(s)N(s) and N​(s,a)N(s,a) by multiplying the chosen count by five times."
+      ],
+      "subsections": []
+    },
+    "Appendix B Detailed Explanation of Section 4.3": {
+      "paragraphs": [
+        "In this section, we provide a thorough examination of the claims made in Sec. 4.3 regarding the limitations of using PRM thresholding for multi-step intervention requests. We reference the results reported in Table 5 to support each claim.",
+        "[Table: Table 5: Task-wise and state-wise interventions performances.]"
+      ],
+      "subsections": [
+        {
+          "title": "B.1 Implementation ofI​(st→T)I(s_{t}\\rightarrow T)andI​(st)I(s_{t})",
+          "paragraphs": [
+            "To identify states or tasks requiring intervention, we examine two approaches:",
+            "PRM-based thresholding For I​(st)I(s_{t}), in a held-out val set, states are ranked by PRM scores, and the threshold for top 10%/30% most difficult states are selected. For I​(st→T)I(s_{t}\\rightarrow T), we evaluate two strategies:",
+            "(a) I​(s[0:5]→T)I(s_{[0:5]}\\rightarrow T) (a.k.a. First five steps): A PRM score threshold is thresholded on val set, based on the initial five steps of the task. On test set, if the threshold is met, intervention is applied for the entire task onward from the sixth step.",
+            "(b) I​(s[0:−1]→T)I(s_{[0:-1]}\\rightarrow T) (a.k.a. all steps): The base actor completes the task to determine whether intervention is needed. If so, the task is restarted, and intervention is applied from s0s_{0}.",
+            "I​(s[0:5]→T)I(s_{[0:5]}\\rightarrow T) (a.k.a. First five steps): A PRM score threshold is thresholded on val set, based on the initial five steps of the task. On test set, if the threshold is met, intervention is applied for the entire task onward from the sixth step.",
+            "I​(s[0:−1]→T)I(s_{[0:-1]}\\rightarrow T) (a.k.a. all steps): The base actor completes the task to determine whether intervention is needed. If so, the task is restarted, and intervention is applied from s0s_{0}.",
+            "Random selection States sts_{t} or tasks TT are selected randomly as a baseline for comparison."
+          ]
+        },
+        {
+          "title": "B.2 Interperting Table5",
+          "paragraphs": [
+            "Table 5 shows the success rate (SR), success-per-length (SPL), and intervention usage rates (%) across several intervention schemes, including both task-wise (top gray-shaded block) and state-wise (bottom gray-shaded block) strategies. The table is subdivided into three overarching intervention types: oracle (columns 2–5), more powerful model delegation (columns 6–11), and MCTS (columns 12–17).",
+            "Each intervention type has further subdivisions for task-wise (rows labeled “Random %” or “PRM-Thresholded: All steps” / “PRM-Thresholded: First five steps” under the Task-wise Intervention header) and state-wise (rows labeled “Random %” or “PRM-Thresholded” under the State-wise Intervention header).",
+            "Note that oracle trajectories are not applicable to state-wise interventions, since they are static trajectories (not models) and cannot adapt to new states. By contrast, the A More Powerful Model and MCTS columns (6–11 and 12–17, respectively) apply to both task-wise and state-wise triggers, thereby showing how multi-step or partial usage of these interventions fares."
+          ]
+        },
+        {
+          "title": "B.3 Explanation of Section 4.3",
+          "paragraphs": [
+            "We reference Tab.5 and explain how PRM scores can identify difficult tasks but struggle with sequential dependence. Below are the claims in Sec. 4.3 and their evidence.",
+            "Looking at Table 5 under Task-wise Intervention, we see that PRM-Thresholded usage (rows titled “PRM-Thresholded: All steps” or “PRM-Thresholded: First five steps”) frequently achieves higher or comparable SR relative to Random usage with similar or lower Usage. For example, under the Oracle columns for GPT4o mini (columns 2–3),",
+            "• Random 30% obtains SR = 38% and SPL = 28%.",
+            "• PRM-Thresholded: All steps 30% achieves SR = 75% with SPL = 58%.",
+            "Random 30% obtains SR = 38% and SPL = 28%.",
+            "PRM-Thresholded: All steps 30% achieves SR = 75% with SPL = 58%.",
+            "Here, using a PRM threshold nearly doubles the SR (75% vs. 38%). The trend persists in other settings under Oracle as well.",
+            "Comparing the Task-wise Intervention block (rows 8–18 in the table) with the State-wise Intervention block (rows 20–25), even random state-wise triggers often achieve higher SR for the same or lower usage. For instance, under A More Powerful Model for GPT4o mini (columns 6–8):",
+            "• Task-wise Random 30% achieves SR = 38% and SPL 28% with usage = 2.8.",
+            "• Task-wise PRM-Thresholded all steps 10% achieves SR = 45% and SPL =33% with usage = 4.1.",
+            "• Task-wise PRM-Thresholded first five steps 10% achieves SR = 28% and SPL 19% with usage = 1.4.",
+            "• State-wise Random 10% yields SR = 48% and SPL=33% with usage = 1.2%.",
+            "Task-wise Random 30% achieves SR = 38% and SPL 28% with usage = 2.8.",
+            "Task-wise PRM-Thresholded all steps 10% achieves SR = 45% and SPL =33% with usage = 4.1.",
+            "Task-wise PRM-Thresholded first five steps 10% achieves SR = 28% and SPL 19% with usage = 1.4.",
+            "State-wise Random 10% yields SR = 48% and SPL=33% with usage = 1.2%.",
+            "As we see, state-wise intervention yields the best SR and SPL, compared to task-wise interventions with more usage. This trend frequently persists throughout Table 5 and it underscores how intervening selectively at difficult states can be more effective than intervening for the remainder of an entire task.",
+            "Despite PRM-based triggers being more principled for picking out tough states, Table 5 shows examples where PRM-Thresholded with a low percentage budget does (much) worse than Random. Focusing on the A More Powerful Model columns for GPT4o mini (columns 6–8):",
+            "• At 10% budget, Random 10% yields SR = 48% and SPL=33% for intervention usage = 1.2.",
+            "• At 30% budget, PRM-Thresholded 30% has SR = 45% and SPL=26%, which is lower, at usage = 2.5.",
+            "At 10% budget, Random 10% yields SR = 48% and SPL=33% for intervention usage = 1.2.",
+            "At 30% budget, PRM-Thresholded 30% has SR = 45% and SPL=26%, which is lower, at usage = 2.5.",
+            "In this example, one can see that PRM-thresholded, despite involving learning, uses much more usage than Random, while leading to low performance. Table 5 shows that PRM-thresholded frequently lags behind random across various interventions and base actors.",
+            "The text in the main paper (Sec. 4.3 and Appendix B) explains that once an intervention lowers the difficulty for the next step, the PRM score may immediately drop below the threshold, handing control back to the base actor too soon. When the difficulty rises again, another intervention triggers, leading to repeated back-and-forth “toggling” that is inefficient. Such a phenomenon is not captured by a PRM approach that only scores state difficulty in isolation, thus harming performance in multi-step scenarios."
+          ]
+        },
+        {
+          "title": "1) PRM scores reliably identify tasks needing assistance",
+          "paragraphs": [
+            "Looking at Table 5 under Task-wise Intervention, we see that PRM-Thresholded usage (rows titled “PRM-Thresholded: All steps” or “PRM-Thresholded: First five steps”) frequently achieves higher or comparable SR relative to Random usage with similar or lower Usage. For example, under the Oracle columns for GPT4o mini (columns 2–3),",
+            "• Random 30% obtains SR = 38% and SPL = 28%.",
+            "• PRM-Thresholded: All steps 30% achieves SR = 75% with SPL = 58%.",
+            "Random 30% obtains SR = 38% and SPL = 28%.",
+            "PRM-Thresholded: All steps 30% achieves SR = 75% with SPL = 58%.",
+            "Here, using a PRM threshold nearly doubles the SR (75% vs. 38%). The trend persists in other settings under Oracle as well."
+          ]
+        },
+        {
+          "title": "2) State-wise interventions typically outperform task-wise methods.",
+          "paragraphs": [
+            "Comparing the Task-wise Intervention block (rows 8–18 in the table) with the State-wise Intervention block (rows 20–25), even random state-wise triggers often achieve higher SR for the same or lower usage. For instance, under A More Powerful Model for GPT4o mini (columns 6–8):",
+            "• Task-wise Random 30% achieves SR = 38% and SPL 28% with usage = 2.8.",
+            "• Task-wise PRM-Thresholded all steps 10% achieves SR = 45% and SPL =33% with usage = 4.1.",
+            "• Task-wise PRM-Thresholded first five steps 10% achieves SR = 28% and SPL 19% with usage = 1.4.",
+            "• State-wise Random 10% yields SR = 48% and SPL=33% with usage = 1.2%.",
+            "Task-wise Random 30% achieves SR = 38% and SPL 28% with usage = 2.8.",
+            "Task-wise PRM-Thresholded all steps 10% achieves SR = 45% and SPL =33% with usage = 4.1.",
+            "Task-wise PRM-Thresholded first five steps 10% achieves SR = 28% and SPL 19% with usage = 1.4.",
+            "State-wise Random 10% yields SR = 48% and SPL=33% with usage = 1.2%.",
+            "As we see, state-wise intervention yields the best SR and SPL, compared to task-wise interventions with more usage. This trend frequently persists throughout Table 5 and it underscores how intervening selectively at difficult states can be more effective than intervening for the remainder of an entire task."
+          ]
+        },
+        {
+          "title": "3) PRM-based selection can underperform random selection due to transition dynamics (the “toggling” issue).",
+          "paragraphs": [
+            "Despite PRM-based triggers being more principled for picking out tough states, Table 5 shows examples where PRM-Thresholded with a low percentage budget does (much) worse than Random. Focusing on the A More Powerful Model columns for GPT4o mini (columns 6–8):",
+            "• At 10% budget, Random 10% yields SR = 48% and SPL=33% for intervention usage = 1.2.",
+            "• At 30% budget, PRM-Thresholded 30% has SR = 45% and SPL=26%, which is lower, at usage = 2.5.",
+            "At 10% budget, Random 10% yields SR = 48% and SPL=33% for intervention usage = 1.2.",
+            "At 30% budget, PRM-Thresholded 30% has SR = 45% and SPL=26%, which is lower, at usage = 2.5.",
+            "In this example, one can see that PRM-thresholded, despite involving learning, uses much more usage than Random, while leading to low performance. Table 5 shows that PRM-thresholded frequently lags behind random across various interventions and base actors.",
+            "The text in the main paper (Sec. 4.3 and Appendix B) explains that once an intervention lowers the difficulty for the next step, the PRM score may immediately drop below the threshold, handing control back to the base actor too soon. When the difficulty rises again, another intervention triggers, leading to repeated back-and-forth “toggling” that is inefficient. Such a phenomenon is not captured by a PRM approach that only scores state difficulty in isolation, thus harming performance in multi-step scenarios."
+          ]
+        }
+      ]
+    },
+    "Appendix C Detailed Derivation of Usage/Policy Iteration": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Part I: Decomposing Value Function into Success and Usage",
+          "paragraphs": [
+            "If π\\pi is any policy, then the value under π\\pi is the expected sum:",
+            "Vsπ​(r)=𝔼π​[∑t=0∞γt​(1success at time ​t−r​ 1help at time ​t)|s0=s].V_{s}^{\\pi}(r)\\;=\\;\\mathbb{E}_{\\pi}\\Biggl{[}\\sum_{t=0}^{\\infty}\\gamma^{t}\\bigl{(}1_{\\text{success at time }t}\\;-\\;r\\,1_{\\text{help at time }t}\\bigr{)}\\;\\Big{|}\\;s_{0}=s\\Biggr{]}.",
+            "Rewriting,",
+            "Hence,",
+            "where we denote",
+            "When taking the max\\max over all policies π\\pi, we get",
+            ", where Ss∗S_{s}^{*} and Ms​(r)M_{s}(r) come from the optimal policy.",
+            "Thus, we can decompose the value function into"
+          ]
+        },
+        {
+          "title": "Part II: Arriving at Piecewise Definition of Usage",
+          "paragraphs": [
+            "Now, let’s substitute 𝑽𝒔​(𝒓)=𝑺𝒔−𝒓​𝑴𝒔​(𝒓)\\boldsymbol{V_{s}(r)=S_{s}-r\\,M_{s}(r)} into the Bellman Equation of Section :",
+            "and ",
+            "for terminal states.",
+            "As we plug in 𝑽𝒔​(𝒓)=𝑺𝒔−𝒓​𝑴𝒔​(𝒓)\\boldsymbol{V_{s}(r)=S_{s}-r\\,M_{s}(r)} to each case",
+            "1. if nohelp at ss",
+            "From the piecewise definition of SsS_{s} (eq. 5), we have Ss=γ​∑s′Pnohelp​(s′∣s)​Ss′,S_{s}\\;=\\;\\gamma\\sum_{s^{\\prime}}P_{\\mathrm{nohelp}}(s^{\\prime}\\mid s)\\,S_{s^{\\prime}},. Thus,",
+            "Dividing through by −r-r (assuming r>0r>0) gives",
+            "for the nohelp branch.",
+            "2. The help branch. ",
+            "Again using the piecewise defintiion of eq. 5 that γ​∑s′Phelp​(s′∣s)​Ss′π\\gamma\\displaystyle\\sum_{s^{\\prime}}P_{\\mathrm{help}}(s^{\\prime}\\mid s)\\;S_{s^{\\prime}}^{\\pi}, we can isolate the usage terms:",
+            "Dividing through by rr and rearranging yields",
+            "Thus, in the help branch, we add 1\\,1 for the immediate usage plus the (discounted) future usages under help transitions.",
+            "Thus, we get"
+          ]
+        },
+        {
+          "title": "Part III: Arriving at Optimal Policy and Usage",
+          "paragraphs": [
+            "First, let’s derive the threshold condition. From the value function Bellman Equation (eq. 2), help is chosen iff:",
+            "Rewriting Vs​(r)=Ss−r​Ms​(r)V_{s}(r)=S_{s}-r\\,M_{s}(r) and isolating the cost component −r-r yields the threshold condition:",
+            "where we denote",
+            "Intuitively, Δ​ps\\Delta p_{s} and Δ​Ms\\Delta M_{s} capture how much additional success probability vs. usage we get by choosing help over nohelp at ss.",
+            "Hence, we arrive at",
+            "Now, combining eq. C and eq. 4, we get",
+            "Ms​(r)={Mshelp=1+γ​∑s′Phelp​(s′∣s)​Ms′​(r),if ​π​(s)=help,Msnohelp=γ​∑s′Pnohelp​(s′∣s)​Ms′​(r),otherwise.π​(s)=help⇔r<Δ​psΔ​Ms."
+          ]
+        },
+        {
+          "title": "Lemma: Piecewise Definition of𝑺𝒔\\boldsymbol{S_{s}}(Help vs. Nohelp).",
+          "paragraphs": [
+            "If SsS_{s} is interpreted as the discounted probability of eventually reaching success under a policy π\\pi that may choose either help\\mathrm{help} or nohelp\\mathrm{nohelp}, we can write In an MDP setting with two possible actions, help\\mathrm{help} or nohelp\\mathrm{nohelp}, the policy π\\pi dictates which action to take at each state ss. Correspondingly, the recursion for SsπS_{s}^{\\pi} becomes:",
+            "• If ss is success: We set Ssπ=1S_{s}^{\\pi}=1. This means that if you start in a success state, the probability of “having achieved success” (discounted or not) is exactly 1.",
+            "• If ss is nonterminal: Then there is no immediate success contribution at ss itself, and we simply recurse to the next state via either Pnohelp(⋅∣s)P_{\\mathrm{nohelp}}(\\cdot\\mid s) or Phelp(⋅∣s)P_{\\mathrm{help}}(\\cdot\\mid s), multiplied by the factor γ\\gamma. Thus, no explicit 𝟏​{s is success}\\mathbf{1}\\{\\text{$s$ is success}\\} is needed inside the sum, because we have already distinguished the success case in the first line of the piecewise definition.",
+            "If ss is success: We set Ssπ=1S_{s}^{\\pi}=1. This means that if you start in a success state, the probability of “having achieved success” (discounted or not) is exactly 1.",
+            "If ss is nonterminal: Then there is no immediate success contribution at ss itself, and we simply recurse to the next state via either Pnohelp(⋅∣s)P_{\\mathrm{nohelp}}(\\cdot\\mid s) or Phelp(⋅∣s)P_{\\mathrm{help}}(\\cdot\\mid s), multiplied by the factor γ\\gamma. Thus, no explicit 𝟏​{s is success}\\mathbf{1}\\{\\text{$s$ is success}\\} is needed inside the sum, because we have already distinguished the success case in the first line of the piecewise definition.",
+            "Thus, under a given policy π\\pi, each nonterminal state ss follows whichever transition probabilities (nohelp\\mathrm{nohelp} or help\\mathrm{help}) π\\,\\pi prescribes at that state. The boundary condition Sstermπ=1S_{s_{\\mathrm{term}}}^{\\pi}=1 applies to all terminal success states."
+          ]
+        }
+      ]
+    },
+    "Appendix D Proof of Convergence": {
+      "paragraphs": [
+        "In Appendix C, we showed that the boxed equation",
+        "Ms​(r)={Mshelp=1+γ​∑s′Phelp​(s′∣s)​Ms′​(r),if ​π​(s)=help,Msnohelp=γ​∑s′Pnohelp​(s′∣s)​Ms′​(r),otherwise.π​(s)=help⇔r<Δ​psΔ​Ms.",
+        "is equivalent to the standard Bellman recursion for",
+        "where",
+        "Because solving value iteration for the above Vsπ​(r)V^{\\pi}_{s}(r) converges to a unique fixed point Vs​(r)V_{s}(r) and the corresponding policy π∗​(r)\\pi^{*}(r), we know that the iteration of the boxed equation also converges to a unique fixed point M∗​(r)M^{*}(r) and π∗​(r)\\pi^{*}(r)."
+      ],
+      "subsections": []
+    },
+    "Appendix E Details on Extensions to Multiple Interventions": {
+      "paragraphs": [
+        "Our algorithm naturally extends to multiple intervention types, as explained in Sec. 5.4. We explain the details."
+      ],
+      "subsections": [
+        {
+          "title": "E.1 Formulation and Reward Regime",
+          "paragraphs": [
+            "We consider a stochastic process with states s∈𝒮s\\in\\mathcal{S} and transition probabilities P​(s′∣s)P(s^{\\prime}\\mid s). At any non-terminal state ss, the agent may choose from multiple interventions {help1,help2,…,help​K}\\{\\text{help1},\\text{help2},\\dots,\\text{help}K\\} or nohelp. Each intervention helpi\\text{help}_{i} can improve the probability of success at the cost of incurring usage. Conversely, nohelp avoids usage costs but may have a lower chance of success. We aim to maximize the task success rate while keeping the expected discounted number of each intervention (or total usage) below a certain budget CC.",
+            "Concretely, let γ∈(0,1)\\gamma\\in(0,1) be the discount factor. Suppose from an initial state s0s_{0}, we want",
+            "One can equivalently encode this via a cost (r1,r2,…,rK)(r_{1},r_{2},\\dots,r_{K}) for each intervention help​i\\text{help}i, or treat it via a usage-based dynamic programming approach. Below, we use a reward regime that translates each help call into a negative reward. This allows standard value-iteration (VI) or usage-based iteration for an MDP with multiple interventions.",
+            "At each non-terminal state ss, the agent chooses among: The immediate reward is: Hence, if an agent eventually succeeds, it gains +1+1 minus the sum of costs ∑iri\\sum_{i}r_{i} times the discounted number of times each helpi\\text{help}_{i} was used.",
+            "• helpi\\text{help}_{i}: a reward of −ri-r_{i}.",
+            "• nohelp: a reward of 0.",
+            "• Terminal States: success yields a reward of +1+1, failure yields 0.",
+            "helpi\\text{help}_{i}: a reward of −ri-r_{i}.",
+            "nohelp: a reward of 0.",
+            "Terminal States: success yields a reward of +1+1, failure yields 0.",
+            "When analyzing usage or success, we often use a probability-of-success model:",
+            "We likewise denote state transition kernels Pnohelp​(s′|s)P_{\\text{nohelp}}(s^{\\prime}|s) or Phelpi​(s′|s)P_{\\text{help}_{i}}(s^{\\prime}|s) to capture the distribution over next states under each chosen action."
+          ]
+        },
+        {
+          "title": "Reward Regime.",
+          "paragraphs": [
+            "At each non-terminal state ss, the agent chooses among: The immediate reward is: Hence, if an agent eventually succeeds, it gains +1+1 minus the sum of costs ∑iri\\sum_{i}r_{i} times the discounted number of times each helpi\\text{help}_{i} was used.",
+            "• helpi\\text{help}_{i}: a reward of −ri-r_{i}.",
+            "• nohelp: a reward of 0.",
+            "• Terminal States: success yields a reward of +1+1, failure yields 0.",
+            "helpi\\text{help}_{i}: a reward of −ri-r_{i}.",
+            "nohelp: a reward of 0.",
+            "Terminal States: success yields a reward of +1+1, failure yields 0."
+          ]
+        },
+        {
+          "title": "Notation for Success Probabilities.",
+          "paragraphs": [
+            "When analyzing usage or success, we often use a probability-of-success model:",
+            "We likewise denote state transition kernels Pnohelp​(s′|s)P_{\\text{nohelp}}(s^{\\prime}|s) or Phelpi​(s′|s)P_{\\text{help}_{i}}(s^{\\prime}|s) to capture the distribution over next states under each chosen action."
+          ]
+        },
+        {
+          "title": "E.2 Derivation of Usage/Policy Iteration for Multiple Interventions",
+          "paragraphs": [
+            "We start from value iteration, as in Sec. 5.2. The value function is:",
+            "with V​(ssuccess)=1V(s_{\\mathrm{success}})=1 and V​(sfailure)=0V(s_{\\mathrm{failure}})=0 for terminal states. Now, we drive a usage-based DP from this:",
+            "If we pick helpi\\text{help}_{i} in state ss, then",
+            "for j≠ij\\neq i. If we pick nohelp,",
+            "In the single-intervention case, we derived ratio=Δ​successΔ​usage\\mathrm{ratio}=\\dfrac{\\Delta\\text{success}}{\\Delta\\text{usage}}. For multiple interventions, each helpi\\text{help}_{i} has:",
+            "We say helpi\\text{help}_{i} is cost-effective (vs. nohelp) if",
+            "If ratioi​(s)≤ri\\mathrm{ratio}_{i}(s)\\leq r_{i} for all ii, we choose nohelp. If exactly one helpi\\text{help}_{i} is cost-effective, we pick helpi\\text{help}_{i}. If multiple helps pass the ratio test, we pick whichever yields the smallest combined cost",
+            "These local decisions define a policy update at each state ss. Iterating the usage functions {Msi}\\{M_{s}^{i}\\} and reselecting among {helpi,nohelp}\\{\\text{help}_{i},\\text{nohelp}\\} converges to a stable fixed point. This final stable policy is π∗\\pi^{*}. This π∗\\pi^{*} is exactly the same solution a standard value iteration approach (with reward {−ri}\\{-r_{i}\\}) would find, with arguments similar to Appendix D."
+          ]
+        },
+        {
+          "title": "Overview.",
+          "paragraphs": [
+            "We start from value iteration, as in Sec. 5.2. The value function is:",
+            "with V​(ssuccess)=1V(s_{\\mathrm{success}})=1 and V​(sfailure)=0V(s_{\\mathrm{failure}})=0 for terminal states. Now, we drive a usage-based DP from this:",
+            "If we pick helpi\\text{help}_{i} in state ss, then",
+            "for j≠ij\\neq i. If we pick nohelp,"
+          ]
+        },
+        {
+          "title": "Threshold Conditions for Multiple Interventions.",
+          "paragraphs": [
+            "In the single-intervention case, we derived ratio=Δ​successΔ​usage\\mathrm{ratio}=\\dfrac{\\Delta\\text{success}}{\\Delta\\text{usage}}. For multiple interventions, each helpi\\text{help}_{i} has:",
+            "We say helpi\\text{help}_{i} is cost-effective (vs. nohelp) if",
+            "If ratioi​(s)≤ri\\mathrm{ratio}_{i}(s)\\leq r_{i} for all ii, we choose nohelp. If exactly one helpi\\text{help}_{i} is cost-effective, we pick helpi\\text{help}_{i}. If multiple helps pass the ratio test, we pick whichever yields the smallest combined cost",
+            "These local decisions define a policy update at each state ss. Iterating the usage functions {Msi}\\{M_{s}^{i}\\} and reselecting among {helpi,nohelp}\\{\\text{help}_{i},\\text{nohelp}\\} converges to a stable fixed point. This final stable policy is π∗\\pi^{*}. This π∗\\pi^{*} is exactly the same solution a standard value iteration approach (with reward {−ri}\\{-r_{i}\\}) would find, with arguments similar to Appendix D."
+          ]
+        },
+        {
+          "title": "E.3 Algorithm",
+          "paragraphs": [
+            "The algorithm for the multiple intervention setting are in three main phases:",
+            "Phase 1: Data Collection and Transition Model.",
+            "• Collect transitions offline by running partial-rollouts with {help​i,nohelp}\\{\\text{help}i,\\text{nohelp}\\} chosen randomly or by partial heuristics.",
+            "• Maintain counts count​[s]​[a]​[s′]\\texttt{count}[s][a][s^{\\prime}] for each action a∈{help​1,…,help​K,nohelp}a\\in\\{\\text{help}1,\\dots,\\text{help}K,\\text{nohelp}\\}.",
+            "• Estimate for a∈{nohelp,help1,…,helpK}a\\in\\{\\text{nohelp},\\,\\text{help}_{1},\\,\\dots,\\text{help}_{K}\\}",
+            "Collect transitions offline by running partial-rollouts with {help​i,nohelp}\\{\\text{help}i,\\text{nohelp}\\} chosen randomly or by partial heuristics.",
+            "Maintain counts count​[s]​[a]​[s′]\\texttt{count}[s][a][s^{\\prime}] for each action a∈{help​1,…,help​K,nohelp}a\\in\\{\\text{help}1,\\dots,\\text{help}K,\\text{nohelp}\\}.",
+            "Estimate",
+            "for a∈{nohelp,help1,…,helpK}a\\in\\{\\text{nohelp},\\,\\text{help}_{1},\\,\\dots,\\text{help}_{K}\\}",
+            "Phase 2: Offline Usage/Policy Iteration (Multiple Interventions). First, initialize usage counters {Msi}i=1K\\{M_{s}^{i}\\}_{i=1}^{K} to zero (or any guess). Then, Repeat until convergence:",
+            "1. Compute usage for each action:",
+            "2. Compute Δ​psi\\Delta p^{i}_{s} and Δ​Msi\\Delta M^{i}_{s}, then check the ratio test ratioi​(s)>ri\\mathrm{ratio}_{i}(s)>\\!r_{i}.",
+            "3. Policy update:",
+            "4. Update counters: Msi←Msi​(πs).\\displaystyle M_{s}^{i}\\;\\leftarrow\\;M_{s}^{i}(\\pi_{s}).",
+            "5. Check convergence: if maxs,i⁡|Msi−oldsi|<ε\\max_{s,i}\\bigl{|}M_{s}^{i}-\\text{old}_{s}^{i}\\bigr{|}<\\varepsilon, stop.",
+            "Compute usage for each action:",
+            "Compute Δ​psi\\Delta p^{i}_{s} and Δ​Msi\\Delta M^{i}_{s}, then check the ratio test ratioi​(s)>ri\\mathrm{ratio}_{i}(s)>\\!r_{i}.",
+            "Policy update:",
+            "Update counters: Msi←Msi​(πs).\\displaystyle M_{s}^{i}\\;\\leftarrow\\;M_{s}^{i}(\\pi_{s}).",
+            "Check convergence: if maxs,i⁡|Msi−oldsi|<ε\\max_{s,i}\\bigl{|}M_{s}^{i}-\\text{old}_{s}^{i}\\bigr{|}<\\varepsilon, stop.",
+            "Finally, we output the stable usage counters {Msi}i=1K\\{M_{s}^{i}\\}_{i=1}^{K} and the final policy π∗\\pi^{*}.",
+            "Phase 3: Final Policy Representation (SFT or Other).",
+            "• We store the final help/nohelp decisions in a table π∗​(s)\\pi^{*}(s).",
+            "• For states ss in the training data, we know exactly which action the usage-based DP prescribes.",
+            "• Train the actual “helper” model (e.g. a neural policy or large language model) via supervised finetuning to mimic π∗​(s)\\pi^{*}(s) on the collected states ss.",
+            "We store the final help/nohelp decisions in a table π∗​(s)\\pi^{*}(s).",
+            "For states ss in the training data, we know exactly which action the usage-based DP prescribes.",
+            "Train the actual “helper” model (e.g. a neural policy or large language model) via supervised finetuning to mimic π∗​(s)\\pi^{*}(s) on the collected states ss.",
+            "If K=1K=1, the above steps reduce exactly to the single-intervention usage-based iteration. If r1=r2=⋯=rK=rr_{1}=r_{2}=\\cdots=r_{K}=r, then each help has the same cost, and we can unify them if needed."
+          ]
+        },
+        {
+          "title": "Relation to Single-Intervention Case.",
+          "paragraphs": [
+            "If K=1K=1, the above steps reduce exactly to the single-intervention usage-based iteration. If r1=r2=⋯=rK=rr_{1}=r_{2}=\\cdots=r_{K}=r, then each help has the same cost, and we can unify them if needed."
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "Achiam et al. (2023) Achiam, J., Adler, S., Agarwal, S., Ahmad, L., Akkaya, I., Aleman, F. L., Almeida, D., Altenschmidt, J., Altman, S., Anadkat, S., et al. Gpt-4 technical report. arXiv preprint arXiv:2303.08774, 2023.",
+    "Anonymous (2025) Anonymous. Livecodebench: Holistic and contamination free evaluation of large language models for code. In The Thirteenth International Conference on Learning Representations, 2025. URL https://openreview.net/forum?id=chfJJYC3iL.",
+    "Asai et al. (2024) Asai, A., Wu, Z., Wang, Y., Sil, A., and Hajishirzi, H. Self-RAG: Learning to retrieve, generate, and critique through self-reflection. In The Twelfth International Conference on Learning Representations, 2024. URL https://openreview.net/forum?id=hSyW5go0v8.",
+    "Bai et al. (2022) Bai, Y., Kadavath, S., Kundu, S., Askell, A., Kernion, J., Jones, A., Chen, A., Goldie, A., Mirhoseini, A., McKinnon, C., et al. Constitutional ai: Harmlessness from ai feedback. arXiv preprint arXiv:2212.08073, 2022.",
+    "Brundage et al. (2018) Brundage, M., Avin, S., Clark, J., Toner, H., Eckersley, P., Garfinkel, B., Dafoe, A., Scharre, P., Zeitzoff, T., Filar, B., et al. The malicious use of artificial intelligence: Forecasting, prevention, and mitigation. arXiv preprint arXiv:1802.07228, 2018.",
+    "Chen et al. (2024a) Chen, X., Lin, M., Schärli, N., and Zhou, D. Teaching large language models to self-debug. In The Twelfth International Conference on Learning Representations, 2024a. URL https://openreview.net/forum?id=KuPixIqPiq.",
+    "Chen et al. (2024b) Chen, Z., Deng, Y., Yuan, H., Ji, K., and Gu, Q. Self-play fine-tuning converts weak language models to strong language models. arXiv preprint arXiv:2401.01335, 2024b.",
+    "Chi et al. (2019) Chi, T.-C., Eric, M., Kim, S., Shen, M., and Hakkani-Tür, D. Z. Just ask: An interactive learning framework for vision and language navigation. In AAAI Conference on Artificial Intelligence, 2019. URL https://api.semanticscholar.org/CorpusID:208527038.",
+    "Christiano et al. (2017) Christiano, P. F., Leike, J., Brown, T., Martic, M., Legg, S., and Amodei, D. Deep reinforcement learning from human preferences. Advances in neural information processing systems, 30, 2017.",
+    "Díaz-Rodríguez et al. (2023) Díaz-Rodríguez, N., Del Ser, J., Coeckelbergh, M., de Prado, M. L., Herrera-Viedma, E., and Herrera, F. Connecting the dots in trustworthy artificial intelligence: From ai principles, ethics, and key requirements to responsible ai systems and regulation. Information Fusion, 99:101896, 2023.",
+    "Dubey et al. (2024) Dubey, A., Jauhri, A., Pandey, A., Kadian, A., Al-Dahle, A., Letman, A., Mathur, A., Schelten, A., Yang, A., Fan, A., et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783, 2024.",
+    "Gabriel (2020) Gabriel, I. Artificial intelligence, values, and alignment. Minds and machines, 30(3):411–437, 2020.",
+    "Gehring et al. (2024) Gehring, J., Zheng, K., Copet, J., Mella, V., Cohen, T., and Synnaeve, G. Rlef: Grounding code llms in execution feedback with reinforcement learning. arXiv preprint arXiv:2410.02089, 2024.",
+    "Gou et al. (2024) Gou, Z., Shao, Z., Gong, Y., Shen, Y., Yang, Y., Duan, N., and Chen, W. CRITIC: Large language models can self-correct with tool-interactive critiquing. In International Conference on Learning Representations, 2024.",
+    "Hendrycks et al. (2021) Hendrycks, D., Carlini, N., Schulman, J., and Steinhardt, J. Unsolved problems in ml safety. arXiv preprint arXiv:2109.13916, 2021.",
+    "Hu et al. (2024) Hu, Z., Liu, C., Feng, X., Zhao, Y., Ng, S.-K., Luu, A. T., He, J., Koh, P. W., and Hooi, B. Uncertainty of thoughts: Uncertainty-aware planning enhances information seeking in LLMs. In The Thirty-eighth Annual Conference on Neural Information Processing Systems, 2024. URL https://openreview.net/forum?id=CVpuVe1N22.",
+    "Jiang et al. (2021) Jiang, Z., Araki, J., Ding, H., and Neubig, G. How can we know when language models know? on the calibration of language models for question answering. Transactions of the Association for Computational Linguistics, 9:962–977, 2021. doi: 10.1162/tacl˙a˙00407. URL https://aclanthology.org/2021.tacl-1.57/.",
+    "Kadavath et al. (2022) Kadavath, S., Conerly, T., Askell, A., Henighan, T., Drain, D., Perez, E., Schiefer, N., Dodds, Z., Dassarma, N., Tran-Johnson, E., Johnston, S., El-Showk, S., Jones, A., Elhage, N., Hume, T., Chen, A., Bai, Y., Bowman, S., Fort, S., Ganguli, D., Hernandez, D., Jacobson, J., Kernion, J., Kravec, S., Lovitt, L., Ndousse, K., Olsson, C., Ringer, S., Amodei, D., Brown, T. B., Clark, J., Joseph, N., Mann, B., McCandlish, S., Olah, C., and Kaplan, J. Language models (mostly) know what they know. ArXiv, abs/2207.05221, 2022. URL https://api.semanticscholar.org/CorpusID:250451161.",
+    "Kuhn et al. (2023) Kuhn, L., Gal, Y., and Farquhar, S. Semantic uncertainty: Linguistic invariances for uncertainty estimation in natural language generation. In The Eleventh International Conference on Learning Representations, 2023. URL https://openreview.net/forum?id=VD-AYtP0dve.",
+    "Lightman et al. (2024) Lightman, H., Kosaraju, V., Burda, Y., Edwards, H., Baker, B., Lee, T., Leike, J., Schulman, J., Sutskever, I., and Cobbe, K. Let’s verify step by step. In The Twelfth International Conference on Learning Representations, 2024. URL https://openreview.net/forum?id=v8L0pN6EOi.",
+    "Lin et al. (2024) Lin, Z., Trivedi, S., and Sun, J. Generating with confidence: Uncertainty quantification for black-box large language models. Transactions on Machine Learning Research, 2024. ISSN 2835-8856. URL https://openreview.net/forum?id=DWkJCSxKU5.",
+    "Liu et al. (2022) Liu, I.-J., Yuan, X., Côté, M.-A., Oudeyer, P.-Y., and Schwing, A. Asking for knowledge (afk): Training rl agents to query external knowledge using language. In International Conference on Machine Learning, pp. 14073–14093. PMLR, 2022.",
+    "Liu et al. (2024) Liu, X., Yu, H., Zhang, H., Xu, Y., Lei, X., Lai, H., Gu, Y., Ding, H., Men, K., Yang, K., Zhang, S., Deng, X., Zeng, A., Du, Z., Zhang, C., Shen, S., Zhang, T., Su, Y., Sun, H., Huang, M., Dong, Y., and Tang, J. Agentbench: Evaluating LLMs as agents. In The Twelfth International Conference on Learning Representations, 2024. URL https://openreview.net/forum?id=zAdUB0aCTQ.",
+    "Madaan et al. (2023) Madaan, A., Tandon, N., Gupta, P., Hallinan, S., Gao, L., Wiegreffe, S., Alon, U., Dziri, N., Prabhumoye, S., Yang, Y., Gupta, S., Majumder, B. P., Hermann, K., Welleck, S., Yazdanbakhsh, A., and Clark, P. Self-refine: Iterative refinement with self-feedback. In Thirty-seventh Conference on Neural Information Processing Systems, 2023. URL https://openreview.net/forum?id=S37hOerQLB.",
+    "Mallen et al. (2023) Mallen, A., Asai, A., Zhong, V., Das, R., Khashabi, D., and Hajishirzi, H. When not to trust language models: Investigating effectiveness of parametric and non-parametric memories. In Rogers, A., Boyd-Graber, J., and Okazaki, N. (eds.), Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pp. 9802–9822, Toronto, Canada, July 2023. Association for Computational Linguistics. doi: 10.18653/v1/2023.acl-long.546. URL https://aclanthology.org/2023.acl-long.546/.",
+    "Min et al. (2025) Min, S. Y., Puig, X., Chaplot, D. S., Yang, T.-Y., Rai, A., Parashar, P., Salakhutdinov, R., Bisk, Y., and Mottaghi, R. Situated instruction following. In European Conference on Computer Vision, pp. 202–228. Springer, 2025.",
+    "Nakano et al. (2021) Nakano, R., Hilton, J., Balaji, S., Wu, J., Ouyang, L., Kim, C., Hesse, C., Jain, S., Kosaraju, V., Saunders, W., et al. Webgpt: Browser-assisted question-answering with human feedback. arXiv preprint arXiv:2112.09332, 2021.",
+    "Nguyen et al. (2021) Nguyen, K., Bisk, Y., and Daum’e, H. Learning when and what to ask: a hierarchical reinforcement learning framework. ArXiv, abs/2110.08258, 2021. URL https://api.semanticscholar.org/CorpusID:239016703.",
+    "Qiao et al. (2024) Qiao, S., Gui, H., Lv, C., Jia, Q., Chen, H., and Zhang, N. Making language models better tool learners with execution feedback. In Duh, K., Gomez, H., and Bethard, S. (eds.), Proceedings of the 2024 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers), pp. 3550–3568, Mexico City, Mexico, June 2024. Association for Computational Linguistics. doi: 10.18653/v1/2024.naacl-long.195. URL https://aclanthology.org/2024.naacl-long.195/.",
+    "Qu et al. (2024) Qu, Y., Zhang, T., Garg, N., and Kumar, A. Recursive introspection: Teaching language model agents how to self-improve. In The Thirty-eighth Annual Conference on Neural Information Processing Systems, 2024. URL https://openreview.net/forum?id=DRC9pZwBwR.",
+    "Ren et al. (2023) Ren, A. Z., Dixit, A., Bodrova, A., Singh, S., Tu, S., Brown, N., Xu, P., Takayama, L., Xia, F., Varley, J., Xu, Z., Sadigh, D., Zeng, A., and Majumdar, A. Robots that ask for help: Uncertainty alignment for large language model planners. In 7th Annual Conference on Robot Learning, 2023. URL https://openreview.net/forum?id=4ZK8ODNyFXx.",
+    "Ruan et al. (2024) Ruan, Y., Dong, H., Wang, A., Pitis, S., Zhou, Y., Ba, J., Dubois, Y., Maddison, C. J., and Hashimoto, T. Identifying the risks of LM agents with an LM-emulated sandbox. In The Twelfth International Conference on Learning Representations, 2024. URL https://openreview.net/forum?id=GEcwtMk1uA.",
+    "Schick et al. (2023) Schick, T., Dwivedi-Yu, J., Dessì, R., Raileanu, R., Lomeli, M., Hambro, E., Zettlemoyer, L., Cancedda, N., and Scialom, T. Toolformer: Language models can teach themselves to use tools. Advances in Neural Information Processing Systems, 36:68539–68551, 2023.",
+    "Shinn et al. (2024) Shinn, N., Cassano, F., Gopinath, A., Narasimhan, K., and Yao, S. Reflexion: Language agents with verbal reinforcement learning. Advances in Neural Information Processing Systems, 36, 2024.",
+    "Singh et al. (2022) Singh, K. P., Weihs, L., Herrasti, A., Choi, J., Kembhavi, A., and Mottaghi, R. Ask4help: Learning to leverage an expert for embodied tasks. In Oh, A. H., Agarwal, A., Belgrave, D., and Cho, K. (eds.), Advances in Neural Information Processing Systems, 2022. URL https://openreview.net/forum?id=_bqtjfpj8h.",
+    "Uesato et al. (2022) Uesato, J., Kushman, N., Kumar, R., Song, F., Siegel, N., Wang, L., Creswell, A., Irving, G., and Higgins, I. Solving math word problems with process- and outcome-based feedback, 2022. URL https://arxiv.org/abs/2211.14275.",
+    "Wang et al. (2024a) Wang, P., Li, L., Shao, Z., Xu, R., Dai, D., Li, Y., Chen, D., Wu, Y., and Sui, Z. Math-shepherd: Verify and reinforce llms step-by-step without human annotations. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pp. 9426–9439, 2024a.",
+    "Wang et al. (2023) Wang, T., Yu, P., Tan, X. E., O’Brien, S., Pasunuru, R., Dwivedi-Yu, J., Golovneva, O., Zettlemoyer, L., Fazel-Zarandi, M., and Celikyilmaz, A. Shepherd: A critic for language model generation, 2023. URL https://arxiv.org/abs/2308.04592.",
+    "Wang et al. (2024b) Wang, X., Chen, Y., Yuan, L., Zhang, Y., Li, Y., Peng, H., and Ji, H. Executable code actions elicit better llm agents. arXiv preprint arXiv:2402.01030, 2024b.",
+    "Wang et al. (2024c) Wang, X., Li, B., Song, Y., Xu, F. F., Tang, X., Zhuge, M., Pan, J., Song, Y., Li, B., Singh, J., Tran, H. H., Li, F., Ma, R., Zheng, M., Qian, B., Shao, Y., Muennighoff, N., Zhang, Y., Hui, B., Lin, J., Brennan, R., Peng, H., Ji, H., and Neubig, G. OpenHands: An Open Platform for AI Software Developers as Generalist Agents, 2024c. URL https://arxiv.org/abs/2407.16741.",
+    "Welleck et al. (2023) Welleck, S., Lu, X., West, P., Brahman, F., Shen, T., Khashabi, D., and Choi, Y. Generating sequences by learning to self-correct. In International Conference on Learning Representations, 2023.",
+    "Xiao et al. (2022) Xiao, Y., Liang, P. P., Bhatt, U., Neiswanger, W., Salakhutdinov, R., and Morency, L.-P. Uncertainty quantification with pre-trained language models: A large-scale empirical analysis. In Conference on Empirical Methods in Natural Language Processing, 2022. URL https://api.semanticscholar.org/CorpusID:247613322.",
+    "Xie et al. (2022) Xie, A., Tajwar, F., Sharma, A., and Finn, C. When to ask for help: Proactive interventions in autonomous reinforcement learning. In Oh, A. H., Agarwal, A., Belgrave, D., and Cho, K. (eds.), Advances in Neural Information Processing Systems, 2022. URL https://openreview.net/forum?id=L9EXtg7h6XE.",
+    "Xie et al. (2023) Xie, Y., Kawaguchi, K., Zhao, Y., Zhao, X., Kan, M.-Y., He, J., and Xie, Q. Self-evaluation guided beam search for reasoning. In Thirty-seventh Conference on Neural Information Processing Systems, 2023. URL https://openreview.net/forum?id=Bw82hwg5Q3.",
+    "Xiong et al. (2024) Xiong, M., Hu, Z., Lu, X., LI, Y., Fu, J., He, J., and Hooi, B. Can LLMs express their uncertainty? an empirical evaluation of confidence elicitation in LLMs. In The Twelfth International Conference on Learning Representations, 2024. URL https://openreview.net/forum?id=gjeQKFxFpZ.",
+    "Yang et al. (2024) Yang, J., Jimenez, C. E., Wettig, A., Lieret, K., Yao, S., Narasimhan, K. R., and Press, O. SWE-agent: Agent-computer interfaces enable automated software engineering. In The Thirty-eighth Annual Conference on Neural Information Processing Systems, 2024. URL https://arxiv.org/abs/2405.15793.",
+    "Yao et al. (2023) Yao, S., Zhao, J., Yu, D., Du, N., Shafran, I., Narasimhan, K., and Cao, Y. React: Synergizing reasoning and acting in language models. In International Conference on Learning Representations (ICLR), 2023.",
+    "Zelikman et al. (2022) Zelikman, E., Wu, Y., Mu, J., and Goodman, N. STar: Bootstrapping reasoning with reasoning. In Oh, A. H., Agarwal, A., Belgrave, D., and Cho, K. (eds.), Advances in Neural Information Processing Systems, 2022. URL https://openreview.net/forum?id=_3ELRdg2sgI.",
+    "Zhai et al. (2024) Zhai, Y., Bai, H., Lin, Z., Pan, J., Tong, S., Zhou, Y., Suhr, A., Xie, S., LeCun, Y., Ma, Y., and Levine, S. Fine-tuning large vision-language models as decision-making agents via reinforcement learning. In The Thirty-eighth Annual Conference on Neural Information Processing Systems, 2024. URL https://openreview.net/forum?id=nBjmMF2IZU.",
+    "Zhou et al. (2023) Zhou, K., Jurafsky, D., and Hashimoto, T. Navigating the grey area: How expressions of uncertainty and overconfidence affect language models. In Bouamor, H., Pino, J., and Bali, K. (eds.), Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, pp. 5506–5524, Singapore, December 2023. Association for Computational Linguistics. doi: 10.18653/v1/2023.emnlp-main.335. URL https://aclanthology.org/2023.emnlp-main.335/."
+  ]
+}

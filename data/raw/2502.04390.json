@@ -1,0 +1,533 @@
+{
+  "title": "In Praise of Stubbornness:The Case for Cognitive-Dissonance-Aware Knowledge Updates in LLMs",
+  "authors": "Simone ClementeZied Ben HouidiAlexis HuetDario RossiGiulio FranzesePietro Michiardi",
+  "abstract": "Despite remarkable capabilities, large language models (LLMs) struggle to continually update their knowledge without catastrophic forgetting. In contrast, humans effortlessly integrate new information, detect conflicts with existing beliefs, and selectively update their mental models. This paper introduces a cognitive-inspired investigation paradigm to study continual knowledge updating in LLMs. We implement two key components inspired by human cognition: (1) Dissonance and Familiarity Awareness, analyzing model behavior to classify information as novel, familiar, or dissonant; and (2) Targeted Network Updates, which track neural activity to identify frequently used (stubborn) and rarely used (plastic) neurons. Through carefully designed experiments in controlled settings, we uncover a number of empirical findings demonstrating the potential of this approach. First, dissonance detection is feasible using simple activation and gradient features, suggesting potential for cognitive-inspired training. Second, we find that non-dissonant updates largely preserve prior knowledge regardless of targeting strategy, revealing inherent robustness in LLM knowledge integration. Most critically, we discover that dissonant updates prove catastrophically destructive to the model’s knowledge base, indiscriminately affecting even information unrelated to the current updates. This suggests fundamental limitations in how neural networks handle contradictions and motivates the need for new approaches to knowledge updating that better mirror human cognitive mechanisms.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Humans effortlessly update their knowledge as they experience the world. They seamlessly integrate new information, ignore redundant stimuli, and actively resolve conflicts with existing beliefs before updating their mental models. This cognitive flexibility stems from several key abilities. Humans exhibit (1) selective attention, focusing on novel or relevant information while filtering out irrelevant or familiar stimuli (Posner et al., 1990; Petersen & Posner, 2012; Desimone et al., 1995; Ranganath & Rainer, 2003). They readily (2) detect conflicts (Croyle & Cooper, 1983) between new information and existing knowledge and actively engage in resolving them, a process known in psychology as cognitive-dissonance (Festinger, 1957; Van Veen et al., 2009). Moreover, their brains exhibit a form of (3) adaptive plasticity, allowing for updates to neural networks that can incorporate new information while often preserving existing knowledge. While the exact mechanisms are still being investigated, this process seems to balance the stability of well-established knowledge with flexibility in the face of new or uncertain information (McClelland et al., 1995; Behrens et al., 2007).",
+        "Despite demonstrating remarkable capabilities, Large Language Models (LLMs) are still far from such learning abilities. Current LLMs face significant challenges in real-world deployment and long-term utility due to their static nature and training paradigms. They suffer from catastrophic forgetting (Kirkpatrick et al., 2017a; Kemker et al., 2018; Li et al., 2022; Luo et al., 2024; Kotha et al., 2024), where incorporating new information often leads to the erasure of previously learned knowledge. Furthermore, LLMs engage during training in indiscriminate learning, passively accepting all training data, even when it contradicts what they already learned. Despite emergent sparsity (Jaiswal et al., 2023; Mirzadeh et al., 2024), knowledge in LLMs follows backpropagation and the objective function, with no explicit mechanism for targeted knowledge storage or retrieval. This results in a situation where all weights are potential candidates for storing knowledge, necessitating comprehensive retraining to properly incorporate new information.",
+        "In this work, we embark on a systematic empirical investigation of how LLMs handle knowledge updates, drawing inspiration from human cognitive traits. Through carefully controlled experiments, we examine (1) the feasibility of Dissonance Awareness, i.e. whether it is possible to correctly classify facts into novel, familiar, and dissonant using features extracted from the LLM. We also investigate the benefits of (2) Adaptive Plasticity by studying how different neuron targeting strategies affect knowledge retention and update. For this, we develop a simple method for tracking historical neuron usage to identify ”plastic” (rarely used) and ”stubborn” (previously used) neurons, allowing us to study how knowledge updates affect different regions of the model’s parameter space. This experimental framework lets us systematically investigate fundamental properties of knowledge integration in LLMs.",
+        "Our investigation reveals a fundamental distinction in how LLMs handle knowledge updates: the case of non-dissonant updates (adding entirely new knowledge) versus dissonant updates (modifying existing associations). While prior work has focused mostly on editing individual factual associations (Meng et al., 2022a; Mitchell et al., 2022; Meng et al., 2022c) or preserving knowledge across distinct tasks as in continual learning (Rebuffi et al., 2017; Kirkpatrick et al., 2017b; Mallya & Lazebnik, 2018), our controlled experiments take a different approach. We systematically study how the placement of new knowledge in the network’s parameter space affects both the integration of that knowledge and its impact on existing, unrelated knowledge. As shown in Tab. 1, this positions our work uniquely: rather than proposing new editing or continual learning methods, we reveal fundamental properties about how LLMs handle knowledge integration in both dissonant and non-dissonant scenarios. Critically, our experimental design allows us to precisely track the impact of updates on a controlled set of initial knowledge, providing clear visibility into how different update strategies affect unrelated information.",
+        "Key takeaways. This leads us to uncover several fundamental properties of LLM knowledge updating: (i) dissonance awareness is feasible using simple model features, suggesting potential for cognitive-inspired training; (ii) LLMs show inherent robustness when incorporating non-dissonant information, largely preserving prior knowledge regardless of targeting strategy; (iii) avoiding heavily-used (stubborn) neurons during updates further improves this robustness, motivating adaptive plasticity in this scenario; (iv) regions of the network heavily used during pre-training are particularly effective at incorporating new knowledge, extending lottery ticket hypothesis findings (Frankle & Carbin, 2019) to language models; and most critically, (v) dissonant updates prove catastrophically destructive to unrelated knowledge, suggesting fundamental limitations in how neural networks handle contradictions: while some of our targeted update strategies show comparable performance to existing editing methods like ROME and MEMIT, all approaches fundamentally struggle with dissonant updates, suggesting the need for fundamentally different mechanisms.",
+        "Implications. These findings point to concrete opportunities such as the feasibility of dissonance awareness, and the benefits of adaptive plasticity in case of non-dissonant updates. But they also reveal fundamental challenges when handling contradictory information. Current approaches essentially attempt to erase and replace old knowledge - a process we show leads to catastrophic forgetting of even unrelated information. But this contrasts sharply with human cognition, where we maintain both old and new knowledge with appropriate temporal context. Consider how humans handled learning that Pluto was no longer classified as a planet: rather than erasing our previous understanding, we maintained both pieces of knowledge, understanding their historical context and why the classification changed. Our experiments motivate the exploration of future fundamentally different mechanisms for handling contradictions - ones that can maintain and contextualize conflicting information rather than attempting to overwrite it.111Code available at https://github.com/bendiogene/ConflictAwareLLM/"
+      ],
+      "subsections": []
+    },
+    "2 Dissonance-aware Targeted Updates": {
+      "paragraphs": [
+        "Our cognitively-inspired investigation begins with a striking empirical discovery. Fig. 3 reveals a fundamental distinction in how language models handle different types of updates: while non-dissonant information (green) can often be incorporated while preserving existing knowledge, dissonant updates (red) prove catastrophically destructive across all model scales and training approaches. This pattern emerged from our controlled experimental pipeline (Fig. 1): when training models on 2,000 initial facts followed by 1,000 new facts, we observe dramatic differences between non-dissonant and dissonant updates in both their ability to learn new information (y-axis) and preserve original knowledge (x-axis). The stark contrast between these two types of updates motivates our systematic methodology: if dissonant updates are inherently destructive, can we develop mechanisms to identify them before they occur? And can targeted plasticity strategies help protect existing knowledge? To answer these questions, we first develop methods to extract and track neural activity patterns (Sec. 2.1), which serve two purposes: enabling classification of incoming information as novel, familiar, or dissonant (Sec. 3.2), and informing targeted update strategies that carefully control where new knowledge is stored in the network (Sec. 2.3)."
+      ],
+      "subsections": [
+        {
+          "title": "2.1 Extraction of historical activations and gradients",
+          "paragraphs": [
+            "We maintain an aggregate profile of neuronal activity by accumulating activations and gradients for each neuron at every training step. Specifically, for each neuron nn in the Transformer blocks—including feed-forward (MLP) layers and attention projections (Key, Query, Value matrices)—we compute H​G^nH\\hat{G}_{n} , the cumulative historical gradient magnitude over time, and H​A^nH\\hat{A}_{n} , the cumulative historical activation magnitude over time. To mitigate scale differences across layers, we also experiment with layer-wise normalization of activations and gradients before accumulation. Precise notation and more details are in Appendix B.",
+            "This historical activity data enables us to classify neurons as “plastic” or “stubborn” based on their past usage (see Fig.3 for a visual illustration), which is useful for our targeted network updates. We use the historical data also to normalize the input features when classifying facts as we see next."
+          ]
+        },
+        {
+          "title": "2.2 Dissonance and Novelty Awareness",
+          "paragraphs": [
+            "We cast our classification problem on three classes: for a given input sequence XX, decide if it is Novel (e.g. could be integrated), Familiar (e.g. can be ignored), or Dissonant (likely requiring proper resolution).",
+            "We design a simple classifier that leverages activation and gradient information to assess the nature of new information. For any input sequence XX, we first perform a forward pass to obtain its current activations and a backward pass to obtain its current gradients (without updating the model weights). Since the goal is to assess feasibility using easy-to-compute features and lightweight methods that could be integrated into large-scale models, we extract for each layer the mean, standard deviation, minimum, maximum, and quartiles (Q1, Q2, Q3) of the activations and gradients, eventually first normalized by historical activations and gradients. We perform ablation studies to assess the importance of different features and employ feature importance analyses to understand which aspects contribute most to the classifier’s performance. We evaluate our ability to classify facts in Sec. 3.2. Despite using simple classifiers like Random Forests and SVMs, we achieve high accuracy, opening the way for future integration of dissonance awareness into LLM training pipelines."
+          ]
+        },
+        {
+          "title": "2.3 Targeted Neuron Updates",
+          "paragraphs": [
+            "Building upon the historical tracking of neural activity, we implement targeted network updates to study the impact of knowledge placement location on new knowledge ingestion and past knowledge retention. We design four main types of targeted updates, which we experimentally evaluate. During training on new information, we perform standard forward and backward passes to compute the loss and gradients. Before the optimizer step, we modify the gradients to freeze certain neurons. Specifically, given the gradients for all parameters of a given layer, we zero-out those that do not belong to the selected set of neuron and corresponding weights, defined as plastic, stubborn, candidate and specific, as described below. This process effectively freezes the weights of non-selected neurons, allowing for targeted updates to specific parts of the model. By varying the choice of selected neurons, we control how new information is integrated into the model while managing its impact on existing knowledge. Next, we introduce strategies to select which neurons and weights to update: Figure 3 illustrates the conceptual relationship between the various neuron updates strategies within the model’s parameter space.",
+            "Plastic Neurons. Neurons underutilized during past model updates. To identify them, we rank neurons by increasing historical gradient values and select the top NN neurons with the lowest cumulative gradients:",
+            "where H​G^nH\\hat{G}_{n} is the historical gradient for neuron nn, accumulated over all prior training. This allows to assess whether targeting underutilized neurons can integrate new knowledge without interfereing with existing one.",
+            "Stubborn Neurons. Neurons that accumulated high historical gradients, indicating significant involvement in previous learning. We rank neurons by decreasing historical gradient values and select the top NN neurons:",
+            "where |𝒩||\\mathcal{N}| is the total number of neurons, and H​G^nH\\hat{G}_{n} is the historical gradient for neuron nn. Updating stubborn neurons allows us to test the model’s capacity for knowledge integration and assess the potential risks of overwriting existing information.",
+            "Candidate Neurons. These neurons are relevant for encoding new information: to identify them, we perform a single back-propagation pass on the new input data, without updating the model weights. We then rank neurons based on the magnitude of these gradients and select the top NN:",
+            "where GnnewG_{n}^{\\text{new}} is the gradient for neuron nn obtained from the back-propagation pass on the new input data. Targeting candidate neurons focuses updates on areas of the network that are most relevant to the new information, as suggested by the back-propagation process.",
+            "Specific Neurons. In another strategy, we identify neurons from the candidate set that do not intersect with the stubborn, in an attempt to store new information efficiently while avoiding interference with existing knowledge. For this, we first: (1) identify stubborn neurons 𝒩stubborn\\mathcal{N}_{\\text{stubborn}}, using NN as defined earlier; we next (2) rank all neurons based on the magnitude of their gradients GnnewG_{n}^{\\text{new}} obtained from a single back-propagation pass on the new data, without updating model weights; finally, (3) we select few specific neurons, by choosing the top NN neurons that are not in 𝒩stubborn\\mathcal{N}_{\\text{stubborn}}:",
+            "where 𝒩all\\mathcal{N}_{\\text{all}} is the set of all neurons ranked by their gradient magnitudes. This last approach ensures that we select neurons that are most relevant to the new information (high gradient) while explicitly avoiding those that are crucial for existing knowledge (stubborn neurons)."
+          ]
+        }
+      ]
+    },
+    "3 Experimental evaluation": {
+      "paragraphs": [
+        "We discuss our experimental setup, to evaluate dissonance-awareness, as well as continual knowledge update."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Experimental setup",
+          "paragraphs": [
+            "Dataset. We use the COUNTERFACT dataset (Meng et al., 2022b) as our primary data source as it contains both facts and counterfacts.444While this dataset allows us to test models’ handling of conflicting knowledge, we acknowledge its limitations in representing more complex real-world knowledge, a limitation which we plan to address in the future. This dataset, with approximately 17,000 facts, allows us to test models’ handling of conflicting knowledge and addition of potentially known information,555For instance, general facts that pre-trained models likely were exposed to during training. two key aspects of our dissonance-aware approach. To address the lack of truly novel facts in COUNTERFACT, we generate additional data using GPT-3.5. We transform existing statements into plausible yet fictitious information, maintaining structural similarity while introducing novel content. For example, “Danielle Darrieux’s mother tongue is French” becomes “Sylvan Myrthil’s mother tongue is Sylvan” (see Appendix C.1 for details).",
+            "For our dissonance awareness experiments, we construct a balanced dataset comprising 1,000 samples each of familiar, conflicting, and novel facts. When using the pre-trained GPT-2-small model, we adjust the familiar class to 600 samples due to the limited number of known facts extracted from the model’s pre-training. For our targeted update experiments, we use 5-fold cross-validation varying each time the sets of old and new facts but keeping the following proportions: 2000 old facts vs. 1000 new facts. For conflicting updates, we also test with 10 and 100 new facts.",
+            "Models. We employ models from the GPT family to ease comparison, focusing mostly on GPT-2-small and GPT-2-xl (and to lesser extent GPT-J 6B). The dataset size (≃\\simeq17,000 facts) limits full stress-testing of larger models like GPT-2-xl (less visible catastrophic forgetting in case of non-dissonant updates compared to compressed models). As a result, some of the effects of our experiments are most clearly observed with GPT-2-small, on which we focus most in the main body of this paper, deferring GPT-2-xl results (which are aligned to GPT-2-small) to the Appendix.",
+            "We implement experiments using Hugging Face Transformers on NVIDIA GPUs. Before setting learning rates and epochs, we conduct a search for optimal hyperparameters that allow effective learning of facts (see App. D.2 for an example for GPT-2-xl). We perform the search based on the ability to correctly learn 10,000 facts from the dataset. More details including results can be found in the code repository."
+          ]
+        },
+        {
+          "title": "3.2 Dissonance awareness",
+          "paragraphs": [
+            "Settings. Our first goal is to evaluate the ability to discriminate familiar, novel, and conflicting information using the readily-available666We explore the use of model output-only features in Appendix. C.5 showing that using output probabilities as feature is also successful. simple features we extract from the models during the forward and backward passes. As schematized in Fig. 1 (left), we do so by relying on simple classifiers (random forests and SVMs), contrasting two scenarios for the input features: (1) a GPT-2 model fine-tuned on 1000 facts (the knowns), and (2) a GPT-2 pre-trained model (using its 600 extracted known facts as known class samples).",
+            "For each scenario, we compile a balanced dataset with equal examples per class (familiar, novel, conflicting). To create novel facts, we employ GPT-4 with carefully designed prompts, using the structure of known facts (subject, relation, object) as templates, replacing key elements with fictitious (but plausible) information. This method ensured structural similarity to known facts while maintaining novelty. Appendix C.1 provides detailed prompts and examples (full datasets will be made available upon acceptance).",
+            "Classification performance We extracted activations (A) and gradients (G) as described in Appendix B, and experimenting with A, G and A+G as input feature sets, using raw (R), per-layer (L) and historical (H) normalization strategies. As classifiers, we employ Random Forest (RF) and Support Vector Machines (SVM), optimizing hyperparameters using Bayesian search with 5-fold cross-validation. For clarity, we report the best results for each combination in Table 2 (average and standard deviation accuracy over the 5-folds) and defer the full results and ablation study to Table 4 in the appendix for the interested reader.",
+            "Models consistently achieve high performance. Using features from the finetuned model reaches as high as (99.5%), but also using features from a pre-trained model still achieves decent performance (94.7%). Interestingly, combining activations and gradients consistently outperformed using either feature set alone, with a slight advantage of SVM over RF. Also, historical normalization helps SVM, but does not provide benefits for RF.",
+            "Feature importance While a full analysis of feature explainability is outside the scope of this paper, we further seek to observe structural differences in the learning process by comparing feature importance, using the feature importance scores derived from the random forest algorithm.",
+            "To further shed light on such difference, Fig. 4 opposes feature importance in both cases, focusing on Activation versus Gradient-related features. It turns out that in the finetuned scenario, gradient-based features are substantially more important. This is likely due to the fact that finetuning the models on these facts has somewhat overfit them leading to gradients that are more discriminative: e.g. a clearly null gradient for known facts and a clearly high one for unknown ones. For the pretrained scenario, however, which is the most likely case in a real case scenario, both activation and gradient features contribute significantly, suggesting that for long-term knowledge, both internal representations and learning dynamics should be mixed in order to achieve good classification. Appendix.C.3 expands this analysis by focusing on transformer block importance instead.",
+            "Finally, deferred to the appendix, comparing the performance of different normalization strategies for the pretrained model using both activations and gradients (Table 4), we found that although normalization slightly helps, historical normalization does not seem to be crucial, since it was only slightly helpful for Random Forest classifiers.",
+            "Key findings Overall, despite the simplicity of our features, the results demonstrate the feasibility of distinguishing between familiar, novel, and conflicting information, even in the challenging case of using pre-trained models, providing the needed foundation for dissonance-aware updates, which we explore in the next experiments."
+          ]
+        },
+        {
+          "title": "3.3 Non-dissonant updates",
+          "paragraphs": [
+            "Settings. We now investigate how LLMs handle non-dissonant updates using our different strategies as experimental tools. In our experiments, schematized in Fig. 1 (middle), we evaluate the incorporation of non-conflicting facts into our models. The pipeline consists of (i) training on 2,000 initial facts (old) while collecting historical gradients to identify stubborn neurons, (ii) simulating updates with 1,000 new facts (new) to collect current gradients for candidate identification and (iii) applying different neuron selection strategies to update the model with these 1,000 facts. Note that while we track 2,000 facts as proxy for old knowledge, this represents a smaller fraction of GPT-2-xl’s total knowledge compared to GPT-2-small, limiting our visibility into effects on other untracked pre-trained knowledge.",
+            "For our experiment below inspired by the lottery ticket hypothesis (Frankle & Carbin, 2018), we used 10,000 separate facts for gradient extraction before training a fresh model on the 2,000+1,000 facts described above.",
+            "Results. Fig. 5 presents the accuracy of various neuron update strategies on old and new knowledge for GPT-2-small, including error bars representing standard deviations over five runs. We observe that simple fine-tuning leads to a slight degradation in performance on old knowledge, dropping to approximately 93% accuracy. In contrast, updating plastic neurons helps preserving old knowledge, with accuracy remaining above 98% even when using up to 20,000 neurons. Random neuron selection exhibits a similar behavior. However, using candidate or stubborn neurons results in slightly more degradation to old knowledge.",
+            "Interestingly, the strategies differ also in their ability to ingest new knowledge. Plastic neurons preserve old knowledge but struggle to ingest new knowledge requiring comparatively more neurons. This contrasts with specific neurons which strike the best balance, learning new knowledge with fewer neurons while maintaining acceptable levels of old knowledge retention.",
+            "An intriguing pattern is that targeting stubborn, candidate, or specific neurons allows the model to learn new knowledge using fewer parameters compared to targeting plastic neurons. This finding resonates with the existence of winning subnetworks, as suggested by the lottery ticket hypothesis (Frankle & Carbin, 2018). It implies that certain subnetworks within the model are more conducive to integrating new information, compared to others. We conduct further experiments that confirm this hypothesis in App D.1.",
+            "Finally, we conducted the same experiments on GPT-2-xl, where our 2,000 tracked facts represent a much smaller portion of the model’s knowledge. With this larger capacity, interference with tracked facts becomes naturally less likely, leading to all strategies showing even better preservation of our monitored knowledge, compared to GPT-2-small. As shown in Fig. 11 and Fig. 10 in the appendix, all strategies tend to preserve old unrelated knowledge; and differ, as in the case of GPT-2-small, in their ability to integrate new knowledge efficiently. Detailed analyses, including the effects of varying learning rates and neuron counts, are provided in Appendix D.3.",
+            "Key Findings. LLMs show remarkable robustness when incorporating non-dissonant information, as long as heavily-used (stubborn) neurons are avoided. Updating plastic neurons helps preserving old knowledge but requires more parameters (or time) to achieve high accuracy on new knowledge. Targeting specific neurons offers a balanced approach, enabling efficient knowledge integration with minimal impact on existing information."
+          ]
+        },
+        {
+          "title": "3.4 Dissonant Updates",
+          "paragraphs": [
+            "Settings. We examine how LLMs handle conflicting information as shown in Fig. 1 (right): after training on 2,000 old facts and 1,000 new facts, we introduce 1,000 conflicting updates contradicting previously learned new facts, applying our various strategies to study their impact on learning conflicting facts and preserving unrelated old knowledge.",
+            "Results. We illustrate the performance of various strategies on GPT-2-small in Fig. 6. Again, old knowledge refers to the 2000 initial completely unrelated facts and new knowledge corresponds to the 1000 conflicting ones. Surprisingly, we find that dissonant updates are highly destructive to the retention of such unrelated knowledge, regardless of the neuron update strategy employed. Even when updating plastic neurons, which are presumed to be underutilized and thus less likely to interfere with existing knowledge, we observe significant degradation in the model’s ability to recall old facts.",
+            "Given the destructive nature of simultaneously adding 1,000 conflicting facts, we conducted additional experiments where we added only 100 and 10 facts. The results, detailed in Appendix E.1, indicate that while the impact on old knowledge retention is less severe when editing fewer facts, the destructive effect remains prominent. This reminds us the performance of state-of-the-art model editing methods such as ROME (Meng et al., 2022a) and MEMIT (Meng et al., 2022c) which also deteriorates when applied to multiple sequential edits, as opposed to single-edit evaluations typically reported in the literature. While our primary focus is not on developing new model editing techniques, we leverage EasyEdit (Wang et al., 2023) to benchmark the above existing methods under our same multi-fact experimental conditions (See App. E.2).",
+            "Finally, we also performed experiments with GPT-2-xl under various conditions, deferred to Appendix E.4 for space constraints. Overall, similarly to the non-dissonant case, GPT-2-xl exhibits different scaling behaviors. Surprisingly though, even when not learning conflicting knowledge, and despite having much more parameters, GPT-2-xl also experiences significant degradation in old knowledge retention– further confirming the catastrophic nature of dissonant updates (See Fig. 13). As shown in Fig. 3, GPT-J6B also confirms the same tendency.",
+            "Key Findings. Dissonant updates pose a significant challenge, as they are destructive to prior unrelated knowledge, regardless of model size and even when targeting unused neurons. This underscores the importance of dissonance awareness to detect and appropriately handle conflicting information during continual learning. Our results motivate the integration of dissonance classifiers directly into the update or training of large language models. Thus, developing dedicated conflict resolution methods remains an essential direction for future work."
+          ]
+        }
+      ]
+    },
+    "4 Discussion and conclusions": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "4.1 Lessons learned",
+          "paragraphs": [
+            "Fundamental Properties of Knowledge Updates: Our results reveal a striking pattern: while non-dissonant updates show remarkable robustness, dissonant updates trigger severe corruption of unrelated knowledge - dropping accuracy below 60% even when modifying just 10-100 facts. This effect persists across our tested model scales and update strategies, suggesting a deeper challenge in how current neural architectures handle contradictory information.",
+            "Feasibility of Dissonance Detection: LLMs encode clear signatures distinguishing between novel, familiar, and dissonant information. In our controlled experiments, simple classifiers achieve 95% accuracy with pre-trained models and 99% with finetuned models using either activation/gradient features or output probabilities. This suggests the potential for developing mechanisms to identify potentially problematic updates before they occur.",
+            "Promise of differentiated plasticity: Avoiding heavily-used neurons during non-dissonant updates improves robustness, maintaining 98% accuracy on old knowledge (versus 93% with finetuning). Interestingly, neurons used during pre-training are particularly effective at integrating new knowledge, extending lottery ticket hypothesis findings (Frankle & Carbin, 2018) to language models."
+          ]
+        },
+        {
+          "title": "4.2 Limitations and Future Directions",
+          "paragraphs": [
+            "Experimental Control vs. Scale: While our controlled experiments reveal fundamental properties of knowledge updating, investigating these phenomena in much larger models presents challenges as it is not straightforward to track the impact on their broader knowledge.",
+            "Dataset Limitations: Our current findings rely on CounterFact-derived data with simple factual statements. Developing larger, more diverse datasets is essential for understanding how these properties generalize to more complex forms of knowledge and conflicts.",
+            "Neuron Classification Metrics: While our analysis of neural plasticity uses gradient magnitudes effectively, future work could explore richer metrics incorporating activation patterns and network connectivity to better understand knowledge distribution and update mechanisms.",
+            "Beyond Binary Dissonance: Our current investigation treats dissonance as binary, while real-world knowledge updates often involve varying degrees of conflict and different types of knowledge. Understanding how these nuances affect knowledge integration remains a challenge.",
+            "Towards Human-Inspired Updates: The catastrophic nature of dissonant updates suggests we may need fundamentally different approaches to LLM training. Rather than attempting to overwrite existing knowledge, future work might explore mechanisms for maintaining and contextualizing potentially conflicting information - similar to how humans maintain both historical and updated knowledge with appropriate contexts."
+          ]
+        }
+      ]
+    },
+    "Impact Statement": {
+      "paragraphs": [
+        "Our work reveals a fundamental and concerning limitation of current AI systems: when LLMs encounter contradictory information, they suffer catastrophic corruption of unrelated knowledge, even in large-scale models. This vulnerability contrasts sharply with human cognition’s remarkable flexibility in handling contradictory information. Interestingly, this distinction might hint at why human cognition seems to favor accumulation and contextualization of conflicting knowledge (e.g., “before” vs “after”), despite the tension it creates, rather than direct overwriting. This cognitive pattern might suggest that direct knowledge editing poses inherent risks that even evolutionary processes had to work around.",
+        "This finding has critical implications for AI deployment: Any AI system operating in the real world will inevitably encounter contradictory information, whether through natural knowledge evolution (e.g., medical guidelines updates) or potential adversarial attacks (e.g., coordinated misinformation campaigns). Our work demonstrates that such contradictions don’t just affect related knowledge - they can corrupt the system’s broader knowledge base in unpredictable ways. Another question is whether this also applies for value alignment in case of attempts to update an AI system’s learned values or ethical principles.",
+        "These findings motivate our development of dissonance detection capabilities as a crucial safety mechanism for deployed AI systems. More broadly, they suggest we may need to fundamentally rethink AI architectures to develop systems that, like humans, maintain and contextualize potentially conflicting information rather than attempting to overwrite it. This might require moving away from current approaches that try to ”edit” neural networks toward architectures that can accumulate and contextualize knowledge while maintaining multiple, temporally-organized versions of truth."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix": {
+      "paragraphs": [
+        "We now report extended material concerning the extended related work (Appendix A), the extraction of historical activations and gradients (Appendix B), as well as detailed results on dissonance awareness (Appendix C), non-dissonant updates (Appendix D) and dissonant updates (Appendix E)."
+      ],
+      "subsections": []
+    },
+    "Appendix A Extended Related work": {
+      "paragraphs": [
+        "In this section, we provide an extended version of Tab. 1, focusing only on the most recent literature, and showing how our work is uniquely positioned in the landscape of model editing and continual learning, the two key related branches to our work.",
+        "[Table: Table 3: Extended taxonomy of incremental Learning Approaches, showing some seminal work (top) and more recent literature (split into editing and continual learning).]"
+      ],
+      "subsections": [
+        {
+          "title": "A.1 Continual learning",
+          "paragraphs": [
+            "Continual Learning (CL) methods enable models to learn new tasks without catastrophically forgetting previously mastered ones (Kirkpatrick et al., 2017b). These approaches fall into three main families: memory-based methods using exemplar buffers (Rebuffi et al., 2017), knowledge distillation techniques that transfer information across model versions (Lopez-Paz & Ranzato, 2017), and regularization-based methods that constrain weight updates (Kirkpatrick et al., 2017b). To ease the understanding of this landscape, we build a taxonomy that characterizes approaches by their incremental type (task, class, or fact-based), memory requirements, update mechanisms, and architectural constraints (Tab. 1). This taxonomy reveals how our work is different from existing continual learning attempts: while existing methods focus on preserving knowledge across distinct tasks, none explicitly address the detection and handling of conflicting information - a key capability in human cognition that our work empirically investigates.",
+            "One of the closest old approaches is deep mind’s EWC (Kirkpatrick et al., 2017b), a method designed to mitigate catastrophic forgetting in neural networks trained sequentially on distinct tasks. The core idea is to protect the most important weights (or neurons) for previously learned tasks during the training of new tasks. EWC identifies these important weights by calculating the Fisher Information Matrix during or after the training of a task, which estimates how sensitive each weight is to the task’s performance. Weights that significantly impact the output for a given task are marked as important. A quadratic penalty is then applied during future learning, constraining these weights to remain close to their values from the previous task. This ensures that knowledge from earlier tasks is preserved while still allowing the model to adapt to new tasks. However, EWC is less suitable for LLMs, which do not have clearly defined tasks when it comes to knowledge ingestion (probably different for other types of skills). EWC’s effectiveness relies on distinct task boundaries and the ability to compute task-specific importance for weights, which is feasible in scenarios with well-defined tasks, such as classification or reinforcement learning. In LLMs, where learning spans a wide range of topics and linguistic structures without clear task delineation, it’s challenging to apply EWC’s task-based strategy. The model would struggle to assign specific neurons or weights to individual tasks or concepts, making it difficult to protect task-specific knowledge without hindering the model’s overall generalization ability across a diverse dataset.",
+            "We cite in the remainder more recent literature that we project onto our taxonomy.",
+            "Bai et al. (2024) introduce a novel approach to continual learning that leverages global prototypes to mitigate catastrophic forgetting in neural networks. Their key insight is that maintaining stable connections between task-specific representations and pre-learned, general-purpose token embeddings (which serve as global prototypes) can significantly reduce forgetting without requiring explicit replay mechanisms. Through empirical validation on both task-incremental and class-incremental NLP scenarios, they demonstrate that models preserving strong connections to these global prototypes exhibit enhanced stability. While their work shares our goal of preserving knowledge during updates, it differs fundamentally in its approach and granularity: where they focus on task-level knowledge preservation through architectural mechanisms, our work addresses the more specific challenge of managing contradictory factual updates through cognitive-inspired conflict detection. Their finding that stable reference points aid knowledge retention is conceptually relevant to our work, though our results suggest that such architectural approaches alone may be insufficient when handling explicitly contradictory information, where more sophisticated cognitive mechanisms become necessary.",
+            "Benjamin et al. (2024) proposed an elegant theoretical framework that interprets neural networks as Bayesian ensembles of classifiers. Their key insight is that a neural network with N parameters can be viewed as a weighted ensemble of N classifiers in the lazy regime, where the classifiers remain fixed throughout learning. This interpretation reveals that a properly designed posterior update rule, resembling SGD without momentum, can enable continual learning without forgetting - notably, they prove that momentum actually exacerbates forgetting. While their work focuses on preserving all knowledge in task-incremental learning, our paper specifically examines cases where knowledge needs to be deliberately updated or overridden. Their key contribution is showing that catastrophic forgetting is linked to the transition from lazy to rich regimes in neural networks, providing both a theoretical explanation for why larger models are more robust to forgetting and a biologically-inspired mechanism for knowledge preservation that perhaps complements our cognitive-based approach.",
+            "Elsayed & Mahmood (2024) propose UPGD (Utility-based Perturbed Gradient Descent), a novel approach targeting both catastrophic forgetting and loss of plasticity in streaming learning scenarios. Their method protects useful network units while maintaining plasticity in less-used ones through utility-gated gradient updates and perturbations. Unlike previous approaches requiring task boundaries or memory buffers, UPGD operates in a challenging streaming setting with continuous non-stationarity. Using their newly introduced direct plasticity metric, they demonstrate UPGD’s ability to maintain performance levels that surpass or match existing methods. This work complements our investigation by providing evidence that selective neuronal updates based on utility metrics can effectively balance stability and plasticity, though in a task-learning rather than knowledge-updating context.",
+            "Hiratani (2024) analyze how task similarity affects continual learning through a novel theoretical framework combining teacher-student models with latent structure. Their key insight is that high input feature similarity coupled with low readout similarity leads to catastrophic outcomes in both knowledge transfer and retention, even when tasks are positively correlated. They demonstrate that weight regularization in the Fisher information metric robustly helps retention regardless of task similarity, while common approaches like activity gating improve retention at the cost of transfer performance. Their theoretical predictions are validated on permuted MNIST tasks with latent variables.",
+            "Jha et al. (2024) propose a probabilistic approach to continual learning for vision-language models, specifically focusing on CLIP adaptation. Their method, CLAP, introduces visual-guided attention and task-specific probabilistic adapters to model the distribution of text features, while leveraging CLIP’s pre-trained knowledge for initialization and regularization. This work demonstrates that probabilistic modeling can significantly reduce catastrophic forgetting in class-incremental learning scenarios, achieving state-of-the-art performance across multiple benchmarks.",
+            "Jiao et al. (2024) propose VQ-Prompt, a novel prompt-based continual learning framework that addresses class-incremental learning with pretrained vision transformers. Their key innovation is incorporating vector quantization into prompt selection, enabling end-to-end optimization of discrete prompts with task loss while maintaining effective knowledge abstraction. This contrasts with our cognitive-dissonance aware approach, as they focus on task adaptation through prompt engineering rather than explicit conflict detection. Their empirical results on ImageNet-R and CIFAR-100 demonstrate superior performance compared to existing prompt-based methods, suggesting the effectiveness of discrete knowledge representation in continual learning.",
+            "(Lee et al., 2024) propose IsCiL, a framework for continual imitation learning that uses retrievable skills and adapter-based architecture to enable efficient knowledge sharing across tasks. Unlike traditional approaches that isolate task-specific parameters, IsCiL introduces a prototype-based skill retrieval mechanism that allows selective reuse of previously learned skills for new tasks. While focused primarily on motor skills rather than resolving knowledge contradictions, their empirical results show that this selective adaptation approach significantly improves sample efficiency and reduces catastrophic forgetting compared to other adapter-based methods, particularly in scenarios with incomplete demonstrations.",
+            "Lee et al. present a systematic empirical investigation of how dataset bias affects continual learning. Through carefully designed experiments across task-incremental, domain-incremental, and class-incremental scenarios, they reveal that bias transfers both forward and backward between tasks. Their analysis shows that CL methods focusing on stability tend to preserve and propagate biases from previous tasks, while emphasis on plasticity allows new biases to contaminate previous knowledge. Based on these insights, they propose BGS (Balanced Greedy Sampling), a method that mitigates bias transfer by maintaining a balanced exemplar memory and retraining the classification head. Note that here, we used “Replay” for Memory Usage in the table since their best performing method (BGS) uses an exemplar memory, but they also evaluate methods without memory.",
+            "Peng et al. (2024) proposed a continual learning approach that automates task selection through vector space retrieval, eliminating the need for explicit task IDs, experience replay, or optimization constraints. Their method, Scalable Language Model (SLM), combines Joint Adaptive Re-parameterization with dynamic knowledge retrieval to automatically identify relevant parameters for each input, enabling task-agnostic updates. While achieving state-of-the-art results across diverse tasks and model scales (BERT, T5, LLaMA-2), their key contribution is demonstrating that automatic task identification and parameter selection can enable continual learning without requiring explicit task boundaries or memory buffers.",
+            "Seo et al. (2024) presented Train-Attention, an interesting meta-learning approach for continual knowledge learning (CKL) in LLMs that predicts and applies weights to tokens based on their usefulness for future tasks. Unlike previous approaches that uniformly update all parameters, their method enables targeted knowledge updates by learning which tokens are most important to focus on. Through experiments on LAMA-CKL and TemporalWiki benchmarks, they show that selective token-weighted learning significantly reduces catastrophic forgetting while improving learning speed. The work somewhat complements our cognitive-inspired approach, and demonstrates the benefits of selective attention, but it does not explicitly address the handling of contradictory information.",
+            "Wang et al. (2024) proposed a unified framework for continual learning that reveals common mathematical structures across seemingly distinct approaches (regularization-based, Bayesian-based, and memory-replay). Building on this unification, they introduce “refresh learning” - a plug-in mechanism that first unlearns current data before relearning it, inspired by the beneficial role of forgetting in human cognition. Their work primarily focuses on task-incremental and class-incremental scenarios, demonstrating improved accuracy across CIFAR and Tiny-ImageNet benchmarks. While their approach differs from our fact-level knowledge updates in LLMs, their findings about selective forgetting complement our observations about cognitive-inspired update mechanisms. Their theoretical analysis showing that refresh learning improves the flatness of the loss landscape offers an interesting perspective on how controlled forgetting might benefit knowledge retention in neural networks.",
+            "Xu et al. (2024) propose a cross-domain task-agnostic incremental learning framework (X-TAIL) for vision-language models, focusing on the challenge of preserving both incrementally learned knowledge and zero-shot abilities. Their approach, RAIL, uses recursive ridge regression with non-linear projections to adapt to new domains without catastrophic forgetting. Unlike previous work requiring domain identity hints or reference datasets, RAIL can classify images across both seen and unseen domains without domain hints, demonstrating superior performance in both discriminative ability and knowledge preservation. While their work advances the technical aspects of continual learning, it differs from our cognitive-inspired investigation as it doesn’t address the fundamental challenge of detecting and resolving conflicting knowledge, instead focusing on domain adaptation without explicit conflict awareness.",
+            "Zhao et al. (2024) propose a class-incremental learning framework for pre-trained vision models that balances stability and plasticity through two complementary parameter-efficient tuning mechanisms. Their SAFE approach first inherits generalizability from pre-trained models via a “slow learner” that captures transferable knowledge in the first session, then maintains plasticity through a “fast learner” that continuously adapts to new classes while resisting catastrophic forgetting. While focused on vision tasks rather than language models, their dual-speed learning strategy presents interesting parallels to our cognitive-inspired approach – particularly in how both works identify the importance of selective plasticity and the distinction between stable (“stubborn”) and adaptable (“plastic”) parameters. However, SAFE doesn’t address the fundamental challenge of detecting and handling contradictory information that we identify as crucial for true cognitive-inspired learning.",
+            "Unlike the above work, our goal is to understand the fundamental cognitive mechanisms underlying the continuous knowledge updates in LLMs, particularly focusing on how models can detect and react to contradictory information. Rather than proposing a new continual learning method, we provide crucial insights into how different types of knowledge updates affect model behavior and stability."
+          ]
+        },
+        {
+          "title": "A.2 Knowledge editing",
+          "paragraphs": [
+            "Next, a big portion of recent literature has focused on understanding and modifying the internal knowledge of Large Language Models (LLMs), post-training. Such knowledge editing aims to alter specific facts or associations within the model without the need for full retraining.",
+            "Geva et al. (2020) were among the first to show that transformer Feed-Forward Network (FFN) layers act as unnormalized key-value stores encoding relational knowledge inside LLMs. This observation was later confirmed and complemented by others (Meng et al., 2022a; Dai et al., 2021) before being leveraged by subsequent work to master the editing of internal memories. Meng et al. (2022a) introduced ROME (Rank-One Model Editing), a method that uses causal tracing to empirically locate the layers essential to encoding a given association. They then modify these modules by applying small rank-one changes. To identify the relevant modules, they run the network multiple times, introducing corruptions to the input sequence to disturb the inference, and then restore individual states from the original non-corrupted pass. But this work an others worked only on single edits, and were often evaluated one edit at a time, starting each time from a fresh pre-trained model. The same authors later developed MEMIT, which follows the same causal tracing principle but with the goal of scaling up to 10,000 edits in bulk(Meng et al., 2022c). Similarly, Dai et al. (2021) leveraged the identification of knowledge neurons to perform “knowledge surgery” – editing factual knowledge within Transformers without the need for additional fine-tuning. Zhu et al. (2020) approached the knowledge modification task as a constrained optimization problem. Their work found that constrained layer-wise fine-tuning emerges as an effective method for modifying the knowledge that Transformers learn, suggesting a different pathway for knowledge editing inside LLMs. De Cao et al. (2021) proposed KnowledgeEditor, which achieved knowledge editing by training a hyper-network with constrained optimization to modify specific facts without fine-tuning or changing the overall stored knowledge. The method was demonstrated on smaller models like BERT for fact-checking and BART for question answering, achieving consistent changes in predictions across different formulations of queries.",
+            "Li et al. (2023) empirically investigate the pitfalls of knowledge editing in LLMs, revealing two critical issues: logical inconsistencies between multiple edits (like contradictory relationship updates) and knowledge distortion (where edits irreversibly damage the model’s knowledge structure). Through carefully designed benchmarks ConflictEdit and RoundEdit, they demonstrate that current editing methods struggle with these challenges, particularly when handling reverse relationships or composite logical rules. While their work focuses on identifying limitations in maintaining logical consistency across edits, our paper takes a complementary cognitive-inspired perspective by addressing how models handle contradictions with their existing knowledge base. Their findings about knowledge distortion align with and reinforce our observations about the catastrophic nature of updates that modify existing knowledge.",
+            "Similarly, Huang et al. (2024) empirically investigate causes of performance degradation during knowledge editing in LLMs. They show degradation correlates with editing target complexity and L1-norm growth in edited layers. Their proposed Dump for Sequence (D4S) method regulates layer norm growth using O(1) space complexity, enabling multiple effective updates while minimizing model degradation. Their work provides valuable insights into the mechanisms of model degradation during knowledge editing, but it does not specifically address the distinction between contradictory and non-contradictory updates, as we do in this paper.",
+            "Tan et al. (2023) propose MALMEN, a scalable hypernetwork approach for editing Large Language Models by aggregating parameter shifts using a least-squares formulation. While previous editing methods like MEND (Mitchell et al., 2022) could handle only a few facts simultaneously, MALMEN can efficiently edit thousands of facts while maintaining comparable performance. Their key innovation lies in separating the computation between the hypernetwork and LM, enabling arbitrary batch sizes and reducing memory requirements. Their empirical results show that MALMEN can edit hundreds of times more facts than MEND while maintaining similar performance levels, though they note that the method still struggles with generalizing to rephrasing not seen during training. Like other editing approaches, MALMEN focuses on the mechanics of (by design conflicting) updates.",
+            "Unlike all the work above, our goal in this work is not to edit knowledge, but to understand the fundamental mechanisms and phenomena that govern how LLMs integrate new information with existing knowledge. By taking a cognitive-inspired approach focused on dissonance awareness and adaptive plasticity, we reveal critical insights about the nature of knowledge representation and updating in these models."
+          ]
+        }
+      ]
+    },
+    "Appendix B Extraction of historical activations and gradients": {
+      "paragraphs": [
+        "We here detail our procedure for the extraction of activations and gradients. Source code is also available at https://github.com/bendiogene/ConflictAwareLLM/ for ultimate level of details and reproducibility purposes."
+      ],
+      "subsections": [
+        {
+          "title": "B.1 Preliminary notation",
+          "paragraphs": [
+            "We focus on the historical tracking of gradients of the outputs (grad_outs) and activations for four key matrices within each block of the transformer model: Attnc_attn\\text{Attn}_{\\text{c\\_attn}}, Attnc_proj\\text{Attn}_{\\text{c\\_proj}}, MLPc_fc\\text{MLP}_{\\text{c\\_fc}}, and MLPc_proj\\text{MLP}_{\\text{c\\_proj}}.",
+            "Given an input sequence X∈ℝB×N×dmodelX\\in\\mathbb{R}^{B\\times N\\times d_{\\text{model}}}, where BB is the batch size, NN is the sequence length, and dmodeld_{\\text{model}} is the model dimension, the transformer block is defined as follows:",
+            "The attention mechanism computes query QQ, key KK, and value VV matrices:",
+            "where WQ∈ℝdmodel×dkeyW_{Q}\\in\\mathbb{R}^{d_{\\text{model}}\\times d_{\\text{key}}}, WK∈ℝdmodel×dkeyW_{K}\\in\\mathbb{R}^{d_{\\text{model}}\\times d_{\\text{key}}}, and WV∈ℝdmodel×dvalueW_{V}\\in\\mathbb{R}^{d_{\\text{model}}\\times d_{\\text{value}}} are trainable projection matrices.",
+            "The concatenated matrix Attnc_attn\\text{Attn}_{\\text{c\\_attn}} is:",
+            "where Wattn=[WQ,WK,WV]∈ℝdmodel×(2​dkey+dvalue)W_{\\text{attn}}=[W_{Q},W_{K},W_{V}]\\in\\mathbb{R}^{d_{\\text{model}}\\times(2d_{\\text{key}}+d_{\\text{value}})}.",
+            "The attention context Attncontext\\text{Attn}_{\\text{context}} is computed as:",
+            "The projected attention output Attnc_proj\\text{Attn}_{\\text{c\\_proj}} is:",
+            "where Wproj∈ℝdvalue×dmodelW_{\\text{proj}}\\in\\mathbb{R}^{d_{\\text{value}}\\times d_{\\text{model}}}.",
+            "The MLP layer consists of two linear transformations with an activation function σ\\sigma:",
+            "where Wfc∈ℝdmodel×dffW_{\\text{fc}}\\in\\mathbb{R}^{d_{\\text{model}}\\times d_{\\text{ff}}} and bfc∈ℝdffb_{\\text{fc}}\\in\\mathbb{R}^{d_{\\text{ff}}}.",
+            "The projected MLP output MLPc_proj\\text{MLP}_{\\text{c\\_proj}} is:",
+            "where Wproj∈ℝdff×dmodelW_{\\text{proj}}\\in\\mathbb{R}^{d_{\\text{ff}}\\times d_{\\text{model}}} and bproj∈ℝdmodelb_{\\text{proj}}\\in\\mathbb{R}^{d_{\\text{model}}}."
+          ]
+        },
+        {
+          "title": "Attention Layer:",
+          "paragraphs": [
+            "The attention mechanism computes query QQ, key KK, and value VV matrices:",
+            "where WQ∈ℝdmodel×dkeyW_{Q}\\in\\mathbb{R}^{d_{\\text{model}}\\times d_{\\text{key}}}, WK∈ℝdmodel×dkeyW_{K}\\in\\mathbb{R}^{d_{\\text{model}}\\times d_{\\text{key}}}, and WV∈ℝdmodel×dvalueW_{V}\\in\\mathbb{R}^{d_{\\text{model}}\\times d_{\\text{value}}} are trainable projection matrices.",
+            "The concatenated matrix Attnc_attn\\text{Attn}_{\\text{c\\_attn}} is:",
+            "where Wattn=[WQ,WK,WV]∈ℝdmodel×(2​dkey+dvalue)W_{\\text{attn}}=[W_{Q},W_{K},W_{V}]\\in\\mathbb{R}^{d_{\\text{model}}\\times(2d_{\\text{key}}+d_{\\text{value}})}.",
+            "The attention context Attncontext\\text{Attn}_{\\text{context}} is computed as:",
+            "The projected attention output Attnc_proj\\text{Attn}_{\\text{c\\_proj}} is:",
+            "where Wproj∈ℝdvalue×dmodelW_{\\text{proj}}\\in\\mathbb{R}^{d_{\\text{value}}\\times d_{\\text{model}}}."
+          ]
+        },
+        {
+          "title": "MLP Layer:",
+          "paragraphs": [
+            "The MLP layer consists of two linear transformations with an activation function σ\\sigma:",
+            "where Wfc∈ℝdmodel×dffW_{\\text{fc}}\\in\\mathbb{R}^{d_{\\text{model}}\\times d_{\\text{ff}}} and bfc∈ℝdffb_{\\text{fc}}\\in\\mathbb{R}^{d_{\\text{ff}}}.",
+            "The projected MLP output MLPc_proj\\text{MLP}_{\\text{c\\_proj}} is:",
+            "where Wproj∈ℝdff×dmodelW_{\\text{proj}}\\in\\mathbb{R}^{d_{\\text{ff}}\\times d_{\\text{model}}} and bproj∈ℝdmodelb_{\\text{proj}}\\in\\mathbb{R}^{d_{\\text{model}}}."
+          ]
+        },
+        {
+          "title": "B.2 Historical gradient and activation collection",
+          "paragraphs": [
+            "Collecting a profile of neuron activity during training or simulation of training is needed as (i) input feature to know if a fact is dissonant, novel or known, and (ii) as means to identify where to locate targeted updates.",
+            "During training, we collect and cumulate the gradients of the outputs (grad_outs) and activations for the matrices Attnc_attn\\text{Attn}_{\\text{c\\_attn}}, Attnc_proj\\text{Attn}_{\\text{c\\_proj}}, MLPc_fc\\text{MLP}_{\\text{c\\_fc}}, and MLPc_proj\\text{MLP}_{\\text{c\\_proj}}. Let tt denote the training step. We collect activations at step tt:",
+            "as well as Gradient of the Outputs (grad_outs) at step tt :",
+            "In the remainder, we denote these, regardless of their provenance matrix, as:",
+            "where ll denotes the layer, BB is the batch size, NN is the sequence length, and doutld^{l}_{\\text{out}} is the output dimension of layer ll.",
+            "When needed, we standardize these metrics for each layer ll as follows:",
+            "where μ\\mu and σ\\sigma are the mean and standard deviation computed over all dimensions of the respective tensor.",
+            "We then sum over the batch dimension:",
+            "Optionally777We consider two approaches. In the first, we extract the activations and gradients corresponding to the last token (i.e., position NN) in the sequence for each sample in the batch. This is reasonable since the last token is representative of the fact or information of interest in our datasets. In the second, we simply aggregate over all tokens, where we aggregate activations and gradients across all tokens in the sequence by computing statistical measures such as the mean or sum over the token dimension., we can sum over the token dimension:",
+            "The standardized and summed metrics are then accumulated across the training steps:",
+            "where TT is the total number of training steps.",
+            "These historical activations H​A^lH\\hat{A}^{l} and gradients H​G^lH\\hat{G}^{l} provide cumulative measures of neuron activity over the training process. They help identify neurons that are heavily utilized (stubborn neurons) and those that are underutilized (plastic neurons), which is crucial for our targeted updates."
+          ]
+        }
+      ]
+    },
+    "Appendix C Dissonance awareness": {
+      "paragraphs": [
+        "[Figure: (a) Finetuned model]",
+        "[Figure: (a) Finetuned model]",
+        "[Figure: (b) Pre-trained model]",
+        "[Figure: (a) Histogram of stubborn neurons (t=8000t=8000 neurons) across transformer blocks]",
+        "[Figure: (a) Histogram of stubborn neurons (t=8000t=8000 neurons) across transformer blocks]",
+        "[Figure: (b) Histogram of stubborn neurons (t=2000t=2000 neurons) across transformer blocks]",
+        "[Table: Table 4: Ablation study of dissonance awareness: Classification Results for Different Scenarios, Feature Sets, Normalization strategies and Classifier. Average (and std) accuracy and F1 scores. ⋆\\star denotes the best combination for each classifier]",
+        "[Table: Table 5: Using output-only features for dissonance-awareness can achieve similar good performance to using our readily available activations and gradients, and even better in the case of the pre-trained model.]"
+      ],
+      "subsections": [
+        {
+          "title": "C.1 Augmenting the COUNTERFACT Dataset with Novel facts",
+          "paragraphs": [
+            "To generate unknown facts to augment the Counterfact dataset, we used GPT-3.5 with a prompt as follows:",
+            "• Original: “Toko Yasuda produces the most amazing music on the guitar.” Transformed: “Zara Zorin produces the most amazing music on the theremin.”",
+            "• Original: “One can get to Autonomous University of Madrid by navigating Spain.” Transformed: “One can reach the Floating Academia of Zephyria by navigating through the Cloud Realms.”",
+            "• Original: “Thomas Joannes Stieltjes was born in Dutch.” Transformed: “Lorien Ilithar was born amidst the Elvish.”",
+            "Original: “Toko Yasuda produces the most amazing music on the guitar.”",
+            "Transformed: “Zara Zorin produces the most amazing music on the theremin.”",
+            "Original: “One can get to Autonomous University of Madrid by navigating Spain.”",
+            "Transformed: “One can reach the Floating Academia of Zephyria by navigating through the Cloud Realms.”",
+            "Original: “Thomas Joannes Stieltjes was born in Dutch.”",
+            "Transformed: “Lorien Ilithar was born amidst the Elvish.”",
+            "These transformations help create novel facts unlikely to be known by the model, enabling us to evaluate its ability to handle unknown information effectively."
+          ]
+        },
+        {
+          "title": "Example Generated Transformations:",
+          "paragraphs": [
+            "• Original: “Toko Yasuda produces the most amazing music on the guitar.” Transformed: “Zara Zorin produces the most amazing music on the theremin.”",
+            "• Original: “One can get to Autonomous University of Madrid by navigating Spain.” Transformed: “One can reach the Floating Academia of Zephyria by navigating through the Cloud Realms.”",
+            "• Original: “Thomas Joannes Stieltjes was born in Dutch.” Transformed: “Lorien Ilithar was born amidst the Elvish.”",
+            "Original: “Toko Yasuda produces the most amazing music on the guitar.”",
+            "Transformed: “Zara Zorin produces the most amazing music on the theremin.”",
+            "Original: “One can get to Autonomous University of Madrid by navigating Spain.”",
+            "Transformed: “One can reach the Floating Academia of Zephyria by navigating through the Cloud Realms.”",
+            "Original: “Thomas Joannes Stieltjes was born in Dutch.”",
+            "Transformed: “Lorien Ilithar was born amidst the Elvish.”",
+            "These transformations help create novel facts unlikely to be known by the model, enabling us to evaluate its ability to handle unknown information effectively."
+          ]
+        },
+        {
+          "title": "C.2 Ablation study of classifier performance",
+          "paragraphs": [
+            "We further report for the interested reader the results of an ablation study of the dissonance awareness classifier, evaluating its performance under different scenarios (fine-tuned vs. pre-trained models), feature sets (A, G, A+G), normalization strategies (None, Layer, Historical), and classifiers (Random Forests (RF) and Support Vector Machines (SVM)).",
+            "Table 4 presents a comprehensive set of classification results, including average accuracy and F1 scores (with standard deviations) across different settings. The best results for each classifier are denoted with a ⋆\\star and reported earlier in Table 2 in the main paper."
+          ]
+        },
+        {
+          "title": "C.3 Explanation of feature importance",
+          "paragraphs": [
+            "To further understand the discriminative power of different features, we analyzed the feature importance scores derived from the RF classifier.",
+            "First, as earlier mentioned in Fig.4 in the main paper, gradient-based features are substantially more important than activation-based features. This suggests that fine-tuning leads to more discriminative gradients, possibly due to the model overfitting on the known facts, resulting in near-zero gradients for known facts and higher gradients for novel or conflicting facts. In contrast, for the pre-trained model, both activation and gradient features contribute significantly, indicating that combining internal representations and learning dynamics is beneficial for classification.",
+            "Complementary to Fig.4, block importance reported in Fig. 7 reveals that, in the pre-trained model all transformer blocks tend to contribute relatively equally to the classification task, with the last layers contributing less. The finetuned model, on the other hand shows a slightly different tendency where the earlier layers contribute less. More work is clearly needed to understand such differences. This paper focuses only on feasibility of the entire cognitive-dissonance approach, leaving more elaborate evaluations for future work.",
+            "[Figure: (a) Finetuned model]",
+            "[Figure: (a) Finetuned model]",
+            "[Figure: (b) Pre-trained model]"
+          ]
+        },
+        {
+          "title": "C.4 Location of stubborn neurons",
+          "paragraphs": [
+            "We also report the distribution of stubborn neurons across the transformer blocks in GPT-2 XL. Figures 8(a) and 8(b) show histograms of the number of stubborn neurons identified in each block for thresholds of 8,000 and 2,000 neurons, respectively.",
+            "Our analysis indicates that stubborn neurons are not uniformly distributed throughout the network. Instead, they curiousy tend to be concentrated in certain blocks, particularly in the first block and in certain middle layers of the transformer. This might suggest that these layers play a more significant role in encoding and retaining knowledge during training. Interestingly, Attnc_attn\\text{Attn}_{\\text{c\\_attn}} concentrates much more of the stubborn neurons overall, with the exception of the first block where Attnc_proj\\text{Attn}_{\\text{c\\_proj}} has a substantially higher share of stubborn neurons. The results are similar for both thresholds.",
+            "Overall, understanding the distribution of stubborn neurons can inform targeted update strategies by identifying which parts of the network are more critical for preserving existing knowledge.",
+            "[Figure: (a) Histogram of stubborn neurons (t=8000t=8000 neurons) across transformer blocks]",
+            "[Figure: (a) Histogram of stubborn neurons (t=8000t=8000 neurons) across transformer blocks]",
+            "[Figure: (b) Histogram of stubborn neurons (t=2000t=2000 neurons) across transformer blocks]"
+          ]
+        },
+        {
+          "title": "C.5 Using model output (instead of internal state) as features for dissonance awareness",
+          "paragraphs": [
+            "In the main paper, we used activations and gradients as they were readily available in our experimental pipeline. We now further test whether using model output only, which is more easily available than internal gradients and activations can achieve similar performance on our scenario.",
+            "Each fact in our dataset is conceptually a statement involving a subject (s), relation (r), and object (o) (e.g., “Danielle Darrieux’s mother tongue is French”). In this section, we extract features that capture increasing levels of detail about the model’s predictions, related to what the actual facts are, leveraging both:",
+            "• Conditional probabilities p​(o|s,r)p(o|s,r) at different truncation points888Since the object oo can span multiple tokens, we extract features from the last NN tokens of each fact (we pick three, since most answers fit within that limit). For each token position, we compute both the truncated prompt probability p​(o|s,r)p(o|s,r) by removing the token and subsequent tokens, and the full sentence probability p​(s,r,o)p(s,r,o). This multi-token analysis ensures we capture the model’s predictions across the entire span of the answer.",
+            "• Joint probability p​(s,r,o)p(s,r,o) of the full statement",
+            "Conditional probabilities p​(o|s,r)p(o|s,r) at different truncation points888Since the object oo can span multiple tokens, we extract features from the last NN tokens of each fact (we pick three, since most answers fit within that limit). For each token position, we compute both the truncated prompt probability p​(o|s,r)p(o|s,r) by removing the token and subsequent tokens, and the full sentence probability p​(s,r,o)p(s,r,o). This multi-token analysis ensures we capture the model’s predictions across the entire span of the answer.",
+            "Joint probability p​(s,r,o)p(s,r,o) of the full statement",
+            "In more details, we extract the following features, with increasing complexity.",
+            "Basic Token Probabilities (F​e​a​t1Feat_{1}): For each of the last NN tokens (representing the answer), we collect the probability of the actual next token given the truncated prompt. These simple scalar features capture the model’s direct confidence in the correct continuation. This has a dimensionality of N+1N+1 (NN truncation points plus full statement, so 4 in our case.)",
+            "Top-kk Predictions Analysis (F​e​a​t2Feat_{2}): Here, for each position in the answer, we collect the values and normalized indices of top-kk most likely next tokens. This captures both confidence distribution and ranking patterns. Similarly to the above, we compute this for both truncated prompts and full statements. Here, the dimensionality is (N+1)×2​k(N+1)\\times 2k (kk values and kk normalized indices for each position). We pick k=100.",
+            "Distribution Features (F​e​a​t3Feat_{3}): Here, we analyze the complete probability distribution over the vocabulary. For each position in the answer sequence, we construct histograms of the probabilities with nb​i​n​sn_{bins} bins (here 100), capturing the full spectrum of the model’s prediction patterns. We augment these distributions with indicator vectors that highlight the positions of ground truth tokens (the true next tokens of the current truncated fact), providing additional context about the model’s accuracy. This results in a feature vector of dimensionality (N+1)×nb​i​n​s(N+1)\\times n_{bins}.",
+            "Combined Features (C​o​n​c​a​tConcat): Here, we simply concatenate F​e​a​t1Feat_{1}, F​e​a​t2Feat_{2}, and F​e​a​t3Feat_{3}.",
+            "Tab. 5 shows the results over our dataset. We observe a similar great performance when using the model outputs, compared to Activations and Gradients. Model output achieves even better performance in case of pre-trained models. This is inline with our earlier observation that activations (what we’re using now) are more important than gradients in the case of pre-trained models. This result is encouraging for future work, where we plan to (i) build more challenging classification datasets (than the simple facts in CounterFact) and (ii) build standalone classifiers to speed up the training of LLMs, by avoiding training on conflicting data."
+          ]
+        }
+      ]
+    },
+    "Appendix D Non-dissonantupdates": {
+      "paragraphs": [
+        "[Figure: Figure 9: Lottery ticket]",
+        "[Figure: (a) Old Knowledge]",
+        "[Figure: (a) Old Knowledge]",
+        "[Figure: (b) New Knowledge]",
+        "[Figure: (c) Old Knowledge]",
+        "[Figure: (d) New Knowledge]",
+        "[Figure: (e) Old Knowledge]",
+        "[Figure: (f) New Knowledge]",
+        "[Figure: (g) Old Knowledge]",
+        "[Figure: (h) New Knowledge]",
+        "[Figure: Figure 11: Non-Dissonant updates with GPT2-XL compared to small, a different visualization. Scatter plot of old (x) vs new (y) knowledge during non-dissonant updates. Same conditions as in Fig. 10. We can see clearly how in all cases, the accuracy on previous knowledge remains high. The lottery-ticket effect is also visible where free neurons struggle to efficient pack novel facts.]",
+        "[Table: Table 6: Accuracy results for different learning rates, batch sizes, and epochs on 10k facts (GPT2-xl). We use the finetuning on 10k facts as a proxy to pick the hyperparameters of our later continual update experiments (learning rate, batch size and epochs). In bold, what we picked for GPT2-xl. Not shown here, for GPT2-small, we picked 5e-4.]"
+      ],
+      "subsections": [
+        {
+          "title": "D.1 Similarities with Lottery ticket",
+          "paragraphs": [
+            "To assess the hypothesis that certain subnetworks within the language model are more conducive to integrating new information—a notion earlier named the lottery ticket hypothesis (Frankle & Carbin, 2018)—we designed an experiment to confirm this effect.",
+            "We first trained a model on 10,000 disjoint facts (referred to as Facts H) and identified the most active candidate neurons during this process, which we term Lottery Ticket Neurons. These neurons should form a preferred subnetwork for representing Facts H. Next, we started from a fresh model and trained on a new set of novel facts (Facts A), which are different from H, restricting updates to three distinct groups of neurons:",
+            "1. Lottery Ticket Neurons: Neurons highly active during the initial training on Facts H.",
+            "2. Non-Lottery Neurons: Neurons underutilized during the initial training on Facts H.",
+            "3. Random Neurons: Neurons selected randomly from the entire network.",
+            "Lottery Ticket Neurons: Neurons highly active during the initial training on Facts H.",
+            "Non-Lottery Neurons: Neurons underutilized during the initial training on Facts H.",
+            "Random Neurons: Neurons selected randomly from the entire network.",
+            "Figure 9 shows the accuracy of acquiring new knowledge when using each of these strategies, with the number of neurons varying from 2,000 to 20,000. Using the Lottery Ticket Neurons led to significantly better performance, reaching nearly 100% accuracy at 8,000 neurons, compared to around 40% for the Non-Lottery Neurons. The Random Neurons strategy also performed relatively well, interestingly suggesting that capturing even a few “anchor” neurons from the preferred subnetwork is sufficient to achieve good performance.",
+            "These results support the existence of preferred subnetworks within the model that are particularly effective for learning new information. Leveraging these subnetworks can enhance the efficiency of knowledge integration while preserving existing knowledge, an aspect that our candidate and specific strategies are already exploiting.",
+            "[Figure: Figure 9: Lottery ticket]"
+          ]
+        },
+        {
+          "title": "D.2 Hyperparameter selection: learning rate and batch size for GPT2-XL",
+          "paragraphs": [
+            "In our experiments, the first step is to conduct a hyperparameter search to determine the optimal learning rates and batch sizes for fine-tuning the model on our facts. Table 6 presents the performance of GPT2-XL on old and new knowledge across various learning rates and batch sizes. Note that this optimal learning rate for full finetuning might turn out not enough for our targeted updates, since they use, by design, a smaller number of neurons. "
+          ]
+        },
+        {
+          "title": "D.3 Comprehensive Analysis of GPT2-XLnon-dissonantUpdates",
+          "paragraphs": [
+            "Figure 10 presents the accuracy of GPT-2 XL on old and new knowledge under various neuron update strategies and experimental conditions. We explored different configurations to understand how the model’s larger capacity affects knowledge integration.",
+            "Our results reveal distinct scaling behaviors compared to GPT-2 small. With the optimal learning rate for GPT-2 XL (Figures 10(a), 10(b)), we observe improved new knowledge acquisition while still preserving old knowledge. This means that although our carefully picked learning rate allows for efficient learning with full finetuning, learning with fewer neurons (as per our targetted strategies) seems harder than it was for GPT-2 small.",
+            "Increasing the learning rate by 10x (Figures 10(c), 10(d)) or allocating 10x more neurons (Figures 10(e), 10(f)) confirms that GPT-2 XL requires either higher learning rates or more extensive parameter updates compared to GPT-2 small to achieve effective learning with our targeted strategies.",
+            "Similarly, extended training duration (50 epochs, Figures 10(g), 10(h)) allows the model to better integrate new knowledge while preserving old information, indicating that longer training can also help overcome the limitations of sparse updates in larger models. Figure 11 summarizes these trade-offs across all configurations, highlighting how different hyperparameter choices affect the balance between preserving old knowledge and acquiring new information.",
+            "Finally, note that while GPT-2 XL’s larger capacity naturally reduces interference with our tracked facts during non-dissonant updates, this improved performance is “deceptive” and should be interpreted cautiously: we cannot measure potential effects on other pre-trained knowledge beyond our tracked facts.",
+            "These results highlight the methodological challenges in studying knowledge updates in larger models: their increased capacity can mask interference with tracked facts, making it harder to fully measure the impact of updates on the model’s broader knowledge. This underscores the importance of controlled experimental settings when studying fundamental properties of knowledge updating in neural networks.",
+            "[Figure: (a) Old Knowledge]",
+            "[Figure: (a) Old Knowledge]",
+            "[Figure: (b) New Knowledge]",
+            "[Figure: (c) Old Knowledge]",
+            "[Figure: (d) New Knowledge]",
+            "[Figure: (e) Old Knowledge]",
+            "[Figure: (f) New Knowledge]",
+            "[Figure: (g) Old Knowledge]",
+            "[Figure: (h) New Knowledge]",
+            "[Figure: Figure 11: Non-Dissonant updates with GPT2-XL compared to small, a different visualization. Scatter plot of old (x) vs new (y) knowledge during non-dissonant updates. Same conditions as in Fig. 10. We can see clearly how in all cases, the accuracy on previous knowledge remains high. The lottery-ticket effect is also visible where free neurons struggle to efficient pack novel facts.]"
+          ]
+        }
+      ]
+    },
+    "Appendix E Dissonantupdates": {
+      "paragraphs": [
+        "[Figure: (a) 10 Facts]",
+        "[Figure: (a) 10 Facts]",
+        "[Figure: (b) 100 Facts]",
+        "[Figure: (c) 1000 Facts]",
+        "[Figure: (d) 10 Facts]",
+        "[Figure: (e) 100 Facts]",
+        "[Figure: (f) 1000 Facts]",
+        "[Figure: (g) 10 Facts]",
+        "[Figure: (h) 100 Facts]",
+        "[Figure: (i) 1000 Facts]",
+        "[Figure: (a) Old Knowledge]",
+        "[Figure: (a) Old Knowledge]",
+        "[Figure: (b) New Knowledge]",
+        "[Figure: (c) Generalization]",
+        "[Figure: (d) Old Knowledge]",
+        "[Figure: (e) New Knowledge]",
+        "[Figure: (f) Generalization]",
+        "[Figure: (g) Old Knowledge]",
+        "[Figure: (h) New Knowledge]",
+        "[Figure: (i) Generalization]",
+        "[Table: Table 7: Comparison of targeted neuron update strategies vs knowledge-editing literature, with a gradient from 0 (red) to 1 (green). Top-1,2 strategies annotated for all metrics and sample sizes.]",
+        "[Table: Table 8: Neuron Editing Results for N=20,000 Neurons]",
+        "[Table: Table 9: Neuron Editing Results for N=8,000 Neurons]",
+        "[Table: Table 10: Neuron Editing Results for N=4,000 Neurons]"
+      ],
+      "subsections": [
+        {
+          "title": "E.1 Impact of number of conflicting facts",
+          "paragraphs": [
+            "We examined the effect of varying the number of conflicting facts introduced during Dissonant updates. Figure 12 shows the performance metrics of GPT-2 small when editing 10, 100, and 1,000 facts, respectively.",
+            "Our findings show that as the number of conflicting facts increases, the impact on old knowledge retention becomes more pronounced, with all strategies experiencing significant degradation. The ability to learn new conflicting knowledge improves slightly with more facts, but overall performance remains suboptimal. The plastic and random neuron strategies tend to preserve old knowledge when editing a small number of facts (e.g., 10 facts), but their effectiveness diminishes as more conflicting information is introduced. Interestingly, the opposite effect is observed for new knowledge, where adding more facts seems to make it easier to learn new knowledge, for all strategies.",
+            "[Figure: (a) 10 Facts]",
+            "[Figure: (a) 10 Facts]",
+            "[Figure: (b) 100 Facts]",
+            "[Figure: (c) 1000 Facts]",
+            "[Figure: (d) 10 Facts]",
+            "[Figure: (e) 100 Facts]",
+            "[Figure: (f) 1000 Facts]",
+            "[Figure: (g) 10 Facts]",
+            "[Figure: (h) 100 Facts]",
+            "[Figure: (i) 1000 Facts]"
+          ]
+        },
+        {
+          "title": "E.2 Comparative performance of Editing methods",
+          "paragraphs": [
+            "Our primary focus in this work is not on developing new model editing techniques. Most existing editing techniques focus on altering existing associations, and are hence by our definition dissonant by design. Our empirical findings in this work suggest another parallel path in which editing is abandoned in favor of non-dissonant variations where old knowledge is kept and contextualized",
+            "However, to have an idea on how existing editing methods perform compared to our targeted strategies, we leverage EasyEdit (Wang et al., 2023) to benchmark two state-of-the-art model editing methods, ROME (Meng et al., 2022a) and MEMIT (Meng et al., 2022c), under our same multi-fact experimental conditions .",
+            "Table 7 summarizes the performance of different strategies and editing methods. Some of our targeted update strategies obtain a higher harmonic mean compared to ROME and MEMIT. But the higher harmonic mean must not hide that the approaches are not directly comparable since they explore different regions of the pareto front, balancing new knowledge acquisition and old knowledge retention, as self-explained with colors and rankings in the table."
+          ]
+        },
+        {
+          "title": "E.3 More detailed figures for specific numbers of neurons",
+          "paragraphs": [
+            "Tables 8, Figs. 9, and 10 provide detailed performance metrics for different neuron thresholds (20k, 8k, and 4k neurons, respectively) when editing 1,000, 100 and 10, conflicting facts using various strategies.",
+            "The results show that changing the number of neurons allocated for updates does not necessarily improve or degrade performance in the dissonant update scenario. In all cases, the model struggles to retain old knowledge while learning new conflicting information. The candidate and specific neuron strategies are consistently and significantly better than state of the art solutions, offering a slight advantage. However, they are still unable to effectively mitigate the destructive effects of dissonant updates, further motivating the neeed for both (i) dissonance awareness and (ii) proper conflict resolution."
+          ]
+        },
+        {
+          "title": "E.4 Scaling to GPT2-XL",
+          "paragraphs": [
+            "We extended our dissonant update experiments to GPT-2 XL to examine whether our observations about knowledge conflicts persist in larger models.",
+            "Figure 13 examines GPT2-XL’s behavior when updating 1,000 conflicting facts using the optimal learning rate, as determined by our hyperparameter search. We compare three configurations: GPT-2 small (2,000 to 20,000 neurons) shown previously, GPT2-XL with the same range, and GPT2-XL with ten times more neurons (20,000 to 200,000). The latter was shown effective in packing new knowledge compared to (2000 to 20000) range in non-dissonant updates.",
+            "First, while GPT2-XL still requires more neurons than GPT-2 small to effectively learn new conflicting knowledge, as seen earlier, the key finding concerns old knowledge retention: regardless of model size or neuron allocation, we observe significant degradation of old, unrelated knowledge across all strategies.",
+            "Interestingly, this degradation persists even when using fewer neurons and when the model fails to effectively learn the new conflicting information (2k to 20k). These results strongly suggest that the destructive impact of conflicting updates on existing knowledge is a fundamental property that remains present in larger models.",
+            "[Figure: (a) Old Knowledge]",
+            "[Figure: (a) Old Knowledge]",
+            "[Figure: (b) New Knowledge]",
+            "[Figure: (c) Generalization]",
+            "[Figure: (d) Old Knowledge]",
+            "[Figure: (e) New Knowledge]",
+            "[Figure: (f) Generalization]",
+            "[Figure: (g) Old Knowledge]",
+            "[Figure: (h) New Knowledge]",
+            "[Figure: (i) Generalization]"
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "Bai et al. (2024) Bai, X., Shang, J., Sun, Y., and Balasubramanian, N. Continual learning with global prototypes: Beyond the scope of task supervision. NeurIPS, 2024.",
+    "Behrens et al. (2007) Behrens, T. E., Woolrich, M. W., Walton, M. E., and Rushworth, M. F. Learning the value of information in an uncertain world. Nature neuroscience, 10(9):1214–1221, 2007.",
+    "Benjamin et al. (2024) Benjamin, A. S., Pehle, C., and Daruwalla, K. Continual learning with the neural tangent ensemble. arXiv preprint arXiv:2408.17394, 2024.",
+    "Croyle & Cooper (1983) Croyle, R. T. and Cooper, J. Dissonance arousal: physiological evidence. Journal of personality and social psychology, 45(4):782, 1983.",
+    "Dai et al. (2021) Dai, D., Dong, L., Hao, Y., Sui, Z., Chang, B., and Wei, F. Knowledge neurons in pretrained transformers. arXiv preprint arXiv:2104.08696, 2021. https://arxiv.org/abs/2104.08696.",
+    "De Cao et al. (2021) De Cao, N., Aziz, W., and Titov, I. Editing factual knowledge in language models. arXiv preprint arXiv:2104.08164, 2021. https://arxiv.org/pdf/2104.08164.pdf.",
+    "Desimone et al. (1995) Desimone, R., Duncan, J., et al. Neural mechanisms of selective visual attention. Annual review of neuroscience, 18(1):193–222, 1995.",
+    "Elsayed & Mahmood (2024) Elsayed, M. and Mahmood, A. R. Addressing loss of plasticity and catastrophic forgetting in continual learning. arXiv preprint arXiv:2404.00781, 2024.",
+    "Festinger (1957) Festinger, L. A theory of cognitive dissonance row. Peterson and company, 1957.",
+    "Frankle & Carbin (2018) Frankle, J. and Carbin, M. The lottery ticket hypothesis: Finding sparse, trainable neural networks. arXiv preprint arXiv:1803.03635, 2018.",
+    "Frankle & Carbin (2019) Frankle, J. and Carbin, M. The lottery ticket hypothesis: Finding sparse, trainable neural networks. In International Conference on Learning Representations, 2019. URL https://openreview.net/forum?id=rJl-b3RcF7.",
+    "Geva et al. (2020) Geva, M., Schuster, R., Berant, J., and Levy, O. Transformer feed-forward layers are key-value memories. arXiv preprint arXiv:2012.14913, 2020. https://arxiv.org/abs/2012.14913.",
+    "Hiratani (2024) Hiratani, N. Disentangling and mitigating the impact of task similarity for continual learning. arXiv preprint arXiv:2405.20236, 2024.",
+    "Huang et al. (2024) Huang, X., Liu, J., Wang, Y., and Liu, K. Reasons and solutions for the decline in model performance after editing. arXiv preprint arXiv:2410.23843, 2024.",
+    "Jaiswal et al. (2023) Jaiswal, A. K., Liu, S., Chen, T., and Wang, Z. The emergence of essential sparsity in large pre-trained models: The weights that matter. In Thirty-seventh Conference on Neural Information Processing Systems, 2023. URL https://openreview.net/forum?id=bU9hwbsVcy.",
+    "Jha et al. (2024) Jha, S., Gong, D., and Yao, L. Clap4clip: Continual learning with probabilistic finetuning for vision-language models. arXiv preprint arXiv:2403.19137, 2024.",
+    "Jiao et al. (2024) Jiao, L., Lai, Q., Li, Y., and Xu, Q. Vector quantization prompting for continual learning. arXiv preprint arXiv:2410.20444, 2024.",
+    "Kemker et al. (2018) Kemker, R., McClure, M., Abitino, A., Hayes, T., and Kanan, C. Measuring catastrophic forgetting in neural networks. Proceedings of the AAAI Conference on Artificial Intelligence, 32, Apr. 2018.",
+    "Kirkpatrick et al. (2017a) Kirkpatrick, J., Pascanu, R., Rabinowitz, N., Veness, J., Desjardins, G., Rusu, A. A., Milan, K., Quan, J., Ramalho, T., Grabska-Barwinska, A., Hassabis, D., Clopath, C., Kumaran, D., and Hadsell, R. Overcoming catastrophic forgetting in neural networks. Proceedings of the National Academy of Sciences, 114(13):3521–3526, 2017a.",
+    "Kirkpatrick et al. (2017b) Kirkpatrick, J., Pascanu, R., Rabinowitz, N., Veness, J., Desjardins, G., Rusu, A. A., Milan, K., Quan, J., Ramalho, T., Grabska-Barwinska, A., et al. Overcoming catastrophic forgetting in neural networks. Proceedings of the national academy of sciences, 114(13):3521–3526, 2017b.",
+    "Kotha et al. (2024) Kotha, S., Springer, J. M., and Raghunathan, A. Understanding catastrophic forgetting in language models via implicit inference. In The Twelfth International Conference on Learning Representations, 2024. URL https://openreview.net/forum?id=VrHiF2hsrm.",
+    "(22) Lee, D., Jung, S., and Moon, T. Continual learning in the presence of spurious correlations: Analyses and a simple baseline. In The Twelfth International Conference on Learning Representations.",
+    "Lee et al. (2024) Lee, D., Yoo, M., Kim, W. K., Choi, W., and Woo, H. Incremental learning of retrievable skills for efficient continual task adaptation. arXiv preprint arXiv:2410.22658, 2024.",
+    "Li et al. (2022) Li, D., Chen, Z., Cho, E., Hao, J., Liu, X., Xing, F., Guo, C., and Liu, Y. Overcoming catastrophic forgetting during domain adaptation of seq2seq language generation. In Carpuat, M., de Marneffe, M.-C., and Meza Ruiz, I. V. (eds.), Proceedings of the 2022 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, pp. 5441–5454, Seattle, United States, July 2022. Association for Computational Linguistics.",
+    "Li et al. (2023) Li, Z., Zhang, N., Yao, Y., Wang, M., Chen, X., and Chen, H. Unveiling the pitfalls of knowledge editing for large language models. arXiv preprint arXiv:2310.02129, 2023.",
+    "Lopez-Paz & Ranzato (2017) Lopez-Paz, D. and Ranzato, M. Gradient episodic memory for continual learning. Advances in neural information processing systems, 30, 2017.",
+    "Luo et al. (2024) Luo, Y., Yang, Z., Meng, F., Li, Y., Zhou, J., and Zhang, Y. An empirical study of catastrophic forgetting in large language models during continual fine-tuning, 2024. URL https://arxiv.org/abs/2308.08747.",
+    "Mallya & Lazebnik (2018) Mallya, A. and Lazebnik, S. Packnet: Adding multiple tasks to a single network by iterative pruning. In Proceedings of the IEEE conference on Computer Vision and Pattern Recognition, pp. 7765–7773, 2018.",
+    "McClelland et al. (1995) McClelland, J. L., McNaughton, B. L., and O’Reilly, R. C. Why there are complementary learning systems in the hippocampus and neocortex: insights from the successes and failures of connectionist models of learning and memory. Psychological review, 102(3):419, 1995.",
+    "Meng et al. (2022a) Meng, K., Bau, D., Andonian, A., and Belinkov, Y. Locating and editing factual associations in gpt. Advances in Neural Information Processing Systems, 35:17359–17372, 2022a.",
+    "Meng et al. (2022b) Meng, K., Bau, D., Andonian, A., and Belinkov, Y. Locating and editing factual associations in gpt. Advances in Neural Information Processing Systems, 35:17359–17372, 2022b.",
+    "Meng et al. (2022c) Meng, K., Sharma, A. S., Andonian, A., Belinkov, Y., and Bau, D. Mass-editing memory in a transformer. arXiv preprint arXiv:2210.07229, 2022c. https://arxiv.org/pdf/2210.07229.pdf.",
+    "Mirzadeh et al. (2024) Mirzadeh, S. I., Alizadeh-Vahid, K., Mehta, S., del Mundo, C. C., Tuzel, O., Samei, G., Rastegari, M., and Farajtabar, M. ReLU strikes back: Exploiting activation sparsity in large language models. In The Twelfth International Conference on Learning Representations, 2024. URL https://openreview.net/forum?id=osoWxY8q2E.",
+    "Mitchell et al. (2022) Mitchell, E., Lin, C., Bosselut, A., Finn, C., and Manning, C. D. Fast model editing at scale. In International Conference on Learning Representations, 2022. URL https://openreview.net/pdf?id=0DcZxeWfOPt.",
+    "Peng et al. (2024) Peng, B., Tian, Z., Liu, S., Yang, M., and Jia, J. Scalable language model with generalized continual learning. arXiv preprint arXiv:2404.07470, 2024.",
+    "Petersen & Posner (2012) Petersen, S. E. and Posner, M. I. The attention system of the human brain: 20 years after. Annual review of neuroscience, 35(1):73–89, 2012.",
+    "Posner et al. (1990) Posner, M. I., Petersen, S. E., et al. The attention system of the human brain. Annual review of neuroscience, 13(1):25–42, 1990.",
+    "Ranganath & Rainer (2003) Ranganath, C. and Rainer, G. Neural mechanisms for detecting and remembering novel events. Nature Reviews Neuroscience, 4(3):193–202, 2003.",
+    "Rebuffi et al. (2017) Rebuffi, S.-A., Kolesnikov, A., Sperl, G., and Lampert, C. H. icarl: Incremental classifier and representation learning. In Proceedings of the IEEE conference on Computer Vision and Pattern Recognition, pp. 2001–2010, 2017.",
+    "Rusu et al. (2016) Rusu, A. A., Rabinowitz, N. C., Desjardins, G., Soyer, H., Kirkpatrick, J., Kavukcuoglu, K., Pascanu, R., and Hadsell, R. Progressive neural networks. arXiv preprint arXiv:1606.04671, 2016.",
+    "Seo et al. (2024) Seo, Y., Lee, D., and Yeo, J. Train-attention: Meta-learning where to focus in continual knowledge learning. arXiv preprint arXiv:2407.16920, 2024.",
+    "Serra et al. (2018) Serra, J., Suris, D., Miron, M., and Karatzoglou, A. Overcoming catastrophic forgetting with hard attention to the task. In International conference on machine learning, pp. 4548–4557. PMLR, 2018.",
+    "Tan et al. (2023) Tan, C., Zhang, G., and Fu, J. Massive editing for large language models via meta learning. arXiv preprint arXiv:2311.04661, 2023.",
+    "Van Veen et al. (2009) Van Veen, V., Krug, M. K., Schooler, J. W., and Carter, C. S. Neural activity predicts attitude change in cognitive dissonance. Nature neuroscience, 12(11):1469–1474, 2009.",
+    "Wang et al. (2023) Wang, P., Zhang, N., Xie, X., Yao, Y., Tian, B., Wang, M., Xi, Z., Cheng, S., Liu, K., Zheng, G., et al. Easyedit: An easy-to-use knowledge editing framework for large language models. arXiv preprint arXiv:2308.07269, 2023.",
+    "Wang et al. (2024) Wang, Z., Li, Y., Shen, L., and Huang, H. A unified and general framework for continual learning. arXiv preprint arXiv:2403.13249, 2024.",
+    "Xu et al. (2024) Xu, Y., Chen, Y., Nie, J., Wang, Y., Zhuang, H., and Okumura, M. Advancing cross-domain discriminability in continual learning of vison-language models. arXiv preprint arXiv:2406.18868, 2024.",
+    "Yoon et al. (2017) Yoon, J., Yang, E., Lee, J., and Hwang, S. J. Lifelong learning with dynamically expandable networks. arXiv preprint arXiv:1708.01547, 2017.",
+    "Zeng et al. (2019) Zeng, G., Chen, Y., Cui, B., and Yu, S. Continual learning of context-dependent processing in neural networks. Nature Machine Intelligence, 1(8):364–372, 2019.",
+    "Zhao et al. (2024) Zhao, L., Zhang, X., Yan, K., Ding, S., and Huang, W. Safe: Slow and fast parameter-efficient tuning for continual learning with pre-trained models, 2024. URL https://arxiv.org/abs/2411.02175.",
+    "Zhu et al. (2020) Zhu, C., Rawat, A. S., Zaheer, M., Bhojanapalli, S., Li, D., Yu, F., and Kumar, S. Modifying memories in transformer models. arXiv preprint arXiv:2012.00363, 2020. https://arxiv.org/pdf/2012.00363.pdf."
+  ]
+}

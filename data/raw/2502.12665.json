@@ -1,0 +1,246 @@
+{
+  "title": "A2ATS: Retrieval-Based KV Cache Reduction via Windowed Rotary Position Embedding and Query-Aware Vector Quantization",
+  "authors": "Junhui He1,2⁣∗{}^{1,2\\ *}Junna Xing2⁣∗†{}^{2\\ *{\\dagger}}Nan Wang2Equal contributions.Rui Xu2,3Shangyu Wu4Peng Zhou2Qiang Liu2Chun Jason Xue5Qingan Li11Wuhan UniversityCorresponding authors.2Alibaba Cloud Computing3Jinan University4City University of Hong Kong5MBZUAI",
+  "abstract": "Long context large language models (LLMs) pose significant challenges for efficient serving due to the large memory footprint and high access overhead of KV cache. Retrieval-based KV cache reduction methods can mitigate these challenges, typically by offloading the complete KV cache to CPU and retrieving necessary tokens on demand during inference. However, these methods still suffer from unsatisfactory accuracy degradation and extra retrieval overhead. To address these limitations, this paper proposes A2ATS, a novel retrieval-based KV cache reduction method. A2ATS aims to obtain an accurate approximation of attention scores by applying the vector quantization technique to key states, thereby enabling efficient and precise retrieval of the top-K tokens. First, we propose Windowed Rotary Position Embedding, which decouples the positional dependency from query and key states after position embedding. Then, we propose query-aware vector quantization that optimizes the objective of attention score approximation directly. Finally, we design the heterogeneous inference architecture for KV cache offloading, enabling long context serving with larger batch sizes. Experimental results demonstrate that A2ATS can achieve a lower performance degradation with similar or lower overhead compared to existing methods, thereby increasing long context serving throughput by up to 2.7×2.7\\times.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Large language models (LLMs) with long context windows (OpenAI, 2023; Reid et al., 2024; Dubey et al., 2024; Jiang et al., 2024; Yang et al., 2024a; DeepSeek-AI et al., 2024) are driving advancements in AI applications. However, these models pose significant challenges for efficient serving. Their Transformer-based (Vaswani et al., 2017) architecture generates and maintains a Key-Value (KV) cache during inference to store intermediate results and avoid re-computation. As the context length increases, the size of the KV cache grows proportionally, leading to severe overheads. First, the size of KV cache accessed when generating each token increases, resulting in a GPU memory bandwidth bottleneck. Moreover, the large KV cache size of each request limits the maximum feasible batch size, resulting in suboptimal GPU utilization.",
+        "Various methods were proposed to address these challenges from different perspectives. Quantization-based methods (Liu et al., 2024b; Hooper et al., 2024) compress KV cache by using lower bit-width representations for KV cache elements. Eviction-based methods (Xiao et al., 2024; Zhang et al., 2023; Li et al., 2024; Yang et al., 2024b) reduce the KV cache size by directly evicting unimportant tokens from memory. Retrieval-based methods (Tang et al., 2024; Singhania et al., 2024; Zhang et al., 2024; Liu et al., 2024a; Chen et al., 2024) offload the complete KV cache to CPU memory and retrieve necessary tokens on demand during inference. However, these methods still face challenges of limited compression ratio, unsatisfactory accuracy degradation, or extra retrieval overhead.",
+        "To address the above limitations, this paper proposes A2ATS, a novel retrieval-based KV cache reduction method. A2ATS aims to obtain an Accurate Approximation of ATtention Scores by applying vector quantization technique to key states, thereby enabling efficient and precise retrieval of the top-K tokens. In order to achieve this goal, we face two main challenges. First, the position-dependent nature of key states after applying position embedding hinders the direct application of shared codebooks across varying inputs. Second, directly utilizing the conventional vector quantization fails to guarantee an accurate approximation of attention scores. To overcome these challenges, the main contributions in this paper are as follows:  Experimental results demonstrate that A2ATS can achieve a low accuracy degradation of 2.2 on Llama-3.1-8B and 0.4 on Mistral-7B while accessing only 6% of the entire KV cache, thereby increasing long context serving throughput by up to 2.7×2.7\\times. Our source code is publicly available 111https://anonymous.4open.science/r/4987d19d-f5cd-4f14-910d-c7141ce37f13/.",
+        "• We observe high inter-input similarities between codebooks of key states before position embedding, and the objective misalignment between vector quantization and attention score approximation by experimental and theoretical analysis;",
+        "• We propose Windowed Rotary Position Embedding to decouple the positional dependency from query and key states after position embedding,",
+        "• We propose and query-aware vector quantization that directly optimizes the objective of attention score approximation;",
+        "• We design the heterogeneous inference system for KV cache offloading, enabling long context serving with larger batch sizes."
+      ],
+      "subsections": []
+    },
+    "2 Preliminaries": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "2.1 Self-Attention Modules and Rotary Position Embedding",
+          "paragraphs": [
+            "Self-attention modules (Vaswani et al., 2017) and Rotary Position Embedding (RoPE) (Su et al., 2021) have become the de facto standard components of state-of-the-art (SOTA) LLMs (Dubey et al., 2024; Yang et al., 2024a; Jiang et al., 2024; DeepSeek-AI et al., 2024).",
+            "In the self-attention module, during decoding phase, the inference process begins by linearly projecting the input states of the ii-th token into query (qiq_{i}), key (kik_{i}), and value (viv_{i}) states, where qi,ki,vi∈ℝ1×dq_{i},k_{i},v_{i}\\in\\mathbb{R}^{1\\times d}, and dd denotes the number of channels or hidden dimensions per head. To enable the model to effectively capture the positional relationships between tokens, position embeddings are then applied to the query and key states. These hidden states before and after this transformation are abbreviated as pre-PE and post-PE states, respectively.",
+            "RoPE is a commonly used position embedding in SOTA LLMs. Specifically, for the ii-th token, a position-dependent rotation matrix Ri∈ℝd×dR_{i}\\in\\mathbb{R}^{d\\times d} is applied to the query qiq_{i} and key kik_{i}, to obtain their post-PE counterparts, denoted by q~i\\tilde{q}_{i} and k~i\\tilde{k}_{i}:",
+            "Then the matrices of KV cache of the context can be denoted by K~=[k~1;k~2;…;k~n]∈ℝn×d{\\tilde{K}}=[{\\tilde{k}}_{1};{\\tilde{k}}_{2};\\dots;{\\tilde{k}}_{n}]\\in\\mathbb{R}^{n\\times d} and V=[v1;v2;…;vn]∈ℝn×dV=[v_{1};v_{2};\\dots;v_{n}]\\in\\mathbb{R}^{n\\times d} respectively, where nn denotes the context length. Next, these post-PE states are used to compute the output state oio_{i} as shown in formula (2):",
+            "where ui=q~i​K~⊤∈ℝ1×nu_{i}=\\tilde{q}_{i}{\\tilde{K}}^{\\top}\\in\\mathbb{R}^{1\\times n} denotes the attention scores before softmax.",
+            "Due to the inherent property of rotation matrices that Ri​Rj⊤=Ri−jR_{i}R_{j}^{\\top}=R_{i-j} (Su et al., 2021), the attention score ui,ju_{i,j} between the ii-th query and jj-th key can be expressed as:",
+            "This equation illustrates how RoPE encodes the relative position (i−ji-j) directly into the attention scores, allowing the model to effectively capture the positional relationships between tokens."
+          ]
+        },
+        {
+          "title": "2.2 Vector Quantization for Efficient Attention Score Approximation",
+          "paragraphs": [
+            "Vector quantization (Buzo et al., 1980) is a data compression technique that maps input vectors to a finite set of codewords from a learned codebook.",
+            "Formally, given an input space X⊆ℝ1×dX\\subseteq\\mathbb{R}^{1\\times d} with data distribution 𝒟\\mathcal{D}, vector quantization aims to construct a codebook C={c1,c2,…,cL}⊂ℝ1×dC=\\{c_{1},c_{2},\\dots,c_{L}\\}\\subset\\mathbb{R}^{1\\times d} with a size of LL codewords to minimize the following objective:",
+            "where x∈ℝ1×dx\\in\\mathbb{R}^{1\\times d} denotes the input vector, x^=cf​(x;C)\\hat{x}=c_{f(x;C)} denotes the quantized vector, and f​(x;C)f(x;C) denotes the quantization function that maps xx to its nearest codeword:",
+            "Finding the optimal codebook CC is computationally expensive. Therefore, approximate algorithms such as LBG and k-means++ (Linde et al., 1980; Arthur and Vassilvitskii, 2007) are commonly used to find a suboptimal but effective codebook.",
+            "After obtaining the codebook, vector quantization compresses an input xx by replacing the original vector with its index s=f​(x;C)s=f(x;C). Since the storage requirement for the index is substantially lower than that of the original vector, vector quantization achieves significant data compression ratio.",
+            "Multiple studies (Lingle, 2024; Zhang et al., 2024; Liu et al., 2024a) have investigated applying vector quantization to post-PE key states of LLMs to efficiently approximate attention scores. Let s∈{1,2,…,L}1×ns\\in\\{1,2,\\dots,L\\}^{1\\times n} denotes the codeword index vector of all post-PE key states, where the length of this vector is nn, and each element si∈{1,2,…,L}s_{i}\\in\\{1,2,\\dots,L\\} denotes the codeword index of the ii-th key state. Then, the k~i\\tilde{k}_{i} can be quantized as k^i=csi\\hat{k}_{i}=c_{s_{i}} , and the attention score ui,ju_{i,j} can be approximated as:",
+            "This equation illustrates the approximation of attention scores without the memory-intensive access to the k~j\\tilde{k}_{j}."
+          ]
+        }
+      ]
+    },
+    "3 Motivation": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "3.1 Inter-Input Similarity of Codebooks",
+          "paragraphs": [
+            "PQCache (Zhang et al., 2024) and ClusterKV (Liu et al., 2024a) propose applying vector quantization to post-PE key states, with individual codebooks constructed for each input during the prefilling phase. However, constructing codebooks during inference requires iterative access to the entire KV cache, incurring high memory access overhead. To address this limitation, we investigate the feasibility of employing shared codebooks for all inputs based on the inter-input similarity of codebooks.",
+            "To quantify the similarity between codebooks C1C_{1} and C2C_{2}, we define the cosine similarity between codebooks as metric, which can be formulated as:",
+            "where c1i,c1j∈C1,c2i,c2j∈C2{c_{1}}_{i},{c_{1}}_{j}\\in C_{1},{c_{2}}_{i},{c_{2}}_{j}\\in C_{2}. This metric computes the average maximum cosine similarity from each codeword in one codebook to any codeword in the other codebook. A cosine similarity score closer to 11 indicates higher similarity between codebooks, while a score closer to 0 or negative values indicates lower similarity.",
+            "We utilize the Llama-3.1-8B-Instruct model (Dubey et al., 2024), and two random samples from the FineWeb dataset (Penedo et al., 2024) with a context length of approximately 32k tokens each for experiments. We collect pre-PE and post-PE (RoPE is used in here) key states from all attention heads on both samples, then employ k-means++ algorithm (Arthur and Vassilvitskii, 2007) to generate codebooks with a size of 4096 codewords for each set of key states, and calculate the inter-sample cosine similarities of pre-PE and post-PE codebooks using Equation (7). The similarity generated by pre-PE and post-PE codebooks are shown in Figure 1. From the experimental results, we derive the following key observations:",
+            "Observation 1: High inter-input similarities of pre-PE codebooks suggest the potential for using shared codebooks to effectively approximate key states across various inputs. The cosine similarities for pre-PE codebooks remain remarkably high, exceeding 0.9 for the majority of layers, indicate a very strong similarity across codebooks of various inputs. This finding indicates that the semantic information in key states might be broadly similar.",
+            "Observation 2: The position-dependent nature of post-PE key states hinders the direct application of a shared codebook. The post-PE codebook similarities are consistently lower, fluctuating around 0.85, with some layers below 0.8, indicating weaker similarity across inputs. The reason is that RoPE causes semantically similar key states at different positions to have different representations. The position-dependent nature of post-PE key states makes it difficult to construct a single codebook that can effectively quantize representations with all semantic information at all possible positions. This representation divergence becomes a key challenge for directly applying a shared codebook on post-PE key states, necessitating the development of a novel vector-quantization-compatible position embedding method."
+          ]
+        },
+        {
+          "title": "3.2 Objective Misalignment of Vector Quantization",
+          "paragraphs": [
+            "The optimization objective of vector quantization is to minimize the mean squared error (MSE) of the approximate key states, while attention score approximation focuses on minimizing the MSE of attention scores. This discrepancy between their optimization objectives raises a fundamental question:",
+            "Does the optimal codebook for vector quantization necessarily yield the most accurate approximation of attention scores?",
+            "Formally, let CC denote the codebook constructed by vector quantization, J​(C)J(C) denote the MSE of vector quantization with CC, and J′​(C)J^{\\prime}(C) denote the MSE of attention scores approximation with CC. We need to investigate whether the following equation holds:",
+            "To address this question, we analyze the relationship between JJ and J′J^{\\prime}.",
+            "For vector quantization, the objective JJ can be reformulated as:",
+            "where 𝒟key\\mathcal{D}^{\\mathrm{key}} denotes the distribution of post-PE key states, and k^\\hat{k} denotes quantized key.",
+            "For attention score approximation, the objective J′J^{\\prime} is formualted as:",
+            "where 𝒟query\\mathcal{D}^{\\mathrm{query}} denotes the distribution of post-PE query states, H=𝔼q~∼𝒟query​[q~⊤​q~]∈ℝd×dH=\\mathbb{E}_{\\tilde{q}\\sim\\mathcal{D}^{\\mathrm{query}}}[\\tilde{q}^{\\top}\\tilde{q}]\\in\\mathbb{R}^{d\\times d} denotes the second-moment matrix of query states.",
+            "The two objectives only align if the query-dependent HH is proportional to the identity matrix. To examine this consistency, we visualize HH on a set of input samples, as depicted in Figure 2. The visualization shows that HH is not proportional to the identity matrix, displaying a non-uniform and non-diagonal structure. This result reveals a fundamental misalignment between the vector quantization objective JJ and the attention score approximation objective J′J^{\\prime}, suggesting potential inaccuracy in attention score approximation.",
+            "To validate the impact of this objective mismatch, we compare conventional vector quantization that minimizes objective JJ, with its query-aware variant that directly minimizes objective J′J^{\\prime} (implementation details in Section 4.2) in Figure 3. From experimental results, the query-aware method consistently achieves lower squared error in attention score approximation. Thus, we derive the following observation:",
+            "Observservation 3: Optimizing vector quantization alone fails to guarantee accurate apprroximation of attention scores due to objective misalignment, necessitating query-aware vector quantization for bridging this objective gap. "
+          ]
+        }
+      ]
+    },
+    "4 Method": {
+      "paragraphs": [
+        "In A2ATS, there are two stages. During the offline pre-processing stage (1st stage), A2ATS constructs a shared codebook on a representative dataset for each attention head of each layer.",
+        "During the inference stage (2nd stage), A2ATS applies quantization functions to key states to map them to the nearest codewords. At each autoregressive decoding step, A2ATS first utilizes codebooks and codeword indices to approximate attention scores, then retrieves the top-K tokens with the highest attention scores for computation, thereby mitigating the memory overhead of accessing the entire KV cache."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Windowed Rotary Position Embedding",
+          "paragraphs": [
+            "As discussed in Section 3.1, the position-dependent nature of post-PE key states hinders the direct application of a shared codebook in the vector quantization process. A seemingly straightforward solution would be to quantize pre-PE key states, and then incorporate RoPE when approximating attention scores. However, this approach is computationally expensive, as it necessitates calculating and applying the rotary matrices for each token at each inference.",
+            "To overcome this inefficiency, while eliminating the inherent position-dependent nature of post-PE key states, we propose Windowed Rotary Position Embedding (WRoPE). This approach builds on the findings by Su (2023b, a) that transformer-based models are nonsensitive to the positional information of non-local tokens. The core idea of WRoPE is to use standard RoPE for local tokens (i.e. those in the window) and use approximate positional information for non-local tokens (i.e. those not in the window). Specifically, WRoPE computes the attention scores as follows: ",
+            "where ww is the window size, acting as a threshold for local vs. non-local tokens, and bb is a constant value representing a fixed relative position approximation for non-local tokens.",
+            "For local tokens (i.e., i−j<wi-j<w), WRoPE functions identically to standard RoPE, as defined in Equation 3. For non-local tokens outside the window (i.e., i−j≥wi-j\\geq w), the position-dependent rotation matrix Ri−jR_{i-j} is replaced by a fixed rotation matrix RbR_{b}, approximating the relative positional information (i−j)(i-j) with a constant offset bb. Then, we can calculate the post-PE query and key states as:",
+            "Since post-PE key k~i\\tilde{k}_{i} states are identical to their pre-PE counterparts kik_{i}, WRoPE decouples the positional dependency from post-PE representations, therefore optimizes subsequent vector quantization."
+          ]
+        },
+        {
+          "title": "4.2 Query-Aware Vector Quantization",
+          "paragraphs": [
+            "As discussed in Section 3.2, conventional vector quantization fails to achieve accurate approximation of attention scores, due to the objective misalignment between vector quantization and attention score approximation.",
+            "To address this limitation, we propose query-aware vector quantization, a custom vector quantization method that directly optimizes the objective of attention score approximation. Specifically, we replace the squared Euclidean distance ‖k~−k^‖2\\|\\tilde{k}-\\hat{k}\\|^{2} of conventional vector quantization with a query-aware quadratic form (k~−k^)​H​(k~−k^)⊤(\\tilde{k}-\\hat{k})H(\\tilde{k}-\\hat{k})^{\\top} derived from formula (10), where HH represents the second-moment matrix of query states.",
+            "Formally, the query-aware vector quantization minimizes the following objective:",
+            "where k^=cf′​(k~;C)\\hat{k}=c_{f^{\\prime}(\\tilde{k};C)} denotes the quantized k~\\tilde{k}, and the corresponding query-aware quantization vector quantization is formulated as:",
+            "For the codebook construction process, we reformulate the objective function to utilize conventional efficient vector quantization algorithms like k-means++ (Arthur and Vassilvitskii, 2007). Specifically, we apply Cholesky decomposition to the positive definite matrix H=L​LTH=LL^{T}, where L∈ℝd×dL\\in\\mathbb{R}^{d\\times d} denotes the Cholesky factor. Let ",
+            "where z∈ℝ1×dz\\in\\mathbb{R}^{1\\times d} denotes the transformed key state. Then, we can re-derive the objective of attention score approximation J′J^{\\prime} as:",
+            "And the quantization function f′f^{\\prime} can be re-derived as:",
+            "where f​(z;Cz)f(z;C^{z}) denotes the quantization function of conventional vector quantization. Then, we can derive that",
+            "Equations 16, 18 reveal that the objective of attention score approximation is equivilant to that of conventional vector quantization on transformed zz. This alignment enables the application of conventional efficient vector quantization algorithms in codebook construction process.",
+            "During the offline pre-processing stage, we collect zz on a representative dataset and construct its codebook CzC^{z} using k-means++ (Arthur and Vassilvitskii, 2007). Then, The original shared codebook CC for k~\\tilde{k} is calculated as:",
+            "During inference, the codeword index of k~\\tilde{k} is computed through query-aware quantization function:",
+            "Let s∈{1,2,…,L}1×ns\\in\\{1,2,\\dots,L\\}^{1\\times n} denotes the codeword index vector of all key states after applying query-aware vector quantization, where sj=f′​(k~j;C)s_{j}=f^{\\prime}(\\tilde{k}_{j};C). Then, the attention score is approximated as:"
+          ]
+        },
+        {
+          "title": "4.3 Heterogeneous Inference Design",
+          "paragraphs": [
+            "Although approximating attention scores via vector quantization and then selectively retrieving top-K tokens for computation reduces memory access overhead, the issue of KV Cache occupying substantial GPU memory remains unresolved. To reduce the memory footprint of KV Cache and enable larger batch sizes for improved GPU utilization, we design a heterogeneous inference system.",
+            "We partition the decoding process of our proposed A2ATS into three components:",
+            "(1) GPU-based model execution: All model weights reside on the GPU memory. Computations involving model weights are executed on the GPU during inference.",
+            "(2) GPU-based approximation of attention scores: The codebook is stored on the GPU. During inference, the GPU first executes the quantization function to assign codewords to key states, then computes attention weight approximations using the codebooks and indices, and lastly gathers the indices of top-K tokens.",
+            "(3) CPU-based selective attention: The full KV Cache is maintained on the CPU memory. During decoding, the top-K token indices and the current query state are transferred to the CPU, where selective attention computation is performed to derive the attention output. This output is then transferred back to the GPU for subsequent computations.",
+            "This design aims to minimize data transfer between CPU and GPU, thereby reducing latency. Furthermore, to fully leverage the CPU’s thread-level parallelism and SIMD capabilities, we implement a custom selective attention kernel optimized for CPU execution."
+          ]
+        }
+      ]
+    },
+    "5 Experiments": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "5.1 Experimental Setup",
+          "paragraphs": [
+            "Tasks. We utilize RULER (Hsieh et al., 2024) as our benchmark for downstream tasks evaluation. This synthetic benchmark contains thirteen subtasks organized into four categories: information retrieval, multi-hop tracing, information aggregation, and question answering. It evaluates long-context comprehension and reasoning capabilities of LLMs, while effectively revealing the accuracy drop caused by KV cache reduction methods.",
+            "Models. We conduct our main experiments on Llama-3.1-8B-Instruct (Dubey et al., 2024) and MegaBeam-Mistral-7B-512k (Wu et al., 2024). These models feature long-context processing capabilities with context windows of up to 128K and 512K tokens, respectively. As for the ablation study and end-to-end throughput evaluation, we apply the Llama-3.1-8B-Instruct model.",
+            "Methods. For main experiments, we compare the proposed A2ATS with the following four KV cache reduction methods, along with the full attention baseline: H2O (Zhang et al., 2023), SnapKV (Li et al., 2024), Quest (Tang et al., 2024), MagicPIG (Chen et al., 2024). For a fair comparison, the sparsity ratios of all KV cache reduction methods are controlled around 0.06. Detailed discussions are presented in Appendix A.",
+            "For ablation studies, we evaluate the following configurations on Llama-3.1-8B-Instruct:",
+            "• Baseline: It utilizes standard RoPE and conventional vector quantization.",
+            "• WRoPE: It utilizes WRoPE and conventional vector quantization.",
+            "• QAVQ: It utilizes standard RoPE and query-aware vector quantization.",
+            "• A2ATS: The proposed method with WRoPE and query-aware vector quantization.",
+            "Baseline: It utilizes standard RoPE and conventional vector quantization.",
+            "WRoPE: It utilizes WRoPE and conventional vector quantization. ",
+            "QAVQ: It utilizes standard RoPE and query-aware vector quantization.",
+            "A2ATS: The proposed method with WRoPE and query-aware vector quantization.",
+            "Implementation Details. The hyper-parameters ww and bb of WRoPE are set to 6464 and 20482048, respectively. The codebooks of query-aware vector quantization, with a size of 4096 each, are constructed from a set of sample inputs consisting of approximately 64K tokens of text randomly sampled from FineWeb (Penedo et al., 2024) and 16K tokens of randomly generated uuid strings. The end-to-end speedup experiments are conducted on a server equipped with an NVIDIA H800 GPU with 80GB memory, and an Intel Xeon Platinum 8469C CPU."
+          ]
+        },
+        {
+          "title": "5.2 Main Results on Downstream Tasks",
+          "paragraphs": [
+            "Table 1 compares the accuracies of different methods on RULER, along with attention sparsity ratios and auxiliary memory overhead. Experimental results draw the following conclusions:",
+            "A2ATS minimizes accuracy degradation under comparable sparsity ratios. For Llama models, A2ATS achieves an average accuracy of 86.6, outperforming H2O (27.0), SnapKV (72.7), Quest (80.7), and MagicPIG (85.7). For Mistral models, A2ATS achieves an average accuracy of 86.3, surpassing H2O (22.3), SnapKV (67.6), Quest (78.4), and MagicPIG (84.6). Notably, A2ATS achieves these accuracies with comparable sparsity ratios (0.060 for Llama, 0.062 for Mistral) to H2O, SnapKV and Quest, lower than those of MagicPIG (0.068 for Llama, 0.064 for Mistral). These results demonstrate the superior accuracy preservation of A2ATS.",
+            "A2ATS causes comparable or lower auxiliary memory overhead compared to existing methods. A2ATS causes auxiliary memory usage (0.008) identical to eviction-based methods, i.e., H2O and SnapKV, while being significantly more memory efficient than retrieval-based approaches, i.e., Quest (0.031) and MagicPIG (2.344). This efficiency comes from the inherent nature of vector quantization, requiring only one codeword index for each token in each attention head, eliminating the need for storing either per-page metadata (Quest) or large LSH tables (MagicPIG)."
+          ]
+        },
+        {
+          "title": "5.3 Ablation Study",
+          "paragraphs": [
+            "Table 2 validates the effectiveness of WRoPE and query-aware vector quantization on improving model accuracy. Experimental results draw the following conclusions: (1) WRoPE is fundamental to attention score approximation using shared codebooks. (2) Query-aware vector quantization provides a further improvement in model accuracy by aligning the objectives of vector quantization and attention score approximation. Detailed discussions are presented in Appendix B."
+          ]
+        },
+        {
+          "title": "5.4 End-to-End Inference Speedup",
+          "paragraphs": [
+            "Figure 4 compares the inference throughput of the proposed A2ATS against full attention on Llama-3.1-8B-Instruct. At a context length of 16K, A2ATS initially exhibits marginally lower throughput than full attention for small batch sizes (≤5)(\\leq 5), primarily due to CPU-GPU data transfer overhead. As batch sizes increase, the throughput of A2ATS grows linearly to exceed 100 tokens/s, while full attention plateaus below 80 tokens/s due to memory bandwidth bottleneck and ends up out of memory at a batch size of 22. A2ATS achieves a peak throughput of over 160 tokens/s, a 2.1× speedup over full attention, with a maximum batch size of over 64. This trend becomes more pronounced at 64K context lengths, where full attention struggles with batches over 5, while A2ATS serving a batch size of up to 16 with a throughput of up to 45 tokens/s, delivering a 2.7×2.7\\times performance advantage. These results highlight A2ATS’s potential in mitigating the memory bottleneck in long context LLM serving."
+          ]
+        }
+      ]
+    },
+    "6 Related Work": {
+      "paragraphs": [
+        "Quantization-based KV cache reduction. This method aims to compress KV cache by using lower bit-width representations for KV cache elements (Liu et al., 2024b; Hooper et al., 2024). However, it typically faces challenges of limited compression ratio and extra computational overhead caused by the dequantization process.",
+        "Eviction-based KV cache reduction. This method aims to reduce the KV cache size by directly evicting unimportant tokens from memory (Xiao et al., 2024; Zhang et al., 2023; Li et al., 2024; Yang et al., 2024b). These methods typically record statistics of attention weights of each token. When the KV cache reaches its capacity limit, they utilize heuristic rules and historical statistics to predict which tokens are more likely to get high attention weights in future decoding, then retain these tokens while evicting the rest. Although these methods generally have low additional overhead, they often lead to noticeable performance degradation.",
+        "Retrieval-based KV cache reduction. This method keeps the entire KV cache in memory while selectively retrieving tokens crucial for the current inference. Quest (Tang et al., 2024) chunks the continuous KV cache into pages and pre-calculates necessary metadata for each page during prefilling. For decoding, it selects the top-K critical cache pages to participate in selective attention computation. PQCache (Zhang et al., 2024) and ClusterKV (Liu et al., 2024a) perform vector quantization on the key states with individual codebooks constructed for each input during prefilling. For decoding, the system uses codewords of the codebooks to approximate attention scores, then retrieves the top-K tokens for computation. MagicPIG (Chen et al., 2024) employs Locality-Sensitive Hashing on query and key states for token retrieval. Although these methods generally achieve lower performance degradation compared to eviction-based methods, they still suffer from unsatisfactory performance and lead to extra overhead. "
+      ],
+      "subsections": []
+    },
+    "7 Conclusion": {
+      "paragraphs": [
+        "In this paper, we propose A2ATS, a novel retrieval-based KV cache reduction method. First, we propose Windowed Rotary Position Embedding to decouple the positional dependency from query and key states after position embedding. Then, we propose query-aware vector quantization to achieve an accurate attention score approximation. Next, we introduce the heterogeneous inference design for KV cache offloading which increases available batch size. Experimental results demonstrate that A2ATS achieves lower performance degradation with comparable or lower overhead compared to existing methods, thereby boosting long context serving throughput by up to 2.7×2.7\\times."
+      ],
+      "subsections": []
+    },
+    "8 Limitations": {
+      "paragraphs": [
+        "The limitations of this work can be summarized in two main aspects.",
+        "First, while A2ATS demonstrates lower accuracy degradation compared to existing methods while accessing a comparable proportion of KV cache, it still exhibits non-negligible performance degradation. This suggests opportunities for future work to investigate adaptive attention sparsity allocation strategies that dynamically optimize the sparsity ratios across layers and attention heads, based on their contextual importance.",
+        "Second, while A2ATS increases long context serving throughput by up to 2.7×2.7\\times, our current implementation is limited to single-GPU deployment. Future research could further explore (1) distributed multi-GPU system designs for scaled deployment, (2) integration with disaggregated LLM serving architectures like MoonCake (Qin et al., 2024)."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Method Configurations": {
+      "paragraphs": [
+        "For the main experiments, we compare the following five KV cache reduction methods, along with the full attention baseline:",
+        "• H2O (Zhang et al., 2023): An eviction-based method that preserves heavy hitter tokens and recent tokens;",
+        "• SnapKV (Li et al., 2024): An eviction-based method that preserves important tokens based on statistics within an observation window;",
+        "• Quest Tang et al. (2024): A retrieval-based method that selects tokens based on metadata of KV cache pages;",
+        "• MagicPIG Chen et al. (2024): A retrieval-based method that utilizes LSH for token sampling;",
+        "• A2ATS: The proposed method.",
+        "For a fair comparison, the sparsity ratios of all KV cache reduction methods are controlled around 0.06, which means approximately 6% of KV cache is accessed at each inference. It is important to note that the sparsity ratio discussed in this paper differs in definition from the cost2\\mathrm{cost}_{2} in MagicPIG (Chen et al., 2024). Specifically, cost2\\mathrm{cost}_{2} measures the ratio of computation overhead (FLOPs) compared to full attention, whereas our sparsity ratio measures the ratio of memory access overhead (MOPs) relative to full attention. Since attention modules are typically considered memory-bound (Kim et al., 2023), we argue that the latter metric provides more meaningful insights on potential overhead reduction. Additionally, the initial 4 tokens and the most recent 64 tokens are statically preserved to align with MagicPIG (Xiao et al., 2024). The detailed configurations for each methods are shown in Table 3.",
+        "[Table: Table 3: Configurations of KV cache reduction methods.]"
+      ],
+      "subsections": []
+    },
+    "Appendix B Detailed Discussions of Ablation Study": {
+      "paragraphs": [
+        "Table 2 validates the effectiveness of WRoPE and query-aware vector quantization on improving model accuracy. Experimental results draw the following conclusions:",
+        "WRoPE is fundamental to attention score approximation using shared codebooks. WRoPE achieves an average improvement of +4.5 over the baseline, with consistent gains across all context lengths. This result confirms WRoPE’s critical role in preventing representation divergence of key states caused by positional embedding.",
+        "Query-aware vector quantization provides a further improvement in model accuracy by aligning the objectives of vector quantization and attention score approximation. Our full method, incorporating query-aware vector quantization, demonstrates further improvements, particularly at longer context lengths (+1.5 at 64K, +1.2 at 96K, respectively). However, query-aware vector quantization alone underperforms the baseline, exhibiting a more significant drop at longer context lengths. This performance degradation suggests that representation divergence is not solely limited to key states but also affects query states, hindering the effectiveness of query-aware vector quantization. With WRoPE mitigating positional dependencies, query-aware vector quantization further optimizes the attention score approximation, achieving state-of-the-art performance."
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "Arthur and Vassilvitskii (2007) David Arthur and Sergei Vassilvitskii. 2007. k-means++: the advantages of careful seeding. In Proceedings of the Eighteenth Annual ACM-SIAM Symposium on Discrete Algorithms, SODA 2007, New Orleans, Louisiana, USA, January 7-9, 2007, pages 1027–1035. SIAM.",
+    "Buzo et al. (1980) Andres Buzo, Augustine H. Gray Jr., Robert M. Gray, and John D. Markel. 1980. Speech coding based upon vector quantization. In IEEE International Conference on Acoustics, Speech, and Signal Processing, ICASSP ’80, Denver, Colorado, USA, April 9-11, 1980, pages 15–18. IEEE.",
+    "Chen et al. (2024) Zhuoming Chen, Ranajoy Sadhukhan, Zihao Ye, Yang Zhou, Jianyu Zhang, Niklas Nolte, Yuandong Tian, Matthijs Douze, Léon Bottou, Zhihao Jia, and Beidi Chen. 2024. Magicpig: LSH sampling for efficient LLM generation. CoRR, abs/2410.16179.",
+    "DeepSeek-AI et al. (2024) DeepSeek-AI, Aixin Liu, Bei Feng, Bing Xue, Bingxuan Wang, Bochao Wu, Chengda Lu, Chenggang Zhao, Chengqi Deng, Chenyu Zhang, Chong Ruan, Damai Dai, Daya Guo, Dejian Yang, Deli Chen, Dongjie Ji, Erhang Li, Fangyun Lin, Fucong Dai, Fuli Luo, Guangbo Hao, Guanting Chen, Guowei Li, H. Zhang, Han Bao, Hanwei Xu, Haocheng Wang, Haowei Zhang, Honghui Ding, Huajian Xin, Huazuo Gao, Hui Li, Hui Qu, J. L. Cai, Jian Liang, Jianzhong Guo, Jiaqi Ni, Jiashi Li, Jiawei Wang, Jin Chen, Jingchang Chen, Jingyang Yuan, Junjie Qiu, Junlong Li, Junxiao Song, Kai Dong, Kai Hu, Kaige Gao, Kang Guan, Kexin Huang, Kuai Yu, Lean Wang, Lecong Zhang, Lei Xu, Leyi Xia, Liang Zhao, Litong Wang, Liyue Zhang, Meng Li, Miaojun Wang, Mingchuan Zhang, Minghua Zhang, Minghui Tang, Mingming Li, Ning Tian, Panpan Huang, Peiyi Wang, Peng Zhang, Qiancheng Wang, Qihao Zhu, Qinyu Chen, Qiushi Du, R. J. Chen, R. L. Jin, Ruiqi Ge, Ruisong Zhang, Ruizhe Pan, Runji Wang, Runxin Xu, Ruoyu Zhang, Ruyi Chen, S. S. Li, Shanghao Lu, Shangyan Zhou, Shanhuang Chen, Shaoqing Wu, Shengfeng Ye, Shengfeng Ye, Shirong Ma, Shiyu Wang, Shuang Zhou, Shuiping Yu, Shunfeng Zhou, Shuting Pan, T. Wang, Tao Yun, Tian Pei, Tianyu Sun, W. L. Xiao, and Wangding Zeng. 2024. Deepseek-v3 technical report. CoRR, abs/2412.19437.",
+    "Dubey et al. (2024) Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Amy Yang, Angela Fan, Anirudh Goyal, Anthony Hartshorn, Aobo Yang, Archi Mitra, Archie Sravankumar, Artem Korenev, Arthur Hinsvark, Arun Rao, Aston Zhang, Aurélien Rodriguez, Austen Gregerson, Ava Spataru, Baptiste Rozière, Bethany Biron, Binh Tang, Bobbie Chern, Charlotte Caucheteux, Chaya Nayak, Chloe Bi, Chris Marra, Chris McConnell, Christian Keller, Christophe Touret, Chunyang Wu, Corinne Wong, Cristian Canton Ferrer, Cyrus Nikolaidis, Damien Allonsius, Daniel Song, Danielle Pintz, Danny Livshits, David Esiobu, Dhruv Choudhary, Dhruv Mahajan, Diego Garcia-Olano, Diego Perino, Dieuwke Hupkes, Egor Lakomkin, Ehab AlBadawy, Elina Lobanova, Emily Dinan, Eric Michael Smith, Filip Radenovic, Frank Zhang, Gabriel Synnaeve, Gabrielle Lee, Georgia Lewis Anderson, Graeme Nail, Grégoire Mialon, Guan Pang, Guillem Cucurell, Hailey Nguyen, Hannah Korevaar, Hu Xu, Hugo Touvron, Iliyan Zarov, Imanol Arrieta Ibarra, Isabel M. Kloumann, Ishan Misra, Ivan Evtimov, Jade Copet, Jaewon Lee, Jan Geffert, Jana Vranes, Jason Park, Jay Mahadeokar, Jeet Shah, Jelmer van der Linde, Jennifer Billock, Jenny Hong, Jenya Lee, Jeremy Fu, Jianfeng Chi, Jianyu Huang, Jiawen Liu, Jie Wang, Jiecao Yu, Joanna Bitton, Joe Spisak, Jongsoo Park, Joseph Rocca, Joshua Johnstun, Joshua Saxe, Junteng Jia, Kalyan Vasuden Alwala, Kartikeya Upasani, Kate Plawiak, Ke Li, Kenneth Heafield, Kevin Stone, and et al. 2024. The llama 3 herd of models. CoRR, abs/2407.21783.",
+    "Hooper et al. (2024) Coleman Hooper, Sehoon Kim, Hiva Mohammadzadeh, Michael W. Mahoney, Yakun Sophia Shao, Kurt Keutzer, and Amir Gholami. 2024. Kvquant: Towards 10 million context length LLM inference with KV cache quantization. In Advances in Neural Information Processing Systems 38: Annual Conference on Neural Information Processing Systems 2024, NeurIPS 2024, Vancouver, BC, Canada, December 10 - 15, 2024.",
+    "Hsieh et al. (2024) Cheng-Ping Hsieh, Simeng Sun, Samuel Kriman, Shantanu Acharya, Dima Rekesh, Fei Jia, Yang Zhang, and Boris Ginsburg. 2024. RULER: what’s the real context size of your long-context language models? CoRR, abs/2404.06654.",
+    "Jiang et al. (2024) Albert Q. Jiang, Alexandre Sablayrolles, Antoine Roux, Arthur Mensch, Blanche Savary, Chris Bamford, Devendra Singh Chaplot, Diego de Las Casas, Emma Bou Hanna, Florian Bressand, Gianna Lengyel, Guillaume Bour, Guillaume Lample, Lélio Renard Lavaud, Lucile Saulnier, Marie-Anne Lachaux, Pierre Stock, Sandeep Subramanian, Sophia Yang, Szymon Antoniak, Teven Le Scao, Théophile Gervet, Thibaut Lavril, Thomas Wang, Timothée Lacroix, and William El Sayed. 2024. Mixtral of experts. CoRR, abs/2401.04088.",
+    "Kim et al. (2023) Sehoon Kim, Coleman Hooper, Thanakul Wattanawong, Minwoo Kang, Ruohan Yan, Hasan Genc, Grace Dinh, Qijing Huang, Kurt Keutzer, Michael W. Mahoney, Yakun Sophia Shao, and Amir Gholami. 2023. Full stack optimization of transformer inference: a survey. CoRR, abs/2302.14017.",
+    "Li et al. (2024) Yuhong Li, Yingbing Huang, Bowen Yang, Bharat Venkitesh, Acyr Locatelli, Hanchen Ye, Tianle Cai, Patrick Lewis, and Deming Chen. 2024. Snapkv: LLM knows what you are looking for before generation. CoRR, abs/2404.14469.",
+    "Linde et al. (1980) Yoseph Linde, Andres Buzo, and Robert M. Gray. 1980. An algorithm for vector quantizer design. IEEE Trans. Commun., 28(1):84–95.",
+    "Lingle (2024) Lucas D. Lingle. 2024. Transformer-vq: Linear-time transformers via vector quantization. In The Twelfth International Conference on Learning Representations, ICLR 2024, Vienna, Austria, May 7-11, 2024. OpenReview.net.",
+    "Liu et al. (2024a) Guangda Liu, Chengwei Li, Jieru Zhao, Chenqi Zhang, and Minyi Guo. 2024a. Clusterkv: Manipulating LLM KV cache in semantic space for recallable compression. CoRR, abs/2412.03213.",
+    "Liu et al. (2024b) Zirui Liu, Jiayi Yuan, Hongye Jin, Shaochen Zhong, Zhaozhuo Xu, Vladimir Braverman, Beidi Chen, and Xia Hu. 2024b. KIVI: A tuning-free asymmetric 2bit quantization for KV cache. In Forty-first International Conference on Machine Learning, ICML 2024, Vienna, Austria, July 21-27, 2024. OpenReview.net.",
+    "OpenAI (2023) OpenAI. 2023. GPT-4 technical report. CoRR, abs/2303.08774.",
+    "Penedo et al. (2024) Guilherme Penedo, Hynek Kydlícek, Loubna Ben Allal, Anton Lozhkov, Margaret Mitchell, Colin A. Raffel, Leandro von Werra, and Thomas Wolf. 2024. The fineweb datasets: Decanting the web for the finest text data at scale. In Advances in Neural Information Processing Systems 38: Annual Conference on Neural Information Processing Systems 2024, NeurIPS 2024, Vancouver, BC, Canada, December 10 - 15, 2024.",
+    "Qin et al. (2024) Ruoyu Qin, Zheming Li, Weiran He, Mingxing Zhang, Yongwei Wu, Weimin Zheng, and Xinran Xu. 2024. Mooncake: A kvcache-centric disaggregated architecture for LLM serving. CoRR, abs/2407.00079.",
+    "Reid et al. (2024) Machel Reid, Nikolay Savinov, Denis Teplyashin, Dmitry Lepikhin, Timothy P. Lillicrap, Jean-Baptiste Alayrac, Radu Soricut, Angeliki Lazaridou, Orhan Firat, Julian Schrittwieser, Ioannis Antonoglou, Rohan Anil, Sebastian Borgeaud, Andrew M. Dai, Katie Millican, Ethan Dyer, Mia Glaese, Thibault Sottiaux, Benjamin Lee, Fabio Viola, Malcolm Reynolds, Yuanzhong Xu, James Molloy, Jilin Chen, Michael Isard, Paul Barham, Tom Hennigan, Ross McIlroy, Melvin Johnson, Johan Schalkwyk, Eli Collins, Eliza Rutherford, Erica Moreira, Kareem Ayoub, Megha Goel, Clemens Meyer, Gregory Thornton, Zhen Yang, Henryk Michalewski, Zaheer Abbas, Nathan Schucher, Ankesh Anand, Richard Ives, James Keeling, Karel Lenc, Salem Haykal, Siamak Shakeri, Pranav Shyam, Aakanksha Chowdhery, Roman Ring, Stephen Spencer, Eren Sezener, and et al. 2024. Gemini 1.5: Unlocking multimodal understanding across millions of tokens of context. CoRR, abs/2403.05530.",
+    "Singhania et al. (2024) Prajwal Singhania, Siddharth Singh, Shwai He, Soheil Feizi, and Abhinav Bhatele. 2024. Loki: Low-rank keys for efficient sparse attention. In Advances in Neural Information Processing Systems 38: Annual Conference on Neural Information Processing Systems 2024, NeurIPS 2024, Vancouver, BC, Canada, December 10 - 15, 2024.",
+    "Su (2023a) Jianlin Su. 2023a. Expand the context length with rope, part 3 – unlocking the unlimited extrapolation potential with rerope. https://normxu.github.io/Rethinking-Rotary-Position-Embedding-3/.",
+    "Su (2023b) Jianlin Su. 2023b. Rectified rotary position embeddings. https://github.com/bojone/rerope.",
+    "Su et al. (2021) Jianlin Su, Yu Lu, Shengfeng Pan, Bo Wen, and Yunfeng Liu. 2021. Roformer: Enhanced transformer with rotary position embedding. CoRR, abs/2104.09864.",
+    "Tang et al. (2024) Jiaming Tang, Yilong Zhao, Kan Zhu, Guangxuan Xiao, Baris Kasikci, and Song Han. 2024. QUEST: query-aware sparsity for efficient long-context LLM inference. In Forty-first International Conference on Machine Learning, ICML 2024, Vienna, Austria, July 21-27, 2024. OpenReview.net.",
+    "Vaswani et al. (2017) Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N. Gomez, Lukasz Kaiser, and Illia Polosukhin. 2017. Attention is all you need. CoRR, abs/1706.03762.",
+    "Wu et al. (2024) Chen Wu, Yin Song, and Eden Duthie. 2024. aws-prototyping/MegaBeam-Mistral-7B-512k.",
+    "Xiao et al. (2024) Guangxuan Xiao, Yuandong Tian, Beidi Chen, Song Han, and Mike Lewis. 2024. Efficient streaming language models with attention sinks. In The Twelfth International Conference on Learning Representations, ICLR 2024, Vienna, Austria, May 7-11, 2024. OpenReview.net.",
+    "Yang et al. (2024a) An Yang, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chengyuan Li, Dayiheng Liu, Fei Huang, Haoran Wei, Huan Lin, Jian Yang, Jianhong Tu, Jianwei Zhang, Jianxin Yang, Jiaxi Yang, Jingren Zhou, Junyang Lin, Kai Dang, Keming Lu, Keqin Bao, Kexin Yang, Le Yu, Mei Li, Mingfeng Xue, Pei Zhang, Qin Zhu, Rui Men, Runji Lin, Tianhao Li, Tingyu Xia, Xingzhang Ren, Xuancheng Ren, Yang Fan, Yang Su, Yichang Zhang, Yu Wan, Yuqiong Liu, Zeyu Cui, Zhenru Zhang, and Zihan Qiu. 2024a. Qwen2.5 technical report. CoRR, abs/2412.15115.",
+    "Yang et al. (2024b) Dongjie Yang, Xiaodong Han, Yan Gao, Yao Hu, Shilin Zhang, and Hai Zhao. 2024b. Pyramidinfer: Pyramid KV cache compression for high-throughput LLM inference. In Findings of the Association for Computational Linguistics, ACL 2024, Bangkok, Thailand and virtual meeting, August 11-16, 2024, pages 3258–3270. Association for Computational Linguistics.",
+    "Zhang et al. (2024) Hailin Zhang, Xiaodong Ji, Yilin Chen, Fangcheng Fu, Xupeng Miao, Xiaonan Nie, Weipeng Chen, and Bin Cui. 2024. Pqcache: Product quantization-based kvcache for long context LLM inference. CoRR, abs/2407.12820.",
+    "Zhang et al. (2023) Zhenyu Zhang, Ying Sheng, Tianyi Zhou, Tianlong Chen, Lianmin Zheng, Ruisi Cai, Zhao Song, Yuandong Tian, Christopher Ré, Clark W. Barrett, Zhangyang Wang, and Beidi Chen. 2023. H2O: heavy-hitter oracle for efficient generative inference of large language models. In Advances in Neural Information Processing Systems 36: Annual Conference on Neural Information Processing Systems 2023, NeurIPS 2023, New Orleans, LA, USA, December 10 - 16, 2023."
+  ]
+}

@@ -1,0 +1,339 @@
+{
+  "title": "LM Agents for Coordinating Multi-User Information Gathering",
+  "authors": "Harsh Jhamtani,Jacob Andreas,Benjamin Van DurmeMicrosoft{hjhamtani,jaandrea,ben.vandurme}@microsoft.com",
+  "abstract": "This paper introduces PeopleJoin, a benchmark for evaluating LM-mediated collaborative problem solving. Given a user request, PeopleJoin agents must identify teammates who might be able to assist, converse with these teammates to gather information, and finally compile a useful answer or summary for the original user. PeopleJoin comprises two evaluation domains: PeopleJoin-QA, focused on questions about tabular data, and PeopleJoin-DocCreation, focused on document creation tasks. The two domains are adapted from existing NLP benchmarks for database question answering and multi-document summarization; here, however, the information needed to complete these tasks is distributed across synthetic “organizations” of 2–20 users, simulating natural multi-user collaboration scenarios. We implemented several popular LM agent architectures, evaluating their accuracy and efficiency at completing tasks, and highlight new research questions that can be studied using PeopleJoin.111Code and data can be found at https://github.com/microsoft/peoplejoin/",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "In today’s fast-paced and interconnected world, effective collaboration is essential for achieving complex tasks and making informed decisions Papachristou et al. (2023); Gemp et al. (2024). Many decision-making, content creation, and information-gathering tasks require collecting information from multiple people. For example, preparing a list of interns across teams in an organization by reaching out to the leader of each team; preparing a newsletter for project updates might necessitate coordinating with multiple contributors; identifying a suitable time to meet might require several rounds of negotiations Lin et al. (2024). Identifying what information is available, judiciously determining who to contact, asking precise questions, and compiling research results can be a challenging and time-consuming process—especially when real-time interaction between team members is difficult to coordinate.",
+        "At the same time, recent large language models (LLMs), such as GPT-4 OpenAI (2023), Phi-3 Abdin et al. (2024), LLaMa Touvron et al. (2023), and Gemini Team et al. (2023), are becoming a crucial building block in developing automated agents that can assist human users with complex tasks Xi et al. (2023); Wang et al. (2024); Butler et al. (2023). These tasks include chat applications for assisting individual users with searching and summarizing information (such as in Microsoft Copilot Chat222https://copilot.microsoft.com/), and even supporting these users in workplace decision-making (Butler et al., 2023; Kim and Hsu, 2024). Could these agents be extended to improve collaboration among multiple users?",
+        "In this paper, we introduce PeopleJoin, an evaluation framework for studying effectiveness of LLM-powered agents to assist with multi-user collaboration tasks. Each PeopleJoin task takes place within a fictitious organization with 2–20 employees, some of whom possess a collection of documents necessary to solve some task. One of the users (the initiating user) communicates the task to an agent (Fig. 1). Agents have direct access to the initiating user’s documents, and can engage in conversations with other users to gather relevant information. They must rely on limited descriptions of other users, and potentially previous interactions, to determine who to contact for a given task. PeopleJoin comprises two families of tasks: PeopleJoin-QA and PeopleJoin-DocCreation, derived from the spider (Yu et al., 2018) and multinews (Fabbri et al., 2019) datasets respectively. It evaluates agents’ ability to answer questions involving complex relational reasoning and document summarization.",
+        "Our initial benchmark release also includes reference agent implementations based on popular prompting and orchestration strategies, and a suite of evaluation metrics. We report evaluation results using Phi-3-medium Abdin et al. (2024), GPT-4-turbo and GPT-4o OpenAI (2023) language models to implement these agents. Our results indicate that LM-powered agents can struggle to coordinate with multiple users to correctly address information seeking and document authoring requests. Major research questions remain around how to optimally determine which people to contact and in what order, how to ask high-quality questions, and how to learn and adapt to the structure of an organization. PeopleJoin thus provide a test-bed for building AI-driven systems that can enhance human collaboration, and will also enable future work on learning from interaction, distributing tasks equitably, and maintaining user privacy in such agentic systems."
+      ],
+      "subsections": []
+    },
+    "2 Challenges in Effectively Steering Multi-User Information Gathering": {
+      "paragraphs": [
+        "The problem of answering user queries by synthesizing information distributed across heterogeneous data sources is most often studied through the lens of database systems Zaniolo (1997). Work on query optimization and federated databases Sheth and Larson (1990) has sought to address the specific question of how to efficiently answer structured queries without access to a centralized knowledge store. The problem we study in PeopleJoin may be viewed as a generalization of this task to the setting where the relevant information is possessed by people, not structured knowledge bases, and must be obtained via conversation rather than structured queries. An agent to help a user with such requests must address several challenges:",
+        "Below, we present a benchmark for evaluating these skills.",
+        "• Information fragmentation: In a typical organization, information is often siloed across multiple users, because of differing roles and responsibilities. Some requests may require gathering information from multiple people.",
+        "• Partial observability: To gather this information, it is often necessary to first determine which collaborators hold relevant information, under incomplete and potentially imprecise information of what information each collaborator might have. Agents for collaborative decision-making might have to engage in multi-turn conversations with various users, refining and adapting requests as needed.",
+        "• Communication costs: Requests for information require human effort to process and answer; effective collaboration requires efficient communication: effective agents should judiciously send information requests to other collaborators, and avoid asking questions that are likely to be unanswerable.",
+        "• Complex reasoning and planning: Efficient communication requires reasoning: establishing what information is available in accessible documents, dynamically predicting which collaborators are likely to have relevant information for specific questions, identifying the best order in which to ask these questions, and re-planning based on collaborators’ responses."
+      ],
+      "subsections": []
+    },
+    "3 Data": {
+      "paragraphs": [
+        "Each PeopleJoin domain comprises a set of organizations. Each organization contains a set of collaborators, and each collaborator has privileged access to a set of documents. The benchmark provides LLM-based simulators for each collaborator, a search interface that can be used to find collaborators, and a messaging interface that can be used to ask collaborators about their documents. Then an agent must take as input a query from one collaborator, use the search and messaging interfaces to interact with other collaborators, and finally return an answer to the originator.",
+        "Drawing analogies between multi-user collaboration tasks and existing multi-data-source tasks commonly studied in NLP, we develop PeopleJoin by re-purposing existing high-quality resources for database question answering (to produce PeopleJoin-QA) and multi-document summarization (to produce PeopleJoin-DocCreation)."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 PeopleJoin-QA",
+          "paragraphs": [
+            "The PeopleJoin-QA dataset evaluates LM agents’ abilities to answer questions by aggregating information from multiple collaborators. We construct it by re-purposing spider Yu et al. (2018), a text-to-SQL benchmark. We transform spider into a multi-user information gathering task by recasting spider tables as “documents”, distributed among several users, and interpreting spider questions as queries from an initiating user to an AI agent. In this scenario, answering questions requires identifying which users possess the relevant pieces of information (similar to selecting tables in a database), and then engaging in multi-turn conversations with these users to ask targeted questions (akin to constructing joins between tables).",
+            "spider consists of a set of 200 databases, with a total of over 10K questions. Each database in spider is transformed into an “organization” containing a set of 22–2020 distinct users, each with access to a distinct set of documents.",
+            "Each table in a spider database is converted to one or more documents.333Represented as a sequence of json objects, one per row. We additionally apply the following transformations to elicit a diverse set of information-gathering behaviors:",
+            "1. Split Documents: One of the randomly selected tables is split into two parts (each containing half the rows). This simulates a scenario in which information about a given topic is distributed across multiple individuals. For instance, in Fig. 2, the information in the table department is split between Alice and Dante.",
+            "2. Redirection: We construct scenarios in which a (“redirecting”) user does not have direct access to some information (e.g. Chen in Fig. 2), but does have knowledge of which other (“target”) user might have this information (Dante in Fig 2). To answer questions about these tables, agents cannot always contact knowledgeable users directly, and must navigate organizational knowledge hierarchies to find them. Information about other users is available to the redirecting user as an additional document.",
+            "3. Missing Information: In each database, we omit a randomly selected table, making a subset of the queries associated with that organization unanswerable, simulating a scenario in which required information is simply not present Levy et al. (2017); Rajpurkar et al. (2018) in the organization.",
+            "Split Documents: One of the randomly selected tables is split into two parts (each containing half the rows). This simulates a scenario in which information about a given topic is distributed across multiple individuals. For instance, in Fig. 2, the information in the table department is split between Alice and Dante.",
+            "Redirection: We construct scenarios in which a (“redirecting”) user does not have direct access to some information (e.g. Chen in Fig. 2), but does have knowledge of which other (“target”) user might have this information (Dante in Fig 2). To answer questions about these tables, agents cannot always contact knowledgeable users directly, and must navigate organizational knowledge hierarchies to find them. Information about other users is available to the redirecting user as an additional document.",
+            "Missing Information: In each database, we omit a randomly selected table, making a subset of the queries associated with that organization unanswerable, simulating a scenario in which required information is simply not present Levy et al. (2017); Rajpurkar et al. (2018) in the organization.",
+            "In PeopleJoin-QA, each user is allocated one document, and no two users have access to the same document. After we have assigned each organization member a set of documents, we populate the collaborator search interface with hints about what information they might have access to (e.g. Chen likely has information about teacher salaries). We begin by constructing templated descriptions specifying the table name and names of columns, then use GPT-4 to convert these to simpler English statements using a few-shot prompting setup.These transformations by design sometimes result in imprecise or incomplete descriptions, simulating the challenges of selecting a good subset of people to contact under limited information. For example, Chen might know about student demographics fails to specify what specific demographic information is there, and how it is associated with students (e.g., using a student ID, name, or other identifier). For redirections as described above, these descriptions state that the redirecting user has the information that is in fact possessed by the target user.",
+            "Each organization is associated with multiple problem instances, one for each question in the underlying spider dataset. For example, in Fig 2, the task issued by Alice to their agent is What are the name and budgets of the department…, which must then be answered by reasoning about the contents of both Alice’s documents and the other users’. Ground-truth answers are derived from the underlying Spider annotations, except in the case of un-answerable queries. Our primary evaluation metric measures the accuracy with which agents can recover ground-truth answers and identify unanswerable questions; secondary evaluations measure whether the right users were contacted, and the efficiency (in terms of messages sent) with which agents identify these users.",
+            "Though the Spider dataset has several thousands of questions paired with databases, we restrict to 500 test tasks to enable efficient evaluation.444Our code release makes it possible to generate additional organizations for training and evaluation. A typical task requires agent to interact with 0–5 people (excluding the initiating user) to arrive at the answer (mean of 1.54 with a variance of 1.12). 9% of test instances in PeopleJoin-QA are unanswerable, 22% of the test instances require an agent to handle a redirection to arrive at correct answer, while 25% of the test instances require an agent to handle a document split between multiple people to answer the user question correctly. Note that a data instance could belong to more than one category (for example, a task might require access to split documents as well as access to information from another document that needs to be accessed through redirection)."
+          ]
+        },
+        {
+          "title": "Documents",
+          "paragraphs": [
+            "Each table in a spider database is converted to one or more documents.333Represented as a sequence of json objects, one per row. We additionally apply the following transformations to elicit a diverse set of information-gathering behaviors:",
+            "1. Split Documents: One of the randomly selected tables is split into two parts (each containing half the rows). This simulates a scenario in which information about a given topic is distributed across multiple individuals. For instance, in Fig. 2, the information in the table department is split between Alice and Dante.",
+            "2. Redirection: We construct scenarios in which a (“redirecting”) user does not have direct access to some information (e.g. Chen in Fig. 2), but does have knowledge of which other (“target”) user might have this information (Dante in Fig 2). To answer questions about these tables, agents cannot always contact knowledgeable users directly, and must navigate organizational knowledge hierarchies to find them. Information about other users is available to the redirecting user as an additional document.",
+            "3. Missing Information: In each database, we omit a randomly selected table, making a subset of the queries associated with that organization unanswerable, simulating a scenario in which required information is simply not present Levy et al. (2017); Rajpurkar et al. (2018) in the organization.",
+            "Split Documents: One of the randomly selected tables is split into two parts (each containing half the rows). This simulates a scenario in which information about a given topic is distributed across multiple individuals. For instance, in Fig. 2, the information in the table department is split between Alice and Dante.",
+            "Redirection: We construct scenarios in which a (“redirecting”) user does not have direct access to some information (e.g. Chen in Fig. 2), but does have knowledge of which other (“target”) user might have this information (Dante in Fig 2). To answer questions about these tables, agents cannot always contact knowledgeable users directly, and must navigate organizational knowledge hierarchies to find them. Information about other users is available to the redirecting user as an additional document.",
+            "Missing Information: In each database, we omit a randomly selected table, making a subset of the queries associated with that organization unanswerable, simulating a scenario in which required information is simply not present Levy et al. (2017); Rajpurkar et al. (2018) in the organization.",
+            "In PeopleJoin-QA, each user is allocated one document, and no two users have access to the same document. After we have assigned each organization member a set of documents, we populate the collaborator search interface with hints about what information they might have access to (e.g. Chen likely has information about teacher salaries). We begin by constructing templated descriptions specifying the table name and names of columns, then use GPT-4 to convert these to simpler English statements using a few-shot prompting setup.These transformations by design sometimes result in imprecise or incomplete descriptions, simulating the challenges of selecting a good subset of people to contact under limited information. For example, Chen might know about student demographics fails to specify what specific demographic information is there, and how it is associated with students (e.g., using a student ID, name, or other identifier). For redirections as described above, these descriptions state that the redirecting user has the information that is in fact possessed by the target user."
+          ]
+        },
+        {
+          "title": "Task and Evaluation",
+          "paragraphs": [
+            "Each organization is associated with multiple problem instances, one for each question in the underlying spider dataset. For example, in Fig 2, the task issued by Alice to their agent is What are the name and budgets of the department…, which must then be answered by reasoning about the contents of both Alice’s documents and the other users’. Ground-truth answers are derived from the underlying Spider annotations, except in the case of un-answerable queries. Our primary evaluation metric measures the accuracy with which agents can recover ground-truth answers and identify unanswerable questions; secondary evaluations measure whether the right users were contacted, and the efficiency (in terms of messages sent) with which agents identify these users."
+          ]
+        },
+        {
+          "title": "Statistics",
+          "paragraphs": [
+            "Though the Spider dataset has several thousands of questions paired with databases, we restrict to 500 test tasks to enable efficient evaluation.444Our code release makes it possible to generate additional organizations for training and evaluation. A typical task requires agent to interact with 0–5 people (excluding the initiating user) to arrive at the answer (mean of 1.54 with a variance of 1.12). 9% of test instances in PeopleJoin-QA are unanswerable, 22% of the test instances require an agent to handle a redirection to arrive at correct answer, while 25% of the test instances require an agent to handle a document split between multiple people to answer the user question correctly. Note that a data instance could belong to more than one category (for example, a task might require access to split documents as well as access to information from another document that needs to be accessed through redirection)."
+          ]
+        },
+        {
+          "title": "3.2 PeopleJoin-DocCreation",
+          "paragraphs": [
+            "The PeopleJoin-DocCreation task evaluates agents not on structured QA, but instead on more open-ended document creation tasks. We derive it from MultiNews Fabbri et al. (2019), a multi-document summarization dataset consisting of sets of news articles on a related topic and single summaries that aggregate information across the articles. We distribute source news articles across multiple users, and require agents to gather these documents (or excerpts from them) and combine them into a target summary.",
+            "As in PeopleJoin-QA, each organization is derived from underlying MultiNews problem instances. Here, however, multiple problem instances are combined into a single organization: some users have articles on one subject, some users have articles about multiple subjects, and some may have no articles at all. Each organization possesses information about 33 topics, and contains 11–77 users, with documents randomly partitioned across users.",
+            "Also as in PeopleJoin-QA, we create user descriptions for collaborator search by presenting user documents to GPT-4 and querying it for a list of keywords that the user is knowledgeable about (e.g. governor election, GOP, health care).",
+            "Because of the relatively large size of the documents that must be exchanged to complete these tasks, we construct 200 test instances distributed across 67 organizations. Summaries are derived from an average of 2.7 documents (variance of 1.1), which must be located within organizations with an average of 5.1 users (variance of 4.5) and 6.4 total documents (variance of 4.1) or 1.25 documents per user."
+          ]
+        },
+        {
+          "title": "Task and Evaluation",
+          "paragraphs": [
+            "As in PeopleJoin-QA, each organization is derived from underlying MultiNews problem instances. Here, however, multiple problem instances are combined into a single organization: some users have articles on one subject, some users have articles about multiple subjects, and some may have no articles at all. Each organization possesses information about 33 topics, and contains 11–77 users, with documents randomly partitioned across users.",
+            "Also as in PeopleJoin-QA, we create user descriptions for collaborator search by presenting user documents to GPT-4 and querying it for a list of keywords that the user is knowledgeable about (e.g. governor election, GOP, health care)."
+          ]
+        },
+        {
+          "title": "Statistics",
+          "paragraphs": [
+            "Because of the relatively large size of the documents that must be exchanged to complete these tasks, we construct 200 test instances distributed across 67 organizations. Summaries are derived from an average of 2.7 documents (variance of 1.1), which must be located within organizations with an average of 5.1 users (variance of 4.5) and 6.4 total documents (variance of 4.1) or 1.25 documents per user."
+          ]
+        }
+      ]
+    },
+    "4 Baseline Agent Architectures": {
+      "paragraphs": [
+        "To demonstrate the usefulness of PeopleJoin as a research platform, we develop and evaluate a reference LM-powered agent implementation to perform tasks by coordinating interactions, retrieving relevant information, and posing targeted queries to other organization members. We consider an event-based reactive agent, which is triggered by user actions: upon getting a message from any organization member, the agent follows ReAct-style prompting loop Yao et al. (2023), taking actions, making observations, and performing reflection, until it decides to pause and wait for a next event, or terminate the session."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Actions",
+          "paragraphs": [
+            "The agent can perform a few types of actions. Document Retrieval: agents have access to documents accessible to the initiating user, by invoking a function search_documents(query: str). Documents are indexed using a standard BM25 index, and the tool call returns a fixed number (upto 3) of documents with the highest matching score. People Retrieval: agents can search through a repository of employee profiles and knowledge areas, by invoking a function search_relevant_people(query: str). However, these expertise profiles may be outdated or imprecise, requiring the agent to navigate uncertainty while coordinating queries. As in document retrieval, descriptions are retrieved using a standard BM25 index. A fixed number (up to 10) of highest-scoring results are returned. Sending Messages: the agent is capable of exchanging messages with any person in the organization. Person Resolution: the agent can resolve a person name to get their user ids, to be used to send messages to them. Turn and Session Completion: agent can mark the current turn or the entire session as completed.",
+            "Signatures of Python functions corresponding to the allowed actions are provided in the prompt. See Appendix A.1 for the full set of action descriptions."
+          ]
+        },
+        {
+          "title": "4.2 Observations and Reflection",
+          "paragraphs": [
+            "After each action is taken, the agent receives a textual observation. These include retrieved documents or descriptions of collaborators. As is typical in LLM-based agent architectures, these observations are simply appended to the agent’s prompt. Before invoking additional actions, the agent may perform reflection actions, corresponding to text-based (“scratchpad” or “chain-of-thought”) reasoning about its future plans. Our agent represents reflection as tool calls that return no value but remain in the agent’s prompt at future timesteps."
+          ]
+        },
+        {
+          "title": "4.3 Prompt Structure",
+          "paragraphs": [
+            "The prompt has 3 parts: action descriptions (outlined above); exemplars; and interaction history.",
+            "Exemplars: In each domain, we manually annotated four exemplars (See Appendix A.2 for a full exemplar) with events, actions, and observations. The exemplars are designed to reflect all relevant phenomena in the domain in question, such as dealing with fragmented information, handling unanswerable questions, and managing redirection.",
+            "Interaction History: An event (receiving a message from an employee) triggers LLM into a loop of action prediction, observation, and reflection, till an end of turn or session is predicted. Actions are executed immediately after they are predicted; events, action, and observation are incrementally appended in the prompt in the order in which they occur (see Appendix A)."
+          ]
+        }
+      ]
+    },
+    "5 Evaluation": {
+      "paragraphs": [
+        "PeopleJoin provides metrics for evaluating the efficiency and correctness of user interactions."
+      ],
+      "subsections": [
+        {
+          "title": "5.1 Outcome Metrics",
+          "paragraphs": [
+            "The most important measure of an agent’s effectiveness is its ability to provide the correct response to the user’s query. We characterize correctness in different ways for the domains within PeopleJoin.",
+            "For PeopleJoin-QA, we prompt an LLM-based evaluator to compare the agent’s final response to the reference answer and output a score in {0,50,100}, where a score of 100 refers to a perfectly matched score (all the expected information was present), a score of 50 refers to a partial match (for example, if only few of the expected list of items were correctly provided), while a score of 0 refers to incorrect results (for example, if the agent claimed it could not find the requested information but gold answer suggests otherwise). The score is predicted by an LLM (gpt-4-turbo), conditioned upon the agent response to the initiating user and the expected gold answer, certain prompt instructions and three examples. More details are available in the Appendix B.1.",
+            "For the PeopleJoin-DocCreation task, we require agents to output a final summary enclosed by special delimiter tokens, then report the rouge-L score (Lin, 2004) of this summary relative to the reference summary. If the agent produces no summary, it obtains a score of 0; if it produces multiple summaries on different turns,we score only the final one. We also report G-Eval scores (Liu et al., 2023), a set of automated metrics that evaluate the relevance, consistency, and coherence of a summary using an LM with access to source documents. G-Eval has been found to correlate highly with human summarization ratings Song et al. (2024)."
+          ]
+        },
+        {
+          "title": "Answer match:",
+          "paragraphs": [
+            "For PeopleJoin-QA, we prompt an LLM-based evaluator to compare the agent’s final response to the reference answer and output a score in {0,50,100}, where a score of 100 refers to a perfectly matched score (all the expected information was present), a score of 50 refers to a partial match (for example, if only few of the expected list of items were correctly provided), while a score of 0 refers to incorrect results (for example, if the agent claimed it could not find the requested information but gold answer suggests otherwise). The score is predicted by an LLM (gpt-4-turbo), conditioned upon the agent response to the initiating user and the expected gold answer, certain prompt instructions and three examples. More details are available in the Appendix B.1."
+          ]
+        },
+        {
+          "title": "rouge and G-Eval",
+          "paragraphs": [
+            "For the PeopleJoin-DocCreation task, we require agents to output a final summary enclosed by special delimiter tokens, then report the rouge-L score (Lin, 2004) of this summary relative to the reference summary. If the agent produces no summary, it obtains a score of 0; if it produces multiple summaries on different turns,we score only the final one. We also report G-Eval scores (Liu et al., 2023), a set of automated metrics that evaluate the relevance, consistency, and coherence of a summary using an LM with access to source documents. G-Eval has been found to correlate highly with human summarization ratings Song et al. (2024)."
+          ]
+        },
+        {
+          "title": "5.2 Efficiency Metrics",
+          "paragraphs": [
+            "An effective agent should not only produce correct answers, but do so while minimizing effort from collaborators. We quantify this using three metrics. Message count (Msg): measures the total number of messages exchanged during the task. Message size (MsgSize): message count alone does not penalize requests requiring lengthy responses from collaborators, so we additionally report the total number of words exchanged (tokenized using the NLTK Bird et al. (2009) word tokenizer). People contacted (#People): the count of people that the agent exchanged messages with (including the initiating user), averaged across the test set."
+          ]
+        },
+        {
+          "title": "5.3 Information Source Metrics",
+          "paragraphs": [
+            "In both PeopleJoin-QA and PeopleJoin-DocCreation, the gold set of documents required to answer a task correctly are known, which also allows us to infer the optimal set of people an agent must contact to arrive at the correct outcome. We collect the set of distinct users contacted by the agent, then compute the precision (P-Prec) and recall (P-Rec) relative to the ground-truth people set, averaged across queries."
+          ]
+        }
+      ]
+    },
+    "6 Experiments": {
+      "paragraphs": [
+        "The PeopleJoin framework includes user simulators that represent collaborators within an organization, along with scaffolding code that enables an agent to search through the initiating user’s documents and identify and contact relevant collaborators. All experiments use a gpt-4-turbo model (OpenAI, 2023), prompted with each collaborator’s description and document collection, to implement these simulators (full prompt in Appendix B.2). We then evaluate our reference agent architecture using the metrics described above.",
+        "We compare several alternative implementations of this reference architecture, including variations in task orchestration and planning strategies. Reactive is the full agent architecture Yao et al. (2023), and Reactive-NoRef is a variant of this architecture which performs no reflection actions. We compare gpt-4-turbo OpenAI (2023), gpt-4o OpenAI (2023), and phi-3-medium Abdin et al. (2024) as LLMs. We use greedy decoding."
+      ],
+      "subsections": [
+        {
+          "title": "6.1 Results onPeopleJoin-QA",
+          "paragraphs": [
+            "The max score on Match metric across all methods is only 54.854.8 (Table 1), achieved by Reactive when used with gpt-4-turbo, demonstrating the overall challenging setup. Moreover, for the same configuration, P-Prec and P-Rec scores are 0.610.61 and 0.890.89 respectively, demonstrating scope of further improvement in optimal selection of people to contact. Comparing LLM choices for Reactive, gpt-4-turbo performed better than gpt-4o, while phi-3-medium is generally worse on Match and information source selection. Finally, Reactive generally performs similar or better than Reactive-NoRef across LLMs on Match, efficiency, and optimal selection of information sources, demonstrating the usefulness of a reflection step. ",
+            "Additional Comparisons: To put these results in perspective, we additionally compare with following techniques: ",
+            "(1) MessageAllOnce, an agent that is encouraged (through prompt instructions and exemplars) to message each person in the organization exactly once, with the same question the user asked. MessageAllOnce results highlight the importance of judiciously choosing who to contact (MsgCnt of 11.4 compared to 9.0 for Reactive), framing the correct questions and engaging in multi-turn conversations with collaborators when needed (Match score is much lower than that of Reactive). (2) MessageNone, an agent that attempts to complete the task with the user’s documents alone (i.e. without contacting any collaborator). MessageNone results provide a baseline performance when no collaborator is contacted. (3) IdealAgent, which is defined as the one that always gets the correct answers by contacting the optimal set of relevant collaborators, formulating perfect questions, etc. will get a Match score of 100, #People count of 1.5 (equals count of the optimal set of people to contact), and MsgCnt of 7. ",
+            "Analysis: We analyzed Match scores on subsets of PeopleJoin-QA for Reactive with gpt-4-turbo: (1) Document Split: 50.0; (2) Redirection: 38.0; (3) Unanswerable: 87.5. The results demonstrate that Reactive does particularly well in identifying unanswerable questions, but struggles with information fragmentation and knowledge hierarchies required to correctly handle the redirection category.",
+            "We include a few qualitative examples in Appendix B.3. Additionally, we analyzed 40 random examples with imperfect Match scores in PeopleJoin-QA when using Reactive and the most common failure modes were: (1) Failing to contact all relevant users and arriving at an incorrect answer [30%30\\% of cases]. (2) Poorly worded or overly-specific queries from the agent causing other users to conclude that they didn’t have relevant information [25%25\\% of cases]. For example, the Listing 9 in Appendix B.3. (3) Failing to reach out to all the relevant people and telling the user it couldn’t get all the information [20%20\\% of cases]. (4) Orchestration errors, such as not predicting tools for people or document search [10%10\\%] (Listing 8 is an example)."
+          ]
+        },
+        {
+          "title": "6.2 Results onPeopleJoin-DocCreation",
+          "paragraphs": [
+            "On PeopleJoin-DocCreation, among the LLM choices, gpt-4-turbo performs better than gpt-4o, which in turn performs better than phi-3 (Table 2). In contrast to results in PeopleJoin-QA, Reactive and Reactive-NoRef variants perform similar, suggesting no usefulness of the reflection step in the document creation task. On this task, an IdealAgent should obtain G-Eval scores of 5, MsgCnt of 6.3, MsgSize of 1592, and #People of 1.7. These results indicate that the document creation task is also challenging, with significant scope for improvement in output quality and communicative efficiency. ",
+            "Analysis: Here, the most common failure modes (in 40 analyzed examples) were (1) failing to ask follow-up questions in cases where one user had multiple documents on a given topic [38% of cases], (2) poorly worded or overly-specific queries, causing other users to conclude that they didn’t have relevant documents [24%], and (3) orchestration failures in which the agent was distracted by a user comment and ended the conversation early or stopped pursuing the original goal [38%]."
+          ]
+        },
+        {
+          "title": "6.3 Case Study with Human Participants",
+          "paragraphs": [
+            "The experiments discussed above rely on simulated users. To complement this, we conducted a human evaluation study in which real users took on the roles of certain collaborators in the experiment. The goal of this study was to assess whether the agents perform the task with similar efficacy when interacting with human users compared to a fully simulated environment. Like simulated users, human participants (Appendix B.4) had access to the documents associated with their assigned personas. Messages from the agent indicated that they were generated by an automated system. While participants were free to respond as they saw fit, they were instructed to engage as respectful colleagues within a business setting.",
+            "The study was conducted on 100 randomly selected examples from the PeopleJoin-QA dataset. In each instance, one collaborator role was played by a human participant. To ensure meaningful interaction, rather than selecting personas randomly— which could result in cases where the human collaborator was not contacted by the agent— we specifically picked the human collaborator to be among the gold set of individuals the agent needed to contact for the test example in question.",
+            "Table 4 presents results, comparing performance metrics between human-in-the-loop interactions and the fully simulated setup, when using Reactive with gpt-4-turbo. Human collaborators provided slightly longer responses and asked more clarification questions than simulated collaborators, leading to a higher number of messages from the agent as well. We also observed slightly better average Match score with human users compared to full simulation. But together, these results suggest the simulated setup produces qualitatively similar dialogs and outcomes to human interactions."
+          ]
+        }
+      ]
+    },
+    "7 Related Work": {
+      "paragraphs": [
+        "AI-mediated collaboration and negotiations: Recent research in human-AI collaboration has explored various strategies for facilitating decision-making and negotiations among multiple users. Lin et al. (2024) examines how AI assistants can assist humans through natural language interactions to make complex decisions, such as planning a multi-city itinerary or negotiating travel arrangements among friends. Gemp et al. (2024) focus on how game-theoretic approaches that can guide LLMs in tasks like meeting scheduling and resource allocation. Past work Papachristou et al. (2023) has also explored the role of LLMs in facilitating group decisions, such as selecting a meeting time or venue, where LLM agents analyze individual preferences from conversations. In contrast, PeopleJoin focuses on LM agents for coordinating multi-user information gathering.",
+        "Multi-hop reasoning and task decomposition: In our setup, an agent needs to compile information from multiple sources, a theme shared with prior work in multi-hop QA Welbl et al. (2018); Yang et al. (2018) and multi-document summarization Liu et al. (2018); Fabbri et al. (2019). Past work on solving complex tasks by decomposing them (via prompting) into simpler sub-tasks Wolfson et al. (2020); Khot et al. (2022); Jhamtani et al. (2024) is also relevant. Compared to such past work, our setup requires additional steps of finding the relevant users, posing apt questions, compiling the gathered information, and doing so with minimum communication overhead possible."
+      ],
+      "subsections": []
+    },
+    "8 Conclusions and Future Directions": {
+      "paragraphs": [
+        "PeopleJoin is a new benchmark designed to evaluate the role of language model (LM) agents in facilitating collaborative information gathering within multi-user environments. It comprises two domains, PeopleJoin-QA and PeopleJoin-DocCreation, which challenge LM agents to handle tasks related to question-answering and document creation. Experiments with popular LM agent architectures revealed both their potential and limitations in accurately and efficiently completing complex collaborative tasks.",
+        "Future work could consider AI agents that learn over time from interactions for improving their performance over time Lewis (1998). By analyzing past conversations, they can improve information source selection and communication strategies, making future interactions more efficient. Secondly, privacy risks emerge when agents access personal documents, as large language models may not fully adhere to privacy guidelines Mireshghallah et al. (2023). Future work could focus on privacy-centric evaluations and explore new information access models to mitigate such risks. Finally, an excessive number of AI-initiated requests can overwhelm users, hindering productivity. Building agents that can minimize human effort and prioritize urgent requests remains a challenge."
+      ],
+      "subsections": []
+    },
+    "Limitations": {
+      "paragraphs": [
+        "PeopleJoin consists of two tasks and is in one language (English). Future work could explore further expanding the domains and supported languages. We make the simplifying assumption that an agent in our setup can engage only in dyadic conversations. Exploring more topologies such as group chats Wu et al. (2023) would bring-in additional challenges. We designed the domains and the experiment setup to study the effectiveness of the LM agents on a diverse set of information gathering behaviors. However, our analysis did not model all the possible factors in a real-world. Future work can explore additional factors such as turn-around speed and reliability of the response from a collaborator, how busy a person is, and various social dynamics that can be at play in organizations."
+      ],
+      "subsections": []
+    },
+    "Ethics Statement": {
+      "paragraphs": [
+        "Allowing AI agents the capability to send messages to other users without fine-grained supervision presents a trade-off between saving user time and maintaining control. While autonomy can streamline workflows by eliminating the need for constant user confirmation, verifying key actions helps ensure accuracy and user oversight. While we studied the task in a sand-boxed environment, practitioners should carefully choose the degree of autonomy granted (for example, a more conservative approach would be to get user confirmation before every message that is sent)."
+      ],
+      "subsections": []
+    },
+    "Acknowledgements": {
+      "paragraphs": [
+        "We thank Jason Eisner and Hao Fang for thoughtful discussions. We thank Chris Kedzie, Patrick Xia, Justin Svegliato and Soham Dan for feedback on the paper."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix": {
+      "paragraphs": [],
+      "subsections": []
+    },
+    "Appendix A Additional details on approach": {
+      "paragraphs": [
+        "[Table: Table 5: Overview of the prompt structure.]"
+      ],
+      "subsections": [
+        {
+          "title": "A.1 Action descriptions",
+          "paragraphs": [
+            "Listing LABEL:ls:action-desc shows the signatures and docstrings of Python functions corresponding to the set of allowed actions."
+          ]
+        },
+        {
+          "title": "A.2 Exemplars",
+          "paragraphs": [
+            "A fully annotated exemplar for question answering domain is provided in Listing 3, while a fully annotated exemplar for summarization domain is shown in Listing 4."
+          ]
+        },
+        {
+          "title": "A.3 Action parsing failures",
+          "paragraphs": [
+            "We observed that parsing a predicted action into an allowed Python function and its parameters fails on a small fraction of cases. In such failure cases, we append a simple string ‘# Failed to parse the predicted action. I will predict the next action again, following the allowed function signatures only’ to the prompt, and decode the next action again. This process is followed upto a maximum of three times, post which the session is terminated."
+          ]
+        },
+        {
+          "title": "A.4 Overview of the prompt structure",
+          "paragraphs": [
+            "An overview of the prompt structure is available in Table 5."
+          ]
+        }
+      ]
+    },
+    "Appendix B Additional details on Experiment Setup": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "B.1 Match score",
+          "paragraphs": [
+            "Prompt outline used to compute Match score is shown in Listing 1.",
+            "Correlation with Human Rating: One of the authors manually labeled 50 randomly selected outputs from Reactive (with gpt-4-turbo as LLM) considering the same reference instructions and examples as in the prompt discussed above. We observe Cohen’s Kappa score of 0.810.81 between manual judgement ratings and Match score, suggesting a high agreement of the LLM-based Match metric with human judgement ratings.",
+            "Stability: We conducted an analysis where we rerun the Match scores in Table 1 three times, and the maximum change we observed in any value was 0.5 (Match is on a scale of 1-100), signifying very low instability issues. Additionally, we observed that switching the underlying LLM from gpt-4-turbo to phi-3-medium to compute Match scores resulted in the exact same ranking of the methods as in the results tables (Table 1), suggesting that relative performance of the methods under Match metric is stable with respect to the choice of the underlying LLM used to compute the metric."
+          ]
+        },
+        {
+          "title": "B.2 User Simulators",
+          "paragraphs": [
+            "User simulator prompt, shown in Listings 5, consists of a basic set of instructions at the top, followed by five examples of diverse situations a user can face (either as the initiating user, or as a teammate receiving a request). Each examples consists of a user description, the set of documents available to the user, and any conversation history so far."
+          ]
+        },
+        {
+          "title": "B.3 Qualitative Examples",
+          "paragraphs": [
+            "Listings 7 through 10 show randomly picked test examples from both the domains, demonstrating success as well as failure cases for Reactive."
+          ]
+        },
+        {
+          "title": "B.4 Human Evaluation Study",
+          "paragraphs": [
+            "Additional details about human participants: We recruited 5 participants, who each carried out 20 human-in-the-loop tasks. All the human participants are US graduates and well-versed with the English language. All participants are paid above the minimum wage requirements of the region. Participants were given the same instructions and examples as in the simulated user prompt."
+          ]
+        }
+      ]
+    },
+    "Appendix C Additional details on datasets": {
+      "paragraphs": [
+        "Spider dataset is available under CC BY-SA 4.0 license.555https://yale-lily.github.io/spider. Multinews dataset is available for research purposes.666https://github.com/Alex-Fabbri/Multi-News/blob/master/LICENSE.txt",
+        "[Table: Listing 2: Action descriptions provided in the prompt, consisting of various function signatures and associated docstrings]"
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "Abdin et al. (2024) Marah Abdin, Sam Ade Jacobs, Ammar Ahmad Awan, Jyoti Aneja, Ahmed Awadallah, Hany Awadalla, Nguyen Bach, Amit Bahree, Arash Bakhtiari, Harkirat Behl, et al. 2024. Phi-3 technical report: A highly capable language model locally on your phone. arXiv preprint arXiv:2404.14219.",
+    "Bird et al. (2009) Steven Bird, Ewan Klein, and Edward Loper. 2009. Natural language processing with Python: analyzing text with the natural language toolkit. \" O’Reilly Media, Inc.\".",
+    "Butler et al. (2023) Jenna Butler, Sonia Jaffe, Nancy Baym, Mary Czerwinski, Shamsi Iqbal, Kate Nowak, Sean Rintel, Abigail Sellen, Mihaela Vorvoreanu, Najeeb G. Abdulhamid, Judith Amores, Reid Andersen, Kagonya Awori, Maxamed Axmed, danah boyd, James Brand, Georg Buscher, Dean Carignan, Martin Chan, Adam Coleman, Scott Counts, Madeleine Daepp, Adam Fourney, Daniel G. Goldstein, Andy Gordon, Aaron L Halfaker, Javier Hernandez, Jake Hofman, Jenny Lay-Flurrie, Vera Liao, Siân Lindley, Sathish Manivannan, Charlton Mcilwain, Subigya Nepal, Jennifer Neville, Stephanie Nyairo, Jacki O’Neill, Victor Poznanski, Gonzalo Ramos, Nagu Rangan, Lacey Rosedale, David Rothschild, Tara Safavi, Advait Sarkar, Ava Scott, Chirag Shah, Neha Parikh Shah, Teny Shapiro, Ryland Shaw, Auste Simkute, Jina Suh, Siddharth Suri, Ioana Tanase, Lev Tankelevitch, Adam Troy, Mengting Wan, Ryen W. White, Longqi Yang, Brent Hecht, and Jaime Teevan. 2023. Microsoft new future of work report 2023. Technical Report MSR-TR-2023-34, Microsoft.",
+    "Fabbri et al. (2019) Alexander Richard Fabbri, Irene Li, Tianwei She, Suyi Li, and Dragomir Radev. 2019. Multi-news: A large-scale multi-document summarization dataset and abstractive hierarchical model. In Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics, pages 1074–1084.",
+    "Gemp et al. (2024) Ian Gemp, Yoram Bachrach, Marc Lanctot, Roma Patel, Vibhavari Dasagi, Luke Marris, Georgios Piliouras, and Karl Tuyls. 2024. States as strings as strategies: Steering language models with game-theoretic solvers. arXiv preprint arXiv:2402.01704.",
+    "Jhamtani et al. (2024) Harsh Jhamtani, Hao Fang, Patrick Xia, Eran Levy, Jacob Andreas, and Ben Van Durme. 2024. Natural language decomposition and interpretation of complex utterances. IJCAI.",
+    "Khot et al. (2022) Tushar Khot, Harsh Trivedi, Matthew Finlayson, Yao Fu, Kyle Richardson, Peter Clark, and Ashish Sabharwal. 2022. Decomposed prompting: A modular approach for solving complex tasks. In The Eleventh International Conference on Learning Representations.",
+    "Kim and Hsu (2024) Yujin Kim and Chin-Chia Hsu. 2024. Leveraging large language models for hybrid workplace decision support. Preprint, arXiv:2402.03616.",
+    "Levy et al. (2017) Omer Levy, Minjoon Seo, Eunsol Choi, and Luke Zettlemoyer. 2017. Zero-shot relation extraction via reading comprehension. In Proceedings of the 21st Conference on Computational Natural Language Learning (CoNLL 2017), pages 333–342, Vancouver, Canada. Association for Computational Linguistics.",
+    "Lewis (1998) Michael Lewis. 1998. Designing for human-agent interaction. Ai magazine, 19(2):67–67.",
+    "Lin (2004) Chin-Yew Lin. 2004. Rouge: A package for automatic evaluation of summaries. In Text summarization branches out, pages 74–81.",
+    "Lin et al. (2024) Jessy Lin, Nicholas Tomlin, Jacob Andreas, and Jason Eisner. 2024. Decision-oriented dialogue for human-ai collaboration. Transactions of the Association for Computational Linguistics, 12:892–911.",
+    "Liu et al. (2018) Peter J Liu, Mohammad Saleh, Etienne Pot, Ben Goodrich, Ryan Sepassi, Lukasz Kaiser, and Noam Shazeer. 2018. Generating wikipedia by summarizing long sequences. In International Conference on Learning Representations.",
+    "Liu et al. (2023) Yang Liu, Dan Iter, Yichong Xu, Shuohang Wang, Ruochen Xu, and Chenguang Zhu. 2023. G-eval: NLG evaluation using gpt-4 with better human alignment. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, EMNLP 2023, Singapore, December 6-10, 2023, pages 2511–2522. Association for Computational Linguistics.",
+    "Mireshghallah et al. (2023) Niloofar Mireshghallah, Hyunwoo Kim, Xuhui Zhou, Yulia Tsvetkov, Maarten Sap, Reza Shokri, and Yejin Choi. 2023. Can llms keep a secret? testing privacy implications of language models via contextual integrity theory. arXiv preprint arXiv:2310.17884.",
+    "OpenAI (2023) OpenAI. 2023. GPT-4 technical report. Computing Research Repository, arXiv:2303.08774.",
+    "Papachristou et al. (2023) Marios Papachristou, Longqi Yang, and Chin-Chia Hsu. 2023. Leveraging large language models for collective decision-making. arXiv preprint arXiv:2311.04928.",
+    "Rajpurkar et al. (2018) Pranav Rajpurkar, Robin Jia, and Percy Liang. 2018. Know what you don’t know: Unanswerable questions for squad. In Proceedings of the 56th Annual Meeting of the Association for Computational Linguistics (Volume 2: Short Papers), pages 784–789.",
+    "Sheth and Larson (1990) Amit P Sheth and James A Larson. 1990. Federated database systems for managing distributed, heterogeneous, and autonomous databases. ACM Computing Surveys (CSUR), 22(3):183–236.",
+    "Song et al. (2024) Hwanjun Song, Hang Su, Igor Shalyminov, Jason Cai, and Saab Mansour. 2024. Finesure: Fine-grained summarization evaluation using llms. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), ACL 2024, Bangkok, Thailand, August 11-16, 2024, pages 906–922. Association for Computational Linguistics.",
+    "Team et al. (2023) Gemini Team, Rohan Anil, Sebastian Borgeaud, Yonghui Wu, Jean-Baptiste Alayrac, Jiahui Yu, Radu Soricut, Johan Schalkwyk, Andrew M Dai, Anja Hauth, et al. 2023. Gemini: a family of highly capable multimodal models. arXiv preprint arXiv:2312.11805.",
+    "Touvron et al. (2023) Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, Dan Bikel, Lukas Blecher, Cristian Canton Ferrer, Moya Chen, Guillem Cucurull, David Esiobu, Jude Fernandes, Jeremy Fu, Wenyin Fu, Brian Fuller, Cynthia Gao, Vedanuj Goswami, Naman Goyal, Anthony Hartshorn, Saghar Hosseini, Rui Hou, Hakan Inan, Marcin Kardas, Viktor Kerkez, Madian Khabsa, Isabel Kloumann, Artem Korenev, Punit Singh Koura, Marie-Anne Lachaux, Thibaut Lavril, Jenya Lee, Diana Liskovich, Yinghai Lu, Yuning Mao, Xavier Martinet, Todor Mihaylov, Pushkar Mishra, Igor Molybog, Yixin Nie, Andrew Poulton, Jeremy Reizenstein, Rashi Rungta, Kalyan Saladi, Alan Schelten, Ruan Silva, Eric Michael Smith, Ranjan Subramanian, Xiaoqing Ellen Tan, Binh Tang, Ross Taylor, Adina Williams, Jian Xiang Kuan, Puxin Xu, Zheng Yan, Iliyan Zarov, Yuchen Zhang, Angela Fan, Melanie Kambadur, Sharan Narang, Aurelien Rodriguez, Robert Stojnic, Sergey Edunov, and Thomas Scialom. 2023. Llama 2: Open foundation and fine-tuned chat models. Computing Research Repository, arXiv:2307.09288.",
+    "Wang et al. (2024) Lei Wang, Chen Ma, Xueyang Feng, Zeyu Zhang, Hao Yang, Jingsen Zhang, Zhiyuan Chen, Jiakai Tang, Xu Chen, Yankai Lin, et al. 2024. A survey on large language model based autonomous agents. Frontiers of Computer Science, 18(6):186345.",
+    "Welbl et al. (2018) Johannes Welbl, Pontus Stenetorp, and Sebastian Riedel. 2018. Constructing datasets for multi-hop reading comprehension across documents. Transactions of the Association for Computational Linguistics, 6:287–302.",
+    "Wolfson et al. (2020) Tomer Wolfson, Mor Geva, Ankit Gupta, Yoav Goldberg, Matt Gardner, Daniel Deutch, and Jonathan Berant. 2020. Break it down: A question understanding benchmark. Transactions of the Association for Computational Linguistics, 8:183–198.",
+    "Wu et al. (2023) Qingyun Wu, Gagan Bansal, Jieyu Zhang, Yiran Wu, Shaokun Zhang, Erkang Zhu, Beibin Li, Li Jiang, Xiaoyun Zhang, and Chi Wang. 2023. Autogen: Enabling next-gen llm applications via multi-agent conversation framework. arXiv preprint arXiv:2308.08155.",
+    "Xi et al. (2023) Zhiheng Xi, Wenxiang Chen, Xin Guo, Wei He, Yiwen Ding, Boyang Hong, Ming Zhang, Junzhe Wang, Senjie Jin, Enyu Zhou, et al. 2023. The rise and potential of large language model based agents: A survey. arXiv preprint arXiv:2309.07864.",
+    "Yang et al. (2018) Zhilin Yang, Peng Qi, Saizheng Zhang, Yoshua Bengio, William Cohen, Ruslan Salakhutdinov, and Christopher D Manning. 2018. Hotpotqa: A dataset for diverse, explainable multi-hop question answering. In Proceedings of the 2018 Conference on Empirical Methods in Natural Language Processing. Association for Computational Linguistics.",
+    "Yao et al. (2023) Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik R. Narasimhan, and Yuan Cao. 2023. React: Synergizing reasoning and acting in language models. In The Eleventh International Conference on Learning Representations, ICLR 2023, Kigali, Rwanda, May 1-5, 2023. OpenReview.net.",
+    "Yu et al. (2018) Tao Yu, Rui Zhang, Kai Yang, Michihiro Yasunaga, Dongxu Wang, Zifan Li, James Ma, Irene Li, Qingning Yao, Shanelle Roman, et al. 2018. Spider: A large-scale human-labeled dataset for complex and cross-domain semantic parsing and text-to-sql task. In Proceedings of the 2018 Conference on Empirical Methods in Natural Language Processing, pages 3911–3921.",
+    "Zaniolo (1997) Carlo Zaniolo. 1997. Advanced database systems. Morgan Kaufmann."
+  ]
+}

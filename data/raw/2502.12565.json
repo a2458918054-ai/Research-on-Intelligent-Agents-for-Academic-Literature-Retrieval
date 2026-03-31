@@ -1,0 +1,385 @@
+{
+  "title": "Self Iterative Label Refinement via Robust Unlabeled Learning",
+  "authors": "Hikaru Asano1,2Tadashi Kozuno3Yukino Baba11The University of Tokyo2RIKEN AIP3OMRON SINIC Xasano-hikaru19, yukino-baba@g.ecc.u-tokyo.ac.jp,tadashi.kozuno@sinicx.com",
+  "abstract": "Recent advances in large language models (LLMs) have yielded impressive performance on various tasks, yet they often depend on high-quality feedback that can be costly. Self-refinement methods attempt to leverage LLMs’ internal evaluation mechanisms with minimal human supervision; however, these approaches frequently suffer from inherent biases and overconfidence—especially in domains where the models lack sufficient internal knowledge—resulting in performance degradation. As an initial step toward enhancing self-refinement for broader applications, we introduce an iterative refinement pipeline that employs the Unlabeled-Unlabeled learning framework to improve LLM-generated pseudo-labels for classification tasks. By exploiting two unlabeled datasets with differing positive class ratios, our approach iteratively denoises and refines the initial pseudo-labels, thereby mitigating the adverse effects of internal biases with minimal human supervision. Evaluations on diverse datasets—including low-resource language corpora, patent classifications, and protein structure categorizations—demonstrate that our method consistently outperforms both initial LLM’s classification performance and the self-refinement approaches by cutting-edge models (e.g., GPT-4o and DeepSeek-R1).",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Rapid advancements in large language models (LLMs) have yielded significant improvements across various downstream tasks and have raised a fundamental research question: How can we further improve an LLM’s capabilities with minimal human supervision? Traditional approaches, such as Reinforcement Learning from Human Feedback (RLHF) (Ouyang et al., 2022) and its variants (Rafailov et al., 2023; Tang et al., 2024), improve performance through classification tasks (Tang et al., 2024), yet they rely on extensive, costly, and time-consuming human-labeled datasets. Although recent methods like Reinforcement Learning from AI Feedback (RLAIF) (Bai et al., 2022; Lee et al., 2024; Zhu et al., 2024) aim to reduce these costs by replacing human annotations with model-generated signals, their success critically hinges on the reliability of the model’s self-evaluation (Li et al., 2024a; Wang et al., 2024).",
+        "When using an LLM as its own evaluator, it is observed that the model’s inherent biases can harm the reliability of its assessments (Koo et al., 2024; Li et al., 2024b; Liu et al., 2024; Wang et al., 2024), thereby undermining the effectiveness of downstream training (Baumgärtner et al., 2024). While iterative self-refinement (Kim et al., 2023; Madaan et al., 2023) and multi-agent frameworks (Estornell and Liu, 2024) can mitigate simpler biases (e.g., ordering or length biases), LLMs still encounter significant challenges in areas where their internal knowledge is limited (Kamoi et al., 2024a). In such cases, external tools—such as accurate, domain-specific databases—can help address certain blind spots (Wu et al., 2024), but they do not fully eliminate the need for human supervision. Without either robust internal knowledge or dependable huge human input, conventional methods not only struggle to improve performance (Huang et al., 2024; Kamoi et al., 2024a) but also may even experience degradation due to inaccuracies and overconfidence (Huang et al., 2024).",
+        "To address these challenges specifically for classification tasks—a crucial first step towards broader self-refinement in LLMs—we introduce an iterative pipeline that refines LLM-generated pseudo-labels using a weakly supervised learning technique known as the Unlabeled-Unlabeled (UU) learning framework (Lu et al., 2019, 2020). Notably, while creating a large, well-maintained labeled dataset requires intensive human supervision, it is relatively straightforward to amass a vast corpus of unlabeled data in the modern era (Sagiroglu and Sinanc, 2013). Motivated by this observation, our approach leverages two unlabeled datasets with differing positive class ratios. Under the simple assumption that one dataset contains a higher proportion of positive examples than the other, our system can effectively learn to distinguish between positive and negative instances without requiring explicit annotations for each example.",
+        "Specifically, our pipeline first employs an LLM to generate initial pseudo-labels from an unlabeled corpus. These pseudo-positive and negative sets are then iteratively refined using UU learning. The classifier trained from UU learning subsequently re-labels the unlabeled corpus, progressively reducing noise and enhancing classification accuracy. By decoupling the refinement process from the LLM’s internal knowledge and instead leveraging data-driven features extracted via UU learning, our method delivers improved performance even in domains where LLMs lack sufficient knowledge.",
+        "We evaluate our approach on several public datasets, including low-resource language corpora, patent classification tasks, and protein structure classification. Notably, as illustrated in Figure 1, even in cases where self-refinement methods based on LLMs—or advanced reasoning models such as DeepSeek-R1 (DeepSeek-AI, 2025)—fail to produce any performance improvement, our iterative UU learning framework successfully refines its outputs and achieves classification performance that surpasses that of both the original LLM and existing self-improvement pipelines. These results underscore the potential of our method not only for specialized text classification but also as a novel approach to achieving self-refinement in LLMs.",
+        "In summary, our contributions are threefold:",
+        "• We introduce an iterative pipeline that refines LLM-generated pseudo-labels via UU Learning, reducing noise and boosting classification accuracy with minimal human supervision.",
+        "• We show that the proposed method outperforms both direct LLM classification and self-improvement methods across diverse tasks, including low-resource language, patent, and protein classification.",
+        "• Our approach mitigates annotation noise and offers a scalable, cost-effective solution for high-quality classification in specialized domains with limited expert-labeled data."
+      ],
+      "subsections": []
+    },
+    "2 Related Work": {
+      "paragraphs": [
+        "RLAIF is a popular LLM post-training method (Bai et al., 2022). Its idea to generate feedback by a model itself is called Pseudo-Labeling (PL) and well studied in semi-supervised learning (Scudder, 1965; Lee, 2013). Below, we will review PL and LLM self-training methods related to ours. For a thorough review of each topic, please refer to Yang et al. (2023) and Xiao and Zhu (2025)."
+      ],
+      "subsections": [
+        {
+          "title": "Pseudo-Labeling:",
+          "paragraphs": [
+            "PL trains a student model so that its output is close to the output of a teacher model on unlabeled data (Scudder, 1965; Lee, 2013). Various methods for constructing a teacher model has been proposed. For example, Π\\Pi-model (Bachman et al., 2014; Sajjadi et al., 2016; Laine and Aila, 2017) and virtual adversarial training (Miyato et al., 2019) perturbs input and/or neural networks of student models. Some methods use weighted average of previous student models’ predictions or weights as a teacher model (Laine and Aila, 2017; Tarvainen and Valpola, 2017), and other methods even try to optimize a teacher model by viewing PL as an optimization problem (Yi and Wu, 2019; Wang and Wu, 2020; Pham et al., 2021). Our work is complimentary to this line of works since what we modify is the risk estimator rather than teacher models.",
+            "PL is known to suffer from erroneous labels generated by a model-in-training (Haase-Schutz et al., 2021; Rizve et al., 2021), and this observation well aligns with recent reports on RLAIF that erroneous self-feedback is a major source of failure (Madaan et al., 2023). A straightforward approach is to filter potentially incorrect labels based on confidence (Sohn et al., 2020; Haase-Schutz et al., 2021; Rizve et al., 2021) or the amplitude of loss as in self-paced learning (Bengio et al., 2009; Kumar et al., 2010; Jiang et al., 2015). Another method is refining pseudo-labels in a way similar to label propagation (Zhu and Ghahramani, 2002) but with similarity scores computed using neural networks (Kutt et al., 2024). Our work tackles the issue of erroneous labels by using a risk estimate robust to erroneous self-feedback based on UU learning (Lu et al., 2019, 2020). Even though our approach requires only a minimal change, we observed a significant performance boost."
+          ]
+        },
+        {
+          "title": "LLM’s Self-Refinement:",
+          "paragraphs": [
+            "To enhance the reasoning capabilities of LLMs, early efforts primarily explored various prompt engineering techniques (Brown et al., 2020; Wei et al., 2022; Wang et al., 2023b; Yao et al., 2023). Even with refined prompting strategies, an LLM’s initial outputs can remain limited in some scenarios. Recent studies have proposed iteratively improved answer strategies called self-refinement approaches (Madaan et al., 2023; Kim et al., 2023; Chen et al., 2024b), and our work falls within this lineage.",
+            "Self-refinement involves generating responses through agents in distinct roles that iteratively provide feedback (Shinn et al., 2023; Zhu et al., 2023). For example, multi-agent debate frameworks (Estornell and Liu, 2024) use an answering agent and an evaluation agent to collaboratively improve answer quality (Chen et al., 2024a; Du et al., 2024; Smit et al., 2024). However, these methods usually assume that the LLM has enough internal knowledge to generate effective feedback and revisions; when it doesn’t, performance gains can be minimal or even negative (Huang et al., 2024; Li et al., 2024c; Kamoi et al., 2024a, b)—sometimes degrading performance (Huang et al., 2024). Our approach minimizes this reliance: internal knowledge is used only initially for classification, with subsequent improvements relying on extracting features directly from the data via UU learning.",
+            "Other work addresses knowledge gaps by retrieving external information or using external tools (Huang et al., 2022; Wang et al., 2023a; Shi et al., 2024; Wu et al., 2024), but setting up such systems can be costly. In contrast, our method requires only a small amount of labeled data for initialization without assuming the availability of external knowledge or tools."
+          ]
+        }
+      ]
+    },
+    "3 Preliminaries": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "3.1 Supervised Binary Classification",
+          "paragraphs": [
+            "In many real-world tasks, one commonly encounters binary classification problems, in which an input x∈ℝdx\\in\\mathbb{R}^{d} is presented, and its label y∈{±1}y\\in\\{\\pm 1\\} needs to be predicted. Each sample is assumed to be independently and identically drawn from an unknown joint distribution p​(x,y)p(x,y). Let π+=p​(y=+1)\\pi_{+}=p(y=+1) be the prior probability of the positive class (positive prior), and define",
+            "Then, the marginal distribution of xx is given by",
+            "A classifier g:ℝd→ℝg:\\mathbb{R}^{d}\\to\\mathbb{R} outputs a real-valued score, whose sign determines the predicted label. For instance, a neural network can serve as gg. A loss function ℓ:ℝ×{±1}→[0,∞)\\ell:\\mathbb{R}\\times\\{\\pm 1\\}\\to[0,\\infty) then measures how much the prediction disagrees with the true label. Let Rp+​(g)=𝔼x∼pp​[ℓ​(g​(x),+1)]R^{+}_{p}(g)=\\mathbb{E}_{x\\sim p_{p}}[\\ell(g(x),+1)] denote the loss for true positive data, and Rn−​(g)=𝔼x∼pn​[ℓ​(g​(x),−1)]R^{-}_{n}(g)=\\mathbb{E}_{x\\sim p_{n}}[\\ell(g(x),-1)] denote the loss for the true negative data. Then, the true risk is expressed as",
+            "In supervised learning, positive dataset 𝒞p={xmp}m=1mp∼pp​(x)\\mathcal{C}_{p}=\\{x^{p}_{m}\\}_{m=1}^{m_{p}}\\sim p_{p}(x) and negative dataset 𝒞n={xmn}m=1mn∼pn​(x)\\mathcal{C}_{n}=\\{x^{n}_{m}\\}_{m=1}^{m_{n}}\\sim p_{n}(x) are accessible. Replacing the expectations in (1) with sample mean, one obtains the empirical risk, and gg is trained to minimize it.",
+            "It is well known that having sufficient positive and negative samples typically allows one to train a highly accurate classifier for many tasks. However, in practice, obtaining large-scale positive and negative datasets with annotations is often challenging, especially in specialized domains where annotation costs become a significant obstacle."
+          ]
+        },
+        {
+          "title": "3.2 Unlabeled-Unlabeled (UU) Learning",
+          "paragraphs": [
+            "UU learning (Lu et al., 2019) is a technique that allows training a classifier without fully labeled positive and negative datasets, leveraging two unlabeled datasets with different class priors.",
+            "Concretely, suppose unlabeled corpora, 𝒞~p={x~mp}m=1mp\\widetilde{\\mathcal{C}}_{p}=\\{\\widetilde{x}^{p}_{m}\\}_{m=1}^{m_{p}} and 𝒞~n={x~mn}m=1mn\\widetilde{\\mathcal{C}}_{n}=\\{\\widetilde{x}^{n}_{m}\\}_{m=1}^{m_{n}}, drawn from different mixture distributions. We denote θp=p​(y=+1∣x~∈𝒞~p)\\theta_{p}=p(y=+1\\mid\\widetilde{x}\\in\\widetilde{\\mathcal{C}}_{p}) and θn=p​(y=+1∣x~∈𝒞~n)\\theta_{n}=p(y=+1\\mid\\widetilde{x}\\in\\widetilde{\\mathcal{C}}_{n}) the positive prior of these unlabeled corpora. In other words, θp\\theta_{p} is the fraction of true positives in 𝒞~p\\widetilde{\\mathcal{C}}_{p}, and θn\\theta_{n} is the fraction of true positives in 𝒞~n\\widetilde{\\mathcal{C}}_{n}. Then, the mixture distribution of each corpus is given as",
+            "When θp>θn\\theta_{p}>\\theta_{n}, we can treat 𝒞~p\\widetilde{\\mathcal{C}}_{p} as a pseudo-positive corpus (due to its larger proportion of actual positives) and 𝒞~n\\widetilde{\\mathcal{C}}_{n} as a pseudo-negative corpus (having a smaller proportion of actual positives).",
+            "By appropriately combining these two unlabeled sets, one can construct an unbiased estimate of the true binary classification risk (1). Specifically, let Rp~±​(g)=𝔼x∼p~p​[ℓ​(g​(x),±1)]R_{\\tilde{p}}^{\\pm}(g)=\\mathbb{E}_{x\\sim\\widetilde{p}_{p}}[\\ell(g(x),\\pm 1)], and Rn~±​(g)=𝔼x∼p~n​[ℓ​(g​(x),±1)]R_{\\tilde{n}}^{\\pm}(g)=\\mathbb{E}_{x\\sim\\widetilde{p}_{n}}[\\ell(g(x),\\pm 1)]. Then, the UU learning risk is given by",
+            "where the coefficients aa, bb, cc, dd are computed from π+\\pi_{+}, θp\\theta_{p}, and θn\\theta_{n} as a=(1−θn)​π+θp−θna=\\frac{(1-\\theta_{n})\\,\\pi_{+}}{\\theta_{p}-\\theta_{n}}, b=θn​(1−π+)θp−θnb=\\frac{\\theta_{n}\\,(1-\\pi_{+})}{\\theta_{p}-\\theta_{n}}, c=(1−θp)​π+θp−θnc=\\frac{(1-\\theta_{p})\\,\\pi_{+}}{\\theta_{p}-\\theta_{n}}, d=θp​(1−π+)θp−θnd=\\frac{\\theta_{p}\\,(1-\\pi_{+})}{\\theta_{p}-\\theta_{n}}. When θp=1\\theta_{p}=1 and θn=0\\theta_{n}=0, that is, when using the same dataset as standard supervised learning, equation (2) reduces to the standard supervised learning risk equation (1). In other words, supervised learning can be considered a special case of UU learning."
+          ]
+        },
+        {
+          "title": "3.3 Robust UU Learning",
+          "paragraphs": [
+            "While UU learning (2) does allow model training without explicit positive/negative labels, comparing the original binary classification risk (1)—which remains nonnegative—against the UU risk (2) shows the UU risk includes negative terms such as −b​Rp~−​(g)-bR_{\\tilde{p}}^{-}(g) and −c​Rn~+​(g)-cR_{\\tilde{n}}^{+}(g). It has been observed that these negative risk terms can lead to overfitting (Lu et al., 2020).",
+            "To mitigate this, Robust UU Learning introduces a generalized Leaky ReLU function ff to moderate the reduction of negative risk. Concretely, it normalizes each term of the loss function as (Lu et al., 2020)",
+            "where each bracketed term resembles a “normalized” risk under the hypothetical label of being positive or negative, respectively. The function ff is given by",
+            "Intuitively, ff leaves the risk value unchanged when the risk is positive, but for negative risk, it uses λ<0\\lambda<0 to convert it into a positive quantity, thus mitigating the overfitting by negative risk."
+          ]
+        }
+      ]
+    },
+    "4 Method": {
+      "paragraphs": [
+        "Below, we present our iterative framework for combining large language model (LLM) annotations with robust UU learning. The goal is to iteratively refine pseudo-labels generated by the LLM, thus boosting classification accuracy under minimal human supervision. Figure 2 provides a high-level view of this approach, which proceeds in rounds."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Overview of the Iterative Pipeline",
+          "paragraphs": [
+            "Our pipeline is composed of three steps:",
+            "1. LLM-Based Annotation (Iteration 0). An LLM provides pseudo-labels for an unlabeled corpus (§4.2).",
+            "2. Robust UU Learning. We split the corpus into pseudo-positive and pseudo-negative subsets and train a classifier using robust UU learning (§4.3).",
+            "3. Re-Labeling. The trained classifier re-labels the entire dataset, producing updated pseudo-positive and pseudo-negative sets for the next iteration (§4.4).",
+            "LLM-Based Annotation (Iteration 0). An LLM provides pseudo-labels for an unlabeled corpus (§4.2).",
+            "Robust UU Learning. We split the corpus into pseudo-positive and pseudo-negative subsets and train a classifier using robust UU learning (§4.3).",
+            "Re-Labeling. The trained classifier re-labels the entire dataset, producing updated pseudo-positive and pseudo-negative sets for the next iteration (§4.4)."
+          ]
+        },
+        {
+          "title": "4.2 Initial Noisy Annotation via LLM",
+          "paragraphs": [
+            "Let 𝒞={x1,x2,…,xN}\\mathcal{C}=\\{x_{1},x_{2},\\dots,x_{N}\\} be a corpus of unlabeled samples. We use the LLM as the initial classifier to assign an initial pseudo-label y~i∈{+1,−1}\\tilde{y}_{i}\\in\\{+1,-1\\} to each sample xix_{i}. Our prompt first provides a concise description of the task, the dataset domain, and the expected answer format (e.g., “Output TRUE or FALSE”). We then give a few-shot examples illustrating how to label an example text, along with a short rationale. Finally, the prompt includes the samples to annotate (see Fig. 6 for the exact prompt).",
+            "Based on the LLM’s output, we form two unlabeled corpora:",
+            "These sets are called pseudo-positive and pseudo-negative corpus, respectively. Although the labels are noisy, 𝒞~p(0)\\widetilde{\\mathcal{C}}^{(0)}_{p} typically has a higher positive prior than 𝒞~n(0)\\widetilde{\\mathcal{C}}^{(0)}_{n}, thereby providing a reliable foundation for UU learning in subsequent iterations."
+          ]
+        },
+        {
+          "title": "4.3 Refinement with Robust UU Learning",
+          "paragraphs": [
+            "Let 𝒞~p(t−1)\\widetilde{\\mathcal{C}}_{p}^{(t-1)} and 𝒞~n(t−1)\\widetilde{\\mathcal{C}}_{n}^{(t-1)} denote the pseudo-positive and pseudo-negative sets from iteration t−1t-1. Our goal is to train a classifier g(t)g^{(t)} (e.g., a neural network) despite noisy labels. To this end, we optimize the robust UU learning objective:",
+            "where R^ruu​(⋅)\\widehat{R}_{\\mathrm{ruu}}(\\cdot) is the empirical risk of robust UU learning, which applies a “generalized leaky ReLU” to reduce the impact of negative risk terms that can arise from mislabels. Each set is weighted by the positive prior π+\\pi_{+} and the sets’ own estimated positive priors θ^p\\hat{\\theta}_{p} and θ^n\\hat{\\theta}_{n}.",
+            "This robust learning approach is less sensitive to initial label noise and can produce a classifier that outperforms the previous iteration’s classifier."
+          ]
+        },
+        {
+          "title": "4.4 Iterative Re-Labeling and Convergence",
+          "paragraphs": [
+            "After training g(t)g^{(t)}, we re-label the entire dataset:",
+            "We then form updated pseudo-positive and pseudo-negative sets,",
+            "and use them as input for the next iteration of robust UU learning.",
+            "Over several iterations, this process progressively improves the reliability of the pseudo-labels. In the ideal scenario, the positive prior in 𝒞~p(t)\\widetilde{\\mathcal{C}}_{p}^{(t)} converges to 1, and the positive prior in 𝒞~n(t)\\widetilde{\\mathcal{C}}_{n}^{(t)} converges to 0, bringing each corpus ever closer to the gold-standard case of perfectly labeled positive and negative data. When these priors reach 1 and 0, respectively, robust UU learning effectively reduces to standard supervised learning—achieving high accuracy even from initially noisy labels."
+          ]
+        }
+      ]
+    },
+    "5 Experiments": {
+      "paragraphs": [
+        "We conducted experiments to explore three main research questions:",
+        "RQ1 Can our iterative refinement approach improve classification performance, compared to the initial LLM-based annotations, for various NLP tasks?",
+        "RQ2 Can our method enhance performance on challenging tasks where even advanced LLMs (e.g., GPT-4o-based models) struggle?",
+        "RQ3 Can our approach outperform existing LLM self-refinement strategies and recently introduced Reasoning models?"
+      ],
+      "subsections": [
+        {
+          "title": "5.1 Experimental Setup",
+          "paragraphs": [
+            "We use six binary classification datasets grouped into two categories based on their difficulty111We evaluate difficulty based on a pilot experiment in which we trained the classification model in a standard supervised setting. Please refer to Table 1 for classification accuracy via supervised learning.. Table 1 reports the dataset statistics, and Table 2 provides examples for positive and negative cases (see Appendix A).",
+            "Easier Tasks (for RQ1): We evaluated our algorithm on three tasks: (i) Fake News (Ahmed et al., 2018), classifying news articles as fake or real, (ii) Saroco (Rogoz et al., 2021), Romanian satire detection dataset to assess effectiveness in a low-resource language, and (iii) Safety (Dai et al., 2024), dataset for SafeRLHF evaluating if the responses to questions is safe or dangerous, thereby assessing effectiveness for LLM’s post-training.",
+            "Harder Tasks (for RQ2 and RQ3): We evaluate our algorithm on three more challenging tasks: (i) the Corona Sentiment222https://github.com/akshayjoshii/COVID19-Tweet-Sentiment-Analysis-and-EDA/tree/master, classifying social media post related to COVID-19 as positive or negative sentiment, (ii) the Green Patent333https://huggingface.co/datasets/cwinkler/patents_green_plastics which involves identifying whether a patent abstract pertains to green plastics—requiring high expert knowledge, and (iii) Protein Structure (Blanchard et al., 2022), involving classification of proteins based on high or low COVID-19 binding affinity from molecular smiles strings.",
+            "For all experiments, we divided each dataset and randomly partitioned it into training, validation (for best epoch selection), and test splits in a 7:1:2 ratio.",
+            "At iteration0, we obtain pseudo-labels from LLMs using a prompt that includes a dataset explanation, a few-shot labeled examples, and a target sample (see Figure 6 for the exact prompt). These pseudo-labels are then used to construct initial pseudo-positive (𝒞~p(0)\\widetilde{\\mathcal{C}}_{p}^{(0)}) and pseudo-negative (𝒞~n(0)\\widetilde{\\mathcal{C}}_{n}^{(0)}) corpora.",
+            "We train the classifier by appending an affine layer to the transformer’s final hidden state to yield a one-dimensional score. For fine-tuning efficiency, we employ QLora (Dettmers et al., 2023) with 4-bit quantization. At each iteration, we fine-tune the model using the pseudo-positive and pseudo-negative corpora with the AdamW optimizer (learning rate = 1.0×10−41.0\\times 10^{-4}, batch size = 16, and 3 epochs) and fix the robust UU learning hyperparameter λ\\lambda at -0.001 (see Equation (4)). At the end of each epoch, we compute the loss on a pseudo-labeled validation set and select the model with the lowest loss to re-label the entire dataset. Additional parameters are detailed in Table 3.",
+            "Robust UU learning requires estimates of the positive proportions θ^p\\hat{\\theta}_{p} and θ^n\\hat{\\theta}_{n} for the pseudo-positive and pseudo-negative corpora, respectively. We compare two settings to obtain these parameters. In the first setting (Ours (Oracle)), we assume that the exact value of θp\\theta_{p} and θn\\theta_{n} are available444The assumption that the precise class priors are known is not unrealistic given the effectiveness of existing class prior estimation methods (e.g., (Scott et al., 2013; Menon et al., 2015; Liu and Tao, 2016; Bekker and Davis, 2020)).. In the second setting (Ours (few-labeled)), only 50 examples from the training dataset are labeled, from which we compute θ^p=p​(y=1∣y~=1)\\hat{\\theta}_{p}=p(y=1\\mid\\tilde{y}=1) and θ^n=p​(y=1∣y~=0)\\hat{\\theta}_{n}=p(y=1\\mid\\tilde{y}=0) before proceeding with robust UU learning. Our experiments show that even a small amount of labeled data provides sufficiently accurate estimates.",
+            "We measure classification accuracy on the held-out test dataset across all iterations. Each run is repeated with three different random seeds, and we report the mean and standard deviation."
+          ]
+        },
+        {
+          "title": "Datasets:",
+          "paragraphs": [
+            "We use six binary classification datasets grouped into two categories based on their difficulty111We evaluate difficulty based on a pilot experiment in which we trained the classification model in a standard supervised setting. Please refer to Table 1 for classification accuracy via supervised learning.. Table 1 reports the dataset statistics, and Table 2 provides examples for positive and negative cases (see Appendix A).",
+            "Easier Tasks (for RQ1): We evaluated our algorithm on three tasks: (i) Fake News (Ahmed et al., 2018), classifying news articles as fake or real, (ii) Saroco (Rogoz et al., 2021), Romanian satire detection dataset to assess effectiveness in a low-resource language, and (iii) Safety (Dai et al., 2024), dataset for SafeRLHF evaluating if the responses to questions is safe or dangerous, thereby assessing effectiveness for LLM’s post-training.",
+            "Harder Tasks (for RQ2 and RQ3): We evaluate our algorithm on three more challenging tasks: (i) the Corona Sentiment222https://github.com/akshayjoshii/COVID19-Tweet-Sentiment-Analysis-and-EDA/tree/master, classifying social media post related to COVID-19 as positive or negative sentiment, (ii) the Green Patent333https://huggingface.co/datasets/cwinkler/patents_green_plastics which involves identifying whether a patent abstract pertains to green plastics—requiring high expert knowledge, and (iii) Protein Structure (Blanchard et al., 2022), involving classification of proteins based on high or low COVID-19 binding affinity from molecular smiles strings.",
+            "For all experiments, we divided each dataset and randomly partitioned it into training, validation (for best epoch selection), and test splits in a 7:1:2 ratio."
+          ]
+        },
+        {
+          "title": "LLM-Based Annotation (Iteration 0):",
+          "paragraphs": [
+            "At iteration0, we obtain pseudo-labels from LLMs using a prompt that includes a dataset explanation, a few-shot labeled examples, and a target sample (see Figure 6 for the exact prompt). These pseudo-labels are then used to construct initial pseudo-positive (𝒞~p(0)\\widetilde{\\mathcal{C}}_{p}^{(0)}) and pseudo-negative (𝒞~n(0)\\widetilde{\\mathcal{C}}_{n}^{(0)}) corpora."
+          ]
+        },
+        {
+          "title": "Training Procedure:",
+          "paragraphs": [
+            "We train the classifier by appending an affine layer to the transformer’s final hidden state to yield a one-dimensional score. For fine-tuning efficiency, we employ QLora (Dettmers et al., 2023) with 4-bit quantization. At each iteration, we fine-tune the model using the pseudo-positive and pseudo-negative corpora with the AdamW optimizer (learning rate = 1.0×10−41.0\\times 10^{-4}, batch size = 16, and 3 epochs) and fix the robust UU learning hyperparameter λ\\lambda at -0.001 (see Equation (4)). At the end of each epoch, we compute the loss on a pseudo-labeled validation set and select the model with the lowest loss to re-label the entire dataset. Additional parameters are detailed in Table 3."
+          ]
+        },
+        {
+          "title": "Estimating Class Priors:",
+          "paragraphs": [
+            "Robust UU learning requires estimates of the positive proportions θ^p\\hat{\\theta}_{p} and θ^n\\hat{\\theta}_{n} for the pseudo-positive and pseudo-negative corpora, respectively. We compare two settings to obtain these parameters. In the first setting (Ours (Oracle)), we assume that the exact value of θp\\theta_{p} and θn\\theta_{n} are available444The assumption that the precise class priors are known is not unrealistic given the effectiveness of existing class prior estimation methods (e.g., (Scott et al., 2013; Menon et al., 2015; Liu and Tao, 2016; Bekker and Davis, 2020)).. In the second setting (Ours (few-labeled)), only 50 examples from the training dataset are labeled, from which we compute θ^p=p​(y=1∣y~=1)\\hat{\\theta}_{p}=p(y=1\\mid\\tilde{y}=1) and θ^n=p​(y=1∣y~=0)\\hat{\\theta}_{n}=p(y=1\\mid\\tilde{y}=0) before proceeding with robust UU learning. Our experiments show that even a small amount of labeled data provides sufficiently accurate estimates."
+          ]
+        },
+        {
+          "title": "Evaluation Metrics and Protocol:",
+          "paragraphs": [
+            "We measure classification accuracy on the held-out test dataset across all iterations. Each run is repeated with three different random seeds, and we report the mean and standard deviation."
+          ]
+        },
+        {
+          "title": "5.2 Experiments on Easier NLP Tasks (RQ1)",
+          "paragraphs": [
+            "We begin with three relatively simple tasks: Fake News, Saroco, and Safety. Given its relatively small parameter size and strong performance, we use Llama-3.2-1B-Instruct555https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct as the base model for the classifier.",
+            "To generate the initial pseudo labels, we employ five open models, gemma-2-2b-it666https://huggingface.co/google/gemma-2-2b-it, Llama-2-7b-chat-hf777https://huggingface.co/meta-llama/Llama-2-7b-chat-hf, Meta-Llama-3-8B888https://huggingface.co/meta-llama/Meta-Llama-3-8B, Llama-3.2-1B-Instruct999https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct, and Llama-3.2-3B-Instruct101010https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct to ensure reproducibility and to evaluate whether our self-refinement approach can operate robustly across a diverse set of models.",
+            "We compare our approach against three baselines:",
+            "1. PN Learning treats the pseudo-labels as fully reliable, i.e., standard supervised training on potentially noisy labels.",
+            "2. PIE (Zhang et al., 2023) iterative label refinement method that temporarily accepts only high-confidence predictions as correct, training an ensemble-like model on these provisional labels and iteratively improving label accuracy.",
+            "3. CCP (Kutt et al., 2024) method leveraging an iterative contrastive learning pipeline that incrementally builds a set of highly reliable labels by learning robust class-specific features from a limited labeled dataset.",
+            "PN Learning treats the pseudo-labels as fully reliable, i.e., standard supervised training on potentially noisy labels.",
+            "PIE (Zhang et al., 2023) iterative label refinement method that temporarily accepts only high-confidence predictions as correct, training an ensemble-like model on these provisional labels and iteratively improving label accuracy.",
+            "CCP (Kutt et al., 2024) method leveraging an iterative contrastive learning pipeline that incrementally builds a set of highly reliable labels by learning robust class-specific features from a limited labeled dataset.",
+            "Figure 3 shows the results for the easier tasks. Both Ours (Oracle) and Ours (few-labeled) steadily improve in accuracy, ultimately achieving high classification performance by the final iteration. Notably, despite using only 50 labeled examples, Ours (few-labeled) achieves performance comparable to Ours (Oracle), underscoring its potential even under minimal supervision.",
+            "For the Fake News task (using Meta-Llama-3-8B), PIE shows iterative performance gains, eventually matching the performance of Ours (Oracle) and outperforming standard PN Learning. This highlights the effectiveness of its ensemble strategy and confidence-based label refinement. However, for Saroco and Safety, where PN Learning struggles, PIE similarly performs poorly. This suggests that even with confidence-based filtering, limited initial classification accuracy hampers the effective elimination of noisy labels.",
+            "Similarly, while CCP demonstrates performance improvements with increasing iterations on the Fake News task, it completely fails on Saroco and Safety. CCP’s reliance on learning class-specific features from a small teacher dataset appears insufficient in scenarios where such features are inherently difficult to capture.",
+            "Summary for RQ1: These results confirm RQ1 by demonstrating that our iterative refinement approach consistently improves classification performance over initial LLM-based annotations on easier tasks, even with limited human supervision."
+          ]
+        },
+        {
+          "title": "Annotation Model:",
+          "paragraphs": [
+            "To generate the initial pseudo labels, we employ five open models, gemma-2-2b-it666https://huggingface.co/google/gemma-2-2b-it, Llama-2-7b-chat-hf777https://huggingface.co/meta-llama/Llama-2-7b-chat-hf, Meta-Llama-3-8B888https://huggingface.co/meta-llama/Meta-Llama-3-8B, Llama-3.2-1B-Instruct999https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct, and Llama-3.2-3B-Instruct101010https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct to ensure reproducibility and to evaluate whether our self-refinement approach can operate robustly across a diverse set of models."
+          ]
+        },
+        {
+          "title": "Baselines:",
+          "paragraphs": [
+            "We compare our approach against three baselines:",
+            "1. PN Learning treats the pseudo-labels as fully reliable, i.e., standard supervised training on potentially noisy labels.",
+            "2. PIE (Zhang et al., 2023) iterative label refinement method that temporarily accepts only high-confidence predictions as correct, training an ensemble-like model on these provisional labels and iteratively improving label accuracy.",
+            "3. CCP (Kutt et al., 2024) method leveraging an iterative contrastive learning pipeline that incrementally builds a set of highly reliable labels by learning robust class-specific features from a limited labeled dataset.",
+            "PN Learning treats the pseudo-labels as fully reliable, i.e., standard supervised training on potentially noisy labels.",
+            "PIE (Zhang et al., 2023) iterative label refinement method that temporarily accepts only high-confidence predictions as correct, training an ensemble-like model on these provisional labels and iteratively improving label accuracy.",
+            "CCP (Kutt et al., 2024) method leveraging an iterative contrastive learning pipeline that incrementally builds a set of highly reliable labels by learning robust class-specific features from a limited labeled dataset."
+          ]
+        },
+        {
+          "title": "Result:",
+          "paragraphs": [
+            "Figure 3 shows the results for the easier tasks. Both Ours (Oracle) and Ours (few-labeled) steadily improve in accuracy, ultimately achieving high classification performance by the final iteration. Notably, despite using only 50 labeled examples, Ours (few-labeled) achieves performance comparable to Ours (Oracle), underscoring its potential even under minimal supervision.",
+            "For the Fake News task (using Meta-Llama-3-8B), PIE shows iterative performance gains, eventually matching the performance of Ours (Oracle) and outperforming standard PN Learning. This highlights the effectiveness of its ensemble strategy and confidence-based label refinement. However, for Saroco and Safety, where PN Learning struggles, PIE similarly performs poorly. This suggests that even with confidence-based filtering, limited initial classification accuracy hampers the effective elimination of noisy labels.",
+            "Similarly, while CCP demonstrates performance improvements with increasing iterations on the Fake News task, it completely fails on Saroco and Safety. CCP’s reliance on learning class-specific features from a small teacher dataset appears insufficient in scenarios where such features are inherently difficult to capture.",
+            "Summary for RQ1: These results confirm RQ1 by demonstrating that our iterative refinement approach consistently improves classification performance over initial LLM-based annotations on easier tasks, even with limited human supervision."
+          ]
+        },
+        {
+          "title": "5.3 Experiment on Harder Tasks (RQ2/RQ3)",
+          "paragraphs": [
+            "We next evaluate our approach on three more challenging tasks: Corona Sentiment, Green Patent, and Protein Structure. To further explore the potential of our proposed method, we employed Llama-3.2-3B-Instruct for both Corona Sentiment and Green Patent and utilized bert-base-smiles111111https://huggingface.co/unikei/bert-base-smiles for Protein Structure. Initial pseudo labels are generated using the high-performance closed models GPT-4o-mini121212https://platform.openai.com/docs/models#gpt-4o-mini and GPT-4o131313https://platform.openai.com/docs/models#gpt-4o.",
+            "To compare the performance of self-refinement under a minimal human supervision setting, we adopt a self-refinement framework (Madaan et al., 2023; Kim et al., 2023; Chen et al., 2024b), where a response agent generates an initial answer and a feedback agent generates the feedback for this answer, thus iteratively refines answer (see Figures 7 and 8 for exact prompts). In this setup, we leverage high-performance closed models (GPT-4o-mini and GPT-4o) alongside the cost-effective reasoning model DeepSeek-R1 (DeepSeek-AI, 2025). For GPT-4o-mini and GPT-4o, initial annotations are generated consistently with our iterative robust UU learning (Ours) to ensure a fair comparison.",
+            "Figure 1 illustrates the accuracy curves across five iterations for the three challenging datasets. For all tasks, Ours (Oracle) shows a steady improvement in classification accuracy over successive iterations. In the Corona Sentiment and Protein Structure tasks, Ours (few-labeled) starts with a low classification accuracy relative to Ours (Oracle), but this gap diminishes with additional iterations. In addition, despite a lower initial performance than DeepSeek-R1 for Corona Sentiment and Protein Structure, our method surpasses DeepSeek-R1’s performance, demonstrating robustness against noisy initial labels.",
+            "In contrast, while the LLM-based self-refinement approach by GPT-4o-mini and GPT-4o shows a slight performance gain in the Corona Sentiment task, they suffer performance degradation in the Green Patent and Protein Structure tasks. Additionally, although DeepSeek-R1 starts with high annotation scores on all three datasets, it exhibits no performance gains in subsequent iterations. This suggests that even when employing a reasoning model, the benefits of self-refinement remain limited in scenarios where the LLM’s internal knowledge is insufficient. Therefore, relying solely on self-refinement in these cases may not lead to further performance gains.",
+            "Summary for RQ2 and RQ3: These findings confirm RQ2 by demonstrating our method enhances performance on challenging tasks through iterative refinement. They also confirm RQ3 by showing our approach outperforms existing LLM self-refinement strategies and reasoning models."
+          ]
+        },
+        {
+          "title": "Baselines:",
+          "paragraphs": [
+            "To compare the performance of self-refinement under a minimal human supervision setting, we adopt a self-refinement framework (Madaan et al., 2023; Kim et al., 2023; Chen et al., 2024b), where a response agent generates an initial answer and a feedback agent generates the feedback for this answer, thus iteratively refines answer (see Figures 7 and 8 for exact prompts). In this setup, we leverage high-performance closed models (GPT-4o-mini and GPT-4o) alongside the cost-effective reasoning model DeepSeek-R1 (DeepSeek-AI, 2025). For GPT-4o-mini and GPT-4o, initial annotations are generated consistently with our iterative robust UU learning (Ours) to ensure a fair comparison."
+          ]
+        },
+        {
+          "title": "Results:",
+          "paragraphs": [
+            "Figure 1 illustrates the accuracy curves across five iterations for the three challenging datasets. For all tasks, Ours (Oracle) shows a steady improvement in classification accuracy over successive iterations. In the Corona Sentiment and Protein Structure tasks, Ours (few-labeled) starts with a low classification accuracy relative to Ours (Oracle), but this gap diminishes with additional iterations. In addition, despite a lower initial performance than DeepSeek-R1 for Corona Sentiment and Protein Structure, our method surpasses DeepSeek-R1’s performance, demonstrating robustness against noisy initial labels.",
+            "In contrast, while the LLM-based self-refinement approach by GPT-4o-mini and GPT-4o shows a slight performance gain in the Corona Sentiment task, they suffer performance degradation in the Green Patent and Protein Structure tasks. Additionally, although DeepSeek-R1 starts with high annotation scores on all three datasets, it exhibits no performance gains in subsequent iterations. This suggests that even when employing a reasoning model, the benefits of self-refinement remain limited in scenarios where the LLM’s internal knowledge is insufficient. Therefore, relying solely on self-refinement in these cases may not lead to further performance gains.",
+            "Summary for RQ2 and RQ3: These findings confirm RQ2 by demonstrating our method enhances performance on challenging tasks through iterative refinement. They also confirm RQ3 by showing our approach outperforms existing LLM self-refinement strategies and reasoning models."
+          ]
+        }
+      ]
+    },
+    "6 Conclusion": {
+      "paragraphs": [
+        "In this work, we introduced an iterative refinement pipeline that leverages robust UU learning to improve classification performance with minimal human supervision. Our approach mitigates noise in the initial annotations by decoupling pseudo-label refinement from the LLM’s internal judgments and by effectively harnessing the unlabeled corpus. Extensive experiments across diverse tasks—from fake news detection and low-resource language satire to challenging domains such as green patent identification and protein structure classification—demonstrate that our method consistently outperforms both the initial LLM annotations and existing self-refinement approaches.",
+        "Notably, our results show that even with as few as 50 labeled examples for fine-tuning, the few-labeled variant of our approach attains performance comparable to an oracle setting, highlighting its scalability and cost-effectiveness. This iterative framework not only enhances the quality of pseudo-labels over successive iterations but also proves robust in scenarios where conventional methods struggle, particularly in domains requiring specialized expertise or within AI for Science applications.",
+        "Future work may extend our framework to additional tasks such as LLM post-training and AI-driven scientific applications. Overall, our study demonstrates that iterative refinement combined with weakly supervised learning can significantly enhance LLM performance in low-resource, complex settings."
+      ],
+      "subsections": [
+        {
+          "title": "Limitations",
+          "paragraphs": [
+            "Our approach has several limitations that warrant further exploration. Although our experiments confirm the method’s robustness under typical conditions, its performance might degrade when faced with extremely noisy pseudo-labels. For instance, the learning process becomes significantly more challenging when the positive prior for the pseudo-positive and pseudo-negative sets are nearly identical, resulting in an initial accuracy of around 0.5. In fact, as shown in Fig.3, in the Fake News task (using Gemma-2.2b), both our Oracle and few-labeled variants exhibit limited performance improvement, with an initial annotation accuracy of approximately 0.6. Conversely, Fig.1 shows that in the Protein Structure task (using GPT-4o), improvement is observed even when the initial annotation accuracy is around 0.55. Although these observations do not allow us to pinpoint a definitive threshold for ineffective initial annotations, they indicate that under conditions under extremely noisy annotation cases, the benefits of our iterative refinement framework will be limited.",
+            "Moreover, our estimation of the positive prior was based on 50 examples; if these samples are out-of-distribution compared to the broader pseudo dataset, the estimated prior may deviate from its true value, potentially impairing performance. In such cases, integrating additional techniques, such as transfer learning, could prove beneficial. Finally, our current work focuses exclusively on refining LLM-generated pseudo-labels for classification tasks and does not explore the application of this approach within the context of LLM post-training. Therefore, future studies should assess our method’s practical utility and effectiveness in post-training scenarios to confirm its broader applicability in real-world settings."
+          ]
+        }
+      ]
+    },
+    "Acknowledgment": {
+      "paragraphs": [
+        "This research was supported by the JST Moonshot Research and Development Program JPMJMS2236-8."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Dataset Details": {
+      "paragraphs": [
+        "[Table: Table 1: Dataset statistics: sample size, positive prior, and classification accuracy, reported as an indicator of task difficulty under standard supervised learning.]",
+        "[Table: Table 2: Examples of positive and negative instances for each dataset]"
+      ],
+      "subsections": [
+        {
+          "title": "A.1 Dataset Curation Details",
+          "paragraphs": [
+            "In our experiments, we use six publicly available datasets: Fake News, Saroco, Safety, Corona Sentiment, Green Patent, and Protein Structure. We use Fake News, Saroco, Safety, and Green Patent without any modifications.",
+            "For the Corona Sentiment dataset, as shown in Table 1, its relatively small size posed a risk of training failures due to insufficient data. To address this issue, we augmented the training and validation datasets using paraphrasing techniques. Specifically, we employed chatgpt_paraphraser_on_T5_base141414https://huggingface.co/humarin/chatgpt_paraphraser_on_T5_base to generate nine paraphrases for each sample in the training and validation sets, thereby increasing the size of these subsets by a factor of ten. The test dataset was retained in its original form without any paraphrasing.",
+            "To build the Protein Structure dataset, we use the binding_affinity dataset151515https://huggingface.co/datasets/jglaser/binding_affinity which includes 1.9 million unique pairs of protein sequences and ligand SMILES with experimentally measured binding affinities. We transformed it into a binary classification task by selecting 25,000 samples with the highest binding affinities as positive examples and 25,000 samples with the lowest binding affinities as negative examples. This process resulted in a final dataset of 50,000 samples."
+          ]
+        }
+      ]
+    },
+    "Appendix B Implementation Details": {
+      "paragraphs": [
+        "[Figure: Figure 4: Classification accuracy across five iterations for PN, UU, robust UU (oracle), robust UU (50-labeled), and robust UU (100-labeled) on three relatively simple datasets. Solid lines represent mean values, and shaded areas denote the mean ±\\pm standard deviation.]",
+        "[Figure: Figure 5: Classification accuracy across five iterations for robust UU learning under different positive prior estimation settings on three challenging datasets. Solid lines represent mean values, and shaded areas denote the mean ±\\pm standard deviation.]",
+        "[Table: Table 3: Hyperparameters used for training.]"
+      ],
+      "subsections": [
+        {
+          "title": "B.1 Prompt Details",
+          "paragraphs": [
+            "We based our implementation on the transformers161616https://github.com/huggingface/transformers library and conducted training and inference using PyTorch171717https://github.com/pytorch/pytorch. In our experiments, we employed 8 NVIDIA A100 GPUs (80GB) and leveraged Accelerate181818https://huggingface.co/docs/accelerate/en/index for distributed training across multiple GPUs. The experimental runtime depends heavily on the dataset size; however, for the Safety dataset – which contains the largest amount of data – five iterations of training and inference required approximately two and a half hours.",
+            "Table 3 details the hyperparameters used in our experiments. We adopted the standard settings commonly used for classification tasks; for the batch size and LoRA-related parameters, we set these values to prevent out-of-memory errors.",
+            "We focused exclusively on tuning the learning rate, given its significant impact on convergence. Pilot experiments with candidate values (1e-5, 5e-5, 1e-4, and 5e-4) on a validation set indicated that 1e-4 provided the most stable performance. Therefore, we used this value throughout our experiments.",
+            "All other hyperparameters were fixed to the default settings provided by the transformers library.",
+            "[Figure: Figure 4: Classification accuracy across five iterations for PN, UU, robust UU (oracle), robust UU (50-labeled), and robust UU (100-labeled) on three relatively simple datasets. Solid lines represent mean values, and shaded areas denote the mean ±\\pm standard deviation.]",
+            "[Figure: Figure 5: Classification accuracy across five iterations for robust UU learning under different positive prior estimation settings on three challenging datasets. Solid lines represent mean values, and shaded areas denote the mean ±\\pm standard deviation.]"
+          ]
+        }
+      ]
+    },
+    "Appendix C Additional Experimental Result": {
+      "paragraphs": [
+        "Figure 4 presents the evolution of classification accuracy over five iterations across three relatively simple datasets. We confirm that the PN model consistently underperforms, indicating ineffective learning, with the sole exception of the Fake New dataset (using Meta-Llama-3-8B). In contrast, while the UU model exhibits incremental improvements, these gains are modest compared to those achieved by the robust UU approach. Moreover, as demonstrated in (§ 5.2), our method achieves performance comparable to the oracle even when only 50 or 100 labeled examples are available.",
+        "Similarly, Figure 5 shows that our method not only achieves progressive performance improvements in the oracle setting but also reaches near-oracle performance under minimal supervision with just 50 or 100 labeled examples. These findings are consistent with those presented in (§ 5.3).",
+        "[Figure: Figure 6: Example prompt for safety evaluation, which follows a similar format to prompts used for other datasets. The examples illustrate both safe (true) and unsafe (false) outcomes.]",
+        "[Figure: Figure 7: Example prompt for Protein Structure classification task, which follows a similar format to prompts used for other datasets. The examples illustrate both safe (true) and unsafe (false) outcomes.]",
+        "[Figure: Figure 8: Prompt for feedback agent, instructing the agent to critique the classification response.]"
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "Ahmed et al. (2018) Hadeer Ahmed, Issa Traore, and Sherif Saad. 2018. Detecting opinion spams and fake news using text classification. Security and Privacy, 1(1):e9.",
+    "Bachman et al. (2014) Philip Bachman, Ouais Alsharif, and Doina Precup. 2014. Learning with pseudo-ensembles. In Proceedings of the Annual Conference on Neural Information Processing Systems (NeurIPS).",
+    "Bai et al. (2022) Yuntao Bai, Saurav Kadavath, Sandipan Kundu, Amanda Askell, Jackson Kernion, Andy Jones, Anna Chen, Anna Goldie, Azalia Mirhoseini, Cameron McKinnon, Carol Chen, Catherine Olsson, Christopher Olah, Danny Hernandez, Dawn Drain, Deep Ganguli, Dustin Li, Eli Tran-Johnson, Ethan Perez, Jamie Kerr, Jared Mueller, Jeffrey Ladish, Joshua Landau, Kamal Ndousse, Kamile Lukosuite, Liane Lovitt, Michael Sellitto, Nelson Elhage, Nicholas Schiefer, Noemi Mercado, Nova DasSarma, Robert Lasenby, Robin Larson, Sam Ringer, Scott Johnston, Shauna Kravec, Sheer El Showk, Stanislav Fort, Tamera Lanham, Timothy Telleen-Lawton, Tom Conerly, Tom Henighan, Tristan Hume, Samuel R. Bowman, Zac Hatfield-Dodds, Ben Mann, Dario Amodei, Nicholas Joseph, Sam McCandlish, Tom Brown, and Jared Kaplan. 2022. Constitutional ai: Harmlessness from ai feedback. Preprint, arXiv:2212.08073.",
+    "Baumgärtner et al. (2024) Tim Baumgärtner, Yang Gao, Dana Alon, and Donald Metzler. 2024. Best-of-venom: Attacking RLHF by injecting poisoned preference data. In First Conference on Language Modeling.",
+    "Bekker and Davis (2020) Jessa Bekker and Jesse Davis. 2020. Learning from positive and unlabeled data: a survey. Machine learning, 109(4):719–760.",
+    "Bengio et al. (2009) Yoshua Bengio, Jérôme Louradour, Ronan Collobert, and Jason Weston. 2009. Curriculum learning. In Proceedings of the International Conference on Machine Learning (ICML).",
+    "Blanchard et al. (2022) Andrew E Blanchard, John Gounley, Debsindhu Bhowmik, Mayanka Chandra Shekar, Isaac Lyngaas, Shang Gao, Junqi Yin, Aristeidis Tsaris, Feiyi Wang, and Jens Glaser. 2022. Language models for the prediction of SARS-CoV-2 inhibitors. The International Journal of High Performance Computing Applications, 36(5-6):587–602.",
+    "Brown et al. (2020) Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, Sandhini Agarwal, Ariel Herbert-Voss, Gretchen Krueger, Tom Henighan, Rewon Child, Aditya Ramesh, Daniel Ziegler, Jeffrey Wu, Clemens Winter, Chris Hesse, Mark Chen, Eric Sigler, Mateusz Litwin, Scott Gray, Benjamin Chess, Jack Clark, Christopher Berner, Sam McCandlish, Alec Radford, Ilya Sutskever, and Dario Amodei. 2020. Language models are few-shot learners. In Proceedings of the Annual Conference on Neural Information Processing Systems (NeurIPS), volume 33, pages 1877–1901. Curran Associates, Inc.",
+    "Chen et al. (2024a) Justin Chen, Swarnadeep Saha, and Mohit Bansal. 2024a. ReConcile: Round-table conference improves reasoning via consensus among diverse LLMs. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 7066–7085, Bangkok, Thailand. Association for Computational Linguistics.",
+    "Chen et al. (2024b) Xinyun Chen, Maxwell Lin, Nathanael Schärli, and Denny Zhou. 2024b. Teaching large language models to self-debug. In The Twelfth International Conference on Learning Representations.",
+    "Dai et al. (2024) Josef Dai, Xuehai Pan, Ruiyang Sun, Jiaming Ji, Xinbo Xu, Mickel Liu, Yizhou Wang, and Yaodong Yang. 2024. Safe RLHF: Safe reinforcement learning from human feedback. In Proceedings of the International Conference on Learning and Representation (ICLR).",
+    "DeepSeek-AI (2025) DeepSeek-AI. 2025. DeepSeek-R1: Incentivizing reasoning capability in LLMs via reinforcement learning. arXiv [cs.CL].",
+    "Dettmers et al. (2023) Tim Dettmers, Artidoro Pagnoni, Ari Holtzman, and Luke Zettlemoyer. 2023. QLoRA: Efficient finetuning of quantized LLMs. In Thirty-seventh Conference on Neural Information Processing Systems.",
+    "Du et al. (2024) Yilun Du, Shuang Li, Antonio Torralba, Joshua B Tenenbaum, and Igor Mordatch. 2024. Improving factuality and reasoning in language models through multiagent debate. In Proceedings of the International Conference on Machine Learning (ICML), ICML’24, Vienna, Austria. JMLR.org.",
+    "Estornell and Liu (2024) Andrew Estornell and Yang Liu. 2024. Multi-LLM debate: Framework, principals, and interventions. In The Thirty-eighth Annual Conference on Neural Information Processing Systems.",
+    "Haase-Schutz et al. (2021) Christian Haase-Schutz, Rainer Stal, Heinz Hertlein, and Bernhard Sick. 2021. Iterative label improvement: Robust training by confidence based filtering and dataset partitioning. In International Conference on Pattern Recognition (ICPR).",
+    "Huang et al. (2024) Jie Huang, Xinyun Chen, Swaroop Mishra, Huaixiu Steven Zheng, Adams Wei Yu, Xinying Song, and Denny Zhou. 2024. Large language models cannot self-correct reasoning yet. In Proceedings of the International Conference on Learning and Representation (ICLR).",
+    "Huang et al. (2022) Wenlong Huang, Fei Xia, Ted Xiao, Harris Chan, Jacky Liang, Pete Florence, Andy Zeng, Jonathan Tompson, Igor Mordatch, Yevgen Chebotar, Pierre Sermanet, Tomas Jackson, Noah Brown, Linda Luu, Sergey Levine, Karol Hausman, and Brian Ichter. 2022. Inner monologue: Embodied reasoning through planning with language models. In Proceedings of the Conference on Robot Learning (CoRL).",
+    "Jiang et al. (2015) Lu Jiang, Deyu Meng, Qian Zhao, Shiguang Shan, and Alexander Hauptmann. 2015. Self-paced curriculum learning. In Proceedngs of the AAAI Conference on Artificial Intelligence (AAAI).",
+    "Kamoi et al. (2024a) Ryo Kamoi, Sarkar Snigdha Sarathi Das, Renze Lou, Jihyun Janice Ahn, Yilun Zhao, Xiaoxin Lu, Nan Zhang, Yusen Zhang, Haoran Ranran Zhang, Sujeeth Reddy Vummanthala, Salika Dave, Shaobo Qin, Arman Cohan, Wenpeng Yin, and Rui Zhang. 2024a. Evaluating LLMs at detecting errors in LLM responses. In First Conference on Language Modeling (COLM).",
+    "Kamoi et al. (2024b) Ryo Kamoi, Yusen Zhang, Nan Zhang, Jiawei Han, and Rui Zhang. 2024b. When can LLMs actually correct their own mistakes? a critical survey of self-correction of LLMs. Transactions of the Association for Computational Linguistics (TACL), 12:1417–1440.",
+    "Kim et al. (2023) Geunwoo Kim, Pierre Baldi, and Stephen McAleer. 2023. Language models can solve computer tasks. In Proceedings of the Annual Conference on Neural Information Processing Systems (NeurIPS), volume 36, pages 39648–39677. Curran Associates, Inc.",
+    "Koo et al. (2024) Ryan Koo, Minhwa Lee, Vipul Raheja, Jong Inn Park, Zae Myung Kim, and Dongyeop Kang. 2024. Benchmarking cognitive biases in large language models as evaluators. In Findings of the Association for Computational Linguistics: ACL 2024, pages 517–545, Bangkok, Thailand. Association for Computational Linguistics.",
+    "Kumar et al. (2010) M. Kumar, Benjamin Packer, and Daphne Koller. 2010. Self-paced learning for latent variable models. In Proceedings of the Annual Conference on Neural Information Processing Systems (NeurIPS).",
+    "Kutt et al. (2024) Brody Kutt, Pralay Ramteke, Xavier Mignot, Pamela Toman, Nandini Ramanan, Sujit Rokka Chhetri, Shan Huang, Min Du, and William Hewlett. 2024. Contrastive credibility propagation for reliable semi-supervised learning. In Proceedngs of the AAAI Conference on Artificial Intelligence (AAAI).",
+    "Laine and Aila (2017) Samuli Laine and Timo Aila. 2017. Temporal ensembling for semi-supervised learning. In Proceedings of the International Conference on Learning and Representation (ICLR).",
+    "Lee (2013) Dong-Hyun Lee. 2013. Pseudo-label: The simple and efficient semi-supervised learning method for deep neural networks. In Workshop on challenges in representation learning, International Conference on Machine Learning (ICML).",
+    "Lee et al. (2024) Harrison Lee, Samrat Phatale, Hassan Mansoor, Thomas Mesnard, Johan Ferret, Kellie Lu, Colton Bishop, Ethan Hall, Victor Carbune, Abhinav Rastogi, and Sushant Prakash. 2024. RLAIF vs. RLHF: scaling reinforcement learning from human feedback with AI feedback. In Proceedings of the 41st International Conference on Machine Learning, ICML’24, Vienna, Austria. JMLR.org.",
+    "Li et al. (2024a) Ang Li, Qiugen Xiao, Peng Cao, Jian Tang, Yi Yuan, Zijie Zhao, Xiaoyuan Chen, Liang Zhang, Xiangyang Li, Kaitong Yang, Weidong Guo, Yukang Gan, Xu Yu, Daniell Wang, and Ying Shan. 2024a. HRLAIF: Improvements in helpfulness and harmlessness in open-domain reinforcement learning from AI feedback. arXiv [cs.LG].",
+    "Li et al. (2024b) Dawei Li, Bohan Jiang, Liangjie Huang, Alimohammad Beigi, Chengshuai Zhao, Zhen Tan, Amrita Bhattacharjee, Yuxuan Jiang, Canyu Chen, Tianhao Wu, Kai Shu, Lu Cheng, and Huan Liu. 2024b. From generation to judgment: Opportunities and challenges of LLM-as-a-judge. arXiv [cs.AI].",
+    "Li et al. (2024c) Yanhong Li, Chenghao Yang, and Allyson Ettinger. 2024c. When hindsight is not 20/20: Testing limits on reflective thinking in large language models. In Findings of the Association for Computational Linguistics: NAACL 2024, pages 3741–3753, Mexico City, Mexico. Association for Computational Linguistics.",
+    "Liu and Tao (2016) Tongliang Liu and Dacheng Tao. 2016. Classification with noisy labels by importance reweighting. IEEE Trans. Pattern Anal. Mach. Intell., 38(3):447–461.",
+    "Liu et al. (2024) Yiqi Liu, Nafise Moosavi, and Chenghua Lin. 2024. LLMs as narcissistic evaluators: When ego inflates evaluation scores. In Findings of the Association for Computational Linguistics: ACL 2024, pages 12688–12701, Bangkok, Thailand. Association for Computational Linguistics.",
+    "Lu et al. (2019) Nan Lu, Gang Niu, Aditya K Menon, and Masashi Sugiyama. 2019. On the minimal supervision for training any binary classifier from only unlabeled data. In Proceedings of the International Conference on Learning and Representation (ICLR).",
+    "Lu et al. (2020) Nan Lu, Tianyi Zhang, Gang Niu, and Masashi Sugiyama. 2020. Mitigating overfitting in supervised classification from two unlabeled datasets: A consistent risk correction approach. In Proceedings of the Twenty Third International Conference on Artificial Intelligence and Statistics (AISTATS), volume 108, pages 1115–1125.",
+    "Madaan et al. (2023) Aman Madaan, Niket Tandon, Prakhar Gupta, Skyler Hallinan, Luyu Gao, Sarah Wiegreffe, Uri Alon, Nouha Dziri, Shrimai Prabhumoye, Yiming Yang, Shashank Gupta, Bodhisattwa Prasad Majumder, Katherine Hermann, Sean Welleck, Amir Yazdanbakhsh, and Peter Clark. 2023. Self-refine: Iterative refinement with self-feedback. In Proceedings of the Annual Conference on Neural Information Processing Systems (NeurIPS), volume 36, pages 46534–46594. Curran Associates, Inc.",
+    "Menon et al. (2015) Aditya Menon, Brendan Van Rooyen, Cheng Soon Ong, and Bob Williamson. 2015. Learning from corrupted binary labels via class-probability estimation. In Proceedings of the 32nd International Conference on Machine Learning, volume 37 of Proceedings of Machine Learning Research, pages 125–134, Lille, France. PMLR.",
+    "Miyato et al. (2019) Takeru Miyato, Shin-Ichi Maeda, Masanori Koyama, and Shin Ishii. 2019. Virtual adversarial training: A regularization method for supervised and semi-supervised learning. IEEE Transactions on Pattern Analysis and Machine Intelligence, 41(8):1979–1993.",
+    "Ouyang et al. (2022) Long Ouyang, Jeffrey Wu, Xu Jiang, Diogo Almeida, Carroll Wainwright, Pamela Mishkin, Chong Zhang, Sandhini Agarwal, Katarina Slama, Alex Ray, John Schulman, Jacob Hilton, Fraser Kelton, Luke Miller, Maddie Simens, Amanda Askell, Peter Welinder, Paul F Christiano, Jan Leike, and Ryan Lowe. 2022. Training language models to follow instructions with human feedback. In Proceedings of the Annual Conference on Neural Information Processing Systems (NeurIPS), volume 35, page 27730–27744.",
+    "Pham et al. (2021) Hieu Pham, Zihang Dai, Qizhe Xie, and Quoc V. Le. 2021. Meta pseudo labels. In Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition (CVPR).",
+    "Rafailov et al. (2023) Rafael Rafailov, Archit Sharma, Eric Mitchell, Stefano Ermon, Christopher D Manning, and Chelsea Finn. 2023. Direct preference optimization: your language model is secretly a reward model. In Proceedings of the Annual Conference on Neural Information Processing Systems (NeurIPS).",
+    "Rizve et al. (2021) Mamshad Nayeem Rizve, Kevin Duarte, Yogesh S Rawat, and Mubarak Shah. 2021. In defense of pseudo-labeling: An uncertainty-aware pseudo-label selection framework for semi-supervised learning. In Proceedings of the International Conference on Learning and Representation (ICLR).",
+    "Rogoz et al. (2021) Ana-Cristina Rogoz, Gaman Mihaela, and Radu Tudor Ionescu. 2021. SaRoCo: Detecting satire in a novel Romanian corpus of news articles. In Proceedings of the 59th Annual Meeting of the Association for Computational Linguistics and the 11th International Joint Conference on Natural Language Processing (Volume 2: Short Papers), Online. Association for Computational Linguistics.",
+    "Sagiroglu and Sinanc (2013) Seref Sagiroglu and Duygu Sinanc. 2013. Big data: A review. In 2013 international conference on collaboration technologies and systems (CTS), pages 42–47. IEEE.",
+    "Sajjadi et al. (2016) Mehdi Sajjadi, Mehran Javanmardi, and Tolga Tasdizen. 2016. Regularization with stochastic transformations and perturbations for deep semi-supervised learning. In Proceedings of the Annual Conference on Neural Information Processing Systems (NeurIPS).",
+    "Scott et al. (2013) Clayton Scott, Gilles Blanchard, and Gregory Handy. 2013. Classification with asymmetric label noise: Consistency and maximal denoising. In Proceedings of the 26th Annual Conference on Learning Theory, volume 30 of Proceedings of Machine Learning Research, pages 489–511, Princeton, NJ, USA. PMLR.",
+    "Scudder (1965) Henry J. Scudder. 1965. Probability of error of some adaptive pattern-recognition machines. IEEE Transactions on Information Theory, 11(3):363–371.",
+    "Shi et al. (2024) Wenqi Shi, Ran Xu, Yuchen Zhuang, Yue Yu, Jieyu Zhang, Hang Wu, Yuanda Zhu, Joyce C Ho, Carl Yang, and May Dongmei Wang. 2024. EHRAgent: Code empowers large language models for few-shot complex tabular reasoning on electronic health records. In Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing (EMNLP), pages 22315–22339, Miami, Florida, USA. Association for Computational Linguistics.",
+    "Shinn et al. (2023) Noah Shinn, Federico Cassano, Ashwin Gopinath, Karthik Narasimhan, and Shunyu Yao. 2023. Reflexion: language agents with verbal reinforcement learning. In Proceedings of the Annual Conference on Neural Information Processing Systems (NeurIPS), volume 36, pages 8634–8652. Curran Associates, Inc.",
+    "Smit et al. (2024) Andries Smit, Nathan Grinsztajn, Paul Duckworth, Thomas D Barrett, and Arnu Pretorius. 2024. Should we be going MAD? a look at multi-agent debate strategies for LLMs. In Proceedings of the 41st International Conference on Machine Learning, ICML’24, Vienna, Austria. JMLR.org.",
+    "Sohn et al. (2020) Kihyuk Sohn, David Berthelot, Nicholas Carlini, Zizhao Zhang, Han Zhang, Colin A Raffel, Ekin Dogus Cubuk, Alexey Kurakin, and Chun-Liang Li. 2020. Fixmatch: Simplifying semi-supervised learning with consistency and confidence. In Proceedings of the Annual Conference on Neural Information Processing Systems (NeurIPS).",
+    "Tang et al. (2024) Yunhao Tang, Zhaohan Daniel Guo, Zeyu Zheng, Daniele Calandriello, Remi Munos, Mark Rowland, Pierre Harvey Richemond, Michal Valko, Bernardo Avila Pires, and Bilal Piot. 2024. Generalized preference optimization: A unified approach to offline alignment. In Proceedings of the International Conference on Machine Learning (ICML), volume 235 of Proceedings of Machine Learning Research, pages 47725–47742. PMLR.",
+    "Tarvainen and Valpola (2017) Antti Tarvainen and Harri Valpola. 2017. Mean teachers are better role models: Weight-averaged consistency targets improve semi-supervised deep learning results. In Proceedings of the Annual Conference on Neural Information Processing Systems (NeurIPS).",
+    "Wang et al. (2023a) Guanzhi Wang, Yuqi Xie, Yunfan Jiang, Ajay Mandlekar, Chaowei Xiao, Yuke Zhu, Linxi Fan, and Anima Anandkumar. 2023a. Voyager: An open-ended embodied agent with large language models. Transactions on Machine Learning Research.",
+    "Wang and Wu (2020) Guo-Hua Wang and Jianxin Wu. 2020. Repetitive reprediction deep decipher for semi-supervised learning. Proceedngs of the AAAI Conference on Artificial Intelligence (AAAI).",
+    "Wang et al. (2024) Peiyi Wang, Lei Li, Liang Chen, Zefan Cai, Dawei Zhu, Binghuai Lin, Yunbo Cao, Lingpeng Kong, Qi Liu, Tianyu Liu, and Zhifang Sui. 2024. Large language models are not fair evaluators. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 9440–9450, Bangkok, Thailand. Association for Computational Linguistics.",
+    "Wang et al. (2023b) Xuezhi Wang, Jason Wei, Dale Schuurmans, Quoc V Le, Ed H Chi, Sharan Narang, Aakanksha Chowdhery, and Denny Zhou. 2023b. Self-consistency improves chain of thought reasoning in language models. In Proceedings of the International Conference on Learning and Representation (ICLR).",
+    "Wei et al. (2022) Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Brian Ichter, Fei Xia, Ed Chi, Quoc V Le, and Denny Zhou. 2022. Chain-of-thought prompting elicits reasoning in large language models. In Proceedings of the Annual Conference on Neural Information Processing Systems (NeurIPS), volume 35, pages 24824–24837. Curran Associates, Inc.",
+    "Wu et al. (2024) Shirley Wu, Shiyu Zhao, Qian Huang, Kexin Huang, Michihiro Yasunaga, Kaidi Cao, Vassilis N Ioannidis, Karthik Subbian, Jure Leskovec, and James Zou. 2024. AvaTaR: Optimizing LLM agents for tool usage via contrastive reasoning. In The Thirty-eighth Annual Conference on Neural Information Processing Systems.",
+    "Xiao and Zhu (2025) Tong Xiao and Jingbo Zhu. 2025. Foundations of large language models. Preprint, arXiv:2501.09223.",
+    "Yang et al. (2023) Xiangli Yang, Zixing Song, Irwin King, and Zenglin Xu. 2023. A survey on deep semi-supervised learning. IEEE Transactions on Knowledge and Data Engineering, 35(9):8934–8954.",
+    "Yao et al. (2023) Shunyu Yao, Dian Yu, Jeffrey Zhao, Izhak Shafran, Tom Griffiths, Yuan Cao, and Karthik Narasimhan. 2023. Tree of thoughts: Deliberate problem solving with large language models. In Proceedings of the Annual Conference on Neural Information Processing Systems (NeurIPS), volume 36, pages 11809–11822. Curran Associates, Inc.",
+    "Yi and Wu (2019) Kun Yi and Jianxin Wu. 2019. Probabilistic end-to-end noise correction for learning with noisy labels. In Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition (CVPR).",
+    "Zhang et al. (2023) Yunyi Zhang, Minhao Jiang, Yu Meng, Yu Zhang, and Jiawei Han. 2023. PIEClass: Weakly-supervised text classification with prompting and noise-robust iterative ensemble training. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, pages 12655–12670, Singapore. Association for Computational Linguistics.",
+    "Zhu et al. (2024) Banghua Zhu, Evan Frick, Tianhao Wu, Hanlin Zhu, Karthik Ganesan, Wei-Lin Chiang, Jian Zhang, and Jiantao Jiao. 2024. Starling-7B: Improving helpfulness and harmlessness with RLAIF. In First Conference on Language Modeling.",
+    "Zhu and Ghahramani (2002) Xiaojin Zhu and Zoubin Ghahramani. 2002. Learning from labeled and unlabeled data with label propagation. Technical Report CMU-CALD-02-107, Center for Automated Learning and Discovery, School of Computer Science, Carnegie Mellon University, Pittsburgh, PA, USA.",
+    "Zhu et al. (2023) Xinyu Zhu, Junjie Wang, Lin Zhang, Yuxiang Zhang, Yongfeng Huang, Ruyi Gan, Jiaxing Zhang, and Yujiu Yang. 2023. Solving math word problems via cooperative reasoning induced language models. In Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 4471–4485, Toronto, Canada. Association for Computational Linguistics."
+  ]
+}

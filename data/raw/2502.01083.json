@@ -1,0 +1,420 @@
+{
+  "title": "Tool Unlearning for Tool-Augmented LLMs",
+  "authors": "Jiali Cheng  Hadi AmiriUniversity of Massachusetts Lowell{jiali_cheng, hadi_amiri}@uml.edu",
+  "abstract": "Tool-augmented large language models (LLMs) are often trained on datasets of query-response pairs, which embed the ability to use tools or APIs directly into the parametric knowledge of LLMs. Tool-augmented LLMs need the ability to forget learned tools due to security vulnerabilities, privacy regulations, or tool deprecations. However, “tool unlearning” has not been investigated in unlearning literature. We introduce this novel task, which requires addressing distinct challenges compared to traditional unlearning: knowledge removal rather than forgetting individual samples, the high cost of optimizing LLMs, and the need for principled evaluation metrics. To bridge these gaps, we propose ToolDelete, the first approach for unlearning tools from tool-augmented LLMs. It implements three key properties to address the above challenges for effective tool unlearning and introduces a new membership inference attack (MIA) model for effective evaluation. Extensive experiments on multiple tool learning datasets and tool-augmented LLMs show that ToolDelete effectively unlearns randomly selected tools, while preserving the LLM’s knowledge on non-deleted tools and maintaining performance on general tasks.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Tool-augmented Large Language Models (LLMs) can use external tools such as calculators (Schick et al., 2023), Python interpretors (Gao et al., 2023), APIs (Tang et al., 2023), or AI models (Patil et al., 2023) to complement the parametric knowledge of vanilla LLMs and enable them to solve more complex tasks (Schick et al., 2023; Patil et al., 2023). They are often trained on query-response pairs, which embed the ability to use tools directly into parameters.",
+        "Despite the growing adoption of tool-augmented LLMs, the ability to selectively unlearn tools has not been investigated. In real-world applications, tool unlearning is essential for addressing critical concerns such as security, privacy, and model reliability. For example, consider a tool-augmented LLM deployed in a healthcare system and trained to use APIs for handling patient data. If one of the APIs is later flagged as insecure due to a vulnerability that could expose sensitive information and violate regulations like HIPAA, tool unlearning is necessary to ensure that the LLM can no longer invoke the insecure API. Similarly, when tools undergo major updates, such as the Python transformers package moving from version 3 to version 4, tool unlearning becomes essential to prevent the LLM from generating outdated or erroneous code. The goal of this work is to address this gap by investigating tool unlearning and providing a solution for this overlooked yet essential task.",
+        "We introduce and formalize the new task of Tool Unlearning, which aims to remove the ability of using specific tools from a tool-augmented LLM while preserving its ability to use other tools and perform general tasks of LLMs such as coherent text generation. Ideally, an effective tool unlearning model should behave as if it had never learned the tools marked for unlearning. Tool unlearning fundamentally differs from traditional sample-level unlearning as it focuses on removing “skills” or the ability to use specific tools, rather than removing individual data samples from a model. In addition, success in tool unlearning should be measured by the model’s ability to forget or retain tool-related skills, which differs from traditional metrics such as measuring likelihood of extracting training data in sample-level unlearning. These differences are discussed in detail in §2.",
+        "Removing skills requires modifying the parameters of LLMs, a process that is computationally expensive and can lead to unforeseen behaviors (Cohen et al., 2024; Gu et al., 2024). In addition, existing membership inference attack (MIA) techniques, a common evaluation method in machine unlearning to determine whether specific data samples were part of training data, are inadequate for evaluating tool unlearning, as they focus on sample-level data rather than tool-based knowledge.",
+        "To address these challenges, we propose ToolDelete, the first tool unlearning algorithm for tool-augmented LLMs, which satisfies three key properties for effective tool unlearning: tool knowledge removal, which focuses on removing any knowledge gained on tools marked for unlearning; tool knowledge retention, which focuses on preserving the knowledge gained on other remaining tools; and general capability retention, which maintains LLM’s general capability on a range of general tasks such as text and code generation using ideas from task arithmetic (Ilharco et al., 2023; Barbulescu & Triantafillou, 2024). In addition, we develop LiRA-Tool, an adaptation of the Likelihood Ratio Attack (LiRA) (Carlini et al., 2022) to tool unlearning, to assess whether tool-related knowledge has been successfully unlearned. Our contributions are:",
+        "• introducing and conceptualizing tool unlearning for tool-augmented LLMs,",
+        "• ToolDelete, which implements three key properties for effective tool unlearning;",
+        "• LiRA-Tool, which is the first membership inference attack (MIA) for tool unlearning.",
+        "Extensive experiments on multiple datasets and tool-augmented LLMs show that ToolDelete outperforms existing general and LLM-specific unlearning algorithms by ++ in accuracy on forget tools and retain tools. In addition, it can save 74.8% of training time compared to retraining, handle sequential unlearning requests, and retain 95+% performance in low resource settings."
+      ],
+      "subsections": []
+    },
+    "2 Tool Unlearning: Preliminaries": {
+      "paragraphs": [
+        "To understand tool unlearning, we first introduce the concept of “tool learning,” see Figure 1(a). Let 𝒟={𝒯,𝒬,𝒴}\\mathcal{D}=\\{\\mathcal{T},\\mathcal{Q},\\mathcal{Y}\\} be a dataset with NN tools 𝒯\\mathcal{T}, and (𝒬,𝒴)(\\mathcal{Q},\\mathcal{Y}) denotes query-output examples that demonstrate how to use the tools in 𝒯\\mathcal{T}. Each tool ti∈𝒯t_{i}\\in\\mathcal{T} may have one or more demonstrations {𝒬i,𝒴i}\\{\\mathcal{Q}_{i},\\mathcal{Y}_{i}\\}, |𝒬i|=|𝒴i|≥1|\\mathcal{Q}_{i}|=|\\mathcal{Y}_{i}|\\geq 1. Starting with an instruction-tuned LLM f0f_{0}, a tool learning algorithm explicitly trains f0f_{0} on 𝒟\\mathcal{D} and results in a tool-augmented model ff capable of using the NN tools in 𝒯\\mathcal{T}. We note that prior to explicit tool learning, the LLM f0f_{0} may already have some tool-using capabilities such as performing basic arithmetic operations."
+      ],
+      "subsections": [
+        {
+          "title": "Problem Definition:",
+          "paragraphs": [
+            "Tool unlearning aims to remove specific tools from tool-augmented LLMs. Let 𝒟f={𝒯f,𝒬f,𝒴f}\\mathcal{D}_{f}=\\{\\mathcal{T}_{f},\\mathcal{Q}_{f},\\mathcal{Y}_{f}\\} denotes k<Nk<N tools and their corresponding demonstrations to be unlearned from the tool-augmented model ff, and 𝒟r=𝒟\\𝒟f={𝒯r,𝒬r,𝒴r}\\mathcal{D}_{r}=\\mathcal{D}\\backslash\\mathcal{D}_{f}=\\{\\mathcal{T}_{r},\\mathcal{Q}_{r},\\mathcal{Y}_{r}\\} denotes the remaining tools and their demonstrations to retain. The goal is to obtain an unlearned model f′f^{\\prime} that has limited knowledge on using 𝒯f\\mathcal{T}_{f} tools–can no longer perform tasks involving 𝒯f\\mathcal{T}_{f} tools–while preserving ff’s ability to use 𝒯r\\mathcal{T}_{r} tools as before."
+          ]
+        },
+        {
+          "title": "Use Cases of Tool Unlearning",
+          "paragraphs": [
+            "The ability to forget learned tools is essential in real-world applications. For example, addressing the insecure tools from untrustworthy developers that could be exploited by adversarial attackers; removing tools restricted by their providers due to copyright or privacy concerns, such as APIs that start allowing unauthorized downloads of book chapters or releasing publications that users did not author; unlearning broken or deprecated tool that lead to failed operations or corrupted outputs; unlearning tools that may no longer be needed; and managing limited model capacity, where new versions of tools necessitate replacing outdated ones. More examples of parameter-level tool unlearning are provided in Appendix A."
+          ]
+        },
+        {
+          "title": "Difference to Standard Unlearning Tasks",
+          "paragraphs": [
+            "Tool unlearning is different from sample-level unlearning as it focuses on removing “skills” rather than individual training samples. Objective: sample-level unlearning aims to reduce the memorization likelihood or extraction probabilities of specific data samples (qi,yi)(q_{i},y_{i}) (Jang et al., 2023), which is useful for removing copyrighted or private information. In contrast, tool unlearning targets the “ability” to solve tasks using tools marked for unlearning (TfT_{f}). For example, generating f′​(qi)f^{\\prime}(q_{i}) that is superficially different from yiy_{i} (while preserving the semantics) is considered successful for sample-level unlearning. However, for tool unlearning, preserving skills and semantics indicate maintained knowledge on TfT_{f}, which makes unlearning a failure. Figure 1b shows successful tool unlearning, where the ability to use the API is forgotten, despite the high lexical memorization between output of the unlearned model and the training data. In addition, selectively removing knowledge from tool-augmented models is a challenging tasks because changes to one tool may unexpectedly affect the model’s ability to use other tools–referred to as ripple effect in fact editing literature (Cohen et al., 2024; Gu et al., 2024). Furthermore, LLMs are general models that can conduct a wide range of tasks beyond tool using, and this ability must be retained. Evaluation: metrics like sequence extraction likelihood and perplexity are standard in sample-level unlearning. For tool unlearning, success is measured by the ability to forget or retain tool-related skills, which is more appropriate. Data: sample-level unlearning require access to all individual samples marked for unlearning, while tool unlearning does not. This aligns with “concept erasure” in diffusion models (Gandikota et al., 2023; Kumari et al., 2023) and zero-shot unlearning (Chundawat et al., 2023) but differs from traditional LLM unlearning (Yao et al., 2024). Later we demonstrate this in § 5."
+          ]
+        },
+        {
+          "title": "Importance of Parameter-Level Tool Unlearning",
+          "paragraphs": [
+            "We observe that one can naively block tools at the prompt-level or remove tools from the tool set without updating the LLM. However, these shortcut solutions are insufficient to remove tool knowledge. Firstly, the knowledge on 𝒯f\\mathcal{T}_{f} persists in the parameters of f′f^{\\prime}, leaving the LLM still under threat. Adversarial agents / attackers can exploit this knowledge, which also bypasses prompt-level restrictions. Since existing LLMs do not guarantee 100% adherence to instructions or contextual information (Zhou et al., 2023; Zeng et al., 2024), they may ignore the tool set provided in the prompt and answer queries with their parametric knowledge (Goyal et al., 2023). In addition, tool unlearning at prompt level can create conflicts between the model’s parametric knowledge and contextual information. This may lead to misinformation, hallucination, and other unpredictable behavior (Xu et al., 2024). Finally, we show in the experiments that prompt-level tool unlearning is indeed insufficient, see Table 1 (ICLU model), which aligns with existing works on LLM unlearning, where parameter update is required (Jia et al., 2024; Zhang et al., 2024b)."
+          ]
+        }
+      ]
+    },
+    "3 ToolDelete": {
+      "paragraphs": [
+        "We develop ToolDelete–an effective tool unlearning approach that removes the capability of using tools marked for unlearning (𝒯f\\mathcal{T}_{f}) or solving tasks that depend on them, while preserving the ability of using the remaining tools (𝒯r\\mathcal{T}_{r}) and performing general tasks such as text and code generation. ToolDelete implements three key properties for effective tool unlearning:"
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Tool Knowledge Deletion",
+          "paragraphs": [
+            "Unlearning requires completely removing the knowledge of 𝒯f\\mathcal{T}_{f} that ff gained during tool learning, ideally as if 𝒯f\\mathcal{T}_{f} had never been part of the training set. In other words, knowledge about 𝒯f\\mathcal{T}_{f} is successfully removed if the unlearned model f′f^{\\prime} has no more knowledge than the tool-free model f0f_{0} about 𝒯f\\mathcal{T}_{f}.",
+            "Let ti∈𝒯ft_{i}\\in\\mathcal{T}_{f} denote a tool to be unlearned and gg be a function that quantifies the amount of knowledge a model has about a tool. The unlearned model f′f^{\\prime} satisfies tool knowledge deletion if:",
+            "This formulation allows users to control the extent of knowledge removal from f′f^{\\prime}. For instance, when we unlearn a “malicious” tool that calls a malignant program, we may require f′f^{\\prime} retains no knowledge of this tool, i.e. g​(f′,ti)=0g(f^{\\prime},t_{i})=0. In less critical cases, users can choose to reset f′f^{\\prime}’s knowledge to pre-tool augmentation level, i.e. g​(f′,ti)=g​(f0,ti)g(f^{\\prime},t_{i})=g(f_{0},t_{i})",
+            "To measure tool knowledge in LLMs, we follow previous works that used prompting to probe LLMs’ knowledge (Brown et al., 2020; Singhal et al., 2023), i.e. adopting the output of LLMs as their knowledge on a given tool. For each ti∈𝒯ft_{i}\\in\\mathcal{T}_{f} and its associated demonstrations {𝒬i,𝒴i}\\{\\mathcal{Q}_{i},\\mathcal{Y}_{i}\\}, we query the tool-free LLM f0f_{0} with 𝒬i\\mathcal{Q}_{i} and collect its responses 𝒴i′=f0​(Qi)\\mathcal{Y}^{\\prime}_{i}=f_{0}(Q_{i}). Since f0f_{0} has never seen tit_{i} or {𝒬i,𝒴i}\\{\\mathcal{Q}_{i},\\mathcal{Y}_{i}\\}, 𝒴i′\\mathcal{Y}^{\\prime}_{i} represents the tool-free response. We then constrain the unlearned model f′f^{\\prime} to generate responses similar to 𝒴i′\\mathcal{Y}^{\\prime}_{i} to prevent it from retaining knowledge of tit_{i}."
+          ]
+        },
+        {
+          "title": "3.2 Tool Knowledge Retention",
+          "paragraphs": [
+            "The unlearning process should preserve model’s knowledge of tools in TrT_{r}. Ideally, all knowledge gained on TrT_{r} during tool learning should be retained after unlearning.",
+            "Let tm∈Trt_{m}\\in T_{r} denote a retained tool, and let gg be a function that quantifies the amount of knowledge a model has about a tool. The unlearned model f′f^{\\prime} satisfies tool knowledge retention if:",
+            "where ϵ\\epsilon is an infinitesimal constant, so that f′f^{\\prime} retains the same knowledge of tools in TrT_{r} as the original model ff.",
+            "For effective tool knowledge retention, f′f^{\\prime} is further fine-tuned using demonstrations associated with 𝒯r\\mathcal{T}_{r}, or, more practically, a subset of 𝒯r\\mathcal{T}_{r} proportional to 𝒯f\\mathcal{T}_{f} for efficiency."
+          ]
+        },
+        {
+          "title": "3.3 General Capability Retention via Task Arithmetic",
+          "paragraphs": [
+            "Optimizing the above objectives can lead to effective unlearning, but it may not be sufficient to maintain the general capabilities of the unlearned model f′f^{\\prime}. As a foundation model, f′f^{\\prime} is expected to retain abilities such as text and code generation, question answering, instruction-following, and basic mathematical reasoning. These capabilities either existed in f0f_{0} prior to tool augmentation or do not depend on specific tools. Therefore, preserving the general capabilities of f′f^{\\prime} is essential to guarantee that tool unlearning does not compromise the overall functionality of the model.",
+            "Let 𝒯G\\mathcal{T}_{G} denote the general tasks used to evaluate LLMs. The unlearned model f′f^{\\prime} satisfies general capability retention if it preserves the knowledge on TGT_{G} that it originally obtained prior to tool learning:",
+            "where ϵ\\epsilon is an infinitesimal constant.",
+            "We propose to use task arithmetic (Ilharco et al., 2023; Barbulescu & Triantafillou, 2024) as an efficient and effective approach to preserving the general capabilities of the unlearned model. Our objective is that f′f^{\\prime} retains as much general knowledge as f0f_{0}, the instruction tuned LLM trained from a randomly initialized model fRf_{R}. Let θ0\\theta_{0} and θR\\theta_{R} denote the parameters of f0f_{0} and fRf_{R} respectively. The difference vector θ0−θR\\theta_{0}-\\theta_{R} captures the direction of general knowledge acquisition. We apply this adjustment to θ′\\theta^{\\prime} (the parameters of f′f^{\\prime}) to preserve its general knowledge:",
+            "Task arithmetic is efficient, practical, effective for preserving general capabilities (Ilharco et al., 2023; Barbulescu & Triantafillou, 2024): Efficiency: the vector operation does not scale with dataset size, making it significantly more efficient than retraining on large datasets. Practicality: general capabilities obtained from pre-training and instruction tuning (Zhou et al., 2024) are often impractical to replicate due to the size and limited availability of data–even in some open-source LLMs (Touvron et al., 2023b), the actual pre-training data is not fully open-source. In addition, reintroducing general knowledge from alternative datasets can lead to data imbalances and distributional biases. Effectiveness: applying θ0−θR\\theta_{0}-\\theta_{R} largely restores the foundational abilities of f′f^{\\prime}, such as text generation and instruction-following, without requiring expensive and time-consuming retraining on large datasets."
+          ]
+        },
+        {
+          "title": "Why Task Arithmetic?",
+          "paragraphs": [
+            "Task arithmetic is efficient, practical, effective for preserving general capabilities (Ilharco et al., 2023; Barbulescu & Triantafillou, 2024): Efficiency: the vector operation does not scale with dataset size, making it significantly more efficient than retraining on large datasets. Practicality: general capabilities obtained from pre-training and instruction tuning (Zhou et al., 2024) are often impractical to replicate due to the size and limited availability of data–even in some open-source LLMs (Touvron et al., 2023b), the actual pre-training data is not fully open-source. In addition, reintroducing general knowledge from alternative datasets can lead to data imbalances and distributional biases. Effectiveness: applying θ0−θR\\theta_{0}-\\theta_{R} largely restores the foundational abilities of f′f^{\\prime}, such as text generation and instruction-following, without requiring expensive and time-consuming retraining on large datasets."
+          ]
+        },
+        {
+          "title": "3.4 Training Details",
+          "paragraphs": [
+            "To obtain the unlearned model f′f^{\\prime}, we solve: and once the optimized model parameters θ′⁣∗\\theta^{\\prime*} are obtained, we apply task arithmetic to reinforce general capabilities: where α\\alpha is a hyperparameter to control the magnitude of task arithmetic. The above formulation provides flexibility in training ToolDelete using various existing paradigms, including supervised fine-tuning (SFT) (Taori et al., 2023), direct preference optimization (DPO) (Rafailov et al., 2023), reinforcement learning from human feedback (RLHF) (Ouyang et al., 2022), parameter-efficient fine-tuning (PEFT) (He et al., 2022; Su et al., 2023), or quantization (Dettmers et al., 2022; Ma et al., 2024) techniques. Below we describe two variants of ToolDelete:",
+            "• ToolDelete-SFT fine-tunes ff using language modeling loss. On forget tools 𝒯f\\mathcal{T}_{f}, we replace the original responses 𝒴f\\mathcal{Y}_{f} with tool-free responses 𝒴f′\\mathcal{Y}^{\\prime}_{f}. The samples for 𝒯r\\mathcal{T}_{r} are not modified.",
+            "• ToolDelete-DPO uses direct preference optimization (DPO) to prioritize wining responses over losing responses. For (ti,𝒬i,𝒴i)∈𝒯f(t_{i},\\mathcal{Q}_{i},\\mathcal{Y}_{i})\\in\\mathcal{T}_{f} to be unlearned, we prioritize the corresponding tool-free response 𝒴i′\\mathcal{Y}^{\\prime}_{i} over the original response 𝒴i\\mathcal{Y}_{i}. For (tj,𝒬j,𝒴j)∈𝒯r(t_{j},\\mathcal{Q}_{j},\\mathcal{Y}_{j})\\in\\mathcal{T}_{r}, the original response 𝒴j\\mathcal{Y}_{j} is prioritized over the tool-free response 𝒴i′\\mathcal{Y}^{\\prime}_{i}.",
+            "ToolDelete-SFT fine-tunes ff using language modeling loss. On forget tools 𝒯f\\mathcal{T}_{f}, we replace the original responses 𝒴f\\mathcal{Y}_{f} with tool-free responses 𝒴f′\\mathcal{Y}^{\\prime}_{f}. The samples for 𝒯r\\mathcal{T}_{r} are not modified.",
+            "ToolDelete-DPO uses direct preference optimization (DPO) to prioritize wining responses over losing responses. For (ti,𝒬i,𝒴i)∈𝒯f(t_{i},\\mathcal{Q}_{i},\\mathcal{Y}_{i})\\in\\mathcal{T}_{f} to be unlearned, we prioritize the corresponding tool-free response 𝒴i′\\mathcal{Y}^{\\prime}_{i} over the original response 𝒴i\\mathcal{Y}_{i}. For (tj,𝒬j,𝒴j)∈𝒯r(t_{j},\\mathcal{Q}_{j},\\mathcal{Y}_{j})\\in\\mathcal{T}_{r}, the original response 𝒴j\\mathcal{Y}_{j} is prioritized over the tool-free response 𝒴i′\\mathcal{Y}^{\\prime}_{i}."
+          ]
+        },
+        {
+          "title": "3.5 LiRA-Tool for Tool Unlearning Evaluation",
+          "paragraphs": [
+            "A key challenge in evaluating tool unlearning is the lack of membership inference attack (MIA) models to determine whether a tool has been truly unlearned. Existing MIA models typically evaluate individual training samples by analyzing model loss, which is insufficient for tool unlearning. Unlike sample-level unlearning, tool unlearning focuses on removing abstract parametric knowledge of tools in 𝒯f\\mathcal{T}_{f}, not just forgetting specific training samples. The key limitation of sample-based MIA is that the prompt-response pairs (𝒬f,𝒴f)(\\mathcal{Q}_{f},\\mathcal{Y}_{f}) in the training set may not fully represent all aspects of a tool’s functionality. As a result, sample-level MIA may “overfit” to a limited subset of tool related prompts and fail to holistically assess whether the tool-usage capability have been fully removed from the model’s parametric knowledge.",
+            "To address the above limitation, we introduce “shadow samples”, a diverse set of prompt-response pairs to probe various aspects of tool knowledge. We prompt GPT4 with different combinations of in-context examples to obtain a comprehensive set of prompt-response pairs with various prompt format, intention, and difficulty requirements. These samples will be used to stress-test the unlearned LLM f′f^{\\prime} beyond the specific training prompts. This approach prevents overfitting to the original training data and provides a more reliable evaluation of whether the tool has truly been forgotten. To implement this, we extend Likelihood Ratio Attack (LiRA) (Carlini et al., 2022), the state-of-the-art MIA approach, to tool unlearning.",
+            "LiRA infers the membership of a sample (x,y)(x,y) by constructing two distributions of model losses: ℚ~in\\mathbb{\\tilde{Q}}_{\\text{in}} and ℚ~out\\mathbb{\\tilde{Q}}_{\\text{out}} with (x,y)(x,y) in and out of the model training set respectively. These distributions are approximated as Gaussians, with their parameters estimated based on “shadow models” trained on different subsets of the training data. The Likelihood-Ratio Test (Vuong, 1989; Carlini et al., 2022) is then used to determine whether (x,y)(x,y) is more likely to belong to ℚ~in\\mathbb{\\tilde{Q}}_{\\text{in}} or ℚ~out\\mathbb{\\tilde{Q}}_{\\text{out}}. For LLMs, the test statistic is given by (Pawelczyk et al., 2024) as:",
+            "This approach, however, is insufficient for tool unlearning because it only assesses membership of specific training samples rather than measuring whether the model still retains the capability to use a tool.",
+            "A major limitation of sample-level LiRA is in its reliance on training-set observations, which may not fully capture the knowledge distribution of an entire tool. Therefore, applying LiRA to tool unlearning can lead to overfitting to a specific subset of training prompts and failing to comprehensively assess whether the tool knowledge has been removed. We address this issue by introducing LiRA-Tool. Instead of relying on observed training samples, we construct a “shadow distribution” ℙ\\mathbb{P} that generates tool-related query-response pairs. This allows us to sample diverse tool-specific prompts that test the model’s ability to use the tool. The new likelihood-ratio test is:",
+            "where ℙti\\mathbb{P}_{t_{i}} represents the shadow distribution for generating tool-learning samples for tool tit_{i}. In practice, we use GPT-4 to generate diverse shadow samples by prompting it with various distinct instructions to ensure that the evaluation set captures more comprehensive aspects of tool knowledge than the training set. Appendix E provides more details.",
+            "The key novelty in LiRA-Tool in the sue of “shadow samples,” which introduce diversity across multiple dimensions. By moving beyond limited training prompts, LiRA-Tool ensures that the model loss reflect overall tool-using ability, rather than just sample-level memorization. Our loss-ratio formulation shares similarities to previous MIAs for sample-level unlearning, such as probability distribution comparison prior- and post-unlearning (Cheng et al., 2023; Cheng & Amiri, 2025) and other adaptations of LiRA using shadow models (Kurmanji et al., 2023; Pawelczyk et al., 2024). However, to the best of our knowledge, this work is the first adaptation of LiRA for detecting tool presence in tool-augmented LLMs.",
+            "Shadow samples obtained from GPT-4 may not fully represent the complexity of the original tool-learning data and can potentially lead to incomplete approximations of the true knowledge distribution. However, despite this limitation, shadow samples provide a more comprehensive and consistent evaluation of a model’s tool-using abilities compared to relying merely on observed training samples, which are often limited and incomplete. Expanding the diversity and robustness of shadow sample generation is indeed an important direction for future work."
+          ]
+        },
+        {
+          "title": "Challenge",
+          "paragraphs": [
+            "A key challenge in evaluating tool unlearning is the lack of membership inference attack (MIA) models to determine whether a tool has been truly unlearned. Existing MIA models typically evaluate individual training samples by analyzing model loss, which is insufficient for tool unlearning. Unlike sample-level unlearning, tool unlearning focuses on removing abstract parametric knowledge of tools in 𝒯f\\mathcal{T}_{f}, not just forgetting specific training samples. The key limitation of sample-based MIA is that the prompt-response pairs (𝒬f,𝒴f)(\\mathcal{Q}_{f},\\mathcal{Y}_{f}) in the training set may not fully represent all aspects of a tool’s functionality. As a result, sample-level MIA may “overfit” to a limited subset of tool related prompts and fail to holistically assess whether the tool-usage capability have been fully removed from the model’s parametric knowledge."
+          ]
+        },
+        {
+          "title": "Solution",
+          "paragraphs": [
+            "To address the above limitation, we introduce “shadow samples”, a diverse set of prompt-response pairs to probe various aspects of tool knowledge. We prompt GPT4 with different combinations of in-context examples to obtain a comprehensive set of prompt-response pairs with various prompt format, intention, and difficulty requirements. These samples will be used to stress-test the unlearned LLM f′f^{\\prime} beyond the specific training prompts. This approach prevents overfitting to the original training data and provides a more reliable evaluation of whether the tool has truly been forgotten. To implement this, we extend Likelihood Ratio Attack (LiRA) (Carlini et al., 2022), the state-of-the-art MIA approach, to tool unlearning."
+          ]
+        },
+        {
+          "title": "Sample-level LiRA",
+          "paragraphs": [
+            "LiRA infers the membership of a sample (x,y)(x,y) by constructing two distributions of model losses: ℚ~in\\mathbb{\\tilde{Q}}_{\\text{in}} and ℚ~out\\mathbb{\\tilde{Q}}_{\\text{out}} with (x,y)(x,y) in and out of the model training set respectively. These distributions are approximated as Gaussians, with their parameters estimated based on “shadow models” trained on different subsets of the training data. The Likelihood-Ratio Test (Vuong, 1989; Carlini et al., 2022) is then used to determine whether (x,y)(x,y) is more likely to belong to ℚ~in\\mathbb{\\tilde{Q}}_{\\text{in}} or ℚ~out\\mathbb{\\tilde{Q}}_{\\text{out}}. For LLMs, the test statistic is given by (Pawelczyk et al., 2024) as:",
+            "This approach, however, is insufficient for tool unlearning because it only assesses membership of specific training samples rather than measuring whether the model still retains the capability to use a tool."
+          ]
+        },
+        {
+          "title": "LiRA-Tool: Knowledge-level LiRA",
+          "paragraphs": [
+            "A major limitation of sample-level LiRA is in its reliance on training-set observations, which may not fully capture the knowledge distribution of an entire tool. Therefore, applying LiRA to tool unlearning can lead to overfitting to a specific subset of training prompts and failing to comprehensively assess whether the tool knowledge has been removed. We address this issue by introducing LiRA-Tool. Instead of relying on observed training samples, we construct a “shadow distribution” ℙ\\mathbb{P} that generates tool-related query-response pairs. This allows us to sample diverse tool-specific prompts that test the model’s ability to use the tool. The new likelihood-ratio test is:",
+            "where ℙti\\mathbb{P}_{t_{i}} represents the shadow distribution for generating tool-learning samples for tool tit_{i}. In practice, we use GPT-4 to generate diverse shadow samples by prompting it with various distinct instructions to ensure that the evaluation set captures more comprehensive aspects of tool knowledge than the training set. Appendix E provides more details."
+          ]
+        },
+        {
+          "title": "Novelty of LiRA-Tool",
+          "paragraphs": [
+            "The key novelty in LiRA-Tool in the sue of “shadow samples,” which introduce diversity across multiple dimensions. By moving beyond limited training prompts, LiRA-Tool ensures that the model loss reflect overall tool-using ability, rather than just sample-level memorization. Our loss-ratio formulation shares similarities to previous MIAs for sample-level unlearning, such as probability distribution comparison prior- and post-unlearning (Cheng et al., 2023; Cheng & Amiri, 2025) and other adaptations of LiRA using shadow models (Kurmanji et al., 2023; Pawelczyk et al., 2024). However, to the best of our knowledge, this work is the first adaptation of LiRA for detecting tool presence in tool-augmented LLMs."
+          ]
+        },
+        {
+          "title": "Limitations of LiRA-Tool",
+          "paragraphs": [
+            "Shadow samples obtained from GPT-4 may not fully represent the complexity of the original tool-learning data and can potentially lead to incomplete approximations of the true knowledge distribution. However, despite this limitation, shadow samples provide a more comprehensive and consistent evaluation of a model’s tool-using abilities compared to relying merely on observed training samples, which are often limited and incomplete. Expanding the diversity and robustness of shadow sample generation is indeed an important direction for future work."
+          ]
+        }
+      ]
+    },
+    "4 Experimental Setup": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Datasets & Tool-Augmented LLMs",
+          "paragraphs": [
+            "We experiment with the following datasets and their corresponding LLMs:",
+            "• ToolAlpaca (Tang et al., 2023) is an agent-generated tool learning dataset consisting of 495 tools and 3975 training examples. ToolAlpaca 7B is fine-tuned on ToolAlpaca using Vicuna-v1.3 (Zheng et al., 2023).",
+            "• ToolBench (Qin et al., 2024) consists of more than 16k real world APIs from 49 categories, where each training demonstration involves complex task solving traces. ToolLLaMA is fine-tuned on ToolBench using LLaMA-2 7B (Touvron et al., 2023b).",
+            "• API-Bench (Patil et al., 2023) focus on APIs that load machine learning models. Gorilla is fine-tuned on API-Bench from LLaMA 7B (Touvron et al., 2023a).",
+            "ToolAlpaca (Tang et al., 2023) is an agent-generated tool learning dataset consisting of 495 tools and 3975 training examples. ToolAlpaca 7B is fine-tuned on ToolAlpaca using Vicuna-v1.3 (Zheng et al., 2023).",
+            "ToolBench (Qin et al., 2024) consists of more than 16k real world APIs from 49 categories, where each training demonstration involves complex task solving traces. ToolLLaMA is fine-tuned on ToolBench using LLaMA-2 7B (Touvron et al., 2023b).",
+            "API-Bench (Patil et al., 2023) focus on APIs that load machine learning models. Gorilla is fine-tuned on API-Bench from LLaMA 7B (Touvron et al., 2023a)."
+          ]
+        },
+        {
+          "title": "Setup & Evaluation",
+          "paragraphs": [
+            "We use the public checkpoints of the above tool-augmented LLMs as original models–the starting point for unlearning. Then we conduct unlearning experiments with 2–20% tools randomly selected as 𝒯f\\mathcal{T}_{f}. We evaluate tool unlearning effectiveness, general capability of tool-unlearned LLMs, and robustness to membership inference attack (MIA). For unlearning effectiveness, we measure performance on test sets (𝒯T,↑\\mathcal{T}_{T},\\uparrow), forget set (𝒯f,↓\\mathcal{T}_{f},\\downarrow), and remaining set (𝒯r,↑\\mathcal{T}_{r},\\uparrow), where “performance” reflects the ability to solve tasks that depend on specific tools, depending on the unique metrics in the original tool-augmented models ff. For general capabilities, we evaluate the unlearned LLMs on a wide range of tasks: college STEM knowledge with MMLU (Hendrycks et al., 2021), reasoning ability with BBH-Hard (Suzgun et al., 2023), instruction-following with IFEval (Zhou et al., 2023), and factual knowledge with MMLU (Hendrycks et al., 2021). For MIA, we use the proposed LiRA-Tool; following prior work on LiRA (Pawelczyk et al., 2024), we train the shadow models with forget set size of {1, 5, 10, 20} and primarily evaluate the True Positive Rate (TPR) at low False Positive Rate (FPR) (TPR @ FPR = 0.01), where TPR means the attacker successfully detects a tool is present. Therefore, a lower TPR indicates better performance (privacy)."
+          ]
+        },
+        {
+          "title": "Baselines",
+          "paragraphs": [
+            "As there are no prior works on tool unlearning, we adapt the following unlearning methods to tool unlearning setting (see Appendix B for descriptions of the baselines): general unlearning approaches, including GradAscent (Golatkar et al., 2020; Yao et al., 2024), RandLabel (Graves et al., 2021), and SalUn (Fan et al., 2024b); and LLM-specific unlearning approaches, including ICUL (Pawelczyk et al., 2024), SGA (Jang et al., 2023; Barbulescu & Triantafillou, 2024), TAU (Barbulescu & Triantafillou, 2024), CUT (Li et al., 2024b), NPO (Zhang et al., 2024b), and SOUL-GradDiff (Jia et al., 2024). For ICUL (Pawelczyk et al., 2024), we randomly select one example (qi,yi)(q_{i},y_{i}) from 𝒯f\\mathcal{T}_{f} and corrupt the output yiy_{i} with randomly selected tokens. Then we concatenate this corrupted sequence with other intact sequences as the in-context demonstrations. For all other baselines, we treat all data related to 𝒯f\\mathcal{T}_{f} as unlearning examples and all data related to 𝒯r\\mathcal{T}_{r} as remaining examples. Everything else remains the same for each baseline."
+          ]
+        }
+      ]
+    },
+    "5 Results": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Comparison to general unlearning methods",
+          "paragraphs": [
+            "Our main results in Table 1 show that, compared to Retrain, the best-performing baseline in the general unlearning methods category, ToolDelete-SFT outperforms Retrain by 0.6, 0.3, 8.0, 2.3 absolute points on 𝒯T\\mathcal{T}_{T}, 𝒯r\\mathcal{T}_{r}, 𝒯f\\mathcal{T}_{f}, 𝒯G\\mathcal{T}_{G} respectively. ToolDelete-DPO outperforms Retrain by 1.3, 3.3, 9.8, 1.8 absolute points across the same metrics. We note that GradAscent can effectively unlearn 𝒯f\\mathcal{T}_{f}, but it negatively impacts its 𝒯T\\mathcal{T}_{T} and 𝒯r\\mathcal{T}_{r} performance. Although RandLabel and SalUn outperforms GradAscent, they still fall short on 𝒯G\\mathcal{T}_{G} compared to ToolDelete."
+          ]
+        },
+        {
+          "title": "Comparison to LLM-specific unlearning methods",
+          "paragraphs": [
+            "Existing LLM unlearning methods, despite effective in sample-level unlearning, are prone to under-performing in tool unlearning. Both ToolDelete-SFT and ToolDelete-DPO outperforms ICUL, SGA, and TAU on 𝒯T\\mathcal{T}_{T}, 𝒯r\\mathcal{T}_{r}, 𝒯f\\mathcal{T}_{f} and 𝒯G\\mathcal{T}_{G}. The only exception is ICUL, which outperforms ToolDelete-SFT on 𝒯r\\mathcal{T}_{r} by 2.7 absolute points, but is outperformed by ToolDelete-DPO on 𝒯r\\mathcal{T}_{r} by 0.3 points. The good performance of ICUL on 𝒯r\\mathcal{T}_{r} is at the cost of failing to unlearn tools in 𝒯f\\mathcal{T}_{f}, which is not desired in tool unlearning. In addition, ICUL has limited ability of preserving test set performance, it is outperformed by ToolDelete-SFT and ToolDelete-DPO by 3.6 and 4.3 respectively. Furthremore, it is particularly limited in deletion capacity, i.e. number of unlearning samples that a method can handle. As |Df||D_{f}| exceeds 10, the performance of ICUL on 𝒯T\\mathcal{T}_{T} significantly degrades. This is while ToolDelete can process much larger deletion requests efficiently."
+          ]
+        },
+        {
+          "title": "SFT vs. DPO",
+          "paragraphs": [
+            "DPO outperforms SFT by 0.7, 3.0, and 1.8 on 𝒯T\\mathcal{T}_{T}, 𝒯r\\mathcal{T}_{r}, 𝒯f\\mathcal{T}_{f} respectively. On 𝒯G\\mathcal{T}_{G}, SFT is slightly better than DPO by 0.5 points. However, DPO takes slightly longer time to train, see Figure 4. Both optimization methods achieve superior performance over existing approaches."
+          ]
+        },
+        {
+          "title": "Measuring tool unlearning with MIA",
+          "paragraphs": [
+            "Following prior practices (Carlini et al., 2022; Pawelczyk et al., 2024), a lower TPR indicates an unlearned model with better privacy when FPR=0.01. ToolDelete-DPO achieves 0.14 TPR, outperforming Retrain by 0.01. This advantage is obtained by explicitly prioritizing tool-free responses f0​(𝒬)f_{0}(\\mathcal{Q}) over original responses. In addition, ToolDelete-SFT achieves comparable performance with Retrain, which indicates its effectiveness to protect privacy. Both variants of our method outperforms GradAscent and ICUL, the best performing baselines, achieving 0.21 and 0.18 TPR. This indicates that existing sample-level unlearning approaches are not sufficient for unlearning tools, see Figure 2."
+          ]
+        },
+        {
+          "title": "Sequential unlearning",
+          "paragraphs": [
+            "Tool unlearning requests may arrive in sequential mini-batches. We experiment with sequential unlearning requests by incrementally unlearning 2%, 5%, 10%, and 20% of tools. Retrain, ICUL by design cannot process sequential deletion requests. ToolDelete can continue training according to the current deletion request, without having to retrain a new model. When 20% of unlearning requests arrive in batches, ToolDelete can sequentially unlearn each of them. As Figure 3 and Table 1 show, compared to unlearning 20% at once, the performance does not degrade significantly."
+          ]
+        },
+        {
+          "title": "All properties contribute to effective tool unlearning",
+          "paragraphs": [
+            "Ablation studies in Table 2 show that without Tool Knowledge Removal, performance of ToolDelete-SFT and ToolDelete-DPO on 𝒯f\\mathcal{T}_{f} degrade by -34.8 and -37.2 absolute points respectively. Such significant performance drop is observed for other model properties as well. Therefore, we conclude all proposed properties are necessary for successful at tool unlearning on 𝒯T\\mathcal{T}_{T}, 𝒯r\\mathcal{T}_{r}, 𝒯f\\mathcal{T}_{f}, and 𝒯G\\mathcal{T}_{G}."
+          ]
+        },
+        {
+          "title": "ToolDeletefunctions effectively without access to training data",
+          "paragraphs": [
+            "In certain unlearning settings, access to the original training data might be restricted, e.g., in healthcare settings or in cases where training data is no longer available due to compliance. In these cases, ToolDelete can generate pseudo-samples for tools using the “shadow samples” technique developed for LiRA-Tool, see §3.5. Table 4 in Appendix D shows that ToolDelete can perform tool unlearning effectively, achieving comparable performances to when full access to the exact training data is available."
+          ]
+        },
+        {
+          "title": "ToolDeleteis efficient",
+          "paragraphs": [
+            "Efficiency is a critical aspect for unlearning. As Figure 4 in Appendix D illustrates, ToolDelete is substantially more efficient than retraining a new model from scratch–saving about 74.8% of training time on average. In addition, this efficiency gain is relatively consistent as the size of TfT_{f} increases. ToolDelete-SFT is slightly faster than ToolDelete-DPO, as the latter requires a negative sample for each of its prompts."
+          ]
+        },
+        {
+          "title": "ToolDelete-LoRA is ultra-efficient with good unlearning performance",
+          "paragraphs": [
+            "We experiment if ToolDelete can achieve effective tool unlearning through LoRA (Hu et al., 2022), when computing resource is limited. Experiments on ToolAlpaca show that ToolDelete-LoRA can achieve 97.7%, 99.6%, 84.5%, and 84.3% of the performance of ToolDelete with full parameter on 𝒯T\\mathcal{T}_{T}, 𝒯r\\mathcal{T}_{r}, 𝒯f\\mathcal{T}_{f}, 𝒯G\\mathcal{T}_{G} on average across SFT and DPO, see Table 3 in Appendix D. In addition, it reduces save computational cost by 81.1% and decreases the training time by 71.3%."
+          ]
+        },
+        {
+          "title": "ToolDeleteis flexible in choice of tool-free responses",
+          "paragraphs": [
+            "In (1), we obtain tool knowledge-free responses from the tool-free LLM f0f_{0}. However, in cases where f0f_{0} is unavailable, ToolDelete can still function using any knowledge-free LLM to generate tool knowledge-free responses, such as a randomly initialized LLM fRf_{R}. Table 5 compares the performances between these two implementations. While θ0\\theta_{0} consistently outperforms θR\\theta_{R}, using θR\\theta_{R} is still effective in achieving tool unlearning."
+          ]
+        },
+        {
+          "title": "Why isToolDeleteeffectiveness?",
+          "paragraphs": [
+            "We attribute the performance of ToolDelete to its three key properties: (a): Tool Knowledge Removal enables targeted tool unlearning without over-forgetting, unlike GradAscent and Retrain. This is achieved by prioritizing tool knowledge-free responses over tool knowledge-intense responses so that the model forgets tool functionality without excessive degradation. (b): Tool Knowledge Retention reinforces the knowledge about remaining tools. In fact, re-exposing the model to the original training data can further strengthen their representation. (c): General Capability Retention, which maintains or even improves model’s general capabilities through an efficient and effective task arithmetic operation. Therefore, precise unlearning, retention of relevant knowledge, and overall model stability are the key factors that contribute to the performance of ToolDelete."
+          ]
+        }
+      ]
+    },
+    "6 Related work": {
+      "paragraphs": [
+        "Unlearning for non-LLM models: These methods include methods that focus on pruning before unlearning (Jia et al., 2023) or finding salient parameters (Fan et al., 2024b) and manipulating gradients Ullah et al. (2021); Hoang et al. (2024), adversarial methods (Liu et al., 2023; Setlur et al., 2022; Wei et al., 2023), approximation of inverse Hessian (Zhang et al., 2024a), and data augmentation (Choi et al., 2024). Other works study unlearning under multimodal setting (Cheng & Amiri, 2025), image-to-image models (Li et al., 2024a), and finding the most challenging unlearning subset within a dataset (Fan et al., 2024a). Recently, a few works started to benchmark MU performances on unlearning fictitious user profiles (Maini et al., 2024), world knowledge (Jin et al., 2024) and a variety of tasks (Cheng & Amiri, 2024).",
+        "Unlearning for LLMs: Recently, more attention has been given to LLM unlearning, where gradient ascent is a common technique (Eldan & Russinovich, 2023; Jang et al., 2023). (Yao et al., 2024) evaluate several traditional unlearning methods on LLMs. KGA (Wang et al., 2023) formulates unlearning as achieving knowledge gap between training data and test data similar to that of training data and deleted data. Yao et al. (2023) proposed to predict if the LLM output is grammatically correct on deleted samples, such that the knowledge is not over unlearned. Other methods include second-order-optimization (Jia et al., 2024), performing DPO with no positive examples (Zhang et al., 2024b), and reinforcement learning with a negative reward model (Kassem et al., 2023). Unlearning from logits difference (Ji et al., 2024) first builds an assisted LLM which memorizes data to be deleted and forgets the retained data, which is later used to derive the unlearned LLM by deviating from the assisted LLM in logits.",
+        "Tool-Augmented LLMs: TAML (Parisi et al., 2022) used self-play to boost LLMs’ performance on math and reasoning tasks. Schick et al. (2023) discovered that LLMs can teach themselves how to use APIs. Recently, efforts have been devoted to building benchmarks to train and evaluate the tool-using ability of LLMs, such as agent-based data generation (Tang et al., 2023; Li et al., 2023), bootstrapping training data with seed examples (Patil et al., 2023), modifying existing datasets (Basu et al., 2024), and dataset development with GPT-4 (Qin et al., 2024)."
+      ],
+      "subsections": []
+    },
+    "7 Conclusion": {
+      "paragraphs": [
+        "We introduce Tool Unlearning–a novel machine unlearning task with the goal of unlearning previously learned tools from tool-augmented LLMs. We develop the first tool unlearning approach, ToolDelete, that implements three key properties: tool knowledge deletion, tool knowledge retention, general capability retention. In addition, we introduce LiRA-Tool, the first membership inference attack (MIA) method for evaluating tool unlearning. LiRA-Tool largely addresses the limitations of sample-based MIAs for tool unlearning. Extensive experiments on several diverse datasets and LLMs show that ToolDelete is an efficient, flexible, and effective tool unlearning method that supports sequential unlearning, maintains strong performance across all key properties, and operates without requiring full access to training data. It outperforms existing methods by removing tool knowledge without over-forgetting (as shown in ablation studies), achieving 74.8% faster training times compared to retraining, and delivering highly effective tool unlearning even in resource-constrained settings with ToolDelete-LoRA (which reduces compute costs by 81.1% and training time by 71.3%).",
+        "In future, we will investigate tool unlearning in dynamically updated LLMs (e.g. API-based LLMs like GPT-4), where we address continuous unlearning challenges. In addition, we will develop adversarial training techniques and robustness evaluation frameworks to prevent unintended tool re-learning or model exploitation."
+      ],
+      "subsections": [
+        {
+          "title": "Limitations",
+          "paragraphs": [
+            "We did not conduct experiments using closed-source LLMs or API-based LLMs. In addition, this work did not investigate the impact of varying model scales due to the limited publicly-available tool-augmented LLMs. Our experiments were conducted on the 7B scale and the scalability of the proposed tool unlearning approach across models of different sizes and scales is an open question for future investigation. "
+          ]
+        }
+      ]
+    },
+    "Impact Statement": {
+      "paragraphs": [
+        "Our work investigates the security implications of tool-augmented Large Language Models (LLMs), where we focus on the risks that arise from integrating external tools, and the necessity ability to remove these acquired tools. A key concern is ensuring compliance with privacy regulations, such as the Right to be Forgotten (RTBF), which mandates the removal of specific data upon user request. In the context of tool-augmented LLMs, this necessitates the ability to delete sensitive, regulated, or outdated information related to specific tools. By examining how LLMs interact with and rely on external tools, potential threats to model security can be identified, e.g. unauthorized tool usage, adversarial exploitation, and privacy violations. Our research highlights the critical importance of addressing these challenges."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Practical Use Cases of Tool Unlearning": {
+      "paragraphs": [
+        "We provide several examples in which tool unlearning is essential:"
+      ],
+      "subsections": [
+        {
+          "title": "Case 1: De-memorize Privacy-Concerned Tools",
+          "paragraphs": [
+            "Imagine a tool-augmented LLM that is deployed in a healthcare system and trained to use APIs for handling and processing patient data, such as accessing medical records or generating anonymized reports. Suppose one of the APIs that was initially compliant is later flagged as insecure due to a vulnerability that could expose patient data. This violates regulations like HIPAA or GDPR. In this case, ToolDelete is essential as it can update the tool-augmented LLM’s parameters to unlearn how to invoke the insecure API. This removes any capability embedded in the LLM’s parametric knowledge and prevents adversarial or accidental usage of the vulnerable API."
+          ]
+        },
+        {
+          "title": "Case 2: Forget Harmful / Biased Tools",
+          "paragraphs": [
+            "Consider a tool-augmented LLM that can use a Safe For Work diffusion model as a tool to generate images based on user instructions. If the user prompts can fool the model to generate Not Safe For Work (NSFW), harmful, or biased images, this tool should be unlearned from the LLM. Note that even if we augment the LLM with a new and safe version of the diffusion model without unlearning the previous version, the LLM would still be able to call the previous version, which can lead to generating Not Safe For Work, harmful, or biased images. Therefore, we should explicitly erase the ability of using the previous version of the diffusion model from the LLM."
+          ]
+        },
+        {
+          "title": "Case 3: Unlearn Deprecated Tools",
+          "paragraphs": [
+            "Tool unlearning is also essential when a tool has a major update, where the function names and input parameters have changed, e.g. the major update of the Python transformers package from v2 to v4. Without unlearning v2, the tool-augmented LLM may generate erroneous code and bring difficulty for debugging, since many functions have been renamed and removed. Therefore, as the underlying tools evolve, the tool-augmented LLM should be updated through unlearning of the previous versions and augmenting the new ones."
+          ]
+        }
+      ]
+    },
+    "Appendix B Baselines": {
+      "paragraphs": [
+        "As there are no prior works on tool unlearning, we adapt the following unlearning methods to tool unlearning setting. Four general unlearning approaches.",
+        "• GradAscent (Golatkar et al., 2020; Yao et al., 2024) runs gradient ascent on 𝒯f\\mathcal{T}_{f} with the associated query-reponse samples (𝒬f,𝒴f)(\\mathcal{Q}_{f},\\mathcal{Y}_{f}).",
+        "• RandLabel (Graves et al., 2021) fine-tunes on 𝒯r\\mathcal{T}_{r} and 𝒯f\\mathcal{T}_{f} with corrupted labels.",
+        "• SalUn (Fan et al., 2024b) performs RandLabel on unlearning-related parameters discovered by saliency map.",
+        "• ICUL (Pawelczyk et al., 2024) uses 𝒯f\\mathcal{T}_{f} with corrupted label as in-context demonstrations.",
+        "• SGA (Jang et al., 2023; Barbulescu & Triantafillou, 2024), which performs gradient ascent on 𝒯f\\mathcal{T}_{f} whose memorization probability exceeds a pre-defined threshold.",
+        "• TAU (Barbulescu & Triantafillou, 2024), which performs task arithmetic on SGA.",
+        "• CUT (Li et al., 2024b).",
+        "• NPO (Zhang et al., 2024b) uses DPO with only a losing response (i.e. no winning response).",
+        "• SOUL-GradDiff (Jia et al., 2024) uses second-order information in optimization. It adapts the Sophia optimizer (Liu et al., 2024) for LLM unlearning. We adopt the SOUL + GradDiff (Maini et al., 2024) implementation in the original paper."
+      ],
+      "subsections": []
+    },
+    "Appendix C Implementation details": {
+      "paragraphs": [
+        "We use a learning rate of 10−510^{-5} across all experiments. All experiments are conducted on 8 NVIDIA A100 GPUs.",
+        "For the original models in tool unlearning, we use the TangQiaoYu/ToolAlpaca-7B, ToolBench/ToolLLaMA-2-7b-v2, gorilla-llm/gorilla-openfunctions-v0 checkpoints that are publically available on Huggingface."
+      ],
+      "subsections": []
+    },
+    "Appendix D Additional results": {
+      "paragraphs": [
+        "We present the results of LoRA tool unlearning, sequential tool unlearning, time comparison and results on ToolLLaMA and Gorilla in Table 3–7.",
+        "[Figure: Figure 3: Performance of sequential unlearning on ToolAlpaca. We unlearn 2%, 5%, 10%, 20% of tools in a sequential manner.]",
+        "[Figure: Figure 4: Training time of ToolDelete, which saves 74.8% of time on average.]",
+        "[Table: Table 3: Full parameters vs. LoRA in tool unlearning performances when deleting 20% of tools on ToolAlpaca. Original denotes the tool-augmented LLM prior unlearning and is provided for reference only.]",
+        "[Table: Table 4: Performance comparison between with and without having access to the exact training samples.]",
+        "[Table: Table 5: Performance comparison between using pre-trained LLM f0f_{0} and randomly initialized LLM fRf_{R}.]",
+        "[Table: Table 6: Tool unlearning performances when deleting 20% of tools on ToolLLaMA. Best and second best performances are bold and underlined respectively. Original denotes the tool-augmented LLM prior unlearning and is provided for reference only.]",
+        "[Table: Table 7: Tool unlearning performances when deleting 20% of tools on ToolLLaMA. Best and second best performances are bold and underlined respectively. Original denotes the tool-augmented LLM prior unlearning and is provided for reference only.]"
+      ],
+      "subsections": []
+    },
+    "Appendix E Sampling of Shadow Samples for LiRA-Tool": {
+      "paragraphs": [
+        "We use the following prompt to prompt GPT-4 to synthesize diverse shadow samples for evaluation with LiRA-Tool."
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "Barbulescu & Triantafillou (2024) George-Octavian Barbulescu and Peter Triantafillou. To each (textual sequence) its own: Improving memorized-data unlearning in large language models. In Proceedings of the 40th International Conference on Machine Learning, 2024.",
+    "Basu et al. (2024) Kinjal Basu, Ibrahim Abdelaziz, Subhajit Chaudhury, Soham Dan, Maxwell Crouse, Asim Munawar, Vernon Austel, Sadhana Kumaravel, Vinod Muthusamy, Pavan Kapanipathi, and Luis Lastras. API-BLEND: A comprehensive corpora for training and benchmarking API LLMs. In Lun-Wei Ku, Andre Martins, and Vivek Srikumar (eds.), Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pp. 12859–12870, Bangkok, Thailand, August 2024. Association for Computational Linguistics. doi: 10.18653/v1/2024.acl-long.694. URL https://aclanthology.org/2024.acl-long.694/.",
+    "Brown et al. (2020) Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, Sandhini Agarwal, Ariel Herbert-Voss, Gretchen Krueger, Tom Henighan, Rewon Child, Aditya Ramesh, Daniel Ziegler, Jeffrey Wu, Clemens Winter, Chris Hesse, Mark Chen, Eric Sigler, Mateusz Litwin, Scott Gray, Benjamin Chess, Jack Clark, Christopher Berner, Sam McCandlish, Alec Radford, Ilya Sutskever, and Dario Amodei. Language models are few-shot learners. In H. Larochelle, M. Ranzato, R. Hadsell, M.F. Balcan, and H. Lin (eds.), Advances in Neural Information Processing Systems, volume 33, pp. 1877–1901. Curran Associates, Inc., 2020. URL https://proceedings.neurips.cc/paper_files/paper/2020/file/1457c0d6bfcb4967418bfb8ac142f64a-Paper.pdf.",
+    "Carlini et al. (2022) Nicholas Carlini, Steve Chien, Milad Nasr, Shuang Song, Andreas Terzis, and Florian Tramèr. Membership inference attacks from first principles. In 2022 IEEE Symposium on Security and Privacy (SP), pp. 1897–1914, 2022. doi: 10.1109/SP46214.2022.9833649.",
+    "Cheng & Amiri (2024) Jiali Cheng and Hadi Amiri. MU-bench: A multitask multimodal benchmark for machine unlearning. In Neurips Safe Generative AI Workshop 2024, 2024. URL https://openreview.net/forum?id=FCfY1wYkn9.",
+    "Cheng & Amiri (2025) Jiali Cheng and Hadi Amiri. Multidelete for multimodal machine unlearning. In Aleš Leonardis, Elisa Ricci, Stefan Roth, Olga Russakovsky, Torsten Sattler, and Gül Varol (eds.), Computer Vision – ECCV 2024, pp. 165–184, Cham, 2025. Springer Nature Switzerland. ISBN 978-3-031-72940-9.",
+    "Cheng et al. (2023) Jiali Cheng, George Dasoulas, Huan He, Chirag Agarwal, and Marinka Zitnik. GNNDelete: A general strategy for unlearning in graph neural networks. In The Eleventh International Conference on Learning Representations, 2023. URL https://openreview.net/forum?id=X9yCkmT5Qrl.",
+    "Choi et al. (2024) Dasol Choi, Soora Choi, Eunsun Lee, Jinwoo Seo, and Dongbin Na. Towards efficient machine unlearning with data augmentation: Guided loss-increasing (gli) to prevent the catastrophic model utility drop. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) Workshops, pp. 93–102, June 2024.",
+    "Chundawat et al. (2023) Vikram S. Chundawat, Ayush K. Tarun, Murari Mandal, and Mohan Kankanhalli. Zero-shot machine unlearning. IEEE Transactions on Information Forensics and Security, 18:2345–2354, 2023. doi: 10.1109/TIFS.2023.3265506.",
+    "Cohen et al. (2024) Roi Cohen, Eden Biran, Ori Yoran, Amir Globerson, and Mor Geva. Evaluating the Ripple Effects of Knowledge Editing in Language Models. Transactions of the Association for Computational Linguistics, 12:283–298, 04 2024. ISSN 2307-387X. doi: 10.1162/tacl_a_00644. URL https://doi.org/10.1162/tacl_a_00644.",
+    "Dettmers et al. (2022) Tim Dettmers, Mike Lewis, Younes Belkada, and Luke Zettlemoyer. Gpt3.int8(): 8-bit matrix multiplication for transformers at scale. In S. Koyejo, S. Mohamed, A. Agarwal, D. Belgrave, K. Cho, and A. Oh (eds.), Advances in Neural Information Processing Systems, volume 35, pp. 30318–30332. Curran Associates, Inc., 2022. URL https://proceedings.neurips.cc/paper_files/paper/2022/file/c3ba4962c05c49636d4c6206a97e9c8a-Paper-Conference.pdf.",
+    "Eldan & Russinovich (2023) Ronen Eldan and Mark Russinovich. Who’s harry potter? approximate unlearning in llms, 2023.",
+    "Fan et al. (2024a) Chongyu Fan, Jiancheng Liu, Alfred Hero, and Sijia Liu. Challenging forgets: Unveiling the worst-case forget sets in machine unlearning, 2024a.",
+    "Fan et al. (2024b) Chongyu Fan, Jiancheng Liu, Yihua Zhang, Eric Wong, Dennis Wei, and Sijia Liu. Salun: Empowering machine unlearning via gradient-based weight saliency in both image classification and generation. In The Twelfth International Conference on Learning Representations, 2024b. URL https://openreview.net/forum?id=gn0mIhQGNM.",
+    "Gandikota et al. (2023) Rohit Gandikota, Joanna Materzyńska, Jaden Fiotto-Kaufman, and David Bau. Erasing concepts from diffusion models. In Proceedings of the 2023 IEEE International Conference on Computer Vision, 2023.",
+    "Gao et al. (2023) Luyu Gao, Aman Madaan, Shuyan Zhou, Uri Alon, Pengfei Liu, Yiming Yang, Jamie Callan, and Graham Neubig. Pal: program-aided language models. In Proceedings of the 40th International Conference on Machine Learning, ICML’23. JMLR.org, 2023.",
+    "Golatkar et al. (2020) Aditya Golatkar, Alessandro Achille, and Stefano Soatto. Eternal sunshine of the spotless net: Selective forgetting in deep networks. In IEEE/CVF Conference on Computer Vision and Pattern Recognition, 2020.",
+    "Goyal et al. (2023) Navita Goyal, Ani Nenkova, and Hal Daumé III. Factual or contextual? disentangling error types in entity description generation. In Anna Rogers, Jordan Boyd-Graber, and Naoaki Okazaki (eds.), Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pp. 8322–8340, Toronto, Canada, July 2023. Association for Computational Linguistics. doi: 10.18653/v1/2023.acl-long.463. URL https://aclanthology.org/2023.acl-long.463/.",
+    "Graves et al. (2021) Laura Graves, Vineel Nagisetty, and Vijay Ganesh. Amnesiac machine learning. Proceedings of the AAAI Conference on Artificial Intelligence, 35(13):11516–11524, May 2021. doi: 10.1609/aaai.v35i13.17371. URL https://ojs.aaai.org/index.php/AAAI/article/view/17371.",
+    "Gu et al. (2024) Jia-Chen Gu, Hao-Xiang Xu, Jun-Yu Ma, Pan Lu, Zhen-Hua Ling, Kai-Wei Chang, and Nanyun Peng. Model editing can hurt general abilities of large language models. arXiv preprint arXiv:2401.04700, 2024.",
+    "He et al. (2022) Junxian He, Chunting Zhou, Xuezhe Ma, Taylor Berg-Kirkpatrick, and Graham Neubig. Towards a unified view of parameter-efficient transfer learning. In International Conference on Learning Representations, 2022. URL https://openreview.net/forum?id=0RDcd5Axok.",
+    "Hendrycks et al. (2021) Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou, Mantas Mazeika, Dawn Song, and Jacob Steinhardt. Measuring massive multitask language understanding. In International Conference on Learning Representations, 2021. URL https://openreview.net/forum?id=d7KBjmI3GmQ.",
+    "Hoang et al. (2024) Tuan Hoang, Santu Rana, Sunil Gupta, and Svetha Venkatesh. Learn to unlearn for deep neural networks: Minimizing unlearning interference with gradient projection. In Proceedings of the IEEE/CVF Winter Conference on Applications of Computer Vision (WACV), pp. 4819–4828, January 2024.",
+    "Hu et al. (2022) Edward J Hu, yelong shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and Weizhu Chen. LoRA: Low-rank adaptation of large language models. In International Conference on Learning Representations, 2022. URL https://openreview.net/forum?id=nZeVKeeFYf9.",
+    "Ilharco et al. (2023) Gabriel Ilharco, Marco Tulio Ribeiro, Mitchell Wortsman, Ludwig Schmidt, Hannaneh Hajishirzi, and Ali Farhadi. Editing models with task arithmetic. In The Eleventh International Conference on Learning Representations, 2023. URL https://openreview.net/forum?id=6t0Kwf8-jrj.",
+    "Jang et al. (2023) Joel Jang, Dongkeun Yoon, Sohee Yang, Sungmin Cha, Moontae Lee, Lajanugen Logeswaran, and Minjoon Seo. Knowledge unlearning for mitigating privacy risks in language models. In Anna Rogers, Jordan Boyd-Graber, and Naoaki Okazaki (eds.), Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pp. 14389–14408, Toronto, Canada, July 2023. Association for Computational Linguistics. doi: 10.18653/v1/2023.acl-long.805. URL https://aclanthology.org/2023.acl-long.805/.",
+    "Ji et al. (2024) Jiabao Ji, Yujian Liu, Yang Zhang, Gaowen Liu, Ramana Rao Kompella, Sijia Liu, and Shiyu Chang. Reversing the forget-retain objectives: An efficient llm unlearning framework from logit difference. arXiv preprint arXiv:2406.08607, 2024.",
+    "Jia et al. (2023) Jinghan Jia, Jiancheng Liu, Parikshit Ram, Yuguang Yao, Gaowen Liu, Yang Liu, Pranay Sharma, and Sijia Liu. Model sparsity can simplify machine unlearning. In Thirty-seventh Conference on Neural Information Processing Systems, 2023. URL https://openreview.net/forum?id=0jZH883i34.",
+    "Jia et al. (2024) Jinghan Jia, Yihua Zhang, Yimeng Zhang, Jiancheng Liu, Bharat Runwal, James Diffenderfer, Bhavya Kailkhura, and Sijia Liu. SOUL: Unlocking the power of second-order optimization for LLM unlearning. In Yaser Al-Onaizan, Mohit Bansal, and Yun-Nung Chen (eds.), Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing, pp. 4276–4292, Miami, Florida, USA, November 2024. Association for Computational Linguistics. doi: 10.18653/v1/2024.emnlp-main.245. URL https://aclanthology.org/2024.emnlp-main.245/.",
+    "Jin et al. (2024) Zhuoran Jin, Pengfei Cao, Chenhao Wang, Zhitao He, Hongbang Yuan, Jiachun Li, Yubo Chen, Kang Liu, and Jun Zhao. Rwku: Benchmarking real-world knowledge unlearning for large language models. arXiv preprint arXiv:2406.10890, 2024.",
+    "Kassem et al. (2023) Aly Kassem, Omar Mahmoud, and Sherif Saad. Preserving privacy through dememorization: An unlearning technique for mitigating memorization risks in language models. In Houda Bouamor, Juan Pino, and Kalika Bali (eds.), Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, pp. 4360–4379, Singapore, December 2023. Association for Computational Linguistics. doi: 10.18653/v1/2023.emnlp-main.265. URL https://aclanthology.org/2023.emnlp-main.265/.",
+    "Kumari et al. (2023) Nupur Kumari, Bingliang Zhang, Sheng-Yu Wang, Eli Shechtman, Richard Zhang, and Jun-Yan Zhu. Ablating concepts in text-to-image diffusion models. In Proceedings of the 2023 IEEE International Conference on Computer Vision, 2023.",
+    "Kurmanji et al. (2023) Meghdad Kurmanji, Peter Triantafillou, Jamie Hayes, and Eleni Triantafillou. Towards unbounded machine unlearning. In A. Oh, T. Neumann, A. Globerson, K. Saenko, M. Hardt, and S. Levine (eds.), Advances in Neural Information Processing Systems, volume 36, pp. 1957–1987. Curran Associates, Inc., 2023. URL https://proceedings.neurips.cc/paper_files/paper/2023/file/062d711fb777322e2152435459e6e9d9-Paper-Conference.pdf.",
+    "Li et al. (2024a) Guihong Li, Hsiang Hsu, Chun-Fu Chen, and Radu Marculescu. Machine unlearning for image-to-image generative models. In The Twelfth International Conference on Learning Representations, 2024a. URL https://openreview.net/forum?id=9hjVoPWPnh.",
+    "Li et al. (2023) Minghao Li, Yingxiu Zhao, Bowen Yu, Feifan Song, Hangyu Li, Haiyang Yu, Zhoujun Li, Fei Huang, and Yongbin Li. API-bank: A comprehensive benchmark for tool-augmented LLMs. In Houda Bouamor, Juan Pino, and Kalika Bali (eds.), Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, pp. 3102–3116, Singapore, December 2023. Association for Computational Linguistics. doi: 10.18653/v1/2023.emnlp-main.187. URL https://aclanthology.org/2023.emnlp-main.187/.",
+    "Li et al. (2024b) Nathaniel Li, Alexander Pan, Anjali Gopal, Summer Yue, Daniel Berrios, Alice Gatti, Justin D Li, Ann-Kathrin Dombrowski, Shashwat Goel, Long Phan, et al. The wmdp benchmark: Measuring and reducing malicious use with unlearning. arXiv preprint arXiv:2403.03218, 2024b.",
+    "Liu et al. (2024) Hong Liu, Zhiyuan Li, David Leo Wright Hall, Percy Liang, and Tengyu Ma. Sophia: A scalable stochastic second-order optimizer for language model pre-training. In The Twelfth International Conference on Learning Representations, 2024. URL https://openreview.net/forum?id=3xHDeA8Noi.",
+    "Liu et al. (2023) Junxu Liu, Mingsheng Xue, Jian Lou, Xiaoyu Zhang, Li Xiong, and Zhan Qin. Muter: Machine unlearning on adversarially trained models. In Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV), pp. 4892–4902, October 2023.",
+    "Ma et al. (2024) Shuming Ma, Hongyu Wang, Lingxiao Ma, Lei Wang, Wenhui Wang, Shaohan Huang, Li Dong, Ruiping Wang, Jilong Xue, and Furu Wei. The era of 1-bit llms: All large language models are in 1.58 bits. arXiv preprint arXiv:2402.17764, 2024.",
+    "Maini et al. (2024) Pratyush Maini, Zhili Feng, Avi Schwarzschild, Zachary C. Lipton, and J. Zico Kolter. Tofu: A task of fictitious unlearning for llms, 2024.",
+    "Ouyang et al. (2022) Long Ouyang, Jeffrey Wu, Xu Jiang, Diogo Almeida, Carroll Wainwright, Pamela Mishkin, Chong Zhang, Sandhini Agarwal, Katarina Slama, Alex Ray, et al. Training language models to follow instructions with human feedback. Advances in neural information processing systems, 35:27730–27744, 2022.",
+    "Parisi et al. (2022) Aaron Parisi, Yao Zhao, and Noah Fiedel. Talm: Tool augmented language models. arXiv preprint arXiv:2205.12255, 2022.",
+    "Patil et al. (2023) Shishir G Patil, Tianjun Zhang, Xin Wang, and Joseph E Gonzalez. Gorilla: Large language model connected with massive apis. arXiv preprint arXiv:2305.15334, 2023.",
+    "Pawelczyk et al. (2024) Martin Pawelczyk, Seth Neel, and Himabindu Lakkaraju. In-context unlearning: Language models as few-shot unlearners. In Ruslan Salakhutdinov, Zico Kolter, Katherine Heller, Adrian Weller, Nuria Oliver, Jonathan Scarlett, and Felix Berkenkamp (eds.), Proceedings of the 41st International Conference on Machine Learning, volume 235 of Proceedings of Machine Learning Research, pp. 40034–40050. PMLR, 21–27 Jul 2024. URL https://proceedings.mlr.press/v235/pawelczyk24a.html.",
+    "Qin et al. (2024) Yujia Qin, Shihao Liang, Yining Ye, Kunlun Zhu, Lan Yan, Yaxi Lu, Yankai Lin, Xin Cong, Xiangru Tang, Bill Qian, Sihan Zhao, Lauren Hong, Runchu Tian, Ruobing Xie, Jie Zhou, Mark Gerstein, dahai li, Zhiyuan Liu, and Maosong Sun. ToolLLM: Facilitating large language models to master 16000+ real-world APIs. In The Twelfth International Conference on Learning Representations, 2024. URL https://openreview.net/forum?id=dHng2O0Jjr.",
+    "Rafailov et al. (2023) Rafael Rafailov, Archit Sharma, Eric Mitchell, Christopher D Manning, Stefano Ermon, and Chelsea Finn. Direct preference optimization: Your language model is secretly a reward model. In Thirty-seventh Conference on Neural Information Processing Systems, 2023. URL https://openreview.net/forum?id=HPuSIXJaa9.",
+    "Schick et al. (2023) Timo Schick, Jane Dwivedi-Yu, Roberto Dessi, Roberta Raileanu, Maria Lomeli, Eric Hambro, Luke Zettlemoyer, Nicola Cancedda, and Thomas Scialom. Toolformer: Language models can teach themselves to use tools. In Thirty-seventh Conference on Neural Information Processing Systems, 2023. URL https://openreview.net/forum?id=Yacmpz84TH.",
+    "Setlur et al. (2022) Amrith Setlur, Benjamin Eysenbach, Virginia Smith, and Sergey Levine. Adversarial unlearning: Reducing confidence along adversarial directions. In Alice H. Oh, Alekh Agarwal, Danielle Belgrave, and Kyunghyun Cho (eds.), Advances in Neural Information Processing Systems, 2022. URL https://openreview.net/forum?id=cJ006qBE8Uv.",
+    "Singhal et al. (2023) Karan Singhal, Shekoofeh Azizi, Tao Tu, S Sara Mahdavi, Jason Wei, Hyung Won Chung, Nathan Scales, Ajay Tanwani, Heather Cole-Lewis, Stephen Pfohl, et al. Large language models encode clinical knowledge. Nature, 620(7972):172–180, 2023.",
+    "Su et al. (2023) Yusheng Su, Chi-Min Chan, Jiali Cheng, Yujia Qin, Yankai Lin, Shengding Hu, Zonghan Yang, Ning Ding, Xingzhi Sun, Guotong Xie, Zhiyuan Liu, and Maosong Sun. Exploring the impact of model scaling on parameter-efficient tuning. In Houda Bouamor, Juan Pino, and Kalika Bali (eds.), Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, pp. 15062–15078, Singapore, December 2023. Association for Computational Linguistics. doi: 10.18653/v1/2023.emnlp-main.931. URL https://aclanthology.org/2023.emnlp-main.931/.",
+    "Suzgun et al. (2023) Mirac Suzgun, Nathan Scales, Nathanael Schärli, Sebastian Gehrmann, Yi Tay, Hyung Won Chung, Aakanksha Chowdhery, Quoc Le, Ed Chi, Denny Zhou, and Jason Wei. Challenging BIG-bench tasks and whether chain-of-thought can solve them. In Anna Rogers, Jordan Boyd-Graber, and Naoaki Okazaki (eds.), Findings of the Association for Computational Linguistics: ACL 2023, pp. 13003–13051, Toronto, Canada, July 2023. Association for Computational Linguistics. doi: 10.18653/v1/2023.findings-acl.824. URL https://aclanthology.org/2023.findings-acl.824/.",
+    "Tang et al. (2023) Qiaoyu Tang, Ziliang Deng, Hongyu Lin, Xianpei Han, Qiao Liang, Boxi Cao, and Le Sun. Toolalpaca: Generalized tool learning for language models with 3000 simulated cases. arXiv preprint arXiv:2306.05301, 2023.",
+    "Taori et al. (2023) Rohan Taori, Ishaan Gulrajani, Tianyi Zhang, Yann Dubois, Xuechen Li, Carlos Guestrin, Percy Liang, and Tatsunori B. Hashimoto. Stanford alpaca: An instruction-following llama model. https://github.com/tatsu-lab/stanford_alpaca, 2023.",
+    "Touvron et al. (2023a) Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier Martinet, Marie-Anne Lachaux, Timothée Lacroix, Baptiste Rozière, Naman Goyal, Eric Hambro, Faisal Azhar, et al. Llama: Open and efficient foundation language models. arXiv preprint arXiv:2302.13971, 2023a.",
+    "Touvron et al. (2023b) Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, et al. Llama 2: Open foundation and fine-tuned chat models. arXiv preprint arXiv:2307.09288, 2023b.",
+    "Ullah et al. (2021) Enayat Ullah, Tung Mai, Anup Rao, Ryan A. Rossi, and Raman Arora. Machine unlearning via algorithmic stability. In Mikhail Belkin and Samory Kpotufe (eds.), Proceedings of Thirty Fourth Conference on Learning Theory, volume 134 of Proceedings of Machine Learning Research, pp. 4126–4142. PMLR, 15–19 Aug 2021. URL https://proceedings.mlr.press/v134/ullah21a.html.",
+    "Vuong (1989) Quang H. Vuong. Likelihood ratio tests for model selection and non-nested hypotheses. Econometrica, 57(2):307–333, 1989. ISSN 00129682, 14680262. URL http://www.jstor.org/stable/1912557.",
+    "Wang et al. (2023) Lingzhi Wang, Tong Chen, Wei Yuan, Xingshan Zeng, Kam-Fai Wong, and Hongzhi Yin. KGA: A general machine unlearning framework based on knowledge gap alignment. In Anna Rogers, Jordan Boyd-Graber, and Naoaki Okazaki (eds.), Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pp. 13264–13276, Toronto, Canada, July 2023. Association for Computational Linguistics. doi: 10.18653/v1/2023.acl-long.740. URL https://aclanthology.org/2023.acl-long.740/.",
+    "Wei et al. (2023) Shaokui Wei, Mingda Zhang, Hongyuan Zha, and Baoyuan Wu. Shared adversarial unlearning: Backdoor mitigation by unlearning shared adversarial examples. In Thirty-seventh Conference on Neural Information Processing Systems, 2023. URL https://openreview.net/forum?id=zqOcW3R9rd.",
+    "Xu et al. (2024) Rongwu Xu, Zehan Qi, Zhijiang Guo, Cunxiang Wang, Hongru Wang, Yue Zhang, and Wei Xu. Knowledge conflicts for llms: A survey. arXiv preprint arXiv:2403.08319, 2024.",
+    "Yao et al. (2024) Jin Yao, Eli Chien, Minxin Du, Xinyao Niu, Tianhao Wang, Zezhou Cheng, and Xiang Yue. Machine unlearning of pre-trained large language models. In Lun-Wei Ku, Andre Martins, and Vivek Srikumar (eds.), Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pp. 8403–8419, Bangkok, Thailand, August 2024. Association for Computational Linguistics. doi: 10.18653/v1/2024.acl-long.457. URL https://aclanthology.org/2024.acl-long.457/.",
+    "Yao et al. (2023) Yuanshun Yao, Xiaojun Xu, and Yang Liu. Large language model unlearning. arXiv preprint arXiv:2310.10683, 2023.",
+    "Zeng et al. (2024) Zhiyuan Zeng, Jiatong Yu, Tianyu Gao, Yu Meng, Tanya Goyal, and Danqi Chen. Evaluating large language models at evaluating instruction following. In The Twelfth International Conference on Learning Representations, 2024. URL https://openreview.net/forum?id=tr0KidwPLc.",
+    "Zhang et al. (2024a) Binchi Zhang, Yushun Dong, Tianhao Wang, and Jundong Li. Towards certified unlearning for deep neural networks. In Forty-first International Conference on Machine Learning, 2024a. URL https://openreview.net/forum?id=1mf1ISuyS3.",
+    "Zhang et al. (2024b) Ruiqi Zhang, Licong Lin, Yu Bai, and Song Mei. Negative preference optimization: From catastrophic collapse to effective unlearning. In First Conference on Language Modeling, 2024b. URL https://openreview.net/forum?id=MXLBXjQkmb.",
+    "Zheng et al. (2023) Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan Zhuang, Zhanghao Wu, Yonghao Zhuang, Zi Lin, Zhuohan Li, Dacheng Li, Eric Xing, Hao Zhang, Joseph E Gonzalez, and Ion Stoica. Judging llm-as-a-judge with mt-bench and chatbot arena. In A. Oh, T. Naumann, A. Globerson, K. Saenko, M. Hardt, and S. Levine (eds.), Advances in Neural Information Processing Systems, volume 36, pp. 46595–46623. Curran Associates, Inc., 2023. URL https://proceedings.neurips.cc/paper_files/paper/2023/file/91f18a1287b398d378ef22505bf41832-Paper-Datasets_and_Benchmarks.pdf.",
+    "Zhou et al. (2024) Chunting Zhou, Pengfei Liu, Puxin Xu, Srinivasan Iyer, Jiao Sun, Yuning Mao, Xuezhe Ma, Avia Efrat, Ping Yu, Lili Yu, et al. Lima: Less is more for alignment. Advances in Neural Information Processing Systems, 36, 2024.",
+    "Zhou et al. (2023) Jeffrey Zhou, Tianjian Lu, Swaroop Mishra, Siddhartha Brahma, Sujoy Basu, Yi Luan, Denny Zhou, and Le Hou. Instruction-following evaluation for large language models. arXiv preprint arXiv:2311.07911, 2023."
+  ]
+}

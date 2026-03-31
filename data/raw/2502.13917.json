@@ -1,0 +1,466 @@
+{
+  "title": "\\modelname: A Large-Scale Generalist Diffusion Language Model",
+  "authors": "Jaesung Tae1,Hamish Ivison2,311footnotemark:1,Sachin Kumar3,4,Arman Cohan11Yale University,2University of Washington,3Allen Institute for AI,4The Ohio State UniversityCo-first authors. Correspondence tohamishi@allenai.org.",
+  "abstract": "We introduce \\modelname, a general instruction-following diffusion language model that outperforms contemporary instruction-tuned diffusion models, as well as matches and sometimes exceeds strong autoregressive (AR) models. We train \\modelname by first adapting a strong AR model via continued pretraining with the usual cross-entropy as diffusion loss, and then performing further instruction tuning. We find that adaptation training as well as the choice of the base model is crucial for training good instruction-following diffusion models. We further propose reward guidance, a novel and modular inference-time guidance procedure to align model outputs without needing to train the underlying model. Finally, we show that \\modelname further improves with increased inference-time compute, highlighting the utility of diffusion LMs in having fine-grained controllability over the amount of compute used at inference time. Code and models are available at https://github.com/hamishivi/tess-2.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Existing language models are predominantly trained using an autoregressive (AR) paradigm. Prior works have suggested that AR models may have a number of limitations, especially in planning and self-correction (Lin et al., 2021; Bachmann and Nagarajan, 2024; Huang et al., 2024). While recent work has made large strides in improving AR model reasoning, this hinges on increasing test-time compute using specialized reinforcement learning-based training procedures (Kumar et al., 2024; Laskin et al., 2022) and costly long generations (DeepSeek-AI, 2025; Min et al., 2024).",
+        "An alternative paradigm lies in diffusion language models, which have shown promise in addressing some of the limitations of AR models (Ye et al., 2024; Zhang et al., 2023). Diffusion models provide plug-and-play controllability at inference time Li et al. (2022), are naturally capable of flexible generation such as infilling, and enable precise control of inference compute, more so than recent long chain-of-thought approaches. However, diffusion LMs have remained relatively small scale and focused on improving intrinsic metrics such as perplexity (Lou et al., 2024; Gulrajani and Hashimoto, 2023), rather than examining common downstream tasks used to evaluate AR LMs. This constrains their broader impact and practical applicability.",
+        "In this work, we aim to close this gap by introducing \\modelname, a large-scale diffusion language model. We show that strong diffusion models can be trained by adapting from existing AR models, and that these models can be further instruction-tuned to serve as strong generalist models across varied downstream settings. We ablate a number of configurations and present a recipe for adapting existing AR LMs to diffusion models. Our final model outperforms contemporary diffusion LMs and performs close to or exceeds AR baselines, showing that continuous diffusion models can serve as generalist instruction-tuned models.",
+        "To the best of our knowledge, we are the first work to provide a full recipe for training generalist instruction-following fully non-autoregressive continuous diffusion models, with prior work only examining performance after task-specific finetuning (Karimi Mahabadi et al., 2024; Han et al., 2024a), using semi-autoregressive setups and only testing chat settings (Han et al., 2023), or using a discrete diffusion approach instead of a continuous one (Gong et al., 2024). We also underscore the unique advantages of diffusion LMs over AR models: the scalability of inference-time compute with increased diffusion steps and the ability to supplement the backward diffusion process with reward models. We summarize our contributions:",
+        "1. We propose a recipe for adapting LLMs into instruction-following diffusion LMs that significantly outperform prior text diffusion models and perform similarly to better than AR models on QA and general instruction-following.",
+        "2. We ablate components of the recipe and highlight salient elements, such as using a base model with a bidirectional pretraining objective rather than pure AR, where possible.",
+        "3. We show that our resulting model can further improve with increased test-time compute by employing more diffusion steps.",
+        "4. We introduce reward guidance, a novel technique for steering diffusion LMs to generate text aligned with user preferences, enhancing downstream chat performance without any additional training."
+      ],
+      "subsections": []
+    },
+    "2 Related Work": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Diffusion Language Models",
+          "paragraphs": [
+            "With the popularization of diffusion models in non-language domains such as image (Nichol and Dhariwal, 2021), audio (Kong et al., 2020; Tae et al., 2022; Shen et al., 2023), video (Ho et al., 2022), and text-to-image generation (Saharia et al., 2022; Ramesh et al., 2022), there have been growing attempts to adapt and improve diffusion methods for language generation. One line of diffusion LMs proposes diffusing the model latent space by adding Gaussian noise to input word embeddings Li et al. (2022); Gulrajani and Hashimoto (2023). Another approach uses discrete diffusion based on categorical jump probabilities and continuous-time Markov chains (Lou et al., 2024; Richemond et al., 2022; Gong et al., 2024), removing the need for mapping diffused embeddings to discrete inputs or outputs.",
+            "In contrast, simplex diffusion language models maintain the continuity of the diffusion process, instead aiming to learn discrete data by modelling over a continuous simplex. We build off TESS (Karimi Mahabadi et al., 2024), which diffuses over the probability simplex and itself is a fully-non-autoregressive version of SSD-LM (Han et al., 2022). While Han et al. (2024b) explored scaling SSD-LM for instruction-following, it remained semi-autoregressive and focused on a novel collaborative decoding strategy without releasing code, models, or data. In contrast, we show that fully non-autoregressive generation is possible at context lengths of up to 2048 tokens while only using publicly available data and model checkpoints."
+          ]
+        },
+        {
+          "title": "Adapting Diffusion Models",
+          "paragraphs": [
+            "Concurrent and prior work has also examined instruction-tuning diffusion models and adapting them from existing AR models. Han et al. (2024a) builds off SUNDAE (Savinov et al., 2022) and shows that AR models can be successfully converted into diffusion models for further downstream finetuning. They focus on training diffusion checkpoints that can then be finetuned to perform specific tasks, as opposed to examining instruction tuning and general performance as done in this work. Additionally, they pretrain their own AR and diffusion models while we utilize publicly available checkpoints.",
+            "Ye et al. (2023) examines scaling reparameterized discrete diffusion models (Zheng et al., 2024) by adapting XLM-R checkpoints (Conneau et al., 2020), but report that they are unable to adapt more modern LMs such as Llama and find their models fall short on more complex reasoning tasks.",
+            "Concurrent to our work, Gong et al. (2024) proposes DiffuLlama, an absorbing discrete diffusion model (Austin et al., 2021) adapted from Llama Touvron et al. (2023). However, they focus on discrete diffusion and pretraining without exploring instruction tuning. In comparison, we show that simpler continuous diffusion algorithms (i.e., the one used in SSD-LM and TESS) can be straightforwardly translated to adapt diffusion LMs. We additionally explore instruction tuning adapted diffusion LMs and evaluate the model on common instruction tuning benchmarks, which better reflect downstream real-life applications — in particular, the model’s ability to provide long-form generations that engage with user queries."
+          ]
+        }
+      ]
+    },
+    "3 \\modelname": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "3.1 Simplex Diffusion Language Models",
+          "paragraphs": [
+            "For the model architecture of \\modelname, we largely follow TESS (Karimi Mahabadi et al., 2024), which is a fully non-autoregressive diffusion model with self-conditioning. We provide a brief recap.",
+            "Let 𝒱\\mathcal{V} denote the vocabulary space. We map the index of each token to be generated w∈𝒱w\\in\\mathcal{V} to a kk-logit simplex to produce 𝐬w∈{±k}|𝒱|\\mathbf{s}^{w}\\in\\{\\pm k\\}^{|\\mathcal{V}|}, whose ii-th component satisfies",
+            "with a hyperparameter k∈ℝ+k\\in\\mathbb{R}^{+}. We then produce a probability simplex over 𝒱\\mathcal{V} via 𝐩w=softmax​(𝐬w)\\mathbf{p}^{w}=\\text{softmax}(\\mathbf{s}^{w}). Finally, we compute the weighted sum of word embeddings to obtain a continuous embedding vector, 𝐡w=𝐄𝐩w\\mathbf{h}^{w}=\\mathbf{E}\\mathbf{p}^{w}, where 𝐄∈ℝd×|𝒱|\\mathbf{E}\\in\\mathbb{R}^{d\\times|\\mathcal{V}|} is the word embedding matrix, dd denotes the size of the hidden dimension, and 𝐡w∈ℝd\\mathbf{h}^{w}\\in\\mathbb{R}^{d}.",
+            "We use a single linear layer without bias to produce timestep embeddings. These embeddings are directly added to the token embeddings before being fed into the first transformer block to inform the model of the current timestep in the diffusion process.",
+            "Let 𝐰=(w1,…,wL)\\mathbf{w}=(w_{1},\\dots,w_{L}) be a sentence of LL tokens such that wi∈𝒱w_{i}\\in\\mathcal{V}, and 𝐒0=(𝐬w1,…,𝐬wL)∈{±k}L×|𝒱|\\mathbf{S}_{0}=(\\mathbf{s}^{w_{1}},\\dots,\\mathbf{s}^{w_{L}})\\in\\{\\pm k\\}^{L\\times|\\mathcal{V}|} be the kk-logit simplex representation of 𝐰\\mathbf{w}. Following the standard Denoising Diffusion Probabilistic Models (DDPM) formulation (Ho et al., 2020), we add noise to the kk-logit simplex representation during training according to",
+            "where t∈{0,1,⋯,T}t\\in\\{0,1,\\cdots,T\\} is the timestep, T∈ℕT\\in\\mathbb{N} is the total number of diffusion steps, ϵt∼𝒩​(0,k2​𝐈)\\bm{\\epsilon}_{t}\\sim\\mathcal{N}(0,k^{2}\\mathbf{I}), and α¯t\\bar{\\alpha}_{t} follows the cosine noise schedule Nichol and Dhariwal (2021).",
+            "We train the model by computing the usual cross-entropy loss between the ground-truth tokens 𝐰\\mathbf{w} and the model prediction given a noisy logit simplex 𝐒t\\mathbf{S}_{t} at timestep tt.",
+            "This is in contrast to the usual mean squared error loss used in standard diffusion models, and is found to be stable in training simplex-based diffusion language models Han et al. (2022); Karimi Mahabadi et al. (2024).",
+            "During inference, we sample 𝐒T\\mathbf{S}_{T} from the prior 𝒩​(0,k2​𝐈)\\mathcal{N}(0,k^{2}\\mathbf{I}) and run the reverse process for t=T,…,1t=T,\\dots,1 on the noisy kk-logit simplex. The reverse process can be approximated via",
+            "Thus, to reverse one step from tt, we take the model prediction 𝐒^𝜽\\hat{\\mathbf{S}}_{\\bm{\\theta}} as the hypothetical ground truth, then corrupt it by (t−1)(t-1) timesteps. To construct the model prediction, we project the logits predicted by the underlying encoder model via argmax as a pseudo-inverse of Eq. (1) to match the initial kk-logit representation:",
+            "Let 𝐒^0t\\hat{\\mathbf{S}}_{0}^{t} denote the model prediction of the ground truth simplex 𝐒0\\mathbf{S}_{0} at time tt. As shown in Eq. (4), typical diffusion models generate a prediction via",
+            "In self-conditioning, we feed the model prediction from the previous timestep as an additional conditional variable:",
+            "The intuition is that providing the model with a richer signal about its own generative trajectory could be useful. Prior work found this dramatically improves performance Karimi Mahabadi et al. (2024), and we follow their setup. We first compute the average of simplex probabilities",
+            "Note that 𝐩avgw\\mathbf{p}^{w}_{\\text{avg}} is a well-defined categorical distribution over 𝒱\\mathcal{V}. We then compute a continuous embedding vector, 𝐡w=𝐄𝐩avgw\\mathbf{h}^{w}=\\mathbf{E}\\mathbf{p}^{w}_{\\text{avg}}, and use this vector as input to our underlying model to make a prediction for the given diffusion step following Eq. (4). We apply self-conditioning with probability ρ=0.5\\rho=0.5 during training (that is, half the time we compute a prior step and use that as self-conditioning input along with standard inputs); during inference, we always use self-conditioning (ρ=1\\rho=1)."
+          ]
+        },
+        {
+          "title": "Simplex-based Representation",
+          "paragraphs": [
+            "Let 𝒱\\mathcal{V} denote the vocabulary space. We map the index of each token to be generated w∈𝒱w\\in\\mathcal{V} to a kk-logit simplex to produce 𝐬w∈{±k}|𝒱|\\mathbf{s}^{w}\\in\\{\\pm k\\}^{|\\mathcal{V}|}, whose ii-th component satisfies",
+            "with a hyperparameter k∈ℝ+k\\in\\mathbb{R}^{+}. We then produce a probability simplex over 𝒱\\mathcal{V} via 𝐩w=softmax​(𝐬w)\\mathbf{p}^{w}=\\text{softmax}(\\mathbf{s}^{w}). Finally, we compute the weighted sum of word embeddings to obtain a continuous embedding vector, 𝐡w=𝐄𝐩w\\mathbf{h}^{w}=\\mathbf{E}\\mathbf{p}^{w}, where 𝐄∈ℝd×|𝒱|\\mathbf{E}\\in\\mathbb{R}^{d\\times|\\mathcal{V}|} is the word embedding matrix, dd denotes the size of the hidden dimension, and 𝐡w∈ℝd\\mathbf{h}^{w}\\in\\mathbb{R}^{d}."
+          ]
+        },
+        {
+          "title": "Timestep Embeddings",
+          "paragraphs": [
+            "We use a single linear layer without bias to produce timestep embeddings. These embeddings are directly added to the token embeddings before being fed into the first transformer block to inform the model of the current timestep in the diffusion process."
+          ]
+        },
+        {
+          "title": "Forward Diffusion",
+          "paragraphs": [
+            "Let 𝐰=(w1,…,wL)\\mathbf{w}=(w_{1},\\dots,w_{L}) be a sentence of LL tokens such that wi∈𝒱w_{i}\\in\\mathcal{V}, and 𝐒0=(𝐬w1,…,𝐬wL)∈{±k}L×|𝒱|\\mathbf{S}_{0}=(\\mathbf{s}^{w_{1}},\\dots,\\mathbf{s}^{w_{L}})\\in\\{\\pm k\\}^{L\\times|\\mathcal{V}|} be the kk-logit simplex representation of 𝐰\\mathbf{w}. Following the standard Denoising Diffusion Probabilistic Models (DDPM) formulation (Ho et al., 2020), we add noise to the kk-logit simplex representation during training according to",
+            "where t∈{0,1,⋯,T}t\\in\\{0,1,\\cdots,T\\} is the timestep, T∈ℕT\\in\\mathbb{N} is the total number of diffusion steps, ϵt∼𝒩​(0,k2​𝐈)\\bm{\\epsilon}_{t}\\sim\\mathcal{N}(0,k^{2}\\mathbf{I}), and α¯t\\bar{\\alpha}_{t} follows the cosine noise schedule Nichol and Dhariwal (2021)."
+          ]
+        },
+        {
+          "title": "Training",
+          "paragraphs": [
+            "We train the model by computing the usual cross-entropy loss between the ground-truth tokens 𝐰\\mathbf{w} and the model prediction given a noisy logit simplex 𝐒t\\mathbf{S}_{t} at timestep tt.",
+            "This is in contrast to the usual mean squared error loss used in standard diffusion models, and is found to be stable in training simplex-based diffusion language models Han et al. (2022); Karimi Mahabadi et al. (2024)."
+          ]
+        },
+        {
+          "title": "Sampling",
+          "paragraphs": [
+            "During inference, we sample 𝐒T\\mathbf{S}_{T} from the prior 𝒩​(0,k2​𝐈)\\mathcal{N}(0,k^{2}\\mathbf{I}) and run the reverse process for t=T,…,1t=T,\\dots,1 on the noisy kk-logit simplex. The reverse process can be approximated via",
+            "Thus, to reverse one step from tt, we take the model prediction 𝐒^𝜽\\hat{\\mathbf{S}}_{\\bm{\\theta}} as the hypothetical ground truth, then corrupt it by (t−1)(t-1) timesteps. To construct the model prediction, we project the logits predicted by the underlying encoder model via argmax as a pseudo-inverse of Eq. (1) to match the initial kk-logit representation:"
+          ]
+        },
+        {
+          "title": "Self-conditioning",
+          "paragraphs": [
+            "Let 𝐒^0t\\hat{\\mathbf{S}}_{0}^{t} denote the model prediction of the ground truth simplex 𝐒0\\mathbf{S}_{0} at time tt. As shown in Eq. (4), typical diffusion models generate a prediction via",
+            "In self-conditioning, we feed the model prediction from the previous timestep as an additional conditional variable:",
+            "The intuition is that providing the model with a richer signal about its own generative trajectory could be useful. Prior work found this dramatically improves performance Karimi Mahabadi et al. (2024), and we follow their setup. We first compute the average of simplex probabilities",
+            "Note that 𝐩avgw\\mathbf{p}^{w}_{\\text{avg}} is a well-defined categorical distribution over 𝒱\\mathcal{V}. We then compute a continuous embedding vector, 𝐡w=𝐄𝐩avgw\\mathbf{h}^{w}=\\mathbf{E}\\mathbf{p}^{w}_{\\text{avg}}, and use this vector as input to our underlying model to make a prediction for the given diffusion step following Eq. (4). We apply self-conditioning with probability ρ=0.5\\rho=0.5 during training (that is, half the time we compute a prior step and use that as self-conditioning input along with standard inputs); during inference, we always use self-conditioning (ρ=1\\rho=1)."
+          ]
+        },
+        {
+          "title": "3.2 Adapting AR models to Diffusion",
+          "paragraphs": [
+            "Our approach to adapting AR models to diffusion consists of three key elements: UL2 masking, label shifting, and full bidirectional attention.",
+            "Inspired by Tay et al. (2023), we train our model with a mixture of span infilling and prefix completion training objectives. For span infilling, we mask out random spans (with lengths randomly sampled from a pre-specified range) within the text and train the model to predict them. For prefix completion, we mask the last nn tokens, where nn is randomly chosen, and ask the model to predict the rest. The latter objective aligns with how we use the model for downstream tasks, but we found training with both objectives to work best for overall performance in pilot experiments. We provide further details in App. A.",
+            "In a typical diffusion LM, at each position tit_{i}, the model predicts the less noised version of the same token. In our approach, we instead train the model to predict the token at ti+1t_{i+1} to align with the next token prediction objective used for AR models. Note that this is theoretically equivalent to a diffusion model, but we find that it helps the model converge faster. Concurrent with our work, DiffuLlama Gong et al. (2024) also reported positive results with label shifting.",
+            "Finally, we disable causal masking and train our model with full bidirectional attention masks, as we found this led to better performance in pilot experiments. Fortunately, existing optimized model components such as Flash Attention (Dao et al., 2022; Dao, 2024) are fully compatible with this change. This enables fast and efficient diffusion adaptation training. Concurrently, DiffuLlama Gong et al. (2024) also reported using full bidirectional attention."
+          ]
+        },
+        {
+          "title": "UL2 Masking",
+          "paragraphs": [
+            "Inspired by Tay et al. (2023), we train our model with a mixture of span infilling and prefix completion training objectives. For span infilling, we mask out random spans (with lengths randomly sampled from a pre-specified range) within the text and train the model to predict them. For prefix completion, we mask the last nn tokens, where nn is randomly chosen, and ask the model to predict the rest. The latter objective aligns with how we use the model for downstream tasks, but we found training with both objectives to work best for overall performance in pilot experiments. We provide further details in App. A."
+          ]
+        },
+        {
+          "title": "Label Shifting",
+          "paragraphs": [
+            "In a typical diffusion LM, at each position tit_{i}, the model predicts the less noised version of the same token. In our approach, we instead train the model to predict the token at ti+1t_{i+1} to align with the next token prediction objective used for AR models. Note that this is theoretically equivalent to a diffusion model, but we find that it helps the model converge faster. Concurrent with our work, DiffuLlama Gong et al. (2024) also reported positive results with label shifting."
+          ]
+        },
+        {
+          "title": "Full Bidirectional Attention",
+          "paragraphs": [
+            "Finally, we disable causal masking and train our model with full bidirectional attention masks, as we found this led to better performance in pilot experiments. Fortunately, existing optimized model components such as Flash Attention (Dao et al., 2022; Dao, 2024) are fully compatible with this change. This enables fast and efficient diffusion adaptation training. Concurrently, DiffuLlama Gong et al. (2024) also reported using full bidirectional attention."
+          ]
+        },
+        {
+          "title": "3.3 Instruction Tuning",
+          "paragraphs": [
+            "Once we have a diffusion-adapted model, we further put it through a stage of instruction tuning, in which we train the model on a smaller set of carefully curated instruction data. For this stage, we apply the same label shifting and full bidirectional attention mask as before, but switch from UL2 to only using a prefix-LM (Liu et al., 2018) objective for training. Specifically, we format our dataset to contain only single-turn instances, mask out the assistant response, and train the model to predict it. We also explored multi-turn training but observed marginal gains. We leave improved multi-turn training for future work."
+          ]
+        },
+        {
+          "title": "3.4 Reward-based Classifier Guidance",
+          "paragraphs": [
+            "Finally, we explore reward guidance, a novel method to improve model outputs without further training. We extend the guidance method proposed in Han et al. (2022) to be used with a scalar reward model. Intuitively, reward guidance works by adjusting the in-progress generation at each diffusion step using gradients from an off-the-shelf reward model, which is used to estimate the potential reward of the generation. This ultimately allows us to guide the generation process towards sequences with higher rewards.",
+            "Specifically, at each diffusion step, we take the output from the model at a given step, 𝐒^𝜽\\hat{\\mathbf{S}}_{\\bm{\\theta}}, and convert it to continuous token embeddings that we can then feed into an off-the-shelf reward model (with a matching tokenizer):",
+            "where 𝐄\\mathbf{E} is the embedding matrix of the classifier. We then pass 𝐜w\\mathbf{c}_{w} as input into the reward model, adding any required positional information before feeding it into the first hidden layer. This results in a predicted reward R∈ℝR\\in\\mathbb{R} for the given timestep. Since we want to increase this, we perform gradient ascent on the output reward, computing the gradient of 𝐒^𝜽\\hat{\\mathbf{S}}_{\\bm{\\theta}} with respect to the reward via backpropagation and then adding the resulting gradient to the model prediction by",
+            "where η\\eta is the guidance coefficient that controls how much guidance to apply at each timestep. Note that this is an inference-time algorithm that is applied at each timestep during the backward process; we do not apply any guidance during training."
+          ]
+        }
+      ]
+    },
+    "4 Experiments": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "4.1 Setup",
+          "paragraphs": [
+            "We evaluate our model in three settings: directly after diffusion adaptive pretraining, after instruction tuning, and with reward guidance applied.",
+            "For diffusion adaptation training, we train the model on Dolma 1.7 Soldaini et al. (2024), an open pretraining dataset, for up to 200,000 train steps, or approximately 45 billion tokens.111This is roughly in line with prior work; Han et al. (2023) trained on 38B tokens from C4. We use a constant learning rate of 1×10−51\\times 10^{-5} with a linear warmup of 5000 train steps, and a batch size of 112 samples.222While it is common to decay the learning rate, we use a constant LR for ease of experimentation and restarts. We adapt the Mistral-7B-v0.1 model (Jiang et al., 2023), based on model ablations explored in Sec. 4.2. We use a simplex value of 5 and self-conditioning as done in Karimi Mahabadi et al. (2024). We provide additional details in App. A.",
+            "For instruction tuning, we use the Tulu 2 SFT mixture (Ivison et al., 2023), which consists of roughly 326k samples. We finetune for 3 epochs with a learning rate of 1×10−51\\times 10^{-5} with linear warmup for the first 3% of training steps and linear cooldown for the rest of training, which we found worked best in pilot experiments.",
+            "For reward guidance, we train a standard reward model on human preferences using Mistral-7B-v0.1 and the data and hyperparameters provided by Dong et al. (2023); Xiong et al. (2023). We provide training details in App. C.",
+            "Following Han et al. (2022, 2023); Richemond et al. (2022), we evaluate our adaptation using perplexity, average distinct nn-grams in the output samples (d-1/2/3/4), unigram (per-token) entropy, and Mauve score (Pillutla et al., 2021). Perplexity is measured using a held-out model,333Specifically, GPT-NeoX 1.3B (Black et al., 2021). following Han et al. (2022, 2023).",
+            "In addition to the adaptation evaluation, we evaluate our models on a diverse set of downstream tasks: (1) AlpacaEval (Li et al., 2023), which tests general instruction following capabilities; (2) GSM8k (Cobbe et al., 2021), which tests simple math word problems; (3) SQuAD (Rajpurkar et al., 2016) (with context), which tests general question-answering abilities; (4) TriviaQA Joshi et al. (2017), a reading comprehension dataset; (5) IFEval (Zhou et al., 2023), which tests exact instruction-following; and (6) Big Bench Hard (BBH) (Suzgun et al., 2022), which tests general reasoning. For GSM8k, we additionally test the performance of our model after finetuning on the GSM8k symbolic data provided by Ye et al. (2024), following DiffuLLaMA Gong et al. (2024). We provide further details in App. D."
+          ]
+        },
+        {
+          "title": "Diffusion Adaptation",
+          "paragraphs": [
+            "For diffusion adaptation training, we train the model on Dolma 1.7 Soldaini et al. (2024), an open pretraining dataset, for up to 200,000 train steps, or approximately 45 billion tokens.111This is roughly in line with prior work; Han et al. (2023) trained on 38B tokens from C4. We use a constant learning rate of 1×10−51\\times 10^{-5} with a linear warmup of 5000 train steps, and a batch size of 112 samples.222While it is common to decay the learning rate, we use a constant LR for ease of experimentation and restarts. We adapt the Mistral-7B-v0.1 model (Jiang et al., 2023), based on model ablations explored in Sec. 4.2. We use a simplex value of 5 and self-conditioning as done in Karimi Mahabadi et al. (2024). We provide additional details in App. A."
+          ]
+        },
+        {
+          "title": "Instruction Tuning",
+          "paragraphs": [
+            "For instruction tuning, we use the Tulu 2 SFT mixture (Ivison et al., 2023), which consists of roughly 326k samples. We finetune for 3 epochs with a learning rate of 1×10−51\\times 10^{-5} with linear warmup for the first 3% of training steps and linear cooldown for the rest of training, which we found worked best in pilot experiments."
+          ]
+        },
+        {
+          "title": "Reward Guidance",
+          "paragraphs": [
+            "For reward guidance, we train a standard reward model on human preferences using Mistral-7B-v0.1 and the data and hyperparameters provided by Dong et al. (2023); Xiong et al. (2023). We provide training details in App. C."
+          ]
+        },
+        {
+          "title": "Adaptation Evaluation",
+          "paragraphs": [
+            "Following Han et al. (2022, 2023); Richemond et al. (2022), we evaluate our adaptation using perplexity, average distinct nn-grams in the output samples (d-1/2/3/4), unigram (per-token) entropy, and Mauve score (Pillutla et al., 2021). Perplexity is measured using a held-out model,333Specifically, GPT-NeoX 1.3B (Black et al., 2021). following Han et al. (2022, 2023)."
+          ]
+        },
+        {
+          "title": "Downstream Evaluation",
+          "paragraphs": [
+            "In addition to the adaptation evaluation, we evaluate our models on a diverse set of downstream tasks: (1) AlpacaEval (Li et al., 2023), which tests general instruction following capabilities; (2) GSM8k (Cobbe et al., 2021), which tests simple math word problems; (3) SQuAD (Rajpurkar et al., 2016) (with context), which tests general question-answering abilities; (4) TriviaQA Joshi et al. (2017), a reading comprehension dataset; (5) IFEval (Zhou et al., 2023), which tests exact instruction-following; and (6) Big Bench Hard (BBH) (Suzgun et al., 2022), which tests general reasoning. For GSM8k, we additionally test the performance of our model after finetuning on the GSM8k symbolic data provided by Ye et al. (2024), following DiffuLLaMA Gong et al. (2024). We provide further details in App. D."
+          ]
+        },
+        {
+          "title": "4.2 Diffusion Adaptation",
+          "paragraphs": [
+            "While TESS used a RoBERTa model (Liu et al., 2019) as its backbone, recently there has been a wave of increasingly larger and more powerful open-weight pretrained models (Jiang et al., 2023; Touvron et al., 2023; Llama Team, 2024). However, unlike RoBERTa, these models are typically decoder-only causal LMs, which makes it unclear how well they transfer to the full bidirectional attention setup used for diffusion LMs. This additional layer of complexity has been a challenge in adapting pretrained LLMs to diffusion.",
+            "We investigate this by conducting diffusion adaptation training on 4 different base models for 35,000 steps (roughly 2B tokens) with Dolma 1.7: RoBERTa (Liu et al., 2019), Llama 2 (Touvron et al., 2023), Llama 3.0 (Llama Team, 2024), and Mistral base v0.1 (Jiang et al., 2023). We additionally try pretraining from scratch using a randomly initialized Mistral v0.1. We use a sequence length of 512 due to RoBERTa’s only supporting up to that length. We evaluate these models on a random sample of 512 samples from the C4 validation set (Raffel et al., 2020), using the metrics described in Sec. 4.1. We show the results in Table 1. We enumerate our findings below.",
+            "Llama models were unable to generate coherent text with the small number of pretraining steps. While we find the models perform better with more pretraining, they additionally display higher loss values throughout training compared to Mistral or RoBERTa, as seen in Figure 2. This also occurs for Llama 3.0, despite it being a stronger base model than Mistral v0.1 in AR settings. We suggest this is due to the use of bidirectional attention during training, which results in a large change in the model’s internal hidden states.444Concurrent work attempts to slowly convert the causal mask to a bidirectional one when adapting Llama models, but find it provides minimal improvements (Gong et al., 2024). We additionally experimented with maintaining the causal attention mask during pilot experiments and found it still yielded poorer training curves compared to Mistral, likely due to the fact that the causal mask removes a core benefit of diffusion LMs: full bidirectional attention flows across the entire input and sequence to be generated. In contrast, Mistral likely behaves better due to potentially being pretrained with a prefix-LM objective with partial bidirectional attention; its ability to handle sudden changes in its attention mask has also been noted in prior work (BehnamGhader et al., 2024).",
+            "Additionally, we find that Mistral performs better than Llama, achieving much lower perplexity and generating coherent text. While its perplexity is higher than RoBERTa, Mistral also displays significantly better distinct nn-grams and Mauve, indicating diverse, high quality generations. Furthermore, Mistral is able to natively handle much longer sequences than RoBERTa, which is limited to 512-length sequences due to its absolute positional embeddings. Finally, the Mistral adaptation produces lower loss than training from scratch, suggesting that the diffusion-adapted model is able to make use of the knowledge and skills attained through AR pretraining.",
+            "Given these results and our limited compute budget, we chose Mistral as the base for future experiments. However, we emphasize this does not imply that Llama is inherently unsuitable for our approach: the Llama models are far from full convergence given that we saw a measurable improvement in performance at least up to 200,000 steps of diffusion adaptation with our final model, as shown in Figure 3(c). Instead, we believe that Llama could also benefit from our proposed recipe, though achieving comparable results may require additional compute for adaptation training.",
+            "As a next step, we further scale the training of \\modelname by (1) extending the sequence length to 2048 tokens, and (2) training up to 200,000 training steps. Results are shown in Table 2. We find that increasing the context length instantly improves performance, with the model achieving much lower perplexity and a higher mauve score while remaining reasonably diverse in terms of generations. Additionally, we observe that training for longer further reduces perplexity while minimally affecting diversity. We also find that longer adaptation training results in improved downstream performance after instruction tuning (see Sec 5.2)."
+          ]
+        },
+        {
+          "title": "Llama models do not adapt well.",
+          "paragraphs": [
+            "Llama models were unable to generate coherent text with the small number of pretraining steps. While we find the models perform better with more pretraining, they additionally display higher loss values throughout training compared to Mistral or RoBERTa, as seen in Figure 2. This also occurs for Llama 3.0, despite it being a stronger base model than Mistral v0.1 in AR settings. We suggest this is due to the use of bidirectional attention during training, which results in a large change in the model’s internal hidden states.444Concurrent work attempts to slowly convert the causal mask to a bidirectional one when adapting Llama models, but find it provides minimal improvements (Gong et al., 2024). We additionally experimented with maintaining the causal attention mask during pilot experiments and found it still yielded poorer training curves compared to Mistral, likely due to the fact that the causal mask removes a core benefit of diffusion LMs: full bidirectional attention flows across the entire input and sequence to be generated. In contrast, Mistral likely behaves better due to potentially being pretrained with a prefix-LM objective with partial bidirectional attention; its ability to handle sudden changes in its attention mask has also been noted in prior work (BehnamGhader et al., 2024)."
+          ]
+        },
+        {
+          "title": "Adapting Mistral results in coherent and diverse generations.",
+          "paragraphs": [
+            "Additionally, we find that Mistral performs better than Llama, achieving much lower perplexity and generating coherent text. While its perplexity is higher than RoBERTa, Mistral also displays significantly better distinct nn-grams and Mauve, indicating diverse, high quality generations. Furthermore, Mistral is able to natively handle much longer sequences than RoBERTa, which is limited to 512-length sequences due to its absolute positional embeddings. Finally, the Mistral adaptation produces lower loss than training from scratch, suggesting that the diffusion-adapted model is able to make use of the knowledge and skills attained through AR pretraining.",
+            "Given these results and our limited compute budget, we chose Mistral as the base for future experiments. However, we emphasize this does not imply that Llama is inherently unsuitable for our approach: the Llama models are far from full convergence given that we saw a measurable improvement in performance at least up to 200,000 steps of diffusion adaptation with our final model, as shown in Figure 3(c). Instead, we believe that Llama could also benefit from our proposed recipe, though achieving comparable results may require additional compute for adaptation training.",
+            "As a next step, we further scale the training of \\modelname by (1) extending the sequence length to 2048 tokens, and (2) training up to 200,000 training steps. Results are shown in Table 2. We find that increasing the context length instantly improves performance, with the model achieving much lower perplexity and a higher mauve score while remaining reasonably diverse in terms of generations. Additionally, we observe that training for longer further reduces perplexity while minimally affecting diversity. We also find that longer adaptation training results in improved downstream performance after instruction tuning (see Sec 5.2)."
+          ]
+        },
+        {
+          "title": "4.3 Instruction Tuning",
+          "paragraphs": [
+            "We now explore how well our adapted model performs after instruction tuning. We perform diffusion adaptation on Mistral v0.1 for 200,000 steps and then further instruction tune on the Tulu 2 SFT mixture (Ivison et al., 2023), a popular instruction tuning dataset. We additionally finetune models on the augmented GSM8k symbolic set from Ye et al. (2024) and evaluate on GSM8k, following Gong et al. (2024). Finally, we also explore updating our recipe with newer models and datasets, using Mistral v0.3 and the Tulu 3 SFT mixture, following the same adaptation strategy and hyperparameters as the Mistral v0.1 and Tulu 2 setup. We compare \\modelname with (1) the same Mistral models AR-finetuned on the Tulu 2/3 data (2 for v0.1, 3 for v0.3); (2) prior diffusion LMs of similar size to \\modelname, DiffuLlama Gong et al. (2024) and Flan-XLM-R-D XXL Ye et al. (2023). We also train Mistral v0.1 on the same number of tokens as \\modelname and then finetune on Tulu 2 (w/ cont. pretrain). We provide more details in App B. We use 100 diffusion steps at inference time for all diffusion models. We show the results in Table 3, denoting \\modelname trained using Mistral v0.1 and Tulu 2 as \\modelname v0.1 and \\modelname trained using Mistral v0.3 and Tulu 3 as \\modelname v0.3. We enumerate our findings below.",
+            "v0.3 outperforms all other diffusion LMs across all evaluations (with \\modelname v0.1 often a close second). This is likely due to the simplicity of the simplex diffusion setup with cross-entropy, as well as the careful selection of a stronger and more compatible base model (Sec 4.2). This results in better generations, even for baselines trained on more tokens: DiffuLlama is trained on 65B tokens, compared to only 45B for \\modelname.",
+            "performs close to or better than AR counterparts on AlpacaEval, SQuAD, and TriviaQA, showing that it can perform QA and produce coherent long-form generations (as tested by AlpacaEval) as well as, if not better than, AR models. However, we find that \\modelname still lags behind Mistral AR for reasoning-centric tasks such as BBH and GSM8k. While we find that increasing the amount of inference-time compute used can reduce this gap (Sec 5.1), it remains.",
+            "We further investigate this performance gap by examining generations from the different diffusion models and AR models. Qualitatively, we observe that \\modelname is indeed able to produce coherent generations, but often makes basic mistakes in its reasoning, resulting in low exact match scores. Other diffusion models often fail to even produce coherent generations, explaining their overall low performance. We show these generations in App. F.",
+            "However, when finetuning on the GSM8k symbolic dataset, surprisingly we find that \\modelname benefits significantly, with both \\modelname variants outperforming both Mistral AR variants. This suggests that diffusion models can achieve performance similar to AR models when using more data, and suggests that further tailoring instruction-tuning mixtures for diffusion models (e.g., adding more math and reasoning data) is a promising direction."
+          ]
+        },
+        {
+          "title": "\\modelnameoutperforms other diffusion models.",
+          "paragraphs": [
+            "v0.3 outperforms all other diffusion LMs across all evaluations (with \\modelname v0.1 often a close second). This is likely due to the simplicity of the simplex diffusion setup with cross-entropy, as well as the careful selection of a stronger and more compatible base model (Sec 4.2). This results in better generations, even for baselines trained on more tokens: DiffuLlama is trained on 65B tokens, compared to only 45B for \\modelname."
+          ]
+        },
+        {
+          "title": "\\modelnameperforms well on general QA tasks but poorly on reasoning.",
+          "paragraphs": [
+            "performs close to or better than AR counterparts on AlpacaEval, SQuAD, and TriviaQA, showing that it can perform QA and produce coherent long-form generations (as tested by AlpacaEval) as well as, if not better than, AR models. However, we find that \\modelname still lags behind Mistral AR for reasoning-centric tasks such as BBH and GSM8k. While we find that increasing the amount of inference-time compute used can reduce this gap (Sec 5.1), it remains.",
+            "We further investigate this performance gap by examining generations from the different diffusion models and AR models. Qualitatively, we observe that \\modelname is indeed able to produce coherent generations, but often makes basic mistakes in its reasoning, resulting in low exact match scores. Other diffusion models often fail to even produce coherent generations, explaining their overall low performance. We show these generations in App. F."
+          ]
+        },
+        {
+          "title": "\\modelnameoutperforms AR when large amounts of domain-specific data are available.",
+          "paragraphs": [
+            "However, when finetuning on the GSM8k symbolic dataset, surprisingly we find that \\modelname benefits significantly, with both \\modelname variants outperforming both Mistral AR variants. This suggests that diffusion models can achieve performance similar to AR models when using more data, and suggests that further tailoring instruction-tuning mixtures for diffusion models (e.g., adding more math and reasoning data) is a promising direction."
+          ]
+        },
+        {
+          "title": "4.4 Stepping Up with Reward Guidance",
+          "paragraphs": [
+            "Finally, we explore applying reward guidance to \\modelname v0.1. We vary the reward guidance weight (η\\eta in Eq. (11)) when generating responses for AlpacaEval, and plot the result in Table 3(a). We find that using reward guidance can further improve AlpacaEval performance, providing a 3-point gain without requiring further training when using a guidance weight of 0.25. We find that using higher guidance weights can still provide a small boost, while using significantly higher values results in nonsensical generations (consisting mostly of dashes), as the generation process becomes dominated by the gradients from the reward model. These degenerate outputs still have high reward, but are no longer semantically meaningful.555This is similar to “reward-hacking” in RLHF, where models learn how to generate meaningless sequences that nonetheless achieve high reward (Bai et al., 2022). As such, reward guidance provides a way to further improve and guide model generations without additional retraining."
+          ]
+        }
+      ]
+    },
+    "5 Analysis": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "5.1 Scaling Inference-time Compute",
+          "paragraphs": [
+            "One advantage of diffusion models is that inference-time compute can be directly configured by varying the number of backward steps. Figure 3(b) shows that more steps generally yield better performance, with GSM8k performance demonstrating a consistent upward trend up until 1000 steps. Interestingly, in AlpacaEval, the score decreases significantly after 500 steps. We find that this is due to increased model repetitions with higher diffusion steps. This results in lower perplexity but less diverse text, which is penalized by the LM judge."
+          ]
+        },
+        {
+          "title": "5.2 Adaptation Training Steps and Downstream Performance",
+          "paragraphs": [
+            "While we showed perplexity improvements from increased adaptation steps in Sec. 4.2, this may not necessarily translate to downstream improvements. To further investigate, we additionally examine downstream AlpacaEval performance against the number of training steps. We run diffusion adaptation training on Mistral v0.1 using the same hyperparameter settings as \\modelname, except using a shorter sequence length (1024) to reduce compute costs, and evaluate checkpoints throughout training up to 400k steps. We plot our results in Figure 3(c). As seen, we find that performance drastically improves up to 200k adaptation steps, and somewhat plateaus after. As such, we chose to use 200k steps of adaptation for our final \\modelname run."
+          ]
+        },
+        {
+          "title": "5.3 Evolution of Diffusion Predictions",
+          "paragraphs": [
+            "We further investigate how diffusion predictions evolve over diffusion timesteps by plotting the confidence of \\modelname v0.1 as measured by the top-1 token probability over time. We find that the sequence is largely determined about 60% of the way through the diffusion steps, and interestingly the later portion of the generation is sometimes generated first. This suggests that early stopping of the generation may be a promising method of reducing inference compute costs, as observed in prior work (Han et al., 2023). We visualize the predictions in Figure 4 in App E."
+          ]
+        }
+      ]
+    },
+    "6 Conclusion": {
+      "paragraphs": [
+        "We present \\modelname, a large-scale general instruction-following diffusion language model that outperforms state-of-the-art diffusion models and achieves parity with comparable AR models on a number of tasks. We propose an effective recipe for adapting frontier open-weight LMs to diffusion. Our recipe involves a combination of masking and infilling pretraining objectives, shifted labels in training, finding more compatible base models, and utilizing full bidirectional attention. In addition, we introduce a novel form of classifier guidance that leverages a reward model to further enhance generations at inference time. We find \\modelname outperforms existing adapted diffusion models, highlighting the strength of our approach. However, we also find that gaps still remain with AR models in some settings, leaving room for future research."
+      ],
+      "subsections": []
+    },
+    "Limitations": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Sampling Speed",
+          "paragraphs": [
+            "Diffusion models are notoriously slow due to the number of backward steps required. To quantify the sampling cost of our model, we ran the model on AlpacaEval with naive generation via Hugging Face transformers Wolf et al. (2020) with a maximum output length of 2048, batch size of 8, and Flash Attention 2 Dao (2024) enabled. Surprisingly, we find that it takes approximately 480 seconds per batch for the AR model and 77 seconds per batch for the diffusion model. This occurs because the diffusion model uses 100 forward passes per output even if the output is over 100 tokens in length, while the AR generation loop has to perform up to 2048 forward passes. We speculate that this discrepancy will further widen in favor of diffusion LMs as we move to longer sequence regimes. However, using optimized kernels such as vLLM Kwon et al. (2023) can dramatically reduce AR runtime. We did not explore systems or kernel approaches for runtime improvements; we leave this to future work. Additionally, incorporating recent work in computer vision for single step sampling in diffusion-based models (Song et al., 2023) or investigating early stopping mechanisms as noted in Sec 5.3 could be interesting avenues for further improvement."
+          ]
+        },
+        {
+          "title": "Chat Performance Relative to AR Models",
+          "paragraphs": [
+            "As noted in this paper, our best models still lag behind AR models on AlpacaEval and GSM8k when trained on Tulu 2 SFT data. As such, our model is a weaker generalist model than its AR counterparts. We hope that future improvements in data quality could help close the gap – while Dolma is good quality data, we still find that continued pretraining of Mistral on Dolma results in degraded performance (Table 3), suggesting that our adaptation data can be improved relative to the original Mistral pretraining data. Additionally, we expect a more thorough search and tuning of hyperparameters such as the learning rate (using decay instead of a constant schedule) to further improve performance."
+          ]
+        }
+      ]
+    },
+    "Ethics Statement": {
+      "paragraphs": [
+        "In this work, we focused on improving an alternate modelling framework that diverges from popular language models. While we did not explicitly investigate this in our work, it is likely that our models display similar issues to their autoregressive counterparts when it comes to producing toxic and biased content (Weidinger et al., 2022; Sheng et al., 2021). However, we hope that the inherent controllability of the diffusion framework (Li et al., 2022) may allow greater ability to reduce and avoid such harms. Examining how results around toxic and harmful generations of autoregressive setups transfer to diffusion models remains an open area for future investigation and improvement."
+      ],
+      "subsections": []
+    },
+    "Acknowledgements": {
+      "paragraphs": [
+        "We express gratitude to Matthew Peters for help and advice during earlier phases of this project. We also thank members of UW NLP for feedback. This research was supported in part by compute credits from Google."
+      ],
+      "subsections": []
+    },
+    "Appendix": {
+      "paragraphs": [],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Adaptation Training Details": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "A.1 Pretraining Masking",
+          "paragraphs": [
+            "For pretraining, we use a UL2-inspired masking scheme (Tay et al., 2023), which involves randomly sampling different masking strategies. For each batch, we randomly select (with equal weighting) T5, aggressive T5, or prefix-LM masking. We detail each masking strategy below:",
+            "• T5: This follows the T5 masking strategy (Raffel et al., 2020), in which non-overlapping mask spans consisting of 3 or 8 tokens are applied until roughly 15% of the input sequence is masked.",
+            "• Aggressive T5: This is a more aggressive variant of the T5 strategy above. We apply masking spans consisting of 3, 8, or 48 tokens until roughly 50% of the input sequence is masked.",
+            "• Prefix-LM: This follows the prefix-LM objective (Liu et al., 2018), where only the final tokens in the input sequence are masked, better resembling downstream usage (where we prompt an LM and want to generate a completion). We simply mask the first half of the input sequence and train the model to predict the rest.",
+            "T5: This follows the T5 masking strategy (Raffel et al., 2020), in which non-overlapping mask spans consisting of 3 or 8 tokens are applied until roughly 15% of the input sequence is masked.",
+            "Aggressive T5: This is a more aggressive variant of the T5 strategy above. We apply masking spans consisting of 3, 8, or 48 tokens until roughly 50% of the input sequence is masked.",
+            "Prefix-LM: This follows the prefix-LM objective (Liu et al., 2018), where only the final tokens in the input sequence are masked, better resembling downstream usage (where we prompt an LM and want to generate a completion). We simply mask the first half of the input sequence and train the model to predict the rest.",
+            "Note that even with UL2, our training objective is the usual cross-entropy loss, and there are no modifications required: we simply take the model predictions for all output positions and use those for cross-entropy loss. Concretely, we first mask out random spans from the input text according to UL2. Next, we add noise to produce noisy word embeddings. The model then has to predict the actual words given these inputs, where the softmax output is paired with the usual cross-entropy loss.",
+            "Intuitively, adding span masks (1) acts as a strong regularizer that makes token prediction more difficult, (2) prepares the model for more flexible generation, e.g., filling, and (3) more directly encourages the use of bidirectional context during generation."
+          ]
+        },
+        {
+          "title": "A.2 Infrastructure",
+          "paragraphs": [
+            "We train all models on a cluster of H100s, with all jobs running on at most 1 node (8 GPUs). During training, we apply common techniques used during autoregressive training to reduce training time and improve overall efficiency: fused AdamW, Flash Attention 2 (Dao, 2024), gradient checkpointing, and bfloat16 training.",
+            "Running the diffusion adaptation training for 35,000 training steps (with sequence length 512) takes roughly 250 H100-hours, while running for 200,000 steps (with sequence length 2048) takes roughly 2,000 H100-hours. Based on commonly used training cost estimates from Kaplan et al. (2020), the estimated total FLOPs is given by",
+            "Running instruction tuning (with sequence length 2048) takes roughly 280 H100 hours."
+          ]
+        }
+      ]
+    },
+    "Appendix B Baseline Details": {
+      "paragraphs": [
+        "We provide more details on baselines used for Table 3 below:",
+        "• DiffuLlama (Gong et al., 2024): We finetune the publicly released checkpoint on Tulu 2 (and GSM8k) data, using code provided by the authors.666https://github.com/HKUNLP/DiffuLLaMA",
+        "• Flan-XLM-R-D XXL (Ye et al., 2023): We directly evaluate the publicly released instruction tuned checkpoint using code provided by the authors.777https://github.com/yegcjs/DiffusionLLM",
+        "• Mistral v0.1 AR: Mistral v0.1 7B directly finetuned on Tulu 2.",
+        "• Mistral v0.1 AR w/ cont. pretrain: Mistral v0.1 trained on Dolma 1.7 for the same number of steps and tokens as \\modelname, then finetuned on the Tulu 2 dataset.",
+        "• Mistral v0.3 AR: Mistral v0.3 7B directly finetuned on Tulu 3 data."
+      ],
+      "subsections": []
+    },
+    "Appendix C Reward Model Training": {
+      "paragraphs": [
+        "For reward model (RM) training, we use a standard setup following prior work (Ouyang et al., 2022; Ivison et al., 2024). Our RM is simply a causal decoder-only model with the LM head replaced with a regression head that predicts a score given a prompt and completion. We initialize our RM from a Mistral v0.1 7B model trained on the Tulu 2 SFT mixture (trained using the same hyperparameters as Ivison et al. (2023)). We then use a dataset888https://huggingface.co/datasets/weqweasdas/preference_dataset_mixture2_and_safe_pku used to to train state-of-the-art Mistral-based RMs on RewardBench (Lambert et al., 2024), detailed here. This dataset contains prompts xx along with chosen and rejected completions ycy_{c} and yry_{r} respectively. We then optimize the RM with",
+        "where RR is the reward model and DD our overall dataset. We use a learning rate of 5×10−65\\times 10^{-6}, batch size of 1 and 512 gradient accumulation steps. We train for 1 epoch, linearly warming up the learning rate for the first 3% of steps and linearly decaying to 0 over training afterwards. We use a maximum sample length of 2048 and filter out longer examples during training. The resulting model is used in our reward guidance experiments (Sec. 3)."
+      ],
+      "subsections": []
+    },
+    "Appendix D Downstream Evaluation Details": {
+      "paragraphs": [
+        "Here we provide further details on the evaluation settings used for downstream and instruction-tuned evaluation:",
+        "• AlpacaEval (Li et al., 2023): We use the package provided by Li et al. (2023), following the default setup for both AlpacaEval 1. We allow the evaluated model to generate up to 2048 tokens, without specifying special stop sequences. We use no few-shot samples for this evaluation. For (instruction-tuned) DiffuLlama, we found it useful to append ‘Response:’ after the user instruction to obtain a response.",
+        "• SQuAD (Rajpurkar et al., 2016): We randomly chose 512 samples from the SQuAD validation split as a test set. We chose 512 to reduce the computational cost of evaluation. We include the article containing the answer in the prompt, and include 3 in-context examples (randomly selected from the train set) in order to ensure the model outputs in the desired format. We report text-based F1.",
+        "• GSM8k (Cobbe et al., 2021): We evaluate models on the full test set of GSM. Following Wei et al. (2022), we evaluate with chain-of-thought. We use 8 few-shot in-context examples. Because all answers in GSM are numbers, we extract the last number in the model response as the final answer. We report average accuracy across test examples. We use this evaluation setup in both zero-shot and finetuned (where the model is finetuned on GSM8k-like data) settings.",
+        "• TriviaQA (Joshi et al., 2017): We select 2000 examples from TriviaQA following Gong et al. (2024), and just prompt with the question alone. We use a 2-shot prompt with two examples from the train split in order to encourage the model to use the right format. We report exact match following Gong et al. (2024), where we give a prediction ‘1’ if any answer alias appears in the model prediction (after minor post-processing) and ‘0’ otherwise.",
+        "• IFEval (Zhou et al., 2023): We use the entire IFEval suite, and report the loose prompt accuracy.",
+        "• Big Bench Hard (Suzgun et al., 2022; Srivastava et al., 2022): We use the entire set of tasks and examples. If the prompt is too long for the model (as is the case for Flan-XLM-R-D XXL, which has a maximum context length of 512), we left-truncate the prompt to fit. We extract the answer using regular expresssions (searching for ‘The answer is X’) and report exact match accuracy.",
+        "We use the Tulu chat template during evaluation for models that have undergone Tulu-based instruction tuning, and no chat template for other models."
+      ],
+      "subsections": []
+    },
+    "Appendix E Model Prediction Visualization": {
+      "paragraphs": [
+        "In Figure 4, we show how the confidence of the top-predicted token changes over diffusion steps when performing inference with \\modelname.",
+        "[Figure: Figure 4: Confidence over diffusion steps for \\modelname with the prompt ‘When I talk about music, I.’ Backward diffusion time flows from top to bottom. At about 60 diffusion steps, the sequence is more or less determined. Note we set confidence to 1 for prompt (leftmost) tokens.]"
+      ],
+      "subsections": []
+    },
+    "Appendix F Example Reasoning Generations": {
+      "paragraphs": [
+        "We compare \\modelnameand Mistral AR generations in Figure 5. We see that while \\modelname can indeed produce long, coherent generations, it struggles with precise reasoning, as seen in its incorrect mathematical reasoning.",
+        "[Figure: Figure 5: Generations from \\modelnameand Mistral AR v0.1. We find that \\modelname can produce long, coherent generations when prompted, but often makes reasoning mistakes, as seen in the GSM8k example.]"
+      ],
+      "subsections": []
+    },
+    "Appendix G Example Generations": {
+      "paragraphs": [
+        "We provide some example generations from our model for more general prompts in Figure 6.",
+        "[Figure: Figure 6: Non-cherry picked sample generations from \\modelname. Note we use a shorter generation length (256 tokens) than during training and evaluation (2048 tokens) for ease of reading.]"
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "Austin et al. (2021) Jacob Austin, Daniel D. Johnson, Jonathan Ho, Daniel Tarlow, and Rianne van den Berg. 2021. Structured Denoising Diffusion Models in Discrete State-Spaces. In NeurIPS.",
+    "Bachmann and Nagarajan (2024) Gregor Bachmann and Vaishnavh Nagarajan. 2024. The Pitfalls of Next-Token Prediction. In Proceedings of the 41st International Conference on Machine Learning, volume 235 of Proceedings of Machine Learning Research, pages 2296–2318. PMLR.",
+    "Bai et al. (2022) Yuntao Bai, Andy Jones, Kamal Ndousse, Amanda Askell, Anna Chen, Nova DasSarma, Dawn Drain, Stanislav Fort, Deep Ganguli, Tom Henighan, Nicholas Joseph, Saurav Kadavath, Jackson Kernion, Tom Conerly, Sheer El-Showk, Nelson Elhage, Zac Hatfield-Dodds, Danny Hernandez, Tristan Hume, Scott Johnston, Shauna Kravec, Liane Lovitt, Neel Nanda, Catherine Olsson, Dario Amodei, Tom Brown, Jack Clark, Sam McCandlish, Chris Olah, Ben Mann, and Jared Kaplan. 2022. Training a Helpful and Harmless Assistant with Reinforcement Learning from Human Feedback. Preprint, arXiv:2204.05862.",
+    "BehnamGhader et al. (2024) Parishad BehnamGhader, Vaibhav Adlakha, Marius Mosbach, Dzmitry Bahdanau, Nicolas Chapados, and Siva Reddy. 2024. LLM2Vec: Large Language Models Are Secretly Powerful Text Encoders. In First Conference on Language Modeling.",
+    "Black et al. (2021) Sid Black, Gao Leo, Phil Wang, Connor Leahy, and Stella Biderman. 2021. GPT-Neo: Large Scale Autoregressive Language Modeling with Mesh-Tensorflow. If you use this software, please cite it using these metadata.",
+    "Cobbe et al. (2021) Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark Chen, Heewoo Jun, Lukasz Kaiser, Matthias Plappert, Jerry Tworek, Jacob Hilton, Reiichiro Nakano, Christopher Hesse, and John Schulman. 2021. Training Verifiers to Solve Math Word Problems. arXiv preprint arXiv:2110.14168.",
+    "Conneau et al. (2020) Alexis Conneau, Kartikay Khandelwal, Naman Goyal, Vishrav Chaudhary, Guillaume Wenzek, Francisco Guzmán, Edouard Grave, Myle Ott, Luke Zettlemoyer, and Veselin Stoyanov. 2020. Unsupervised cross-lingual representation learning at scale. In Proceedings of the 58th Annual Meeting of the Association for Computational Linguistics, pages 8440–8451, Online. Association for Computational Linguistics.",
+    "Dao (2024) Tri Dao. 2024. FlashAttention-2: Faster Attention with Better Parallelism and Work Partitioning. In International Conference on Learning Representations (ICLR).",
+    "Dao et al. (2022) Tri Dao, Daniel Y. Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. 2022. FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness. In Advances in Neural Information Processing Systems (NeurIPS).",
+    "DeepSeek-AI (2025) DeepSeek-AI. 2025. DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning. Preprint, arXiv:2501.12948.",
+    "Dong et al. (2023) Hanze Dong, Wei Xiong, Deepanshu Goyal, Rui Pan, Shizhe Diao, Jipeng Zhang, Kashun Shum, and Tong Zhang. 2023. Raft: Reward ranked finetuning for generative foundation model alignment. arXiv preprint arXiv:2304.06767.",
+    "Gong et al. (2024) Shansan Gong, Shivam Agarwal, Yizhe Zhang, Jiacheng Ye, Lin Zheng, Mukai Li, Chenxin An, Peilin Zhao, Wei Bi, Jiawei Han, Hao Peng, and Lingpeng Kong. 2024. Scaling Diffusion Language Models via Adaptation from Autoregressive Models. Preprint, arXiv:2410.17891.",
+    "Gulrajani and Hashimoto (2023) Ishaan Gulrajani and Tatsunori Hashimoto. 2023. Likelihood-Based Diffusion Language Models. In Thirty-seventh Conference on Neural Information Processing Systems.",
+    "Han et al. (2024a) Kehang Han, Kathleen Kenealy, Aditya Barua, Noah Fiedel, and Noah Constant. 2024a. Transfer Learning for Text Diffusion Models. Preprint, arXiv:2401.17181.",
+    "Han et al. (2022) Xiaochuang Han, Sachin Kumar, and Yulia Tsvetkov. 2022. SSD-LM: Semi-autoregressive Simplex-based Diffusion Language Model for Text Generation and Modular Control. arXiv preprint arXiv:2210.17432.",
+    "Han et al. (2023) Xiaochuang Han, Sachin Kumar, Yulia Tsvetkov, and Marjan Ghazvininejad. 2023. SSD-2: Scaling and Inference-time Fusion of Diffusion Language Models. Preprint, arXiv:2305.14771.",
+    "Han et al. (2024b) Xiaochuang Han, Sachin Kumar, Yulia Tsvetkov, and Marjan Ghazvininejad. 2024b. David helps goliath: Inference-time collaboration between small specialized and large general diffusion LMs. In Proceedings of the 2024 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers), pages 8385–8400, Mexico City, Mexico. Association for Computational Linguistics.",
+    "Ho et al. (2020) Jonathan Ho, Ajay Jain, and Pieter Abbeel. 2020. Denoising diffusion probabilistic models. NeurIPS.",
+    "Ho et al. (2022) Jonathan Ho, Tim Salimans, Alexey A Gritsenko, William Chan, Mohammad Norouzi, and David J Fleet. 2022. Video Diffusion Models. In ICLR Workshop on Deep Generative Models for Highly Structured Data.",
+    "Huang et al. (2024) Jie Huang, Xinyun Chen, Swaroop Mishra, Huaixiu Steven Zheng, Adams Wei Yu, Xinying Song, and Denny Zhou. 2024. Large Language Models Cannot Self-Correct Reasoning Yet. In The Twelfth International Conference on Learning Representations.",
+    "Ivison et al. (2024) Hamish Ivison, Yizhong Wang, Jiacheng Liu, Zeqiu Wu, Valentina Pyatkin, Nathan Lambert, Noah A. Smith, Yejin Choi, and Hannaneh Hajishirzi. 2024. Unpacking DPO and PPO: Disentangling Best Practices for Learning from Preference Feedback. In NeurIPS.",
+    "Ivison et al. (2023) Hamish Ivison, Yizhong Wang, Valentina Pyatkin, Nathan Lambert, Matthew Peters, Pradeep Dasigi, Joel Jang, David Wadden, Noah A. Smith, Iz Beltagy, and Hannaneh Hajishirzi. 2023. Camels in a Changing Climate: Enhancing LM Adaptation with Tulu 2. Preprint, arXiv:2311.10702.",
+    "Jiang et al. (2023) Albert Q. Jiang, Alexandre Sablayrolles, Arthur Mensch, Chris Bamford, Devendra Singh Chaplot, Diego de las Casas, Florian Bressand, Gianna Lengyel, Guillaume Lample, Lucile Saulnier, Lélio Renard Lavaud, Marie-Anne Lachaux, Pierre Stock, Teven Le Scao, Thibaut Lavril, Thomas Wang, Timothée Lacroix, and William El Sayed. 2023. Mistral 7B. Preprint, arXiv:2310.06825.",
+    "Joshi et al. (2017) Mandar Joshi, Eunsol Choi, Daniel Weld, and Luke Zettlemoyer. 2017. TriviaQA: A large scale distantly supervised challenge dataset for reading comprehension. In Proceedings of the 55th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 1601–1611, Vancouver, Canada. Association for Computational Linguistics.",
+    "Kaplan et al. (2020) Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B. Brown, Benjamin Chess, Rewon Child, Scott Gray, Alec Radford, Jeffrey Wu, and Dario Amodei. 2020. Scaling Laws for Neural Language Models.",
+    "Karimi Mahabadi et al. (2024) Rabeeh Karimi Mahabadi, Hamish Ivison, Jaesung Tae, James Henderson, Iz Beltagy, Matthew Peters, and Arman Cohan. 2024. TESS: Text-to-text self-conditioned simplex diffusion. In Proceedings of the 18th Conference of the European Chapter of the Association for Computational Linguistics (Volume 1: Long Papers), pages 2347–2361, St. Julian’s, Malta. Association for Computational Linguistics.",
+    "Kong et al. (2020) Zhifeng Kong, Wei Ping, Jiaji Huang, Kexin Zhao, and Bryan Catanzaro. 2020. DiffWave: A Versatile Diffusion Model for Audio Synthesis. In ICLR.",
+    "Kumar et al. (2024) Aviral Kumar, Vincent Zhuang, Rishabh Agarwal, Yi Su, John D Co-Reyes, Avi Singh, Kate Baumli, Shariq Iqbal, Colton Bishop, Rebecca Roelofs, Lei M Zhang, Kay McKinney, Disha Shrivastava, Cosmin Paduraru, George Tucker, Doina Precup, Feryal Behbahani, and Aleksandra Faust. 2024. Training Language Models to Self-Correct via Reinforcement Learning. Preprint, arXiv:2409.12917.",
+    "Kwon et al. (2023) Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph E. Gonzalez, Hao Zhang, and Ion Stoica. 2023. Efficient Memory Management for Large Language Model Serving with PagedAttention. In Proceedings of the ACM SIGOPS 29th Symposium on Operating Systems Principles.",
+    "Lambert et al. (2024) Nathan Lambert, Valentina Pyatkin, Jacob Morrison, LJ Miranda, Bill Yuchen Lin, Khyathi Chandu, Nouha Dziri, Sachin Kumar, Tom Zick, Yejin Choi, Noah A. Smith, and Hannaneh Hajishirzi. 2024. RewardBench: Evaluating Reward Models for Language Modeling. Preprint, arXiv:2403.13787.",
+    "Laskin et al. (2022) Michael Laskin, Luyu Wang, Junhyuk Oh, Emilio Parisotto, Stephen Spencer, Richie Steigerwald, DJ Strouse, Steven Hansen, Angelos Filos, Ethan Brooks, Maxime Gazeau, Himanshu Sahni, Satinder Singh, and Volodymyr Mnih. 2022. In-context Reinforcement Learning with Algorithm Distillation. Preprint, arXiv:2210.14215.",
+    "Li et al. (2022) Xiang Lisa Li, John Thickstun, Ishaan Gulrajani, Percy Liang, and Tatsunori B Hashimoto. 2022. Diffusion-LM Improves Controllable Text Generation. In NeurIPS.",
+    "Li et al. (2023) Xuechen Li, Tianyi Zhang, Yann Dubois, Rohan Taori, Ishaan Gulrajani, Carlos Guestrin, Percy Liang, and Tatsunori B. Hashimoto. 2023. AlpacaEval: An Automatic Evaluator of Instruction-following Models. https://github.com/tatsu-lab/alpaca_eval.",
+    "Lin et al. (2021) Chu-Cheng Lin, Aaron Jaech, Xin Li, Matthew R. Gormley, and Jason Eisner. 2021. Limitations of autoregressive models and their alternatives. In Proceedings of the 2021 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, pages 5147–5173, Online. Association for Computational Linguistics.",
+    "Liu et al. (2018) Peter J. Liu, Mohammad Saleh, Etienne Pot, Ben Goodrich, Ryan Sepassi, Lukasz Kaiser, and Noam Shazeer. 2018. Generating Wikipedia by Summarizing Long Sequences. In International Conference on Learning Representations.",
+    "Liu et al. (2019) Yinhan Liu, Myle Ott, Naman Goyal, Jingfei Du, Mandar Joshi, Danqi Chen, Omer Levy, Mike Lewis, Luke Zettlemoyer, and Veselin Stoyanov. 2019. RoBERTa: A Robustly Optimized BERT Pretraining Approach. Preprint, arXiv:1907.11692.",
+    "Llama Team (2024) Llama Team. 2024. The Llama 3 Herd of Models. Preprint, arXiv:2407.21783.",
+    "Lou et al. (2024) Aaron Lou, Chenlin Meng, and Stefano Ermon. 2024. Discrete diffusion modeling by estimating the ratios of the data distribution. arXiv preprint arXiv:2310.16834.",
+    "Min et al. (2024) Yingqian Min, Zhipeng Chen, Jinhao Jiang, Jie Chen, Jia Deng, Yiwen Hu, Yiru Tang, Jiapeng Wang, Xiaoxue Cheng, Huatong Song, Wayne Xin Zhao, Zheng Liu, Zhongyuan Wang, and Ji-Rong Wen. 2024. Imitate, Explore, and Self-Improve: A Reproduction Report on Slow-thinking Reasoning Systems. Preprint, arXiv:2412.09413.",
+    "Nichol and Dhariwal (2021) Alexander Quinn Nichol and Prafulla Dhariwal. 2021. Improved denoising diffusion probabilistic models. In ICML.",
+    "Ouyang et al. (2022) Long Ouyang, Jeff Wu, Xu Jiang, Diogo Almeida, Carroll L. Wainwright, Pamela Mishkin, Chong Zhang, Sandhini Agarwal, Katarina Slama, Alex Ray, John Schulman, Jacob Hilton, Fraser Kelton, Luke Miller, Maddie Simens, Amanda Askell, Peter Welinder, Paul Christiano, Jan Leike, and Ryan Lowe. 2022. Training language models to follow instructions with human feedback. Preprint, arXiv:2203.02155.",
+    "Pillutla et al. (2021) Krishna Pillutla, Swabha Swayamdipta, Rowan Zellers, John Thickstun, Sean Welleck, Yejin Choi, and Zaid Harchaoui. 2021. MAUVE: Measuring the Gap Between Neural Text and Human Text using Divergence Frontiers. In NeurIPS.",
+    "Raffel et al. (2020) Colin Raffel, Noam Shazeer, Adam Roberts, Katherine Lee, Sharan Narang, Michael Matena, Yanqi Zhou, Wei Li, and Peter J. Liu. 2020. Exploring the Limits of Transfer Learning with a Unified Text-to-Text Transformer. Journal of Machine Learning Research, 21(140):1–67.",
+    "Rajpurkar et al. (2016) Pranav Rajpurkar, Jian Zhang, Konstantin Lopyrev, and Percy Liang. 2016. SQuAD: 100,000+ questions for machine comprehension of text. In Proceedings of the 2016 Conference on Empirical Methods in Natural Language Processing, pages 2383–2392, Austin, Texas. Association for Computational Linguistics.",
+    "Ramesh et al. (2022) Aditya Ramesh, Prafulla Dhariwal, Alex Nichol, Casey Chu, and Mark Chen. 2022. Hierarchical text-conditional image generation with clip latents. arXiv preprint arXiv:2204.06125.",
+    "Richemond et al. (2022) Pierre H Richemond, Sander Dieleman, and Arnaud Doucet. 2022. Categorical SDEs with Simplex Diffusion. arXiv preprint arXiv:2210.14784.",
+    "Saharia et al. (2022) Chitwan Saharia, William Chan, Saurabh Saxena, Lala Li, Jay Whang, Emily Denton, Seyed Kamyar Seyed Ghasemipour, Burcu Karagol Ayan, S Sara Mahdavi, Rapha Gontijo Lopes, et al. 2022. Photorealistic Text-to-Image Diffusion Models with Deep Language Understanding. In NeurIPS.",
+    "Savinov et al. (2022) Nikolay Savinov, Junyoung Chung, Mikolaj Binkowski, Erich Elsen, and Aaron van den Oord. 2022. Step-unrolled Denoising Autoencoders for Text Generation. In International Conference on Learning Representations.",
+    "Shen et al. (2023) Kai Shen, Zeqian Ju, Xu Tan, Yanqing Liu, Yichong Leng, Lei He, Tao Qin, Sheng Zhao, and Jiang Bian. 2023. NaturalSpeech 2: Latent Diffusion Models are Natural and Zero-Shot Speech and Singing Synthesizers. ArXiv, abs/2304.09116.",
+    "Sheng et al. (2021) Emily Sheng, Kai-Wei Chang, Prem Natarajan, and Nanyun Peng. 2021. Societal biases in language generation: Progress and challenges. In Proceedings of the 59th Annual Meeting of the Association for Computational Linguistics and the 11th International Joint Conference on Natural Language Processing (Volume 1: Long Papers), pages 4275–4293, Online. Association for Computational Linguistics.",
+    "Soldaini et al. (2024) Luca Soldaini, Rodney Kinney, Akshita Bhagia, Dustin Schwenk, David Atkinson, Russell Authur, Ben Bogin, Khyathi Chandu, Jennifer Dumas, Yanai Elazar, Valentin Hofmann, Ananya Jha, Sachin Kumar, Li Lucy, Xinxi Lyu, Nathan Lambert, Ian Magnusson, Jacob Morrison, Niklas Muennighoff, Aakanksha Naik, Crystal Nam, Matthew Peters, Abhilasha Ravichander, Kyle Richardson, Zejiang Shen, Emma Strubell, Nishant Subramani, Oyvind Tafjord, Evan Walsh, Luke Zettlemoyer, Noah Smith, Hannaneh Hajishirzi, Iz Beltagy, Dirk Groeneveld, Jesse Dodge, and Kyle Lo. 2024. Dolma: an open corpus of three trillion tokens for language model pretraining research. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 15725–15788, Bangkok, Thailand. Association for Computational Linguistics.",
+    "Song et al. (2023) Yang Song, Prafulla Dhariwal, Mark Chen, and Ilya Sutskever. 2023. Consistency Models. In ICML.",
+    "Srivastava et al. (2022) Aarohi Srivastava, Abhinav Rastogi, Abhishek Rao, Abu Awal Md Shoeb, Abubakar Abid, Adam Fisch, Adam R Brown, Adam Santoro, Aditya Gupta, Adrià Garriga-Alonso, et al. 2022. Beyond the Imitation Game: Quantifying and extrapolating the capabilities of language models. arXiv preprint arXiv:2206.04615.",
+    "Suzgun et al. (2022) Mirac Suzgun, Nathan Scales, Nathanael Schärli, Sebastian Gehrmann, Yi Tay, Hyung Won Chung, Aakanksha Chowdhery, Quoc V Le, Ed H Chi, Denny Zhou, , and Jason Wei. 2022. Challenging BIG-Bench Tasks and Whether Chain-of-Thought Can Solve Them. arXiv preprint arXiv:2210.09261.",
+    "Tae et al. (2022) Jaesung Tae, Hyeongju Kim, and Taesu Kim. 2022. EdiTTS: Score-based Editing for Controllable Text-to-Speech. In Interspeech.",
+    "Tay et al. (2023) Yi Tay, Mostafa Dehghani, Vinh Q. Tran, Xavier Garcia, Jason Wei, Xuezhi Wang, Hyung Won Chung, Dara Bahri, Tal Schuster, Steven Zheng, Denny Zhou, Neil Houlsby, and Donald Metzler. 2023. UL2: Unifying Language Learning Paradigms. In The Eleventh International Conference on Learning Representations.",
+    "Touvron et al. (2023) Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, Dan Bikel, Lukas Blecher, Cristian Canton Ferrer, Moya Chen, Guillem Cucurull, David Esiobu, Jude Fernandes, Jeremy Fu, Wenyin Fu, Brian Fuller, Cynthia Gao, Vedanuj Goswami, Naman Goyal, Anthony Hartshorn, Saghar Hosseini, Rui Hou, Hakan Inan, Marcin Kardas, Viktor Kerkez, Madian Khabsa, Isabel Kloumann, Artem Korenev, Punit Singh Koura, Marie-Anne Lachaux, Thibaut Lavril, Jenya Lee, Diana Liskovich, Yinghai Lu, Yuning Mao, Xavier Martinet, Todor Mihaylov, Pushkar Mishra, Igor Molybog, Yixin Nie, Andrew Poulton, Jeremy Reizenstein, Rashi Rungta, Kalyan Saladi, Alan Schelten, Ruan Silva, Eric Michael Smith, Ranjan Subramanian, Xiaoqing Ellen Tan, Binh Tang, Ross Taylor, Adina Williams, Jian Xiang Kuan, Puxin Xu, Zheng Yan, Iliyan Zarov, Yuchen Zhang, Angela Fan, Melanie Kambadur, Sharan Narang, Aurelien Rodriguez, Robert Stojnic, Sergey Edunov, and Thomas Scialom. 2023. Llama 2: Open Foundation and Fine-Tuned Chat Models. Preprint, arXiv:2307.09288.",
+    "Wei et al. (2022) Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, brian ichter, Fei Xia, Ed H. Chi, Quoc V Le, and Denny Zhou. 2022. Chain of Thought Prompting Elicits Reasoning in Large Language Models. In Advances in Neural Information Processing Systems.",
+    "Weidinger et al. (2022) Laura Weidinger, Jonathan Uesato, Maribeth Rauh, Conor Griffin, Po-Sen Huang, John Mellor, Amelia Glaese, Myra Cheng, Borja Balle, Atoosa Kasirzadeh, Courtney Biles, Sasha Brown, Zac Kenton, Will Hawkins, Tom Stepleton, Abeba Birhane, Lisa Anne Hendricks, Laura Rimell, William Isaac, Julia Haas, Sean Legassick, Geoffrey Irving, and Iason Gabriel. 2022. Taxonomy of Risks Posed by Language Models. In Proceedings of the 2022 ACM Conference on Fairness, Accountability, and Transparency, FAccT ’22, page 214–229, New York, NY, USA. Association for Computing Machinery.",
+    "Wolf et al. (2020) Thomas Wolf, Lysandre Debut, Victor Sanh, Julien Chaumond, Clement Delangue, Anthony Moi, Pierric Cistac, Tim Rault, Rémi Louf, Morgan Funtowicz, Joe Davison, Sam Shleifer, Patrick von Platen, Clara Ma, Yacine Jernite, Julien Plu, Canwen Xu, Teven Le Scao, Sylvain Gugger, Mariama Drame, Quentin Lhoest, and Alexander M. Rush. 2020. Transformers: State-of-the-Art Natural Language Processing. In EMNLP: System Demonstrations.",
+    "Xiong et al. (2023) Wei Xiong, Hanze Dong, Chenlu Ye, Han Zhong, Nan Jiang, and Tong Zhang. 2023. Gibbs sampling from human feedback: A provable kl-constrained framework for rlhf. arXiv preprint arXiv:2312.11456.",
+    "Ye et al. (2024) Jiacheng Ye, Shansan Gong, Liheng Chen, Lin Zheng, Jiahui Gao, Han Shi, Chuan Wu, Xin Jiang, Zhenguo Li, Wei Bi, and Lingpeng Kong. 2024. Diffusion of Thought: Chain-of-Thought Reasoning in Diffusion Language Models. In The Thirty-eighth Annual Conference on Neural Information Processing Systems.",
+    "Ye et al. (2023) Jiasheng Ye, Zaixiang Zheng, Yu Bao, Lihua Qian, and Quanquan Gu. 2023. Diffusion Language Models Can Perform Many Tasks with Scaling and Instruction-Finetuning. Preprint, arXiv:2308.12219.",
+    "Zhang et al. (2023) Yizhe Zhang, Jiatao Gu, Zhuofeng Wu, Shuangfei Zhai, Joshua M. Susskind, and Navdeep Jaitly. 2023. PLANNER: Generating Diversified Paragraph via Latent Language Diffusion Model. In Thirty-seventh Conference on Neural Information Processing Systems.",
+    "Zheng et al. (2024) Lin Zheng, Jianbo Yuan, Lei Yu, and Lingpeng Kong. 2024. A Reparameterized Discrete Diffusion Model for Text Generation. Preprint, arXiv:2302.05737.",
+    "Zhou et al. (2023) Jeffrey Zhou, Tianjian Lu, Swaroop Mishra, Siddhartha Brahma, Sujoy Basu, Yi Luan, Denny Zhou, and Le Hou. 2023. Instruction-Following Evaluation for Large Language Models. arXiv preprint arXiv:2311.07911."
+  ]
+}

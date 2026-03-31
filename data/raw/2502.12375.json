@@ -1,0 +1,229 @@
+{
+  "title": "UltraGen: Extremely Fine-grained Controllable Generation viaAttribute Reconstruction and Global Preference Optimization",
+  "authors": "Longfei YunLetian PengJingbo ShangUniversity of California, San Diego{loyun, lepeng, jshang}@ucsd.eduCorresponding author.",
+  "abstract": "Fine granularity is an essential requirement for controllable text generation, which has seen rapid growth with the ability of LLMs. However, existing methods focus mainly on a small set of attributes like 3 to 5, and their performance degrades significantly when the number of attributes increases to the next order of magnitude. To address this challenge, we propose a novel zero-shot approach for extremely fine-grained controllable generation (EFCG), proposing auto-reconstruction (AR) and global preference optimization (GPO). In the AR phase, we leverage LLMs to extract soft attributes (e.g., Emphasis on simplicity and minimalism in design) from raw texts, and combine them with programmatically derived hard attributes (e.g., The text should be between 300 and 400 words) to construct massive (around 4545) multi-attribute requirements, which guide the fine-grained text reconstruction process under weak supervision. In the GPO phase, we apply direct preference optimization (DPO) to refine text generation under diverse attribute combinations, enabling efficient exploration of the global combination space. Additionally, we introduce an efficient attribute sampling strategy to identify and correct potentially erroneous attributes, further improving global optimization. Our framework significantly improves the constraint satisfaction rate (CSR) and text quality for EFCG by mitigating position bias and alleviating attention dilution.111Code: https://github.com/LongfeiYun17/UltraGen",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "While large language models (LLMs) have shown promising performance in various tasks, processing massive input information remains a challenging setup (Liu et al., 2024). For controlled text generation (CTG) Wang et al. (2023); Song et al. (2024), models are often required to satisfy a certain number of constraints simultaneously. In previous works, the typical number of constraints ranges from 3 to 5. However, when the number of constraints scales to the extreme (e.g. 30 or more), performance degrades significantly (Figure 1).",
+        "One representative challenge arises in travel itinerary planning (Appendix F). Consider a prompt requiring a detailed 5-day travel plan that satisfies over 30 constraints, covering timing, budget, transportation, meal preferences, and specific landmark visits. Despite LLMs’ impressive fluency, they frequently violate crucial attributes like each activity must be under 2 hours or avoid scheduling during 1 PM to 2 PM due to lunch break. Why do LLMs perform well in general text generation but struggle under EFCG? We hypothesize that this limitation stems from two fundamental issues.",
+        "First, When the number of constraints increases, later-specified conditions are more likely to be neglected, as the model’s performance exhibits position-dependent degradation (Liu et al., 2024), meaning that attributes appearing later in the prompt are less likely to be satisfied (Figure 3). Second, the pretraining and instruction-tuning corpus of LLMs involve simple prompts with a few loosely defined requirements. Models rarely encounter instances with 30+ precise constraints in a single prompt. As a result, when faced with extreme constraint setups, models fail to maintain attention across all conditions, leading to attention dilution (Figure 6) during generation.",
+        "To tackle the challenges, we propose a framework designed to enhance LLMs’ ability to handle a massive number of constraints effectively. We hypothesize that position bias arises partly due to the lack of exposure to diverse attribute positions during training. To mitigate this, we construct a large-scale automated dataset pipeline that extracts soft attributes (e.g., style, content) and hard attributes (e.g., keywords, structure) from natural texts without human annotation. A quality check is conducted to ensure that the attributes align with the raw texts (Section 3.3.1). By training LLMs on these realistic multi-attribute inputs, we expose the model to variable attributes across different positions, enabling it to better internalize the relationship between attributes and the text regardless of position.",
+        "Besides, as the number of constraints increases, the prompt space shifts towards an underrepresented distribution in the pre-training corpus, exacerbating attention dilution. To address this, we introduce a global preference optimization strategy in the second stage. First, we fine-tune an embedding model via contrastive learning to capture attribute correlations, encouraging the model to prioritize plausible and coherent attribute combinations. This helps steer generation away from implausible combinations rarely seen during pre-training. For example, consider an attribute set that requires the inclusion of an international politics term such as impose 25% tariffs, alongside a medical term like myocardial infarction. Such a combination is highly unlikely to appear together in real-world cases. Second, we promote diversity by selecting the least similar candidate from a pool of generations. This prevents the model from collapsing to a small set of frequent patterns and encourages exploration of less common yet valid combinations. Together, correlation modeling narrows the search space towards possible regions, while diversity selection expands coverage within that space, enabling the model to retain and balance a large set of attributes during generation.",
+        "Our contributions are threefold. First, we design an automated pipeline for dataset construction tailored to extreme constraints, enabling high-quality training and evaluation. Second, we develop a training strategy that integrates reconstruction and RL Rafailov et al. (2024) to address the fundamental challenges in EFCG. Finally, we conduct extensive experiments to validate the proposed framework, providing insights into its efficacy and limitations."
+      ],
+      "subsections": []
+    },
+    "2 Related Work": {
+      "paragraphs": [],
+      "subsections": []
+    },
+    "3 Method": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "3.1 Preliminaries",
+          "paragraphs": [
+            "Our extremely EFCG is an extension to controllable text generation CTG, whose goal is to generate an output YY based on a given input XX and a set of control conditions cc. Formally, this can be expressed as:",
+            "where nn denotes the length of YY, and θ\\theta represents the parameters of a language model, and Y<iY_{<i} refers to generated tokens before the ii-th one. In conventional CTG models, XX typically serves as a prompt, representing an incomplete text, while YY constitutes its continuation.",
+            "Despite advancements made in CTG, existing models often struggle to effectively handle fine-grained control conditions, particularly when the position of attributes within the input context varies. As illustrated in Figure 3, this limitation manifests as a significant performance degradation when attributes are positioned away from the beginning of the input context. Such trends highlight that modern language models may not robustly utilize information across the entire input sequence, with biases toward primacy regions of the context window. Addressing this challenge is crucial for improving the robustness and accuracy of EFCG task.",
+            "E5-large Wang et al. (2022) is a powerful pre-trained encoder optimized for embedding sentences. In EFCG, we utilize E5-large to encode document-grounded attributes and measure their relationships using cosine similarity. Cosine similarity is a widely used metric to quantify the similarity between two high-dimensional vectors, defined as:",
+            "where 𝐮\\mathbf{u} and 𝐯\\mathbf{v} represent the vector embeddings of two attributes. The cosine similarity yields values between -1 (completely dissimilar) and 1 (identical). Using cosine similarity, we identify semantically related attributes and filter out redundant or weakly correlated pairs."
+          ]
+        },
+        {
+          "title": "3.2 UltraGen",
+          "paragraphs": [
+            "As shown in Figure 2, our approach, UltraGen, addresses the challenge of EFCG through a two-stage framework. First, we introduce auto-reconstruction training to align text with a rich set of soft and hard attributes. Second, we apply global preference optimization to enhance the model’s adaptability to diverse, globally complex attribute compositions.",
+            "The auto-reconstruction stage trains on naturally aligned attribute-text pairs, where attributes are directly extracted from real texts of FineWeb Penedo et al. (2024), a high-quality web corpus, to ensure intrinsic constraint compatibility (i.e., no conflicting attributes exist by construction). Then we train the model to re-generate the text based on the decomposed attributes. Formally, given a training example (Y,c)∈DUltraBench (Y,c)\\in D_{\\text{UltraBench }}, the model learns to reconstruct YY by minimizing the negative log-likelihood.",
+            "This process achieves dual objectives: constraint grounding, which forces the model to internalize the relationships between atomic attributes and their textual realizations, and fluency preservation, which maintains the base model’s generative quality by leveraging the natural language distribution of the original corpus. The resulting reconstruct model serves as a coherent and constraint-aware initial policy for RL, providing essential prior knowledge for subsequent exploration of complicated constraint combinations.",
+            "To extend the foundation capability to global text generation, we first collect a massive pool of attributes from multiple sources. The attributes pool integrates diverse sources spanning multiple domains, styles, and formats. Unlike reconstruction, which applies mainly web data, our RL phase leverages data from (1) Books, (2) Academic Papers (arXiv), (3) Social Media (Reddit), (4) Technical Forums (StackExchange), (5) News (CC-News), and (6) Encyclopedic Sources (Wikipedia). This ensures broad coverage of textual variations, enabling the model to generalize across different contexts and constraint types. In each iteration, a valid subset of attributes is selected from this pool. Using the auto-reconstruction model, we generate KK candidate responses conditioned on the selected attributes. We then apply the CSR metric to identify the preferred and less favorable responses, which are subsequently used for DPO training.",
+            "A key challenge in selecting a valid subset of attributes lies in balancing topic coherence and anti-redundancy. Topic coherence requires a high correlation among attributes to ensure interdependent constraints are holistically satisfied. For example, keywords chain of thought and use formal tone jointly imply technical writing. In contrast, diversity prevents overfitting to frequent patterns and enhances fluency. For example, phrases like the dreariest place, a dreary day are redundant and make the text uninformative. Therefore, our pipeline comprises three key steps:",
+            "We fine-tune the E5-large encoder using triplet contrastive learning Gao et al. (2021) on document-grounded attributes. For each anchor attribute 𝒜i\\mathcal{A}_{i}, a positive pair 𝒜j\\mathcal{A}_{j} shares context from the same document, while a negative pair 𝒜k\\mathcal{A}_{k} is sampled from unrelated contexts. The encoder minimizes the triplet loss, yielding 81.6%81.6\\% validation accuracy in distinguishing correlated attributes.",
+            "The process begins by randomly sampling 2000 seed soft attributes from the attributes pool as the initial attribute set. For each seed attribute AiA_{i}, we retrieve its top 1024 most correlated candidates using the fine-tuned E5 encoder, where correlation is quantified by the cosine similarity in the correlation representation space using the fine-tuned model. To enforce diversity and minimize semantic redundancy, candidates are iteratively added to the set based on a redundancy score Sim⁡(Acandidate ,Ai)\\operatorname{Sim}\\left(A_{\\text{candidate }},A_{i}\\right), which is defined as the cosine similarity in their original E5 semantic representation space. Expansion terminates when each set contains a randomly determined number from 10 to 110.",
+            "For each attribute set, DPO training pairs are constructed by generating KK responses using the auto-reconstruction model. The soft and hard attribute scores are obtained by using the Python scripts and GPT-4o (Section 3.3.3), respectively. The total score is computed by averaging the two scores.",
+            "Responses are ranked from highest to lowest based on their scores. The highest-scoring response is chosen, while the lowest-scoring response is rejected. This automated scoring and ranking ensure the selection of thematically coherent and high-quality responses, refining the model’s ability to distinguish and generate optimal outputs."
+          ]
+        },
+        {
+          "title": "3.3 UltraBench",
+          "paragraphs": [
+            "To support our training framework, we construct two specialized dataset splits named UltraBench, derived from FineWeb Penedo et al. (2024) and multiple sources. The UltraBench dataset is designed to evaluate and train models on extremely fine-grained controllable text generation. Its construction involves Two stages, as detailed below.",
+            "Attributes were categorized into two types: For the FineWeb split, we use each attribute set along with its corresponding raw text to perform the auto-reconstruction stage. For the Multi-sources split, we aggregate and de-duplicate all decomposed attributes to form a global attribute pool.",
+            "1. Soft attributes: (e.g., style, tone, content) were inferred using GPT-4o Achiam et al. (2023) to capture semantic properties. For example, a soft attribute might describe a passage as a vivid personal narrative focused on childbirth experience.",
+            "2. Hard attributes: consist of programmatically verifiable constraints extracted directly from the text. These included keyword requirements (e.g., include sustainability), structural rules (e.g., generate exactly three paragraphs), and syntactic directives (e.g., use all lowercase letters).",
+            "Soft attributes: (e.g., style, tone, content) were inferred using GPT-4o Achiam et al. (2023) to capture semantic properties. For example, a soft attribute might describe a passage as a vivid personal narrative focused on childbirth experience.",
+            "Hard attributes: consist of programmatically verifiable constraints extracted directly from the text. These included keyword requirements (e.g., include sustainability), structural rules (e.g., generate exactly three paragraphs), and syntactic directives (e.g., use all lowercase letters).",
+            "To ensure the reliability of soft attribute extraction, we conducted a human evaluation on a randomly selected subset of 100 documents. Human experts assessed whether the extracted attributes accurately reflected the underlying text. We computed the Agreement Rate (AR), defined as the proportion of samples where automated extractions matched the original raw text. This process achieved an AR of 96.5%, indicating a strong alignment between attributes and original text.",
+            "In Appendix C, we summarize the dataset details. Table 4 details the composition of UltraBench, with separate configurations for reconstruction and multi-sources subsets. Table 6 further analyzes the multi-sources subset’s domain distribution, while Table 7 quantifies quality control metrics.",
+            "Table 5 provides a detailed comparison of our dataset with other relevant works. While IFeval and FollowBench include synthesized data (Synt.), they fall short in capturing the diversity and complexity required for evaluating real-world applications. Another key strength of our dataset lies in the average number of attributes per sample, where we achieve a remarkable value of 45.9 and 29.9 on two splits, far exceeding the benchmarks’ maximum of 4.5. This demonstrates the ability of our dataset for evaluating tasks requiring fine-grained attribute understanding.",
+            "To rigorously evaluate EFCG capabilities, we use two evaluation metrics:",
+            "For a given instruction with both soft and hard constraints, we compute the CSR as follows:",
+            "where sj(i)=1s_{j}^{(i)}=1 if the jj-th constraint for the ii-th instruction is satisfied, and 0 otherwise. Here, n(i)n^{(i)} is the number of constraints (hard or soft) for instruction ii, and mm is the total number of evaluated instructions.",
+            "1. Hard Constraint Verification: For programmatically verifiable constraints, we perform deterministic checks via Python scripts. Due to the significant imbalance in hard attributes, we adopt macro accuracy to ensure fair evaluation. Macro accuracy computes the average CSR across different types, giving equal weight to each type regardless of its frequency.",
+            "2. Soft Constraint Evaluation: For semantic constraints, we employ an LLM-based judge (GPT-4o), assigning a binary score (0 or 1) to each constraint. We validate the quality of the LLM-based judges on a randomly selected set of 100 samples. By calculating the Cohen’s Kappa coefficient between the scores of LLM-based judge and human experts, we found a strong agreement (84.55%) between the automatic evaluation and human experts’ assessment.",
+            "Hard Constraint Verification: For programmatically verifiable constraints, we perform deterministic checks via Python scripts. Due to the significant imbalance in hard attributes, we adopt macro accuracy to ensure fair evaluation. Macro accuracy computes the average CSR across different types, giving equal weight to each type regardless of its frequency.",
+            "Soft Constraint Evaluation: For semantic constraints, we employ an LLM-based judge (GPT-4o), assigning a binary score (0 or 1) to each constraint. We validate the quality of the LLM-based judges on a randomly selected set of 100 samples. By calculating the Cohen’s Kappa coefficient between the scores of LLM-based judge and human experts, we found a strong agreement (84.55%) between the automatic evaluation and human experts’ assessment.",
+            "In the auto-reconstruction phase, we also use BERTScore Zhang et al. (2020) to measure the quality of the reconstructed text. BERTScore leverages the contextual embeddings from pre-trained language models to capture semantic similarity. BERTScore is widely used in text generation tasks, as it aligns better with human judgments of semantic quality compared to traditional n-gram overlap-based metrics."
+          ]
+        }
+      ]
+    },
+    "4 Experiments": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "4.1 Experiment Setup",
+          "paragraphs": [
+            "Our experiments evaluate the EFCG task using one mainstream instruction-tuned base model: Llama-3.2-3B-Instruct Dubey et al. (2024), chosen for its demonstrated proficiency in instruction-following tasks within the 3B parameter range. To systematically assess the impact of our methodology, we compare three training paradigms: (1) BASE, which directly employs the unmodified base models to establish a performance baseline; (2) AR, where models undergo the auto-reconstruction stage on our meticulously constructed FineWeb dataset (§3.2), enriched with fine-grained attributes to enhance multi-constraint adherence; and (3) AR+GPO, a hybrid optimization approach combining direct preference optimization with global embedding space adaption."
+          ]
+        },
+        {
+          "title": "4.2 Evaluation Results on UltraBench",
+          "paragraphs": [
+            "Our experimental findings, summarized in Table 1, demonstrate the substantial advancements achieved by applying the UltraGen paradigm to EFCG. The evaluation leverages the validation set of FineWeb and Global splits to assess model performance under both local and global constraints.",
+            "The application of AR yielded significant improvements over the base model. On the FineWeb split, the AR model attained an overall score of 56.05, representing a relative improvement of 11.4%. The soft score rose to 81.44, indicating enhanced adherence to semantic and stylistic attributes, while the hard score increased to 30.65, reflecting better performance on programmatically verifiable constraints. On the Global split, the AR model demonstrated its ability to generalize, achieving an overall score of 50.15.",
+            "Further optimization through GPO demonstrated remarkable performance on the Global split, where the model achieved an overall score of 57.23 and an impressive hard score of 45.44. This highlights the model’s robust generalization and optimization capabilities when dealing with diverse and challenging global constraints. Notably, despite being trained on the Global split, the AR+GPO model exhibited strong performance on the FineWeb split as well, achieving an overall score of 59.61, a soft score of 84.33, and a hard score of 34.89. This result underscores the model’s ability to transfer its learned capabilities from the broader and more diverse Global split to the more localized FineWeb split.",
+            "To evaluate the contribution of key components in our UltraGen framework, we conducted ablation studies by systematically modifying the training process. We tested the impact of reducing the number of attributes during AR, removing the AR stage, replacing curated attributes with random sampling, and eliminating the high-correlation or low-redundancy selection steps. The results demonstrate that both AR and GPO stages are crucial for achieving strong performance, as reducing constraints, removing correlation modeling, or neglecting redundancy minimization leads to performance degradation."
+          ]
+        },
+        {
+          "title": "4.3 Data Synthesis Improvement",
+          "paragraphs": [
+            "To demonstrate the improvement in the usage of texts synthesized by UltraGen, we utilize several diverse well-established text classification benchmarks to test the data synthesis capability, such as sentiment analysis (1) Emotion Saravia et al. (2018), attitude classification towards a particular public figure (2) Hillary Barbieri et al. (2020), topic classification (3) AG News Zhang et al. (2015), question type classification (4) TREC Li and Roth (2002).",
+            "For each dataset, we analyze the unique properties and paraphrase these properties as hard and soft attributes. Then using a uniform prompt tailored for each dataset, we generate 2,000 synthetic samples per dataset. These generated samples are then used to train a classifier, which is subsequently evaluated on the original test set of the dataset. This procedure allows for a fair comparison of model performance on synthetic data.",
+            "The results, summarized in Table 2, demonstrate the superior generalization ability of the AR+GPO model trained on the Global split. Notably, the AR+GPO model achieved the highest average score of 57.91 across the benchmarks, significantly outperforming both the base model and the AR models. While the AR model’s performance stagnated (45.76, lower than the original one) on the Hillary benchmark, reflecting a focus on localized attributes, the AR+GPO model excelled with a score of 58.31, indicating its generalization and adaptability beyond localized training objectives."
+          ]
+        },
+        {
+          "title": "4.4 Trade-Offs in EFCG",
+          "paragraphs": [
+            "Figure 5 illustrates the interplay between BERTScore and CSR across different numbers of attributes from 10 to 50 for each model. As the figure shows, increasing the number of attributes presents a clear double-edged effect: while more attributes can enhance fine-grained control (e.g., higher F1 score) over the generated text, the added complexity makes it more difficult for the model to maintain high constraint adherence.",
+            "When looking at the 30, 40, and 50 attribute conditions: AR+GPO consistently attains CSR values 5–10 points higher than the other two models without sacrificing F1. For example, at 50 attributes, AR+GPO’s CSR (44.76%) is considerably above AR’s (35.86%) and Original’s (37.40%), while also delivering the highest F1 (0.6348 vs. 0.6310 for AR and 0.6076 for Original).",
+            "This pattern illustrates a more favorable trade-off for AR+GPO: it does not simply chase high BERTScore by ignoring constraints, nor does it force all constraints at the expense of overall text quality. Instead, AR+GPO’s global optimization helps coordinate multiple constraints while retaining strong semantic alignment. In contrast, AR appears effective at moderate attribute counts but loses ground on CSR once the load goes beyond 30 attributes, and the Original model experiences an even steeper decline."
+          ]
+        }
+      ]
+    },
+    "5 Analysis": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "5.1 UltraBench Mitigates Performance Degradation Across Different Positions",
+          "paragraphs": [
+            "Our method effectively mitigates the sensitivity to positional changes in hard attributes. As shown in Figure 3, baseline models such as Llama-3.1-8B-Instruct and Qwen2-7B-Instruct exhibit a significant drop in hard scores as the position increases, indicating a degradation in performance when hard attributes appear later in the input. In contrast, our approach significantly stabilizes performance across all positions (Figure 7). The introduction of AR already improves robustness compared to the original model, and the addition of GPO further enhances consistency, maintaining high hard scores even at later positions. This demonstrates that our approach effectively addresses the position sensitivity issue, ensuring more reliable model performance regardless of attribute placement."
+          ]
+        },
+        {
+          "title": "5.2 A Real-world Travel Case",
+          "paragraphs": [
+            "To further evaluate our approach, we analyze a real-world travel planning scenario where the itinerary must satisfy over thirty attributes. One crucial constraint is that each activity should be less than two hours long. The authors examined the response generated by three models. We observe that only the AR+GPO model consistently generates activities that adhere to this constraint, whereas the original model and AR model occasionally violate it. To gain deeper insights, we provide the user prompt along with a partially generated response (e.g., ”14:00 PM - 1”) and examine the attention flow distribution at this intermediate step. As illustrated in Figure 6, the AR+GPO model exhibits significantly higher attention weights on constraint-related tokens (e.g., ”2”), suggesting that it effectively retains and incorporates constraint-relevant information during generation. In contrast, the original model’s attention weights are relatively weak, indicating a lower degree of constraint awareness."
+          ]
+        }
+      ]
+    },
+    "6 Conclusion": {
+      "paragraphs": [
+        "We proposed UltraGen, a two-stage framework for extremely fine-grained controllable generation. The Auto-Reconstruction stage trains LLMs to align with both soft and hard attributes, while Global Preference Optimization further enhances constraint satisfaction under diverse attribute combinations. Experiments on UltraBench demonstrate that UltraGen significantly improves both constraint adherence and text quality."
+      ],
+      "subsections": []
+    },
+    "Limitations": {
+      "paragraphs": [
+        "While UltraGen demonstrates strong performance in handling extremely fine-grained controllable generation, several limitations remain. First, the set of hard attributes used in this work, though diverse and practical, primarily focuses on structural and keyword constraints; future work could explore more complex and domain-specific hard constraints to further stress-test model capabilities. Second, although our attribute correlation and diversity strategies reduce implausible combinations, ensuring absolute coherence across a large number of constraints remains an open challenge."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Hard Attributes": {
+      "paragraphs": [
+        "The hard attributes employed in this study, as detailed in Table 3, comprise a set of verifiable instructions designed to enforce precise, programmatically assessable constraints on text generation. These attributes are categorized into four primary groups: (1) Keywords, which mandate the inclusion or frequency of specific terms (e.g., ”Include {keyword1}” or ”appear {N} times”); (2) Length Constraints, governing structural requirements such as paragraph count, word limits, or sentence boundaries; (3) Change Cases, enforcing syntactic rules like all-uppercase or all-lowercase formatting; and (4) Positional Directives, such as starting responses with predefined phrases. Each attribute is selected for its objective verifiability through rule-based checks while also reflecting common real-world application scenarios, such as compliance with stylistic guidelines or technical specifications. By anchoring the evaluation in these deterministic constraints, the framework guarantees rigorous assessment of model adherence to fine-grained requirements, aligning with the dataset’s emphasis on combinatorial complexity and practical utility.",
+        "[Table: Table 3: The list of 8 verifiable instructions, with brief descriptions. We use these instructions because we think they are either easy to verify or common in real-world applications.]"
+      ],
+      "subsections": []
+    },
+    "Appendix B Generalization to Unseen Attributes": {
+      "paragraphs": [
+        "We evaluate the models’ ability to generalize to unseen, more challenging attributes, focusing on two types: We use text from the FineWeb validation set and extract 50 attributes per document, focusing on these two types of harder attributes. We then evaluate the three models on this benchmark. The results show that the original model achieves a score of 21.56, while auto-reconstruct slightly reduces performance to 20.79. However, incorporating GPO alongside AR improves generalization, yielding a score of 24.05, suggesting that GPO enhances the model’s ability to handle these harder constraints.",
+        "1. Absolute Position of a Word: The k-th (k ≤\\leq 5) word in the text must be A.",
+        "2. Relative Position Between Two Words: Word A must appear before word B."
+      ],
+      "subsections": []
+    },
+    "Appendix C Dataset Statistics": {
+      "paragraphs": [
+        "In this section, we present detailed statistics of our dataset, including a comparison with existing datasets, quality control evaluation, and the composition of our multi-sources subset.",
+        "[Figure: Figure 8: Proportion of Attributes Across Different Data Domains. The bar chart visualizes the relative contribution of each domain to the multi-sources subset, highlighting a balanced distribution across various sources such as web data, forums, papers, books, and Wikipedia.]",
+        "[Table: Table 4: UltraBench Dataset Composition]",
+        "[Table: Table 5: Detailed comparison of relevant works. Ours represents our dataset construction approach. 'Nums.', 'Cons.', 'Avg Attr.', and 'Synt.' denote the number of samples, constraint types, average number of attributes, and whether the data is synthesized. ]",
+        "[Table: Table 6: Distribution of data sources in the multi-sources subset by category. The data sources are grouped into major categories: Web Data, Forums, Papers, Books, and Wikipedia. Percentages represent the proportion of each domain within the subset.]",
+        "[Table: Table 7: Quality Control Metrics]"
+      ],
+      "subsections": []
+    },
+    "Appendix D DPO data quality": {
+      "paragraphs": [
+        "In this section, we showcase some examples sampled by our global selection strategy.",
+        "[Figure: Figure 9: Score distributions of chosen and rejected data.]",
+        "[Table: Table 8: Correlation Examples]",
+        "[Table: Table 9: Similarity Examples]"
+      ],
+      "subsections": []
+    },
+    "Appendix E Prompts Used in This Study": {
+      "paragraphs": [
+        "We employ three distinct prompts to support different stages of our EFCG pipeline: Decomposition, Judging, and Generation.",
+        "[Table: Table 10: Decompose Prompt]",
+        "[Table: Table 11: Judge Prompt]",
+        "[Table: Table 12: Generation Prompt]"
+      ],
+      "subsections": []
+    },
+    "Appendix F The Complete Case Study": {
+      "paragraphs": [
+        "The travel planner case study exemplifies the practical usefulness of EFCG in handling complex, multi-faceted requirements. As shown in Table 13, generating a 5-day travel itinerary involves satisfying a diverse set of hard attributes (e.g., budget limits, time scheduling, location constraints) alongside soft attributes (e.g., tone, emotion, visual details), while also adapting to real-time factors like weather and physical endurance. Such a task necessitates precise control over both hard and soft constraints, making it a natural testbed for evaluating EFCG systems.",
+        "[Table: Table 13: The complete travel planner case study.]"
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "Achiam et al. (2023) Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Florencia Leoni Aleman, Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal Anadkat, et al. 2023. Gpt-4 technical report. arXiv preprint arXiv:2303.08774.",
+    "Barbieri et al. (2020) Francesco Barbieri, Jose Camacho-Collados, Leonardo Neves, and Luis Espinosa-Anke. 2020. Tweeteval: Unified benchmark and comparative evaluation for tweet classification. arXiv preprint arXiv:2010.12421.",
+    "Carlsson et al. (2022) Fredrik Carlsson, Joey Öhman, Fangyu Liu, Severine Verlinden, Joakim Nivre, and Magnus Sahlgren. 2022. Fine-grained controllable text generation using non-residual prompting. In Proceedings of the 60th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 6837–6857.",
+    "Chen et al. (2022) Howard Chen, Huihan Li, Danqi Chen, and Karthik Narasimhan. 2022. Controllable text generation with language constraints. arXiv preprint arXiv:2212.10466.",
+    "Dubey et al. (2024) Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Amy Yang, Angela Fan, et al. 2024. The llama 3 herd of models. arXiv preprint arXiv:2407.21783.",
+    "Gao et al. (2021) Tianyu Gao, Xingcheng Yao, and Danqi Chen. 2021. Simcse: Simple contrastive learning of sentence embeddings. In Proceedings of the 2021 Conference on Empirical Methods in Natural Language Processing, EMNLP 2021, Virtual Event / Punta Cana, Dominican Republic, 7-11 November, 2021, pages 6894–6910. Association for Computational Linguistics.",
+    "Gu et al. (2022) Yuxuan Gu, Xiaocheng Feng, Sicheng Ma, Lingyuan Zhang, Heng Gong, and Bing Qin. 2022. A distributional lens for multi-aspect controllable text generation. In Proceedings of the 2022 Conference on Empirical Methods in Natural Language Processing, pages 1023–1043, Abu Dhabi, United Arab Emirates. Association for Computational Linguistics.",
+    "Huang et al. (2024) James Y Huang, Sailik Sengupta, Daniele Bonadiman, Yi-an Lai, Arshit Gupta, Nikolaos Pappas, Saab Mansour, Katrin Kirchhoff, and Dan Roth. 2024. Deal: Decoding-time alignment for large language models. arXiv preprint arXiv:2402.06147.",
+    "Jiang et al. (2024) Yuxin Jiang, Yufei Wang, Chuhan Wu, Wanjun Zhong, Xingshan Zeng, Jiahui Gao, Liangyou Li, Xin Jiang, Lifeng Shang, Ruiming Tang, Qun Liu, and Wei Wang. 2024. Learning to edit: Aligning llms with knowledge editing. CoRR, abs/2402.11905.",
+    "Jiang et al. (2023) Yuxin Jiang, Yufei Wang, Xingshan Zeng, Wanjun Zhong, Liangyou Li, Fei Mi, Lifeng Shang, Xin Jiang, Qun Liu, and Wei Wang. 2023. Followbench: A multi-level fine-grained constraints following benchmark for large language models. arXiv preprint arXiv:2310.20410.",
+    "Li and Roth (2002) Xin Li and Dan Roth. 2002. Learning question classifiers. In COLING 2002: The 19th International Conference on Computational Linguistics.",
+    "Liu et al. (2024) Nelson F Liu, Kevin Lin, John Hewitt, Ashwin Paranjape, Michele Bevilacqua, Fabio Petroni, and Percy Liang. 2024. Lost in the middle: How language models use long contexts. Transactions of the Association for Computational Linguistics, 12:157–173.",
+    "Lu et al. (2022) Ximing Lu, Sean Welleck, Jack Hessel, Liwei Jiang, Lianhui Qin, Peter West, Prithviraj Ammanabrolu, and Yejin Choi. 2022. Quark: Controllable text generation with reinforced unlearning. In Advances in Neural Information Processing Systems, volume 35, pages 27591–27609. Curran Associates, Inc.",
+    "Mishra et al. (2022) Swaroop Mishra, Daniel Khashabi, Chitta Baral, and Hannaneh Hajishirzi. 2022. Cross-task generalization via natural language crowdsourcing instructions. In Proceedings of the 60th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 3470–3487, Dublin, Ireland. Association for Computational Linguistics.",
+    "Mudgal et al. (2023) Sidharth Mudgal, Jong Lee, Harish Ganapathy, YaGuang Li, Tao Wang, Yanping Huang, Zhifeng Chen, Heng-Tze Cheng, Michael Collins, Trevor Strohman, et al. 2023. Controlled decoding from language models. arXiv preprint arXiv:2310.17022.",
+    "Penedo et al. (2024) Guilherme Penedo, Hynek Kydlíček, Loubna Ben allal, Anton Lozhkov, Margaret Mitchell, Colin Raffel, Leandro Von Werra, and Thomas Wolf. 2024. The fineweb datasets: Decanting the web for the finest text data at scale. In The Thirty-eight Conference on Neural Information Processing Systems Datasets and Benchmarks Track.",
+    "Qin et al. (2024) Yiwei Qin, Kaiqiang Song, Yebowen Hu, Wenlin Yao, Sangwoo Cho, Xiaoyang Wang, Xuansheng Wu, Fei Liu, Pengfei Liu, and Dong Yu. 2024. Infobench: Evaluating instruction following ability in large language models. arXiv preprint arXiv:2401.03601.",
+    "Rafailov et al. (2024) Rafael Rafailov, Archit Sharma, Eric Mitchell, Christopher D Manning, Stefano Ermon, and Chelsea Finn. 2024. Direct preference optimization: Your language model is secretly a reward model. Advances in Neural Information Processing Systems, 36.",
+    "Rame et al. (2024) Alexandre Rame, Guillaume Couairon, Corentin Dancette, Jean-Baptiste Gaya, Mustafa Shukor, Laure Soulier, and Matthieu Cord. 2024. Rewarded soups: towards pareto-optimal alignment by interpolating weights fine-tuned on diverse rewards. Advances in Neural Information Processing Systems, 36.",
+    "Ren et al. (2025) Qingyu Ren, Jie Zeng, Qianyu He, Jiaqing Liang, Yanghua Xiao, Weikang Zhou, Zeye Sun, and Fei Yu. 2025. Step-by-step mastery: Enhancing soft constraint following ability of large language models. arXiv preprint arXiv:2501.04945.",
+    "Sanh et al. (2021) Victor Sanh, Albert Webson, Colin Raffel, Stephen H Bach, Lintang Sutawika, Zaid Alyafeai, Antoine Chaffin, Arnaud Stiegler, Teven Le Scao, Arun Raja, et al. 2021. Multitask prompted training enables zero-shot task generalization. arXiv preprint arXiv:2110.08207.",
+    "Saravia et al. (2018) Elvis Saravia, Hsien-Chi Toby Liu, Yen-Hao Huang, Junlin Wu, and Yi-Shin Chen. 2018. CARER: Contextualized affect representations for emotion recognition. In Proceedings of the 2018 Conference on Empirical Methods in Natural Language Processing, pages 3687–3697, Brussels, Belgium. Association for Computational Linguistics.",
+    "Song et al. (2024) Feifan Song, Bowen Yu, Minghao Li, Haiyang Yu, Fei Huang, Yongbin Li, and Houfeng Wang. 2024. Preference ranking optimization for human alignment. In Proceedings of the AAAI Conference on Artificial Intelligence, volume 38, pages 18990–18998.",
+    "Takase and Okazaki (2019) Sho Takase and Naoaki Okazaki. 2019. Positional encoding to control output sequence length. In Proceedings of NAACL-HLT, pages 3999–4004.",
+    "Wang et al. (2022) Liang Wang, Nan Yang, Xiaolong Huang, Binxing Jiao, Linjun Yang, Daxin Jiang, Rangan Majumder, and Furu Wei. 2022. Text embeddings by weakly-supervised contrastive pre-training. arXiv preprint arXiv:2212.03533.",
+    "Wang et al. (2023) Yufei Wang, Wanjun Zhong, Liangyou Li, Fei Mi, Xingshan Zeng, Wenyong Huang, Lifeng Shang, Xin Jiang, and Qun Liu. 2023. Aligning large language models with human: A survey. arXiv preprint arXiv:2307.12966.",
+    "Weller et al. (2020) Orion Weller, Nicholas Lourie, Matt Gardner, and Matthew E. Peters. 2020. Learning from task descriptions. In Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing (EMNLP), pages 1361–1375, Online. Association for Computational Linguistics.",
+    "Wen et al. (2024) Bosi Wen, Pei Ke, Xiaotao Gu, Lindong Wu, Hao Huang, Jinfeng Zhou, Wenchuang Li, Binxin Hu, Wendy Gao, Jiaxin Xu, et al. 2024. Benchmarking complex instruction-following with multiple constraints composition. arXiv preprint arXiv:2407.03978.",
+    "Yang et al. (2024) Rui Yang, Xiaoman Pan, Feng Luo, Shuang Qiu, Han Zhong, Dong Yu, and Jianshu Chen. 2024. Rewards-in-context: Multi-objective alignment of foundation models with dynamic preference adjustment. arXiv preprint arXiv:2402.10207.",
+    "Yao et al. (2023) Shunyu Yao, Howard Chen, Austin W Hanjie, Runzhe Yang, and Karthik Narasimhan. 2023. Collie: Systematic construction of constrained text generation tasks. arXiv preprint arXiv:2307.08689.",
+    "Zhang et al. (2024) Tao Zhang, Yanjun Shen, Wenjing Luo, Yan Zhang, Hao Liang, Fan Yang, Mingan Lin, Yujing Qiao, Weipeng Chen, Bin Cui, et al. 2024. Cfbench: A comprehensive constraints-following benchmark for llms. arXiv preprint arXiv:2408.01122.",
+    "Zhang et al. (2020) Tianyi Zhang, Varsha Kishore, Felix Wu, Kilian Q. Weinberger, and Yoav Artzi. 2020. Bertscore: Evaluating text generation with BERT. In 8th International Conference on Learning Representations, ICLR 2020, Addis Ababa, Ethiopia, April 26-30, 2020. OpenReview.net.",
+    "Zhang et al. (2015) Xiang Zhang, Junbo Jake Zhao, and Yann LeCun. 2015. Character-level convolutional networks for text classification. In NIPS.",
+    "Zhou et al. (2023a) Jeffrey Zhou, Tianjian Lu, Swaroop Mishra, Siddhartha Brahma, Sujoy Basu, Yi Luan, Denny Zhou, and Le Hou. 2023a. Instruction-following evaluation for large language models. arXiv preprint arXiv:2311.07911.",
+    "Zhou et al. (2023b) Wangchunshu Zhou, Yuchen Eleanor Jiang, Ethan Wilcox, Ryan Cotterell, and Mrinmaya Sachan. 2023b. Controlled text generation with natural language instructions. In International Conference on Machine Learning, pages 42602–42613. PMLR.",
+    "Zhou et al. (2023c) Zhanhui Zhou, Jie Liu, Chao Yang, Jing Shao, Yu Liu, Xiangyu Yue, Wanli Ouyang, and Yu Qiao. 2023c. Beyond one-preference-for-all: Multi-objective direct preference optimization. arXiv preprint arXiv:2310.03708."
+  ]
+}

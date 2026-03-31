@@ -1,0 +1,294 @@
+{
+  "title": "Prompt-based Depth Pruning of Large Language Models",
+  "authors": "Juyun WeeMinjae ParkJaeho Lee",
+  "abstract": "Depth pruning aims to reduce the inference cost of a large language model without any hardware-specific complications, by simply removing several less important transformer blocks. However, our empirical findings suggest that the importance of a transformer block may be highly task-dependent—a block that is crucial for a task can be removed without degrading the accuracy on another task. Based on this observation, we develop a dynamic depth pruning algorithm, coined PuDDing (Prompt-routed Dynamic Depth Pruning), which determines which blocks to omit from the model based on the input prompt. PuDDing operates by training a lightweight router to predict the best omission set among a set of options, where this option set has also been constructed in a data-driven manner. Empirical results on commonsense reasoning benchmarks demonstrate that PuDDing effectively accelerates the inference language models, and achieves better on-task performance than static depth pruning baselines.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Recent advances in large language models (LLMs) have achieved remarkable success in a wide range of natural language processing tasks (Brown et al., 2020; Touvron et al., 2023; Dubey et al., 2024). However, significant computational requirements of LLMs pose challenges in resource-constrained environments, limiting their practicality. For example, LLaMA-3.3-70B needs 140GB of RAM to be loaded in bf16, which is often too big for memory-constrained local devices. Thus, reducing the model size is essential to make LLMs feasible for on-device applications.",
+        "Depth pruning is a versatile model compression technique that is particularly effective for on-device scenarios (Song et al., 2024; Kim et al., 2024). Such methods simply remove several transformer blocks (which we call “omission set”) from the pretrained model, based on some measures of block importance computed using a small amount of calibration samples. As everything is identical except for the number of blocks, the pruned model is suitable to be deployed on any hardware without tailored supports on low-precision (e.g., integer cores) or fine-grained sparsity (e.g., 2:4 sparsity). Furthermore, as there is no extensive training involved, depth pruning can be easily done in a device-by-device manner for deployment on various devices.",
+        "A key limitation of typical depth pruning algorithms is that their pruning decision is static, i.e., the same omission set is removed regardless of the query given to the model. While this choice allows one to save storage (e.g., flash drives) by discarding the pruned parameters at the local device, it sacrifices the ability to adapt to various downstream tasks. Indeed, our empirical observations show that pruning some transformer blocks in an LLM may incur significant accuracy degradation on certain tasks, while being highly unnecessary for other tasks (see Section 3).",
+        "Can we make dynamic depth pruning decisions to improve the performance on various tasks? This question has not been well studied yet, especially in the context of on-device inference. A recent line of work develops effective dynamic token routing mechanisms to save training/inference computation by processing each token with a limited number of transformer blocks (Raposo et al., 2024; Wang et al., 2024). However, such methods require all parameters to be loaded on high-speed memories (e.g., on-GPU memory); thus, the methods are appropriate for large-scale server clusters, not for on-device inference with memory constraints.",
+        "Contribution. To overcome the limitations, we develop a new prompt-based depth pruning approach (Section 4): In the pre-fill stage, based on the prompt given from the user, a limited number of transformer blocks are selected and loaded to the on-device RAM from the storage drive. This approach does not require a large memory to hold all parameters or highly repeated per-token routing, and thus can effectively accelerate inference on low-memory devices.",
+        "A naïve way to achieve this goal might be to conduct conventional static depth pruning at each inference, using the given prompt as calibration samples. However, this approach incurs a large latency in running static pruning algorithms in every inference. Furthermore, such a method is likely to fail making a good pruning decision due to the shortage of calibration data, especially in single-batch inference cases common in on-device scenarios.",
+        "To this end, we propose a training-based method for the prompt-based depth pruning of large langauge models (Section 5). Our method, coined Prompt-routed Dynamic Depth Pruning (PuDDing), works in two steps.",
+        "1. Candidate omission set generation. We construct a small yet diverse and performant family of omission sets. This is done by drawing multiple splits of calibration data from various task dataset, and then finding an omission set which achieves low loss on each split; here, we use a newly developed task-centric loss instead of perplexity.",
+        "2. Router training. We train a lightweight router which predicts the appropriate omission set from the given prompt. This is done by generating a training dataset consisting of prompt-loss pairs for each omission set, and training the model to predict the loss from the prompt; routing can be done by choosing the minimum-loss option.",
+        "Empirically, we find that the proposed PuDDing enjoys a clear advantage over static depth pruning algorithms, achieving more than 4%p accuracy increase on zero-shot commonsense reasoning tasks (Section 6). At the same time, as the algorithm uses the router only once per each prompt, PuDDing enjoys over 1.2×\\times generation speedup over the dense model, similar to the static depth pruning algorithms.",
+        "Our key contributions can be summarized as follows:",
+        "• Our observations reveal that optimal depth pruning decisions may be highly depend on the task given at hand, underscoring the need for task-dependent depth pruning.",
+        "• We consider the task of prompt-based depth pruning for the first time (to our knowledge), and propose a training-based strategy as a solution.",
+        "• Comparing with static depth pruning algorithms, our algorithm achieves a much higher zero-shot accuracies on various tasks, while being competitive in terms of the computational efficiency."
+      ],
+      "subsections": []
+    },
+    "2 Related Work": {
+      "paragraphs": [
+        "In this section, we provide an in-depth comparison of the proposed framework against existing depth and width sparsity frameworks. See Table 1 for a concise summary."
+      ],
+      "subsections": [
+        {
+          "title": "2.1 Static Depth Pruning",
+          "paragraphs": [
+            "Static depth pruning methods select and remove unnecessary blocks from a pretrained LLM using various proxy metrics to measure the importance of the blocks. ShortGPT (Men et al., 2024) measures the block importance using the expected cosine similarity between the input and output activations of the block; a block that does not change the direction of the activation is deemed unnecessary. Shortened-LLaMA (Kim et al., 2024) directly measures the perplexity drop after removing each transformer block, and SLEB (Song et al., 2024) combines this idea with an iterative pruning.",
+            "Several recent works also focus on layer-level depth pruning, instead of removing an entire transformer block. In particular, Siddiqui et al. (2024), He et al. (2024) discover that pruning out self-attention layers have a much less significant impact than removing the feed-forward layers.",
+            "Unlike these works, this paper aims to perform dynamic depth pruning using the prompts for the downstream tasks; to account for this difference, we design and use new likelihood-based metrics to measure the block importance."
+          ]
+        },
+        {
+          "title": "2.2 Dynamic Token Routing",
+          "paragraphs": [
+            "Inspired by the success of mixture-of-experts (Jacobs et al., 1991; Fedus et al., 2022), several recent works have developed mechanisms to route tokens through only a fraction of all transformer blocks. Mixture-of-Depth (Raposo et al., 2024) adopts the depth sparsity during the training phase with a jointly trained router, to reduce the training cost of LLMs. Here, the trained router can also be used at inference. D-LLM (Wang et al., 2024) trains a router that can be applied on pretrained LLMs to reduce their inference cost.",
+            "Our approach differs from both of these works in the sense that it needs only a limited number of transformer blocks active for a single input query (or prompt); the routing is conducted once per input prompt, not per token."
+          ]
+        },
+        {
+          "title": "2.3 Side Note: Width Pruning Techniques",
+          "paragraphs": [
+            "Width pruning, i.e., pruning out columns and rows of the weight matrices in a structured manner, has also been popularly used for LLM compression. Recent examples include FLAP (An et al., 2024) and SliceGPT (Ashkboos et al., 2024) for the category of static width pruning, and Déjà Vu (Liu et al., 2023) for the dynamic width pruning.",
+            "As these methods tend to alter the size of the weight matrices, which has been highly customized for hardware considerations, they often lead to further challenges in deployment (Song et al., 2024; Kim et al., 2024). In this work, we thus mainly focus on comparison with depth pruning, but also compare with width pruning in terms of the accuracy."
+          ]
+        }
+      ]
+    },
+    "3 A Motivating Observation": {
+      "paragraphs": [
+        "Before describing the proposed framework, we briefly describe a motivating observation which demonstrate that:",
+        "Setup. To show this point, we have compared the zero-shot accuracies of the LLMs whose omission sets differ by a single transformer block. More concretely, we compare the performance of an omission set (b1,b2,…,bk−1,bk)(b_{1},b_{2},\\ldots,b_{k-1},b_{k}) to another omission set (b1,b2,…,bk−1,b~k)(b_{1},b_{2},\\ldots,b_{k-1},\\tilde{b}_{k}), on the LLaMA 3.1-8B model. Here, we have used the SLEB (Song et al., 2024) to generate an omission set, and then replaced a single block to get another one. Then, we observe the impact of such replacement on three commonsense reasoning tasks: BoolQ, PIQA, and WinoGrande.",
+        "Result. Figure 2 illustrates our findings. We observe that pruning out block 29 instead of block 30 has a two-sided impact: On BoolQ, the change makes a dramatic drop in accuracy (62.2% →\\to 38.0%, 62.5% →\\to 37.9%). However, on PIQA and WinoGrande, we observe a slight accuracy boost. This phenomenon suggests that the block 30 may contain more knowledge relevant to answering BoolQ questions, while 29 may be more knowledgeable about PIQA and WinoGrande. This observation highlights the need to consider task variability during the selection of the omission set. To formally address such need, this paper considers an inference of task information from the prompt."
+      ],
+      "subsections": []
+    },
+    "4 Problem Description": {
+      "paragraphs": [
+        "Inspired by the observations in Section 3, we now formalize the problem of prompt-based depth pruning.",
+        "In a nutshell, given some pretrained LLM and a prompt, the goal of the prompt-based depth pruning is to designate which transformer blocks should be removed from the model to generate the most accurate response to the prompt.",
+        "More concretely, let 𝐱\\mathbf{x} be the prompt given to the model, and let 𝐖=(W1,…,Wd)\\mathbf{W}=(W_{1},\\ldots,W_{d}) be the weight parameters of a pretrained LLM consisting of dd transformer blocks, with WiW_{i} indicating the weights of the iith block. The prediction quality of this language model is measured by the expected loss between the model output and the ground-truth, i.e.,",
+        "where ℓ​((⋅,⋅);𝐖)\\ell((\\cdot,\\cdot);\\mathbf{W}) is some loss function which also encapsulates the generative procedure of language model with parameter 𝐖\\mathbf{W} (e.g., perplexity). In static depth pruning, the goal is to find which blocks to prune from the given LLM. More formally, define omission set as a(n unordered) set of transformer block indices",
+        "which designates which blocks will be omitted from the target LLM. Then, let 𝐖∖𝐛\\mathbf{W}^{\\setminus\\mathbf{b}} be a sequence of d−kd-k weights, with bib_{i}th block eliminated from the 𝐖\\mathbf{W}. Then, the static depth pruning aims to solve the minimization",
+        "given the depth constraint kk designated by the operational constraints, such as the desired latency or the peak memory.",
+        "Prompt-based Depth Pruning. The problem of prompt-based depth pruning can be described as optimizing the omission set as a function 𝐛^​(𝐱)\\hat{\\mathbf{b}}(\\mathbf{x}), i.e., solving",
+        "Note that we are constraining the omission set to have the cardinality greater than kk for all 𝐱\\mathbf{x}. In other words, the pruned model should always have d−kd-k or less blocks. This is because we mainly consider the peak memory constraint, i.e., the RAM cannot hold more than d−kd-k blocks. Otherwise, one can consider a slightly modified version of the problem (4) with a probabilistic constraint."
+      ],
+      "subsections": []
+    },
+    "5 Method": {
+      "paragraphs": [
+        "We now formally describe the proposed PuDDing (Prompt-routed Dynamic Depth Pruning)—an algorithm to train a router 𝐛^​(⋅)\\hat{\\mathbf{b}}(\\cdot) for the prompt-based depth pruning.",
+        "In a nutshell, PuDDing operates in two steps:",
+        "1. Generating candidate omission sets using the prompt-answer dataset collected from various tasks (Section 5.1)",
+        "2. Training a router to predict the best option among the candidate omission sets (Section 5.2)",
+        "During the inference phase, the given prompt is fed to the router, which predicts which omission set (among the candidates) one should use for the given prompt. Then, the model parameters are loaded from the storage to the high-speed memory to constitute the depth-pruned LLM (see Figure 3).",
+        "We note that this classification-based approach is in contrast with the approach of dynamic token routing (Wang et al., 2024), where one makes yes/no decisions for omitting each block in a sequential manner; this change is to make the router training easier and generalizable."
+      ],
+      "subsections": [
+        {
+          "title": "5.1 Candidate Omission Set Generation",
+          "paragraphs": [
+            "The first step is to generate a candidate pool of omission sets. That is, we generate a family of omission sets",
+            "which will be used as the codomain of the router 𝐛^​(⋅)\\hat{\\mathbf{b}}(\\cdot), which will simply be an mm-class classifier.",
+            "Desirable properties of the candidate set ℬ\\mathcal{B} are as follows:",
+            "• Coverage: For any realistic prompt-answer pair (𝐱,𝐲)(\\mathbf{x},\\mathbf{y}) from a wide range of tasks, the set ℬ\\mathcal{B} should contain at least one 𝐛i\\mathbf{b}_{i} with a small loss ℓ​(𝐲,f​(𝐱;𝐖∖𝐛i))\\ell(\\mathbf{y},f(\\mathbf{x};\\mathbf{W}^{\\setminus\\mathbf{b}_{i}})).",
+            "• Cardinality: The number of omission sets mm should be sufficiently small, so that one can train a nice predictor for ℬ\\mathcal{B} with a limited number of samples.",
+            "Coverage: For any realistic prompt-answer pair (𝐱,𝐲)(\\mathbf{x},\\mathbf{y}) from a wide range of tasks, the set ℬ\\mathcal{B} should contain at least one 𝐛i\\mathbf{b}_{i} with a small loss ℓ​(𝐲,f​(𝐱;𝐖∖𝐛i))\\ell(\\mathbf{y},f(\\mathbf{x};\\mathbf{W}^{\\setminus\\mathbf{b}_{i}})).",
+            "Cardinality: The number of omission sets mm should be sufficiently small, so that one can train a nice predictor for ℬ\\mathcal{B} with a limited number of samples.",
+            "To obtain these properties, we adopt the following strategy: First, we collect tt calibration datasets D1,…,DtD_{1},\\ldots,D_{t} on a diverse set of downstream tasks. Then, on each calibration dataset, we select the omission set that minimizes some loss criterion, i.e., solve",
+            "Here, the minimization is done in a greedy manner, similar to Song et al. (2024). We apply ll different loss criteria on each calibration dataset to get m=t×lm=t\\times l omission sets.",
+            "Losses. As the loss function, we use new task-focused variants of the perplexity loss, which we call the task likelihood losses. The perplexity measures the fluency of the generated sentences by measuring the average log-likelihood losses over the whole sequence. That is, for a sample sentence 𝐳=(z1,z2,…,zT)\\mathbf{z}=(z_{1},z_{2},\\ldots,z_{T}), the perplexity is",
+            "where pi(⋅|⋅;𝐖)p_{i}(\\cdot|\\cdot;\\mathbf{W}) denotes the conditional generative probability of the target language model with parameters 𝐖\\mathbf{W}, at the iith token. We modify this loss to measure the likelihood only the sequence that matters for on-task performance. That is, if the given datum 𝐳\\mathbf{z} can be broken down into the prompt and answer pair:",
+            "then we can define the task likelihood (tl) loss as:",
+            "In addition, we also consider the task likelihood difference (tld) loss, which is defined as follows: In many tasks, the answer choices are limited (e.g. “true” or “false”). In such cases, we can also use the likelihood difference of the correct and wrong answers, i.e.,",
+            "where 𝐲wrong\\mathbf{y}^{\\mathrm{wrong}} denotes the wrong version of the answer. We use both tl​(⋅)\\mathrm{tl}(\\cdot) and tld​(⋅)\\mathrm{tld}(\\cdot) as our loss criteria.",
+            "We note that the task likelihood losses Equations 9 and 10 is different from the perplexity (Equation 7), in the sense that we do not exponentiate the values. We use this version as it empirically works better than the exponentiated one."
+          ]
+        },
+        {
+          "title": "5.2 Router Training",
+          "paragraphs": [
+            "After generating the candidate omission set ℬ\\mathcal{B}, we train a router that maps the given prompt to the best omission set. Roughly, this is done by first constructing a soft-labeled dataset with task-specific datasets and then training a BERT-based router on the constructed dataset (Devlin et al., 2019)",
+            "Dataset Construction. To construct the training dataset, we first collect various prompt-answer pairs from the task datasets, similarly to the calibration datasets in Section 5.1. Then, for each sample, we compute the task likelihood losses on all omission sets, and store them as a label vector. That is, each datum inside the dataset takes the form (𝐱i,𝐬i)(\\mathbf{x}_{i},\\mathbf{s}_{i}), where 𝐱i\\mathbf{x}_{i} is the prompt and the 𝐬i\\mathbf{s}_{i} is a length-mm vector with",
+            "Note that we no longer need to store the correct answers 𝐲i\\mathbf{y}_{i}.",
+            "Router training. We train a router to accurately predict the label vector 𝐬\\mathbf{s} given the input prompt 𝐱\\mathbf{x}, for all samples in this dataset. That is, we train a function 𝐬^=f​(𝐱)\\hat{\\mathbf{s}}=f(\\mathbf{x}) such that 𝐬^≈𝐬\\hat{\\mathbf{s}}\\approx\\mathbf{s} holds. We use the MSE loss",
+            "to train the router. At inference, we will select the omission set with the minimum-achieving index of the predicted 𝐬^\\hat{\\mathbf{s}}.",
+            "Router architecture. We use a lightweight transformer-based encoder as our router. More specifically, we insert a single linear layer on pretrained BERT-base (Devlin et al., 2019), and jointly fine-tune during the training. While this router has more parameters (∼\\sim110M) than typical routers that are used for dynamic token routing—such as D-LLM (Wang et al., 2024) which uses 2-layer MLP—the computational cost is bearable as we route only once per prompt. In our experiments, the routing cost typically takes up around 2−4%2-4\\% of the total pre-fill cost."
+          ]
+        }
+      ]
+    },
+    "6 Experiment": {
+      "paragraphs": [
+        "We now empirically validate the performance of the proposed algorithm, PuDDing, on zero-shot tasks against the static depth and width pruning baselines."
+      ],
+      "subsections": [
+        {
+          "title": "6.1 Experimental Setup",
+          "paragraphs": [
+            "Models. We evaluate the proposed method on compressing three popular open-weight language models. As the main model, we use the LLaMA-3.1 model with 8B parameters (Dubey et al., 2024). In addition, we evaluate on two language models: Vicuna 1.5 with 7B (Chiang et al., 2023), and OPT with 6.7B parameters (Zhang et al., 2022). We use these models for two reasons. First, the models have an appropriate scale for on-device deployments. Second, all three models consist of 32 transformer blocks, and thus can be compared with the same sparsity criterion.",
+            "Baselines. We mainly compare against four recent static depth and width pruning baselines with open source. In addition, we also compare with “SLEB per prompt,” which is simply SLEB which is conducted by using each given prompt as the calibration data. As this option does not work well in general, and requires a long inference time, we only compare on a limited number of scenarios.",
+            "• SLEB (Song et al., 2024): A depth pruning baseline that iteratively selects the omission set based on perplexity.",
+            "• Shortend LLaMA (Kim et al., 2024): A depth pruning algorithm which selects the omission set one-shot; here, we compare with the version that uses perplexity as the loss criterion and does not apply LoRA.",
+            "• FLAP (An et al., 2024): A retraining-free width pruning algorithm based on structural fluctuation metric.",
+            "• SliceGPT (Ashkboos et al., 2024): Another width pruning algorithm based on principal component analysis.",
+            "SLEB (Song et al., 2024): A depth pruning baseline that iteratively selects the omission set based on perplexity.",
+            "Shortend LLaMA (Kim et al., 2024): A depth pruning algorithm which selects the omission set one-shot; here, we compare with the version that uses perplexity as the loss criterion and does not apply LoRA.",
+            "FLAP (An et al., 2024): A retraining-free width pruning algorithm based on structural fluctuation metric.",
+            "SliceGPT (Ashkboos et al., 2024): Another width pruning algorithm based on principal component analysis.",
+            "Dataset: Evaluation. We evaluate on the test splits of six zero-shot commonsense reasoning tasks: ARC-Challenge and ARC-Easy (Clark et al., 2018), HellaSwag (Zellers et al., 2019), PIQA (Bisk et al., 2020), WinoGrande (Sakaguchi et al., 2021), and BoolQ (Clark et al., 2019).",
+            "Dataset: Calibration for Baselines. For the baseline algorithms, we have used the calibration data designated in the original papers. For SLEB, FLAP, and SliceGPT, we have used the WikiText-2 (Merity et al., 2022). For Shortened LLaMA, we have used the BookCorpus (Zhu, 2015).",
+            "Training. To generate the candidate omission set for our algorithm, we have used 128 randomly drawn samples from the training splits of five zero-shot commonsense reasoning tasks: ARC-Challenge, ARC-Easy, HellaSwag, PIQA, and WinoGrande. That is, we use total 1010 omission sets (as we use two different losses). For training the router, we have used the full training splits. BoolQ dataset has been left out in order to evaluate the generalization to unseen sets. The router has been trained with AdamW with learning rate 10−510^{-5}, weight decay 0.010.01, and batch size 3232 for 10 epochs, with 500 warm-up steps. Also, for WinoGrande dataset, we use a tailored data pre-processing procedure; we describe this in detail in Appendix A.",
+            "Hardware. We have mainly used NVIDIA RTX 6000 Ada for evaluation and training. In addition, we have used cloud instances of NVIDIA A100 for evaluation."
+          ]
+        },
+        {
+          "title": "6.2 Main Experiment",
+          "paragraphs": [
+            "Table 2 provides a comparison of zero-shot accuracies of the model compression methods, on LLaMA-3.1 8B model. From the table, we observe that PuDDing achieves the highest average accuracy on all sparsity levels tested. Especially when 77 blocks have been pruned (over 20% sparsity), the improvement over the best baselines is almost 3%p.",
+            "An interesting observation is the poor performance of “SLEB per prompt,” which measures which block to remove on the fly, by using the given prompt as a calibration dataset. In fact, the performance is worse than the vanilla SLEB. We hypothesize that this is because a single prompt usually does not contain enough information to work as a good calibration data. Our training-based strategy circumvents such difficulty by training a router from the data.",
+            "Regarding the out-of-distribution generalization, we observe that PuDDing also works well on unseen dataset (BoolQ). PuDDing outperforms all other baselines except for FLAP, which works extraordinarily well on this specific dataset.",
+            "In Table 3, we provide comparisons on other language models: Vicuna and OPT. We confirm that our algorithm works better than other baselines under this setup as well."
+          ]
+        },
+        {
+          "title": "6.3 LoRA Fine-tuning",
+          "paragraphs": [
+            "Next, we compare the performance where we assume that we can recover the accuracies using LoRA (Hu et al., 2022). For PuDDing, we generate LoRA updates for each omission set (thus total 1010 for these experiments). This requires additional storage space for storing 1010 separate copies of LoRA weights for each omission set. However, this increase only incurs ∼\\sim2.5% increase in the total storage space. For training LoRA weights, we have followed the setup and hyperparameters used for LoRA training in shortened LLaMA (Kim et al., 2024); we have used Alpaca dataset (Taori et al., 2023) for training, as in the paper.",
+            "Table 4 provides LoRA fine-tuned results of depth pruning algorithms on zero-shot commonsense reasoning tasks, for LLaMA-3.1-8B pruned to 20% sparsity. We observe that PuDDing continues to achieve the best performance among all options evaluated. That is, the advantages of prompt-adaptivity also exists after fine-tuning."
+          ]
+        },
+        {
+          "title": "6.4 More Complicated Tasks",
+          "paragraphs": [
+            "In Table 5, we compare the performance of various depth pruning algorithms on more complicated tasks, including OpenBookQA (Mihaylov et al., 2018), MathQA (Amini et al., 2019), and MMLU (Hendrycks et al., 2021); for MMLU, we take an average on five key tasks: High-school math, physics, medicine, machine learning, and philosophy. From the results, we observe that PuDDing continues to perform better than the baselines, even though these tasks have not been observed during the training of the router."
+          ]
+        }
+      ]
+    },
+    "7 Analysis": {
+      "paragraphs": [
+        "We now provide further analyses on PuDDing. In particular, we provide the following analyses: Wall clock speedup (Section 7.1), and visualization of omission sets for tasks (Section 7.2). In Appendix B, we conduct ablation studies."
+      ],
+      "subsections": [
+        {
+          "title": "7.1 Wall-clock Speedup",
+          "paragraphs": [
+            "We now provide wall-clock analyses and estimates on the latency and throughput of the PuDDing-compressed models.",
+            "Inference. Table 6 presents the average wall-clock inference time comparison between the dense and PuDDing-pruned version of the LLaMA 3.1 8B, evaluated on NVIDIA A100 and RTX 6000 Ada. For PuDDing, we have pruned seven layers (21.88% sparsity). We observe that PuDDing provides a consistent 1.19-1.23×\\times speedup during the pre-fill stage, and 1.22-1.25×\\times speedup including the generation stage. The total routing time takes up to 4-8ms, which can be deemed negligible comparing with the overall latency.",
+            "Parameter loading. Table 7 presents the estimated time required for loading the model parameters of LLaMA-3.1 8B (16GB in FP32) from the storage to the GPU. PuDDing can save around 52ms on PCIe and 6ms on NVLink, which is nonnegligibly large comparing with the computational scale of running these models. However, a pitfall is that, for repeated inference, PuDDing may require loading additional weights to account for different prompts. This additional cost can be minimized by loading only the previously unloaded blocks from the storage; in fact, many blocks overlap, as we will demonstrate in Section 7.2."
+          ]
+        },
+        {
+          "title": "7.2 Pruned Block vs. Task",
+          "paragraphs": [
+            "Figure 4 depicts the distribution of the pruned transformer blocks in LLaMA-3.1-8B model, given the prompts from different tasks. Again, we consider the case where we drop seven transformer blocks for each prompt.",
+            "From the figure, we make two intriguing observations: First, several blocks are considered almost universally unnecessary. In particular, the blocks 20, 26, 27 are removed with over 80% probability in all tasks. Similarly, there are certain block which are almost never pruned, e.g., blocks 1–3 and 5–8. Second, regarding some blocks, the importance of the block highly varies over task. For instance, transformer block 4 is pruned with over 80% for ARC-Easy and ARC-Challenge. On the other hand, for PIQA and WinoGrande, the pruning rate is less than 40%; in these tasks, the blocks 9 and 10 are likelier to be less important.",
+            "We note that similar patterns can be observed for OPT and Vicuna; see Appendix C for visualizations on these models."
+          ]
+        }
+      ]
+    },
+    "8 Conclusion": {
+      "paragraphs": [
+        "In this paper, we have developed a new paradigm for the depth pruning of large language models, where we dynamically determine which blocks should be utilized for processing the prompt given from the user. By doing so, we can save both the memory access cost and the inference computation, thus suitable for on-device deployment of large language models. We have proposed PuDDing, an algorithm to train a router using various task data. Through our experiments, we have confirmed that such framework is quite effective, clearly outperforming existing static depth pruning algorithms consistently over multiple LLMs.",
+        "Limitations and future work. A notable limitation of the proposed method is that we assume that we have access to various task datasets. In particular, we have focused on the case where we use LLMs for commonsense reasoning tasks, instead of an open-ended language generation. A promising future direction will be to develop new techniques to harness unlabeled text corpus, such as Alpaca or C4, to generate diverse clusters of calibration data for attaining corresponding omission sets.",
+        "Another limitation is a general lack of mechanisms to account for the different difficulties of the tasks. For some tasks, it may be necessary to utilize all layers to generate an answer with sufficiently high quality; on the other hand, some tasks can be simply handled with very few layers. While our decision to consider a fixed number of transformer blocks is motivated by the practical constraints of on-device inference, we believe that utilizing variable-depth can be even more effective whenever the on-device memory is spacious but can be preempted to other processes."
+      ],
+      "subsections": []
+    },
+    "9 Impact Statement": {
+      "paragraphs": [
+        "Our paper targets for advancing the general field of machine learning and LLM compression. There are many potential societal consequences of our work, none which we feel must be specifically highlighted here."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Pre-processing for the WinoGrande Dataset": {
+      "paragraphs": [
+        "The WinoGrande dataset, originally consisting of fill-in-the-blank sentences, was initially computed using the sentence-level likelihood (sl) as follows:",
+        "By reformulating the dataset into a Question-Answer format and evaluating the task likelihood (tl) score for the answer part using Equation 9, performance improved significantly, from 61.09% to 64.16%."
+      ],
+      "subsections": []
+    },
+    "Appendix B Ablation Studies": {
+      "paragraphs": [
+        "We have conducted various ablation studies on the proposed algorithm, PuDDing. Below, we provide a summary of our key findings, with corresponding pointers to the relevant section.",
+        "• Number of candidate omission sets (Section B.1): We have varied the number of candidate omission sets inside the set ℬ\\mathcal{B}, and find that having 1010 classes is sufficient for handling zero-shot tasks; the gain from adding omission sets quickly saturates.",
+        "• Proposed task likelihood score (Section B.2): We compare the performance of the task likelihood-based routing and the perplexity-based routing under both static and dynamic setups. We find that the using the task likelihood score leads to a clear advantage in both scenarios.",
+        "• MSE loss for training (Section B.3): We have used the mean-squared error (MSE) loss to train the router using the soft labels. Our experiments show that this leads to a slightly better performance than using the classification loss, namely the cross-entropy loss.",
+        "[Figure: Table 9: Zero-shot accuracy performance of static pruning methods.]",
+        "[Figure: Table 10: Zero-shot accuracy performance of dynamic routing pruning methods.]",
+        "[Figure: Table 11: Zero-shot accuracy comparison between three different training strategy on the router. The best performances are marked in bold, and the runner-up is marked with \\ulunderline.]",
+        "[Table: Table 8: Results of zero-shot task accuracy with varying omission set sizes.]",
+        "[Table: Table 9: Zero-shot accuracy performance of static pruning methods.]",
+        "[Table: Table 11: Zero-shot accuracy comparison between three different training strategy on the router. The best performances are marked in bold, and the runner-up is marked with \\ulunderline.]"
+      ],
+      "subsections": [
+        {
+          "title": "B.1 Number of Candidate Omission Sets",
+          "paragraphs": [
+            "Table 8 shows the accuracy of zero-shot task with varying omission set sizes, comparing the impact of using 5, 10, and 30 omission sets across common-sense reasoning tasks.",
+            "Using only 5 omission sets results in a lower accuracy, with an average of 61.19%, as it shows insufficient performance for optimal results. 30-set configuration, despite some task-specific advantages, does not lead to consistently higher performance. In contrast, the 10-set configuration provides an improvement across multiple tasks, with a highest average accuracy of 61.93%, indicating that this size offers a better balance between performance and model efficiency."
+          ]
+        },
+        {
+          "title": "B.2 Effectiveness of the Proposed Task Likelihood Score",
+          "paragraphs": [
+            "Both dynamic and static pruning methods were set up on LLaMA-3.1 8B, with a sparsity of 20%, corresponding to the pruning of seven blocks.",
+            "Static pruning experiments in Table 10 show the experimental validation of task-adaptive pruning and our proposed tl scoring method. First, we compare two pruning strategies using batch-PPL: one that applies a fixed omission set based on a Wikitext-calibrated batch (57.24% accuracy) and another that dynamically selects omission sets per task (59.32% accuracy). The improvement confirms the claim that different tasks require different layer sets. Next, keeping the task-wise adaptive setting constant, we replace batch-PPL with our task likelihood (tl) loss for omission set selection. This further improves accuracy from 59.32% to 61.02%, demonstrating that our method is more effective at identifying layers that impact quality of task-specific inference.",
+            "By comparing Batch-PPL Router (58.19%) with PuDDing (Task Likelihood Loss) (61.93%) in Table 10, we observe that our tl metric results in omission sets that generalize better across tasks, contributing to an additional performance gain. When comparing these Table 10 results with Table 10, Batch-PPL static pruning (57.24%) improves with router training (58.19%), and our method (60.12%) also benefits from router training, increasing to 61.93%. This validates that even within the same task, different prompts favor slightly different omission sets, and adapting omission sets dynamically through router training is essential for optimal pruning.",
+            "[Figure: Table 9: Zero-shot accuracy performance of static pruning methods.]",
+            "[Figure: Table 10: Zero-shot accuracy performance of dynamic routing pruning methods.]"
+          ]
+        },
+        {
+          "title": "B.3 Using MSE Loss for Training",
+          "paragraphs": [
+            "In Table 11, we present the result of zero-shot task accuracies in the different router training settings. For the label, a one-hot vector signifies that the router learns only from the highest confidence value within the omission block set derived from the training dataset. In contrast, the log-likelihood label allows the router to incorporate all confidence values during training. Our findings show that training with log-likelihood label leads to improved average accuracy (from 60.16% to 61.93%). Hence, we observe that the mean-squared error (MSE) loss function outperforms cross entropy (CE). As a result, in this case for routers to train for finding optimal omission sets by given prompts, richer information in the label (i.e., un-chosen labels are not assigned to zero values), and employing MSE loss enhances better performance.",
+            "[Figure: Table 11: Zero-shot accuracy comparison between three different training strategy on the router. The best performances are marked in bold, and the runner-up is marked with \\ulunderline.]"
+          ]
+        }
+      ]
+    },
+    "Appendix C Additional Visualizations": {
+      "paragraphs": [
+        "Figure 5 illustrates the dynamic block selection process in various tasks, highlighting that this process has also been analyzed with different models to highlight how the block selection strategy varies not only varying tasks but also depending on the specific architectures of the models.",
+        "[Figure: (a) OPT 6.7B]",
+        "[Figure: (a) OPT 6.7B]",
+        "[Figure: (b) Vicuna 1.5 7B]"
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "Amini et al. (2019) Amini, A., Gabriel, S., Lin, S., Koncel-Kedziorski, R., Choi, Y., and Hajishirzi, H. Mathqa: Towards interpretable math word problem solving with operation-based formalisms. In Proceedings of the 2019 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, Volume 1 (Long and Short Papers), pp. 2357–2367, 2019.",
+    "An et al. (2024) An, Y., Zhao, X., Yu, T., Tang, M., and Wang, J. Fluctuation-based adaptive structured pruning for large language models. In Proceedings of the AAAI Conference on Artificial Intelligence, 2024.",
+    "Ashkboos et al. (2024) Ashkboos, S., Croci, M. L., do Nascimento, M. G., Hoefler, T., and Hensman, J. SliceGPT: Compress large language models by deleting rows and columns. In The Twelfth International Conference on Learning Representations, 2024.",
+    "Bisk et al. (2020) Bisk, Y., Zellers, R., Gao, J., Choi, Y., et al. Piqa: Reasoning about physical commonsense in natural language. In Proceedings of the AAAI conference on artificial intelligence, 2020.",
+    "Brown et al. (2020) Brown, T., Mann, B., Ryder, N., Subbiah, M., Kaplan, J. D., Dhariwal, P., Neelakantan, A., Shyam, P., Sastry, G., Askell, A., et al. Language models are few-shot learners. In Advances in Neural Information Processing Systems, 2020.",
+    "Chiang et al. (2023) Chiang, W.-L., Li, Z., Lin, Z., Sheng, Y., Wu, Z., Zhang, H., Zheng, L., Zhuang, S., Zhuang, Y., Gonzalez, J. E., Stoica, I., and Xing, E. P. Vicuna: An open-source chatbot impressing gpt-4 with 90%* chatgpt quality, March 2023. URL https://lmsys.org/blog/2023-03-30-vicuna/.",
+    "Clark et al. (2019) Clark, C., Lee, K., Chang, M.-W., Kwiatkowski, T., Collins, M., and Toutanova, K. Boolq: Exploring the surprising difficulty of natural yes/no questions. arXiv preprint arXiv:1905.10044, 2019.",
+    "Clark et al. (2018) Clark, P., Cowhey, I., Etzioni, O., Khot, T., Sabharwal, A., Schoenick, C., and Tafjord, O. Think you have solved question answering? try arc, the ai2 reasoning challenge. arXiv preprint arXiv:1803.05457, 2018.",
+    "Devlin et al. (2019) Devlin, J., Chang, M.-W., Lee, K., and Toutanova, K. BERT: Pre-training of deep bidirectional transformers for language understanding. In NAACL-HLT, 2019.",
+    "Dubey et al. (2024) Dubey, A., Jauhri, A., Pandey, A., Kadian, A., Al-Dahle, A., Letman, A., Mathur, A., Schelten, A., Yang, A., Fan, A., et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783, 2024.",
+    "Fedus et al. (2022) Fedus, W., Zoph, B., and Shazeer, N. Switch transformers: Scaling to trillion parameter models with simple and efficient sparsity. Journal of Machine Learning Research, 23(120):1–39, 2022.",
+    "He et al. (2024) He, S., Sun, G., Shen, Z., and Li, A. What matters in transformers? not all attention is needed. arXiv preprint arXiv:2406.15786v6, 2024.",
+    "Hendrycks et al. (2021) Hendrycks, D., Burns, C., Basart, S., Zou, A., Mazeika, M., Song, D., and Steinhardt, J. Measuring massive multitask language understanding. In International Conference on Learning Representations, 2021.",
+    "Hu et al. (2022) Hu, E. J., Wallis, P., Allen-Zhu, Z., Li, Y., Wang, S., Wang, L., Chen, W., et al. Lora: Low-rank adaptation of large language models. In International Conference on Learning Representations, 2022.",
+    "Jacobs et al. (1991) Jacobs, R. A., Jordan, M. I., Nowlan, S. J., and Hinton, G. E. Adaptive mixtures of local experts. Neural computation, 3(1):79–87, 1991.",
+    "Kim et al. (2024) Kim, B.-K., Kim, G., Kim, T.-H., Castells, T., Choi, S., Shin, J., and Song, H.-K. Shortened llama: A simple depth pruning for large language models. arXiv preprint arXiv:2402.02834, 11, 2024.",
+    "Liu et al. (2023) Liu, Z., Wang, J., Dao, T., Zhou, T., Yuan, B., Song, Z., Shrivastava, A., Zhang, C., Tian, Y., Ré, C., et al. Deja vu: contextual sparsity for efficient llms at inference time. In Proceedings of the 40th International Conference on Machine Learning, pp. 22137–22176, 2023.",
+    "Men et al. (2024) Men, X., Xu, M., Zhang, Q., Wang, B., Lin, H., Lu, Y., Han, X., and Chen, W. Shortgpt: Layers in large language models are more redundant than you expect. arXiv preprint arXiv:2403.03853, 2024.",
+    "Merity et al. (2022) Merity, S., Xiong, C., Bradbury, J., and Socher, R. Pointer sentinel mixture models. In International Conference on Learning Representations, 2022.",
+    "Mihaylov et al. (2018) Mihaylov, T., Clark, P., Khot, T., and Sabharwal, A. Can a suit of armor conduct electricity? a new dataset for open book question answering. In Proceedings of the 2018 Conference on Empirical Methods in Natural Language Processing, pp. 2381–2391, 2018.",
+    "Raposo et al. (2024) Raposo, D., Ritter, S., Richards, B., Lillicrap, T., Humphreys, P. C., and Santoro, A. Mixture-of-depths: Dynamically allocating compute in transformer-based language models. arXiv preprint arXiv:2404.02258, 2024.",
+    "Sakaguchi et al. (2021) Sakaguchi, K., Bras, R. L., Bhagavatula, C., and Choi, Y. Winogrande: An adversarial winograd schema challenge at scale. Communications of the ACM, 64(9):99–106, 2021.",
+    "Siddiqui et al. (2024) Siddiqui, S. A., Dong, X., Heinrich, G., Breuel, T., Kautz, J., Krueger, D., and Molchanov, P. A deeper look at depth pruning of llms. arXiv preprint arXiv:2407.16286v1, 2024.",
+    "Song et al. (2024) Song, J., Oh, K., Kim, T., Kim, H., Kim, Y., et al. Sleb: Streamlining llms through redundancy verification and elimination of transformer blocks. In Forty-first International Conference on Machine Learning, 2024.",
+    "Taori et al. (2023) Taori, R., Gulrajani, I., Zhang, T., Dubois, Y., Li, X., Guestrin, C., Liang, P., and Hashimoto, T. B. Stanford alpaca: An instruction-following llama model, 2023.",
+    "Touvron et al. (2023) Touvron, H., Lavril, T., Izacard, G., Martinet, X., Lachaux, M.-A., Lacroix, T., Rozière, B., Goyal, N., Hambro, E., Azhar, F., et al. Llama: Open and efficient foundation language models. arXiv preprint arXiv:2302.13971, 2023.",
+    "Wang et al. (2024) Wang, H., Xie, L., Zhao, H., Zhang, C., Qian, H., Lui, J. C., et al. D-llm: A token adaptive computing resource allocation strategy for large language models. In The Thirty-eighth Annual Conference on Neural Information Processing Systems, 2024.",
+    "Zellers et al. (2019) Zellers, R., Holtzman, A., Bisk, Y., Farhadi, A., and Choi, Y. Hellaswag: Can a machine really finish your sentence? In Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics, pp. 4791–4800, 2019.",
+    "Zhang et al. (2022) Zhang, S., Roller, S., Goyal, N., Artetxe, M., Chen, M., Chen, S., Dewan, C., Diab, M., Li, X., Lin, X. V., et al. Opt: Open pre-trained transformer language models. arXiv preprint arXiv:2205.01068, 2022.",
+    "Zhu (2015) Zhu, Y. Aligning books and movies: Towards story-like visual explanations by watching movies and reading books. arXiv preprint arXiv:1506.06724, 2015."
+  ]
+}

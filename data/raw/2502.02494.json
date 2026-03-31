@@ -1,0 +1,360 @@
+{
+  "title": "Analyzing Similarity Metrics for DataSelection for Language Model Pretraining",
+  "authors": "Dylan SamAyan ChakrabartiAfshin RostamizadehSrikumar RamalingamGui CitovskySanjiv Kumar",
+  "abstract": "Similarity between training examples is used to curate pretraining datasets for language models by many methods—for diversification and to select examples similar to high-quality data. However, similarity is typically measured with off-the-shelf embedding models that are generic or trained for tasks such as retrieval. This paper introduces a framework to analyze the suitability of embedding models specifically for data curation in the language model pretraining setting. We quantify the correlation between similarity in the embedding space to similarity in pretraining loss between different training examples, and how diversifying in the embedding space affects pretraining quality. We analyze a variety of embedding models in our framework, with experiments using the Pile dataset for pretraining a 1.7B parameter decoder-only language model. We find that the embedding models we consider are all useful for pretraining data curation. Moreover, a simple approach of averaging per-token embeddings proves to be surprisingly competitive with more sophisticated embedding models—likely because the latter are not designed specifically for pretraining data curation. Indeed, we believe our analysis and evaluation framework can serve as a foundation for the design of embedding models that specifically reason about similarity in pretraining datasets.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "The recent success of general purpose language models (Brown et al., 2020; Chowdhery et al., 2023) is in no small part due to pretraining on large and diverse text corpora scraped from a variety of sources (Raffel et al., 2020; Gao et al., 2020; Penedo et al., 2024). Such pretraining allows the model to quickly adapt to various downstream tasks with just few-shot prompting or minimal finetuning. And so, researchers have explored a variety of approaches to assemble effective pretraining sets, typically by selecting a high-quality and diverse subset from larger corpora of examples scraped from various sources.",
+        "These data curation approaches have shown promising results by improving example quality and by reducing redundancy in pretraining sets. Many of these methods use notions of similarity between examples. Similarity of an example to text from known high-quality sources (such as Wikipedia) has been used as a proxy for the quality of that example (Gunasekar et al., 2023; Penedo et al., 2024). Meanwhile, methods focused on diversification (Abbas et al., 2023; Tirumala et al., 2023) make direct use of similarity metrics to identify and remove redundant examples.",
+        "In this context, similarity between examples has been measured in terms of distances in an embedding space, and these methods have typically used generic embeddings for this purpose—e.g., intermediate representations learned by language models, or those trained for semantic retrieval. But whether these embeddings are optimal for reasoning about similarity between pretraining examples—and whether there is any benefit to using with more sophisticated and potentially expensive models—remains an open question.",
+        "In this paper, we introduce a framework to analyze and quantify the suitability of a given embedding model for the task of data curation for pretraining language models. We consider the question of what a similarity metric should ideally capture for reasoning about pretraining examples. In this context, we characterize how well similarity in the embedding space correlates with similar pretraining behavior—in particular, similar pretraining losses with respect to the same model state (see Fig. 1). We also quantify whether the embedding space is able to separate examples from different data sources from among a mixture of these sources, with the assumption that these sources were curated by human expertise and combined since they were found to be complementary. And last but not least, we use the embeddings in a simple diversification recipe in curating a pretraining set and measure the gain in quality of the resulting pretrained model over a large number of downstream tasks.",
+        "We conduct these experiments using the Pile (Gao et al., 2020) as our data corpus, and in the context of pretraining a 1.7B decoder-only language model with a UL2 objective (Tay et al., 2022). We evaluate a number of different embeddings models—from representations of generic language models (e.g., trained with mask-based reconstruction or mixtures of pretraining objectives) to embeddings specifically trained for retrieval or semantic equivalence.",
+        "Our results find that most embeddings bring some utility to the pretraining data curation setting—in particular, diversity-based pretraining data curation with all of the embeddings that we consider outperforms baseline training. But perhaps surprisingly, a very simple embedding approach—derived from averaging over the independent per-token embeddings from the input layer of a small language model—performs fairly competitively to more sophisticated and computationally expensive approaches.",
+        "These results also strongly suggest that embedding models for reasoning about pretraining examples should be specialized, and that the attributes that make an embedding suitable for semantic matching and retrieval may not translate to benefits for the pretraining setting. More broadly, our work establishes a framework to evaluate current embeddings, and facilitate the design of new ones, for the important task of data curation for language model pretraining."
+      ],
+      "subsections": []
+    },
+    "2 Related Work": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Data Curation.",
+          "paragraphs": [
+            "Many works have studied the problem of selecting high-quality and informative subsets from a larger corpus for efficient and effective language pretraining (Albalak et al., 2024). Indeed, works have shown that data curation for pretraining (both for language and vision-language models) improves neural scaling laws (Sorscher et al., 2022), and that curation techniques should be aware of the particular compute budget (Goyal et al., 2024).",
+            "One family of works approaches data curation with the goal of retaining only high quality examples. The simplest approaches in this family look at heuristics that can filter out noisy or extremely low-quality instances such as documents containing less than 5 sentences or those with extremely short lines of text (Raffel et al., 2020; Xue, 2020). Beyond these heuristic approaches, a line of work focus on extracting high-quality examples based on similarity to known high-quality sources, such as Wikipedia or textbooks (Gunasekar et al., 2023; Penedo et al., 2024). Other works look at creating targeted sets—defining quality in terms of their relevance for particular downstream tasks (Xie et al., 2023), with some creating these by adaptively updating weights over domain mixtures (Xie et al., 2024; Jiang et al., 2024).",
+            "The other family of data curation approaches focus on pruning datasets to ensure a notion of diversity (Abbas et al., 2023, 2024; Tirumala et al., 2023). While some of these works (Abbas et al., 2024; Tirumala et al., 2023) compare different embedding models as part of brief ablations, these comparisons are in the narrow context of their specific divsersification algorithms, and do not provide intuition as to why one embedding may perform better than another.",
+            "Finally, it is worth mentioning that some works in data selection use the model being trained as part of the selection process, often through the use of influence functions or gradient-based methods (Garima et al., 2020; Xia et al., 2024; Engstrom et al., 2024). However, these are typically used during for data-curation for multi-epoch training on small datasets or only during the finetuning stage, and would be prohibitively expensive to use for pretraining."
+          ]
+        },
+        {
+          "title": "Text Embedding Models.",
+          "paragraphs": [
+            "Another related line of work is the task of learning embedding models for text. Many various approaches to learn text embedding models, with objectives including mask-based reconstruction (Devlin, 2018; Liu et al., 2019), a combination of multiple different tasks (Cer, 2018), and contrastive learning-based approaches (Gao et al., 2021; Neelakantan et al., 2022; Izacard et al., 2022; Lee et al., 2024). More recent work has demonstrated extracting embeddings via prompting, specifically designed for predicting model performance (Sam et al., 2025).",
+            "These embedding models have largely been studied in the context for classification or similarity measures (Gomaa et al., 2013; Agirre et al., 2013, 2016), and recent focus has been improving performance on aggregate on large-scale benchmarks (Muennighoff et al., 2022) that are comprised of multiple tasks (e.g., retrieval, clustering, classification, ranking). Many models that achieve strong performance on these large-scale benchmarks have benefitted from scaling (Jiang et al., 2023; Chowdhery et al., 2023), with the help of distilled information from autoregressive models (Lee et al., 2024). However, this has conflicting incentives with their utility in the pretraining setting, as large text embedding models are impractical and too computationally expensive to run inference over the full pretraining corpus. To the best of our knowledge, our work provides the first study of various text embedding models for pretraining data curation."
+          ]
+        }
+      ]
+    },
+    "3 Evaluating Embeddings for Pretraining Data Curation": {
+      "paragraphs": [
+        "We now describe our approach to analyze and evaluate a given embedding model in terms of its suitability for reasoning about similarity among pretraining examples. As mentioned above, similarity is used to (a) find examples that are similar to known “desirable” examples (e.g., examples of known high-quality or those representing downstream tasks of interest) and to (b) discover and remove redundancies in the pretraining corpus. Accordingly, we design experiments that measure an text embedding model’s performance towards these criteria."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Evaluating Correlation with Pretraining Loss",
+          "paragraphs": [
+            "We begin by evaluating whether low distances in a model’s embedding space correlates with similar values of difficulty, which we measure by intermediate losses during language model pretraining. To do so, we first use a balanced K-Means clustering algorithm in the given embedding space to cluster all examples in the pretraining set for a target cluster size. Then, we look at the variance of loss values within each cluster. We note that we use balanced clustering (allowing only some variation in the sizes of different clusters) to ensure that average within-cluster variance is comparable across clusterings in different embedding spaces. We repeat this process for a multiple target cluster sizes for all embeddings.",
+            "When reporting our results, we measure variance reduction, or the ratio of the overall variance across all examples in the pretraining dataset to the variance in loss computed within clusters in the given embedding space. Specifically, we define variance reduction as",
+            "where C={C1,…,Cm}C=\\{C_{1},...,C_{m}\\} is a partition of all datapoints in the dataset DD, and ℂ\\mathbbm{C} is a uniform distribution over each disjoint set in the partition CC. This metric can be interpreted as a measure of predicting pretraining generalization, as nearby points have similar loss values. We remark that random clusters achieve a variance reduction of 1, and larger values of variance reduction imply that points with more similar pretraining loss are clustered together.",
+            "A high value of variance reduction implies that similarity in the embedding space correlates well with pretraining loss. While an isolated pair of examples having similar pretraining loss may be entirely unrelated in quality and content, the fact that an embedding space that consistently brings together examples of similar loss values strongly suggests that these similar examples will behave similarly in terms of contributing to the quality of the language model.",
+            "Beyond finding examples of similar quality and utility, a high variance reduction score implies that the clustering above can serve as a particularly useful proxy for more dynamic and online data sampling strategies (Xie et al., 2024), reducing the number of required forward passes in strategies where datapoints are selected based on their current pretraining loss. This also has implications towards approaches that look to self-improve models through propagating labeled information to nearby examples (Wei et al., 2021; Cai et al., 2021; Pukdee et al., 2023), such as weak-to-strong generalization (Burns et al., 2023)."
+          ]
+        },
+        {
+          "title": "3.2 Measuring Cluster Purity of Data Sources",
+          "paragraphs": [
+            "Next, we study the purity of the respective (K-Means) clusters generated with each considered embedding model with respect to the underlying data source or mixture. Large pretraining datasets such as the Pile (Gao et al., 2020) are comprised of various distinct yet complementary hand-curated data sources (e.g., high quality sources such as Wikipedia, code-based data, data from medical domains). While there may be some similarities between datapoints from different domains, we believe that clusters should generally group points from the same domain together and separate isntances from different domains. In fact, we remark that since embedding models are generally not trained with explicit knowledge of source labels or any domain metadata, and the ability to group together data from the same source and distinguish those from different sources shows an embedding model’s alignment with human judgement (or at least that of the dataset curators).",
+            "Letting s∈{0,⋯,S}s\\in\\{0,\\cdots,S\\} represent the index of the source in some finite number of sources SS, we compute the cluster purity of a set of clusters CC as",
+            "where DsD_{s} represents the subset of datapoints that are from source ss. Intuitively, this represents the proportion of the maximum frequency source to the total cluster size. A cluster purity of 1 represents a clustering that completely separates examples from different domains."
+          ]
+        },
+        {
+          "title": "3.3 Diversification-based Pretraining Data Curation",
+          "paragraphs": [
+            "Prior work has demonstrated that diversification, based on similarity in embedding spaces, can yield more effective pretraining datasets that in-turn lead to improved models (Tirumala et al., 2023). While the diversification techniques themselves tend to be sophisticated, our goal here is to evaluate the utility of a given embedding for diversification. Therefore, we use a simplified version of these diversification of approaches to (1) select a subset from a larger pretraining corpus, (2) pretrain a model on this curated subset, and then (3) report performance on a large set of downstream tasks.",
+            "We begin by clustering the larger pretraining corpus in the given embedding space; in contrast to Section 3.1 and Section 3.2, we do not use balanced clustering which can lead to clusters with a wide variation in “diameters” (distances among points in the same cluster). Instead, since the goal here is diversification, we find clusters such that distances between all pairs of points in the same cluster are within a specified threshold ϵ\\epsilon.",
+            "Given clusters of pretraining data, prior work often uses complex pruning or sampling schemes from large clusters. For simplicity, we simply take the point in each cluster that is closest to the cluster centroid (i.e., the average embedding of all points in the cluster), which likely represents the most representative example for that cluster. We note that prior work (Tirumala et al., 2023) emphasizes the importance of a deduplication step in language model pretraining, and our curation strategy implicitly performs this process when selecting only a single point from each cluster.",
+            "Given that we select a single point from each cluster, this implies that we need the number of clusters to be equal or greater to the number of desired pretraining examples. In practice, we sweep a large grid of ϵ\\epsilon values and select the largest threshold that still produces a sufficient number of clusters. Another important point of note is that producing such a large number of clusters is computationally expensive. To be able to scale to such a large number of clusters, we use the reciprocal agglomerative clustering (RAC) (Sumengen et al., 2021) algorithm. This has the advantage of building a clustering from progressively larger values of ϵ\\epsilon, which works well with our need of a grid search over values of ϵ\\epsilon.",
+            "Finally, we pretrain a language model on the selected subset of examples, and measure few-shot performance of the pretrained model on a diverse variety of downstream tasks."
+          ]
+        }
+      ]
+    },
+    "4 Experiments": {
+      "paragraphs": [
+        "We analyze various different approaches to extract text embeddings across multiple different pretraining settings."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Experiment Details",
+          "paragraphs": [
+            "For text embedding models, we compare Universal Sentence Encoders (USE) (Cer, 2018), which are general purpose text encoders, and Gecko (Lee et al., 2024), a retrieval-focused text embedding model trained via synthetic data distilled from LLMs, and BERT (Devlin, 2018) models. We also compare against various techniques to extract embeddings from a small version of the downstream language model we are training (e.g., a 200M parameter language model). First, we extract an embedding by simply averaging the token embeddings matrix over all tokens in the input sequence, which we refer to as LM Token Embeds. We note that this is equivalent to a learned unigram model (i.e., ignoring all positional information). We also extract an embeddings from a forward pass of the language model by averaging the activations over all tokens in the input sequence at the final hidden layer, which we refer to as LM Output Embeds. In our diversity-based pretraining data curation experiments, we also add a comparison to a naive, random subset selection (Baseline) to evaluate how much benefit is added from our standardized curation strategy with these various embedding models.",
+            "To make clustering with a large number of output clusters feasible and efficient at pretraining data scales, we perform dimensionality reduction using PCA on a large subset of the datapoints (∼\\sim500,000 examples) and extract the top 64 dimensions upon which to project. The projected embeddings are then normalized to have a unit L2 norm. We also explore using random projections (Bingham & Mannila, 2001) as a different dimensionality reduction strategy, finding that random projections do not perform as well as PCA (see Section 4.5 for ablation studies).",
+            "For all of our experiments (e.g., pretraining data curation and predicting loss generalization), we use the Pile (Gao et al., 2020). We pack together documents into a sequence of length 1280, with “[eod]” as delimeters between documents.",
+            "For our pretraining experiments, we train a 1.7B parameter decoder-only language model with a UL2 objective (Tay et al., 2022), on the curated subset of the Pile data through the process outlined in Section 3.3. We use a selection budget of 200B tokens, which is approximately 20% of sequences from the Pile. This corresponds to roughly 170 million clusters for each embedding model, with an average cluster size of 5 examples.",
+            "We pretrain with a learning rate of 0.001 with a linear decay and a batch size of 1024. For our tokenizer, we use sentencepiece with a vocabulary size of 256k tokens. For our pretraining evaluation, we consider the same downstream evaluation datasets from the work of Brown et al. (2020). This invovles a wide variety of 1-shot scoring tasks, as well as open-ended text generation tasks. The full details about our evaluation sets are deferred to Section B.1. For the embeddings produced via LM Token Embeds and LM Output Embeds, we train a 200M parameter language model in the same fashion as above, where we train on a total of 200B randomly selected tokens."
+          ]
+        },
+        {
+          "title": "Text Embedding Models",
+          "paragraphs": [
+            "For text embedding models, we compare Universal Sentence Encoders (USE) (Cer, 2018), which are general purpose text encoders, and Gecko (Lee et al., 2024), a retrieval-focused text embedding model trained via synthetic data distilled from LLMs, and BERT (Devlin, 2018) models. We also compare against various techniques to extract embeddings from a small version of the downstream language model we are training (e.g., a 200M parameter language model). First, we extract an embedding by simply averaging the token embeddings matrix over all tokens in the input sequence, which we refer to as LM Token Embeds. We note that this is equivalent to a learned unigram model (i.e., ignoring all positional information). We also extract an embeddings from a forward pass of the language model by averaging the activations over all tokens in the input sequence at the final hidden layer, which we refer to as LM Output Embeds. In our diversity-based pretraining data curation experiments, we also add a comparison to a naive, random subset selection (Baseline) to evaluate how much benefit is added from our standardized curation strategy with these various embedding models.",
+            "To make clustering with a large number of output clusters feasible and efficient at pretraining data scales, we perform dimensionality reduction using PCA on a large subset of the datapoints (∼\\sim500,000 examples) and extract the top 64 dimensions upon which to project. The projected embeddings are then normalized to have a unit L2 norm. We also explore using random projections (Bingham & Mannila, 2001) as a different dimensionality reduction strategy, finding that random projections do not perform as well as PCA (see Section 4.5 for ablation studies)."
+          ]
+        },
+        {
+          "title": "Dataset Details",
+          "paragraphs": [
+            "For all of our experiments (e.g., pretraining data curation and predicting loss generalization), we use the Pile (Gao et al., 2020). We pack together documents into a sequence of length 1280, with “[eod]” as delimeters between documents."
+          ]
+        },
+        {
+          "title": "Pretraining Details",
+          "paragraphs": [
+            "For our pretraining experiments, we train a 1.7B parameter decoder-only language model with a UL2 objective (Tay et al., 2022), on the curated subset of the Pile data through the process outlined in Section 3.3. We use a selection budget of 200B tokens, which is approximately 20% of sequences from the Pile. This corresponds to roughly 170 million clusters for each embedding model, with an average cluster size of 5 examples.",
+            "We pretrain with a learning rate of 0.001 with a linear decay and a batch size of 1024. For our tokenizer, we use sentencepiece with a vocabulary size of 256k tokens. For our pretraining evaluation, we consider the same downstream evaluation datasets from the work of Brown et al. (2020). This invovles a wide variety of 1-shot scoring tasks, as well as open-ended text generation tasks. The full details about our evaluation sets are deferred to Section B.1. For the embeddings produced via LM Token Embeds and LM Output Embeds, we train a 200M parameter language model in the same fashion as above, where we train on a total of 200B randomly selected tokens."
+          ]
+        },
+        {
+          "title": "4.2 Pretraining Loss Correlation Results",
+          "paragraphs": [
+            "To measure the ability of embedding models to reflect pretraining loss generalization and to cluster together datapoints with similar difficulty, we report their variance reduction as we vary (1) the number of gradient updates in language model pretraining and (2) as we vary the average cluster size in our K-Means clustering.",
+            "We observe that embeddings produced via a small UL2 model (i.e., LM Token Embeds and LM Output Embeds) trained on the same data achieve a much larger reduction in loss variance when compared to off-the-shelf models; these embeddings produce better clusters with datapoints with similar intermediate pretraining losses (Figure 2). These trends hold across multiple different intermediate training checkpoints and for all different cluster sizes. This suggests that training models specifically on the data to perform data curation is preferable to using off-the-shelf embedding models for predicting pretraining loss generalization. Furthermore, we also generally observe that newer embedding models (e.g., Gecko) do not improve upon older alternatives (e.g., BERT and USE), supporting that embedding model improvements in other settings such as retrieval do not translate to this application in the pretraining setting.",
+            "To better interpret what is computed by these similarity metrics, we also visualize pairs of datapoints from the various clusters in Figure 1 to understand what types of examples are placed closely together and which have similar pretraining losses. We randomly sample 3 clusters produced by K-Means clusters with the smallest average cluster size with the LM Output Embeds method to extract embeddings. We randomly sample 2 points from these 3 clusters and observe that samples from the same cluster are thematically similar, although they contains very different information (e.g., the last example referring to two different people in history with some governmental relations, although from different times and different countries). We observe that pretraining losses are similar between within-cluster examples, and lower distances correspond to lower differences in pretraining loss."
+          ]
+        },
+        {
+          "title": "Visualizing Within-Cluster Examples",
+          "paragraphs": [
+            "To better interpret what is computed by these similarity metrics, we also visualize pairs of datapoints from the various clusters in Figure 1 to understand what types of examples are placed closely together and which have similar pretraining losses. We randomly sample 3 clusters produced by K-Means clusters with the smallest average cluster size with the LM Output Embeds method to extract embeddings. We randomly sample 2 points from these 3 clusters and observe that samples from the same cluster are thematically similar, although they contains very different information (e.g., the last example referring to two different people in history with some governmental relations, although from different times and different countries). We observe that pretraining losses are similar between within-cluster examples, and lower distances correspond to lower differences in pretraining loss."
+          ]
+        },
+        {
+          "title": "4.3 Cluster Purity Results",
+          "paragraphs": [
+            "To better understand and interpret the similarity metrics defined by these embedding models, we measure the purity of clusters with respect to the underlying data source. We again remark that none of these embedding models have been trained with knowledge of the data source. Overall, we observe that most embedding models produce fairly pure clusters, where a majority of points come from the same underlying data source (Figure 3). This supports that these embeddings models are generally aligned with human judgement about differences between types of data.",
+            "We observe that the embeddings extracted from the small version of the trained downstream language model achieve the highest cluster purity. We also note that Gecko embeddings achieve the third-highest cluster purity, whereas it performs poorly on the task of predicting loss generalization through variance reduction. This suggests that an improved ability to predict pretraining loss generalization cannot simply be explained via producing clusters that are more pure with respect to underlying data sources. Future work could explore incorporating domain information or metadata into the embedding model’s learning objective, as a form of weak supervision (Sam & Kolter, 2023)."
+          ]
+        },
+        {
+          "title": "4.4 Diversification-based Pretraining Data Curation Results",
+          "paragraphs": [
+            "We report the average downstream task performance of language models trained on pretraining data subsets produced by using various embedding models in the simple diversity-based data curation strategy in Table 1. We first observe that the standardized diversity-based data curation technique applied to all embedding models (both off-the-shelf and those based on small downstream trained language models) outperform the naive random subset selection baseline. Secondly, we observe the LM Output Embeds and Gecko embeddings achieve the best and second-best performance when averaged across all tasks, respectively.",
+            "A notable result is that LM Token Embeds performs comparably to Gecko, while outperforming all the other off-the-shelf embedding models. This is of practical interest due to the simplicity of producing these embeddings; they are simply constructed via averaging over the learned token embeddings and, consequently, are extremely quick to compute in comparison to all other embedding methods. Thus, LM Token Embeds serves as a powerful alternative in settings that are compute-limited.",
+            "These pretraining results also suggest that even simple notions of similarity, even those that do not account for positional information, are sufficient for many pretraining data curation applications. Finally, they support that the training of models specifically for this task (e.g., on the same pretraining dataset) is preferable to the use of general purpose off-the-shelf embedding models."
+          ]
+        },
+        {
+          "title": "4.5 Ablations",
+          "paragraphs": [
+            "We present ablations on the various dimensionality reduction strategies (i.e., technique and resulting size) that we use for the embedding models before running clustering. We present the ablations on Gecko and LM Output Embeds here and defer results on others embeddings to Appendix A.",
+            "The dimensionality of the embeddings used in clustering often must be low for pretraining scales. Here, we run an ablation studying the role of dimensionality (i.e., the number of components in PCA onto which the embeddings are projected) in the variance reduction through clustering (Figure 4). We remark that scaling clustering to accommodate smaller average cluster sizes (i.e., more cluster centers) is intractable for embeddings that have high dimensionality. Thus, we can only report results on various embeddings with a large number (i.e., 256) of components in PCA with larger average cluster sizes. We observe the trend across all embeddings that a higher dimension and larger number of PCA components improves the embedding models’ ability to cluster points by pretraining loss (see other embedding model results in Appendix A.1).",
+            "Another common technique to perform dimensionality reduction (especially with respect to maintaining pairwise distances and similarities) is to use random projections. We experiment with using random projections in our loss clustering experiments and observe that it is outperformed by PCA in terms of variance reduction across all cluster sizes (Figure 5)."
+          ]
+        },
+        {
+          "title": "Impact of Dimensionality on Variance Reduction",
+          "paragraphs": [
+            "The dimensionality of the embeddings used in clustering often must be low for pretraining scales. Here, we run an ablation studying the role of dimensionality (i.e., the number of components in PCA onto which the embeddings are projected) in the variance reduction through clustering (Figure 4). We remark that scaling clustering to accommodate smaller average cluster sizes (i.e., more cluster centers) is intractable for embeddings that have high dimensionality. Thus, we can only report results on various embeddings with a large number (i.e., 256) of components in PCA with larger average cluster sizes. We observe the trend across all embeddings that a higher dimension and larger number of PCA components improves the embedding models’ ability to cluster points by pretraining loss (see other embedding model results in Appendix A.1)."
+          ]
+        },
+        {
+          "title": "Dimensionality Reduction Techniques",
+          "paragraphs": [
+            "Another common technique to perform dimensionality reduction (especially with respect to maintaining pairwise distances and similarities) is to use random projections. We experiment with using random projections in our loss clustering experiments and observe that it is outperformed by PCA in terms of variance reduction across all cluster sizes (Figure 5)."
+          ]
+        }
+      ]
+    },
+    "5 Discussion": {
+      "paragraphs": [
+        "We analyze the fundamental role of computing similarity in pretraining data curation, finding that coarse-grained notions of similarity are particularly useful and that specific models (even simple ones based on averaging learned token embeddings) can outperform other off-the-shelf embedding models. We believe that both our results and the new evaluation framework for similarity metrics provide new insights into the role of similarity in pretraining data curation. For instance, our variance reduction results shows that embedding models tightly cluster points with similar values of pretraining losses, which has larger implications for dynamic data selection. Future work could study that, during training, we can compute the loss on the centroid in each cluster, and use this to select clusters on which to train, that contain points with high values of these intermediate loss. Our method has other, broad potential applications in the pretraining data setting, such as selecting task-specific data for finetuning (Xia et al., 2024) or even in evaluating the generation of synthetic data for (Meng et al., 2022; Sam et al., 2024) by looking at the distance between these potential data to be selected or generated and real data. Finally, our results highlight the benefits for designing models specifically for language model pretraining settings, and our framework provides an evaluation to exactly capture their utility."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Additional Experimental Results": {
+      "paragraphs": [
+        "[Figure: Figure 6: Ablation on the number of components in PCA for embeddings from BERT, USE, and LM Token Embeds. Results are averaged over 50 million sampled clusters from the Pile.]",
+        "[Figure: Figure 7: Ablation where we compare using Random Projections for dimensionality reduction with embeddings from BERT, USE, and LM Token Embeds. Results are averaged over 50 million sampled clusters from the Pile.]"
+      ],
+      "subsections": [
+        {
+          "title": "A.1 Impact of Dimensionality Reduction on Variance Reduction",
+          "paragraphs": [
+            "We now present the remaining results for other embedding models, when we ablate the number of components used in PCA for K-Means clustering, specifically when looking at the reduction in variance of pretraining loss of points within the same cluster. We observe that more components in PCA indeed help achieve higher variance reduction across all embedding models.",
+            "[Figure: Figure 6: Ablation on the number of components in PCA for embeddings from BERT, USE, and LM Token Embeds. Results are averaged over 50 million sampled clusters from the Pile.]"
+          ]
+        },
+        {
+          "title": "A.2 Comparison of Random Projections to PCA for Dimensionality Reduction",
+          "paragraphs": [
+            "We now present the remaining results for other embedding models, when we use Random Projections for dimensionality reduction instead of using PCA. We consistently observe that embeddings paired with PCA outperform those using Random Projections.",
+            "[Figure: Figure 7: Ablation where we compare using Random Projections for dimensionality reduction with embeddings from BERT, USE, and LM Token Embeds. Results are averaged over 50 million sampled clusters from the Pile.]"
+          ]
+        }
+      ]
+    },
+    "Appendix B Additional Experimental Details": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "B.1 Additional Evaluation Details",
+          "paragraphs": [
+            "We report results averaged over a large numer of downstream tasks. These datasets largely follow two categories: scoring and decoding tasks. Scoring tasks primarly look at the output distribution of the model, while decoding tasks look at text generations from the language model. Scoring tasks are performed as 1-shot (i.e., giving one demonstration of format and answer), while decoding is performed zeroshot. For scoring tasks, we look at the standard top-1 accuracy. The list of scoring tasks is as follows:",
+            "• ARC Challenge: Easy and Challenge (Clark et al., 2018)",
+            "• BoolQ (Clark et al., 2019)",
+            "• SuperGLUE - CB and Copa (Wang et al., 2019)",
+            "• HellaSwag (Zellers et al., 2019)",
+            "• MultiRC (Khashabi et al., 2018)",
+            "• OpenBookQA (Mihaylov et al., 2018)",
+            "• PIQA (Bisk et al., 2020)",
+            "• RACE-H and RACE-M (Lai et al., 2017)",
+            "• ReCoRD (Zhang et al., 2018)",
+            "• RTE (Dagan et al., 2010)",
+            "• Story Cloze (Mostafazadeh et al., 2016)",
+            "• WIC (Pilehvar & Camacho-Collados, 2018)",
+            "• Winograd (Levesque et al., 2012)",
+            "• WinoGrande (Sakaguchi et al., 2021)",
+            "• WSC (Levesque et al., 2012)",
+            "ARC Challenge: Easy and Challenge (Clark et al., 2018)",
+            "BoolQ (Clark et al., 2019)",
+            "SuperGLUE - CB and Copa (Wang et al., 2019)",
+            "HellaSwag (Zellers et al., 2019)",
+            "MultiRC (Khashabi et al., 2018)",
+            "OpenBookQA (Mihaylov et al., 2018)",
+            "PIQA (Bisk et al., 2020)",
+            "RACE-H and RACE-M (Lai et al., 2017)",
+            "ReCoRD (Zhang et al., 2018)",
+            "RTE (Dagan et al., 2010)",
+            "Story Cloze (Mostafazadeh et al., 2016)",
+            "WIC (Pilehvar & Camacho-Collados, 2018)",
+            "Winograd (Levesque et al., 2012)",
+            "WinoGrande (Sakaguchi et al., 2021)",
+            "WSC (Levesque et al., 2012)",
+            "For decoding or text generation tasks, we evaluate the language model outputs with its F1 score. Decoder tasks are also evaluated as 1-shot. The list of decoding tasks is as follows:",
+            "• Lambada (Paperno et al., 2016)",
+            "• Natural Questions (Kwiatkowski et al., 2019)",
+            "• Squad v2 (Rajpurkar et al., 2018)",
+            "• Trivia QA Wiki (Joshi et al., 2017)",
+            "• Web Questions (Berant et al., 2013)",
+            "Lambada (Paperno et al., 2016)",
+            "Natural Questions (Kwiatkowski et al., 2019)",
+            "Squad v2 (Rajpurkar et al., 2018)",
+            "Trivia QA Wiki (Joshi et al., 2017)",
+            "Web Questions (Berant et al., 2013)"
+          ]
+        },
+        {
+          "title": "B.2 Additional Embedding Model Details",
+          "paragraphs": [
+            "The embedding models of BERT, Gecko and USE are trained with sequence lengths of 512, which we apply on the first 512 tokens of data from the Pile. For Gecko, we use the 110 million parameter model version, while for USE we use the 109 million parameter version. For BERT, we also use a 109 million parameter model. For the small language model that we train with the UL2 objective, we use one with approximately 200 million parameters.",
+            "Both the off-the-shelf BERT and USE embedding models have a dimensionality of 512. The Gecko embedding model has a dimensionality of 768. The small language model has a token embedding dimension of 512 and an hidden activation dimension of 512, which means that both LM Token Embeds and LM Output Embeds have 512 dimensions."
+          ]
+        },
+        {
+          "title": "B.3 Additional Hyperparameter Details",
+          "paragraphs": [
+            "For performing RAC clustering for our pretraining experiments, we use a value of ϵ\\epsilon as the particular diameter of clusters:",
+            "• USE: ϵ=0.2\\epsilon=0.2, which defines roughly 225 million clusters",
+            "• Gecko: ϵ=0.2\\epsilon=0.2, which defines roughly 220 million clusters",
+            "• BERT: ϵ=0.001\\epsilon=0.001, which defines roughly 175 million clusters",
+            "• LM Token Embeds: ϵ=0.001\\epsilon=0.001, which defines roughly 170 million clusters",
+            "• LM Output Embeds: ϵ=0.03\\epsilon=0.03, which defines roughly 180 million clusters",
+            "USE: ϵ=0.2\\epsilon=0.2, which defines roughly 225 million clusters",
+            "Gecko: ϵ=0.2\\epsilon=0.2, which defines roughly 220 million clusters",
+            "BERT: ϵ=0.001\\epsilon=0.001, which defines roughly 175 million clusters",
+            "LM Token Embeds: ϵ=0.001\\epsilon=0.001, which defines roughly 170 million clusters",
+            "LM Output Embeds: ϵ=0.03\\epsilon=0.03, which defines roughly 180 million clusters",
+            "For our K-Means clustering, we perform clustering at 4 different levels of granularity in our variance reduction and cluster purity results. We create four sets of clusterings with an average cluster size of 25, 50, 100, 150, with a minimum cluster size of 15\\frac{1}{5} times the average cluster size and a maximum cluster size of 55 times the average cluster size. For both RAC and K-Means, we use the squared L2 (Euclidean) distance."
+          ]
+        },
+        {
+          "title": "Clustering",
+          "paragraphs": [
+            "For performing RAC clustering for our pretraining experiments, we use a value of ϵ\\epsilon as the particular diameter of clusters:",
+            "• USE: ϵ=0.2\\epsilon=0.2, which defines roughly 225 million clusters",
+            "• Gecko: ϵ=0.2\\epsilon=0.2, which defines roughly 220 million clusters",
+            "• BERT: ϵ=0.001\\epsilon=0.001, which defines roughly 175 million clusters",
+            "• LM Token Embeds: ϵ=0.001\\epsilon=0.001, which defines roughly 170 million clusters",
+            "• LM Output Embeds: ϵ=0.03\\epsilon=0.03, which defines roughly 180 million clusters",
+            "USE: ϵ=0.2\\epsilon=0.2, which defines roughly 225 million clusters",
+            "Gecko: ϵ=0.2\\epsilon=0.2, which defines roughly 220 million clusters",
+            "BERT: ϵ=0.001\\epsilon=0.001, which defines roughly 175 million clusters",
+            "LM Token Embeds: ϵ=0.001\\epsilon=0.001, which defines roughly 170 million clusters",
+            "LM Output Embeds: ϵ=0.03\\epsilon=0.03, which defines roughly 180 million clusters",
+            "For our K-Means clustering, we perform clustering at 4 different levels of granularity in our variance reduction and cluster purity results. We create four sets of clusterings with an average cluster size of 25, 50, 100, 150, with a minimum cluster size of 15\\frac{1}{5} times the average cluster size and a maximum cluster size of 55 times the average cluster size. For both RAC and K-Means, we use the squared L2 (Euclidean) distance."
+          ]
+        },
+        {
+          "title": "B.4 Dimensionality Reduction Details",
+          "paragraphs": [
+            "For running our dimensionality reduction via PCA, we compute the means and components on which to project on a subset of the data (∼\\sim500,000 points). We first standardize the embeddings to have a mean of 0 and variance of 1 before running PCA. As previously mentioned, after projecting onto the desired number of principal components, we perform L2 normalization.",
+            "For our random projections, we use a sparse random projections onto values of −n64,0,n64-\\frac{\\sqrt{n}}{\\sqrt{64}},0,\\frac{\\sqrt{n}}{\\sqrt{64}} with probabilities 14,12,14\\frac{1}{4},\\frac{1}{2},\\frac{1}{4} respectively (i.e., the default parameters via scikit-learn). We also L2 normalize the result of random projections."
+          ]
+        },
+        {
+          "title": "B.5 Compute Details",
+          "paragraphs": [
+            "Pretraining experiments for our 1.7B parameter language models are run on 512 v5 TPUs, where each pretraining run takes approximately 3 days."
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "Abbas et al. (2023) Abbas, A., Tirumala, K., Simig, D., Ganguli, S., and Morcos, A. S. Semdedup: Data-efficient learning at web-scale through semantic deduplication. arXiv preprint arXiv:2303.09540, 2023.",
+    "Abbas et al. (2024) Abbas, A. K. M., Rusak, E., Tirumala, K., Brendel, W., Chaudhuri, K., and Morcos, A. S. Effective pruning of web-scale datasets based on complexity of concept clusters. In The Twelfth International Conference on Learning Representations, 2024. URL https://openreview.net/forum?id=CtOA9aN8fr.",
+    "Agirre et al. (2013) Agirre, E., Cer, D., Diab, M., Gonzalez-Agirre, A., and Guo, W. * sem 2013 shared task: Semantic textual similarity. In Second joint conference on lexical and computational semantics (* SEM), volume 1: proceedings of the Main conference and the shared task: semantic textual similarity, pp. 32–43, 2013.",
+    "Agirre et al. (2016) Agirre, E., Banea, C., Cer, D., Diab, M., Gonzalez Agirre, A., Mihalcea, R., Rigau Claramunt, G., and Wiebe, J. Semeval-2016 task 1: Semantic textual similarity, monolingual and cross-lingual evaluation. In SemEval-2016. 10th International Workshop on Semantic Evaluation; 2016 Jun 16-17; San Diego, CA. Stroudsburg (PA): ACL; 2016. p. 497-511. ACL (Association for Computational Linguistics), 2016.",
+    "Albalak et al. (2024) Albalak, A., Elazar, Y., Xie, S. M., Longpre, S., Lambert, N., Wang, X., Muennighoff, N., Hou, B., Pan, L., Jeong, H., Raffel, C., Chang, S., Hashimoto, T., and Wang, W. Y. A survey on data selection for language models. ArXiv, abs/2402.16827, 2024.",
+    "Berant et al. (2013) Berant, J., Chou, A., Frostig, R., and Liang, P. Semantic parsing on freebase from question-answer pairs. In Proceedings of the 2013 conference on empirical methods in natural language processing, pp. 1533–1544, 2013.",
+    "Bingham & Mannila (2001) Bingham, E. and Mannila, H. Random projection in dimensionality reduction: applications to image and text data. In Proceedings of the seventh ACM SIGKDD international conference on Knowledge discovery and data mining, pp. 245–250, 2001.",
+    "Bisk et al. (2020) Bisk, Y., Zellers, R., Gao, J., Choi, Y., et al. Piqa: Reasoning about physical commonsense in natural language. In Proceedings of the AAAI conference on artificial intelligence, 2020.",
+    "Brown et al. (2020) Brown, T., Mann, B., Ryder, N., Subbiah, M., Kaplan, J. D., Dhariwal, P., Neelakantan, A., Shyam, P., Sastry, G., Askell, A., et al. Language models are few-shot learners. Advances in neural information processing systems, 33:1877–1901, 2020.",
+    "Burns et al. (2023) Burns, C., Izmailov, P., Kirchner, J. H., Baker, B., Gao, L., Aschenbrenner, L., Chen, Y., Ecoffet, A., Joglekar, M., Leike, J., et al. Weak-to-strong generalization: Eliciting strong capabilities with weak supervision. arXiv preprint arXiv:2312.09390, 2023.",
+    "Cai et al. (2021) Cai, T., Gao, R., Lee, J., and Lei, Q. A theory of label propagation for subpopulation shift. In International Conference on Machine Learning, pp. 1170–1182. PMLR, 2021.",
+    "Cer (2018) Cer, D. Universal sentence encoder. arXiv preprint arXiv:1803.11175, 2018.",
+    "Chowdhery et al. (2023) Chowdhery, A., Narang, S., Devlin, J., Bosma, M., Mishra, G., Roberts, A., Barham, P., Chung, H. W., Sutton, C., Gehrmann, S., et al. Palm: Scaling language modeling with pathways. Journal of Machine Learning Research, 24(240):1–113, 2023.",
+    "Clark et al. (2019) Clark, C., Lee, K., Chang, M.-W., Kwiatkowski, T., Collins, M., and Toutanova, K. Boolq: Exploring the surprising difficulty of natural yes/no questions. In NAACL, 2019.",
+    "Clark et al. (2018) Clark, P., Cowhey, I., Etzioni, O., Khot, T., Sabharwal, A., Schoenick, C., and Tafjord, O. Think you have solved question answering? try arc, the ai2 reasoning challenge. arXiv:1803.05457v1, 2018.",
+    "Dagan et al. (2010) Dagan, I., Dolan, B., Magnini, B., and Roth, D. Recognizing textual entailment: Rational, evaluation and approaches–erratum. Natural Language Engineering, 16(1):105–105, 2010.",
+    "Devlin (2018) Devlin, J. Bert: Pre-training of deep bidirectional transformers for language understanding. arXiv preprint arXiv:1810.04805, 2018.",
+    "Engstrom et al. (2024) Engstrom, L., Feldmann, A., and Madry, A. Dsdm: Model-aware dataset selection with datamodels. In Forty-first International Conference on Machine Learning, 2024. URL https://openreview.net/forum?id=GC8HkKeH8s.",
+    "Gao et al. (2020) Gao, L., Biderman, S., Black, S., Golding, L., Hoppe, T., Foster, C., Phang, J., He, H., Thite, A., Nabeshima, N., et al. The pile: An 800gb dataset of diverse text for language modeling. arXiv preprint arXiv:2101.00027, 2020.",
+    "Gao et al. (2021) Gao, T., Yao, X., and Chen, D. Simcse: Simple contrastive learning of sentence embeddings. In EMNLP 2021-2021 Conference on Empirical Methods in Natural Language Processing, Proceedings, 2021.",
+    "Garima et al. (2020) Garima, Liu, F., Kale, S., and Sundararajan, M. Estimating training data influence by tracing gradient descent. In Proceedings of the 34th International Conference on Neural Information Processing Systems, pp. 19920–19930, 2020.",
+    "Gomaa et al. (2013) Gomaa, W. H., Fahmy, A. A., et al. A survey of text similarity approaches. international journal of Computer Applications, 68(13):13–18, 2013.",
+    "Goyal et al. (2024) Goyal, S., Maini, P., Lipton, Z. C., Raghunathan, A., and Kolter, J. Z. Scaling laws for data filtering–data curation cannot be compute agnostic. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pp. 22702–22711, 2024.",
+    "Gunasekar et al. (2023) Gunasekar, S., Zhang, Y., Aneja, J., Mendes, C. C. T., Del Giorno, A., Gopi, S., Javaheripi, M., Kauffmann, P., de Rosa, G., Saarikivi, O., et al. Textbooks are all you need. arXiv preprint arXiv:2306.11644, 2023.",
+    "Izacard et al. (2022) Izacard, G., Caron, M., Hosseini, L., Riedel, S., Bojanowski, P., Joulin, A., and Grave, E. Unsupervised dense information retrieval with contrastive learning. Transactions on Machine Learning Research, 2022. ISSN 2835-8856. URL https://openreview.net/forum?id=jKN1pXi7b0.",
+    "Jiang et al. (2023) Jiang, T., Huang, S., Luan, Z., Wang, D., and Zhuang, F. Scaling sentence embeddings with large language models. arXiv preprint arXiv:2307.16645, 2023.",
+    "Jiang et al. (2024) Jiang, Y., Zhou, A., Feng, Z., Malladi, S., and Kolter, J. Z. Adaptive data optimization: Dynamic sample selection with scaling laws. arXiv preprint arXiv:2410.11820, 2024.",
+    "Joshi et al. (2017) Joshi, M., Choi, E., Weld, D. S., and Zettlemoyer, L. Triviaqa: A large scale distantly supervised challenge dataset for reading comprehension. In Proceedings of the 55th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pp. 1601–1611, 2017.",
+    "Khashabi et al. (2018) Khashabi, D., Chaturvedi, S., Roth, M., Upadhyay, S., and Roth, D. Looking beyond the surface:a challenge set for reading comprehension over multiple sentences. In NAACL, 2018.",
+    "Kwiatkowski et al. (2019) Kwiatkowski, T., Palomaki, J., Redfield, O., Collins, M., Parikh, A., Alberti, C., Epstein, D., Polosukhin, I., Devlin, J., Lee, K., et al. Natural questions: a benchmark for question answering research. Transactions of the Association for Computational Linguistics, 7:453–466, 2019.",
+    "Lai et al. (2017) Lai, G., Xie, Q., Liu, H., Yang, Y., and Hovy, E. Race: Large-scale reading comprehension dataset from examinations. In Proceedings of the 2017 Conference on Empirical Methods in Natural Language Processing, pp. 785–794, 2017.",
+    "Lee et al. (2024) Lee, J., Dai, Z., Ren, X., Chen, B., Cer, D., Cole, J. R., Hui, K., Boratko, M., Kapadia, R., Ding, W., et al. Gecko: Versatile text embeddings distilled from large language models. arXiv preprint arXiv:2403.20327, 2024.",
+    "Levesque et al. (2012) Levesque, H., Davis, E., and Morgenstern, L. The winograd schema challenge. In Thirteenth international conference on the principles of knowledge representation and reasoning, 2012.",
+    "Liu et al. (2019) Liu, Y., Ott, M., Goyal, N., Du, J., Joshi, M., Chen, D., Levy, O., Lewis, M., Zettlemoyer, L., and Stoyanov, V. Roberta: A robustly optimized bert pretraining approach. arXiv e-prints, pp. arXiv–1907, 2019.",
+    "Meng et al. (2022) Meng, Y., Huang, J., Zhang, Y., and Han, J. Generating training data with language models: Towards zero-shot language understanding. Advances in Neural Information Processing Systems, 35:462–477, 2022.",
+    "Mihaylov et al. (2018) Mihaylov, T., Clark, P., Khot, T., and Sabharwal, A. Can a suit of armor conduct electricity? a new dataset for open book question answering. In EMNLP, 2018.",
+    "Mostafazadeh et al. (2016) Mostafazadeh, N., Chambers, N., He, X., Parikh, D., Batra, D., Vanderwende, L., Kohli, P., and Allen, J. A corpus and evaluation framework for deeper understanding of commonsense stories. arXiv preprint arXiv:1604.01696, 2016.",
+    "Muennighoff et al. (2022) Muennighoff, N., Tazi, N., Magne, L., and Reimers, N. Mteb: Massive text embedding benchmark. arXiv preprint arXiv:2210.07316, 2022.",
+    "Neelakantan et al. (2022) Neelakantan, A., Xu, T., Puri, R., Radford, A., Han, J. M., Tworek, J., Yuan, Q., Tezak, N., Kim, J. W., Hallacy, C., et al. Text and code embeddings by contrastive pre-training. arXiv preprint arXiv:2201.10005, 2022.",
+    "Paperno et al. (2016) Paperno, D., Kruszewski, G., Lazaridou, A., Pham, N.-Q., Bernardi, R., Pezzelle, S., Baroni, M., Boleda, G., and Fernández, R. The lambada dataset: Word prediction requiring a broad discourse context. In Proceedings of the 54th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pp. 1525–1534, 2016.",
+    "Penedo et al. (2024) Penedo, G., Kydlíček, H., Lozhkov, A., Mitchell, M., Raffel, C., Von Werra, L., Wolf, T., et al. The fineweb datasets: Decanting the web for the finest text data at scale. arXiv preprint arXiv:2406.17557, 2024.",
+    "Pilehvar & Camacho-Collados (2018) Pilehvar, M. T. and Camacho-Collados, J. Wic: the word-in-context dataset for evaluating context-sensitive meaning representations. arXiv preprint arXiv:1808.09121, 2018.",
+    "Pukdee et al. (2023) Pukdee, R., Sam, D., Ravikumar, P. K., and Balcan, N. Label propagation with weak supervision. In The Eleventh International Conference on Learning Representations, 2023. URL https://openreview.net/forum?id=aCuFa-RRqtI.",
+    "Raffel et al. (2020) Raffel, C., Shazeer, N., Roberts, A., Lee, K., Narang, S., Matena, M., Zhou, Y., Li, W., and Liu, P. J. Exploring the limits of transfer learning with a unified text-to-text transformer. Journal of machine learning research, 21(140):1–67, 2020.",
+    "Rajpurkar et al. (2018) Rajpurkar, P., Jia, R., and Liang, P. Know what you don’t know: Unanswerable questions for squad. In Proceedings of the 56th Annual Meeting of the Association for Computational Linguistics (Volume 2: Short Papers), pp. 784–789, 2018.",
+    "Sakaguchi et al. (2021) Sakaguchi, K., Bras, R. L., Bhagavatula, C., and Choi, Y. Winogrande: An adversarial winograd schema challenge at scale. Communications of the ACM, 64(9):99–106, 2021.",
+    "Sam & Kolter (2023) Sam, D. and Kolter, J. Z. Losses over labels: Weakly supervised learning via direct loss construction. In Proceedings of the AAAI conference on artificial intelligence, volume 37, pp. 9695–9703, 2023.",
+    "Sam et al. (2024) Sam, D., Willmott, D., Semedo, J. D., and Kolter, J. Z. Finetuning clip to reason about pairwise differences. arXiv preprint arXiv:2409.09721, 2024.",
+    "Sam et al. (2025) Sam, D., Finzi, M., and Kolter, J. Z. Predicting the performance of black-box llms through self-queries. arXiv preprint arXiv:2501.01558, 2025.",
+    "Sorscher et al. (2022) Sorscher, B., Geirhos, R., Shekhar, S., Ganguli, S., and Morcos, A. Beyond neural scaling laws: beating power law scaling via data pruning. Advances in Neural Information Processing Systems, 35:19523–19536, 2022.",
+    "Sumengen et al. (2021) Sumengen, B., Rajagopalan, A., Citovsky, G., Simcha, D., Bachem, O., Mitra, P., Blasiak, S., Liang, M., and Kumar, S. Scaling hierarchical agglomerative clustering to billion-sized datasets. arXiv preprint arXiv:2105.11653, 2021.",
+    "Tay et al. (2022) Tay, Y., Dehghani, M., Tran, V. Q., Garcia, X., Wei, J., Wang, X., Chung, H. W., Shakeri, S., Bahri, D., Schuster, T., et al. Ul2: Unifying language learning paradigms. arXiv preprint arXiv:2205.05131, 2022.",
+    "Tirumala et al. (2023) Tirumala, K., Simig, D., Aghajanyan, A., and Morcos, A. D4: Improving llm pretraining via document de-duplication and diversification. Advances in Neural Information Processing Systems, 36:53983–53995, 2023.",
+    "Wang et al. (2019) Wang, A., Pruksachatkun, Y., Nangia, N., Singh, A., Michael, J., Hill, F., Levy, O., and Bowman, S. Superglue: A stickier benchmark for general-purpose language understanding systems. Advances in neural information processing systems, 32, 2019.",
+    "Wei et al. (2021) Wei, C., Shen, K., Chen, Y., and Ma, T. Theoretical analysis of self-training with deep networks on unlabeled data. In International Conference on Learning Representations, 2021. URL https://openreview.net/forum?id=rC8sJ4i6kaH.",
+    "Xia et al. (2024) Xia, M., Malladi, S., Gururangan, S., Arora, S., and Chen, D. LESS: Selecting influential data for targeted instruction tuning. In Forty-first International Conference on Machine Learning, 2024. URL https://openreview.net/forum?id=PG5fV50maR.",
+    "Xie et al. (2023) Xie, S. M., Santurkar, S., Ma, T., and Liang, P. S. Data selection for language models via importance resampling. Advances in Neural Information Processing Systems, 36:34201–34227, 2023.",
+    "Xie et al. (2024) Xie, S. M., Pham, H., Dong, X., Du, N., Liu, H., Lu, Y., Liang, P. S., Le, Q. V., Ma, T., and Yu, A. W. Doremi: Optimizing data mixtures speeds up language model pretraining. Advances in Neural Information Processing Systems, 36, 2024.",
+    "Xue (2020) Xue, L. mt5: A massively multilingual pre-trained text-to-text transformer. arXiv preprint arXiv:2010.11934, 2020.",
+    "Zellers et al. (2019) Zellers, R., Holtzman, A., Bisk, Y., Farhadi, A., and Choi, Y. Hellaswag: Can a machine really finish your sentence? arXiv preprint arXiv:1905.07830, 2019.",
+    "Zhang et al. (2018) Zhang, S., Liu, X., Liu, J., Gao, J., Duh, K., and Van Durme, B. Record: Bridging the gap between human and machine commonsense reading comprehension. arXiv preprint arXiv:1810.12885, 2018."
+  ]
+}

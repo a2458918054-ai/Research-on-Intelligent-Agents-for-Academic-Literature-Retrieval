@@ -1,0 +1,311 @@
+{
+  "title": "Unshackling Context Length: An Efficient Selective Attention Approach through Query-Key Compression",
+  "authors": "Haoyu Wang1∗, Tong Teng1, Tianyu Guo1, An Xiao1, Duyu Tang2,Hanting Chen1, Yunhe Wang11Huawei Noah’s Ark Lab2Huawei CBG{wanghaoyu50, tengtong1, tianyu.guo, an.xiao, tangduyu, chenhanting, yunhe.wang}@huawei.comEqual Contribution.Corresponding Author.",
+  "abstract": "Handling long-context sequences efficiently remains a significant challenge in large language models (LLMs). Existing methods for token selection in sequence extrapolation either employ a permanent eviction strategy or select tokens by chunk, which may lead to the loss of critical information. We propose Efficient Selective Attention (ESA), a novel approach that extends context length by efficiently selecting the most critical tokens at the token level to compute attention. ESA reduces the computational complexity of token selection by compressing query and key vectors into lower-dimensional representations. We evaluate ESA on long sequence benchmarks with maximum lengths up to 256k using open-source LLMs with context lengths of 8k and 32k. ESA outperforms other selective attention methods, especially in tasks requiring the retrieval of multiple pieces of information, achieving comparable performance to full-attention extrapolation methods across various tasks, with superior results in certain tasks.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Large language models (LLMs) have demonstrated remarkable capabilities across a variety of natural language processing (NLP) tasks. One of the emerging trends in this area is the increasing emphasis on extending the context length of LLMs to handle tasks like contextual learning and retrieval-augmented generation (Dong et al., 2022; Gao et al., 2023). However, this extension comes with its own set of challenges, particularly in terms of the Out-Of-Distribution (OOD) extrapolation on context length, massive memory demanded by key-value (KV) cache and the quadratic computational complexity of the attention mechanism. In this paper, we focus on mitigating the OOD issues and reducing the computational cost of LLM inference on long-context sequences, especially for models which adopt Rotary Position Embedding (RoPE) (Su et al., 2024).",
+        "Extrapolation methods based on positional embeddings address the OOD issues (Chen et al., 2023b; bloc97, 2023; Peng et al., 2023), but they are not targeted at reducing computational cost. To improve inference efficiency, methods focusing on selective attention are developed, exploiting the inherent sparsity of attention matrices (Zhang et al., 2024b; Jiang et al., 2024). These methods usually restrict the number of selected tokens to within the pre-training context length. Early approaches focus on local attention, sometimes introduce global tokens, often neglecting long-distance tokens (Beltagy et al., 2020; Xiao et al., 2023; Han et al., 2023). Recent chunk-based methods, such as InfLLM, LongHeads, and Landmark Attention (Xiao et al., 2024; Lu et al., 2024; Mohtashami and Jaggi, 2023), have aimed to extend the context length by chunking input prompts into fixed-size blocks and selecting the top-ranked chunks. These approaches, while reducing computational complexity, often suffer from a lack of flexibility. In contrast, token-level selection methods provide more flexibility by selectively attending to tokens at a finer granularity. However, existing methods usually perform token selection only in the decoding stage and permanently evict certain tokens to manage memory usage as well as reduce computation, facing high latency during prefilling and significant information loss (Zhang et al., 2024b; Liu et al., 2024; Ge et al., 2023; Li et al., 2024b; Cai et al., 2024). To maintain accuracy while reducing computation, it is essential to perform token selection over all preceding tokens during both prefilling and decoding. Nevertheless, selecting tokens individually could introduce significant computational overhead, raising the challenge of how to efficiently identify the most crucial tokens while minimizing cost. This presents a key research problem: balancing flexibility and efficiency for selective attention approach.",
+        "To this end, we propose ESA, an efficient token-level selective attention algorithm that enables length extrapolation without the need for incremental training of LLM parameters. Specifically, our method consists of two steps: efficient selection and attention computation. In the first step, we introduce a query-aware token-level selection mechanism that adaptively identifies the most crucial tokens. To reduce the computational cost, we compress the query and key vectors in the attention heads into low-dimensional representations when evaluating the importance of individual tokens. A learnable approach is employed to derive these compression functions. Additionally, we found that directly selecting the top-ranked tokens can lead to performance degradation in certain tasks. Therefore, we propose proximity influence, where the surrounding tokens are incorporated when calculating the importance score of a particular token. In the step of attention computation, we utilize the full-sized keys and values of the selected tokens, rather than those of all the preceding tokens. This reduces the complexity of traditional attention computation from quadratic to linear. While there is an added computational cost for token selection, it is significantly lower than the complexity of standard attention computation.",
+        "To demonstrate the effectiveness of our approach, we conduct extensive evaluations on LongBench (Bai et al., 2023), ∞\\inftyBENCH (Zhang et al., 2024a), NeedleBench (Li et al., 2024a), and Counting-Stars (Song et al., 2024) with Mistral-7B-Instruct-v0.2 (Mistral) (Jiang et al., 2023) and Llama-3-8B-Instruct (Llama) (AI@Meta, 2024).",
+        "Our contributions are summarized as follows: 1. We propose a novel token-level selective attention method for extending the context length, without incremental training of parameters of LLMs. By introducing proximity influence, we improve semantic continuity among selected tokens, addressing performance degradation caused by directly selecting top-ranked tokens in certain tasks. 2. We reduce computational complexity by leveraging low-dimensional queries and keys for token selection, achieving competitive accuracy at a significantly lower cost."
+      ],
+      "subsections": []
+    },
+    "2 Related Work": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Position Extrapolation.",
+          "paragraphs": [
+            "Following the introduction of RoPE (Su et al., 2024), great efforts have been imposed to extend the context length by modifying the position embeddings (PE). Position interpolation Chen et al. (2023b); kaiokendev (2023) extends the context length by interpolating positional indices within the constraints of pre-training. The NTK-aware method (bloc97, 2023; Rozière et al., 2023; Liu et al., 2023) introduces a nonlinear interpolation strategy by increasing the base parameter of RoPE. YaRN (Peng et al., 2023) proposes a method for frequency interpolation of RoPE dimensions, where higher frequency dimensions are extrapolated, and lower frequency dimensions are interpolated. Further improvements (Chen et al., 2023a; Ding et al., 2024) exploit the dynamics in position extrapolation. Another group of work redesigns the relative position matrix to overcome the OOD issue (Su, 2023; Jin et al., 2024; An et al., 2024). These methods extend the context length but still compute the full attention matrix for inference thus fail to reduce the computational cost. To achieve better performance, some require fine-tuning with a certain amount of long-context data."
+          ]
+        },
+        {
+          "title": "Selective Attention.",
+          "paragraphs": [
+            "Selective attention mechanisms aim to mitigate the computational cost of processing long sequences by selecting only the most relevant tokens for attention computation. Approaches like Longformer (Beltagy et al., 2020) and BigBird (Zaheer et al., 2020) use fixed or adaptive sparse patterns, while Han et al., 2023; Xiao et al., 2023 introduce Λ\\Lambda-shaped windows that evict middle tokens. Although these methods lower costs, they often compromise global context understanding due to restricted attention over all tokens. Some methods aim at compressing the KV cache, usually perform token selection only in the decoding stage (Zhang et al., 2024b; Liu et al., 2024; Ge et al., 2023) or permanently evicting certain tokens (Xiao et al., 2023; Han et al., 2023; Li et al., 2024b). While effective, they may lose critical contextual information. As for chunk-based methods, Xiao et al., 2024 uses an efficient contextual memory mechanism to select the most relevant chunks for computing attention, and Lu et al., 2024 selects the most relevant chunks for each head separately considering the variance among different heads. Unlimiformer and its adaptation (Bertsch et al., 2024; Ahrabian et al., 2024) segment input during the pre-filling stage, using external memory blocks, but remain computationally expensive and require additional training or architecture modifications. In contrast, our method performs efficient token-level selection in both prefilling and decoding stages, without discarding tokens permanently."
+          ]
+        }
+      ]
+    },
+    "3 Method": {
+      "paragraphs": [
+        "Conventionally, each token attends to all preceding tokens to compute the attention output during LLM inference, leading to significant computational overhead when processing long-context sequences. We introduce ESA, which effectively identifies a subset of the most crucial tokens for attention computation, thereby improving the efficiency of the model."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Token Selection",
+          "paragraphs": [
+            "Following previous work (Xiao et al., 2023; Han et al., 2023; Xiao et al., 2024) on extending the context window of LLMs, the preceding tokens (PP) are segmented into three parts, as depicted in Figure 1: initial tokens (II), middle tokens (MM), and local tokens (LL) with respective lengths denoted as lIl_{I}, lMl_{M}, and lLl_{L}. With a massive number of preceding tokens, lMl_{M} is considerably larger than lIl_{I} and lLl_{L}. The initial tokens and local tokens with fixed length will always be selected due to their significance, as highlighted by Xiao et al. (2023) and Han et al. (2023). We then apply ESA to select the top-kk critical tokens MkM_{k} from the middle tokens MM. Specifically, LLM inference consists of two stages: prefilling and decoding. In the prefilling stage, all the input tokens are encoded, and the keys as well as values are computed and cached. We adopt the chunked-prefill method (Agrawal et al., 2023). Compared to the original prefilling method, chunked-prefill approach effectively reduces memory usage. In the decoding stage, the model generates tokens one by one autoregressively. Denote the current tokens (i.e., the current input chunk being processed or the most recently decoded token) as CC, the attention output computed in each step between the current tokens and the selected tokens is defined as:",
+            "where, 𝐐C\\mathbf{Q}_{C} represents the queries of the current tokens, 𝐊[I,Mk,L,C]\\mathbf{K}_{[I,M_{k},L,C]} and 𝐕[I,Mk,L,C]\\mathbf{V}_{[I,M_{k},L,C]} respectively denote the concatenated keys and values of the selected and current tokens.",
+            "Successfully identifying the most crucial tokens requires a function to precisely measure the importance of each token in MM w.r.t CC. Let m∈Mm\\in M be a specific token, we denote the importance score of mm as Fs​(m;C)F_{s}(m;C). Given a predefined number k<=lMk<=l_{M}, kk tokens with the highest scores will be selected, as formalized bellow:",
+            "For an individual token c∈Cc\\in C, the degree to which it attends to a preceding token mm can be determined as following:",
+            "where, 𝐪h,c,𝐤h,m∈ℝd\\mathbf{q}_{h,c},\\mathbf{k}_{h,m}\\in\\mathbb{R}^{d} denote the query of cc and the key of mm, respectively, for the hh-th head. All of the HH dd-dimensional attention heads are incorporated, and the selected tokens are shared across all the heads in a certain layer. This score can be used directly in the decoding stage for token selection as CC consists of only one token (i.e., lC=1l_{C}=1). While at the prefilling stage, lCl_{C} is the chunk size, and every token in CC contributes to the score Fs​(m;C)F_{s}(m;C). To derive a unified form of importance score, we first regularize the score w.r.t each cc and then take the maximum value across all tokens in CC. Eventually, the importance score is formulated as",
+            "1. The expression fs​(m;c)−maxm′∈M⁡fs​(m′;c)f_{s}(m;c)-\\max_{m^{\\prime}\\in M}f_{s}(m^{\\prime};c) indicates that each token in CC is constrained relative to the maximum score in MM, preventing any individual token in CC from exerting a dominating influence on the selection process. 2. In the prefilling stage, our goal is to ensure that high-scoring tokens in MM are not overlooked. Therefore, we select the highest score of each token in CC to represent the score in MM by applying maxc∈C\\max_{c\\in C}.",
+            "The aforementioned scoring method of employing dot product across a considerable number tokens is computational expensive. To achieve efficient selection, we perform dimensionality reduction on keys and queries. The right-hand side of Equation 3 is equivalent to concatenating HH heads followed by performing dot product. That is, fs​(m;c)=𝐪c​𝐤mTf_{s}(m;c)=\\mathbf{q}_{c}\\mathbf{k}_{m}^{T} where 𝐪c=[𝐪1,c;𝐪2,c;…;𝐪H,c]\\mathbf{q}_{c}=[\\mathbf{q}_{1,c};\\mathbf{q}_{2,c};...;\\mathbf{q}_{H,c}], 𝐤m=[𝐤1,m;𝐤2,m;…;𝐤H,m]\\mathbf{k}_{m}=[\\mathbf{k}_{1,m};\\mathbf{k}_{2,m};...;\\mathbf{k}_{H,m}], and 𝐪c,𝐤m∈ℝdH\\mathbf{q}_{c},\\mathbf{k}_{m}\\in\\mathbb{R}^{d_{H}}, dH=H×dd_{H}=H\\times d. Denote the dimensionality reduction on queries and keys as follows:",
+            "where, 𝐪c′,𝐤m′∈ℝd′\\mathbf{q}_{c}^{\\prime},\\mathbf{k}_{m}^{\\prime}\\in\\mathbb{R}^{d^{\\prime}}, d′<dHd^{\\prime}<d_{H}. The dimension-reduced representation 𝐤m′\\mathbf{k}_{m}^{\\prime} will be cached and reused during the subsequent computation steps. With the lower-dimensional surrogates of queries and keys, the importance score is approximated with",
+            "The computational cost is therefore reduced compared with using the full-dimensional queries and keys. To maintain accuracy, the lower-dimensional representations should retrain the token order as faithfully as possible. To this end, we perform a one-time offline procedure to learn fθqf_{\\theta_{q}} and fθkf_{\\theta_{k}} in each layer by minimizing the discrepancy between the importance scores before and after dimensionality reduction, formally:",
+            "We model fθqf_{\\theta_{q}} and fθkf_{\\theta_{k}} jointly, where each is a linear layer that projects a high-dimensional input to a low-dimensional output. In preparation of the training data for the neural networks, we first perform token selection with full-dimensional queries and keys with a calibration dataset. All the queries and keys calculated during the process are saved. Subsequently, we use the saved queries and keys to train fθqf_{\\theta_{q}} and fθkf_{\\theta_{k}} for each layer. The learnt fθqf_{\\theta_{q}} and fθkf_{\\theta_{k}} will be utilized in our ESA to compress queries and keys with dimensionality reduction. Since the low-dimensional keys are cached and reused, the additional computational load introduced by Equation 5 is marginal compared to the reduction achieved by Equation 6. We conducted a quantitative analysis of efficiency in Section 3.3.",
+            "Considering proximity influence, if a token in MM has a high importance score, it affects the scores of the surrounding tokens. We propose adaptive selection which is achieved by updating the importance score of a token based on its neighbors. Specifically, the score of the jj-th token, where j∈[lI,lI+lM−1]j\\in[l_{I},l_{I}+l_{M}-1], is determined as the maximum score within a window of size ϵ\\epsilon surrounding it. The importance score of the jj-th token, computed using the low-dimensional query and key, is denoted by sjs_{j}. The updated score is given by",
+            "where, ϵ\\epsilon represents the proximity influence distance, which is used to control the continuity of the selected tokens."
+          ]
+        },
+        {
+          "title": "Importance Score.",
+          "paragraphs": [
+            "Successfully identifying the most crucial tokens requires a function to precisely measure the importance of each token in MM w.r.t CC. Let m∈Mm\\in M be a specific token, we denote the importance score of mm as Fs​(m;C)F_{s}(m;C). Given a predefined number k<=lMk<=l_{M}, kk tokens with the highest scores will be selected, as formalized bellow:",
+            "For an individual token c∈Cc\\in C, the degree to which it attends to a preceding token mm can be determined as following:",
+            "where, 𝐪h,c,𝐤h,m∈ℝd\\mathbf{q}_{h,c},\\mathbf{k}_{h,m}\\in\\mathbb{R}^{d} denote the query of cc and the key of mm, respectively, for the hh-th head. All of the HH dd-dimensional attention heads are incorporated, and the selected tokens are shared across all the heads in a certain layer. This score can be used directly in the decoding stage for token selection as CC consists of only one token (i.e., lC=1l_{C}=1). While at the prefilling stage, lCl_{C} is the chunk size, and every token in CC contributes to the score Fs​(m;C)F_{s}(m;C). To derive a unified form of importance score, we first regularize the score w.r.t each cc and then take the maximum value across all tokens in CC. Eventually, the importance score is formulated as",
+            "1. The expression fs​(m;c)−maxm′∈M⁡fs​(m′;c)f_{s}(m;c)-\\max_{m^{\\prime}\\in M}f_{s}(m^{\\prime};c) indicates that each token in CC is constrained relative to the maximum score in MM, preventing any individual token in CC from exerting a dominating influence on the selection process. 2. In the prefilling stage, our goal is to ensure that high-scoring tokens in MM are not overlooked. Therefore, we select the highest score of each token in CC to represent the score in MM by applying maxc∈C\\max_{c\\in C}."
+          ]
+        },
+        {
+          "title": "Efficient Selection through Query-Key Compression.",
+          "paragraphs": [
+            "The aforementioned scoring method of employing dot product across a considerable number tokens is computational expensive. To achieve efficient selection, we perform dimensionality reduction on keys and queries. The right-hand side of Equation 3 is equivalent to concatenating HH heads followed by performing dot product. That is, fs​(m;c)=𝐪c​𝐤mTf_{s}(m;c)=\\mathbf{q}_{c}\\mathbf{k}_{m}^{T} where 𝐪c=[𝐪1,c;𝐪2,c;…;𝐪H,c]\\mathbf{q}_{c}=[\\mathbf{q}_{1,c};\\mathbf{q}_{2,c};...;\\mathbf{q}_{H,c}], 𝐤m=[𝐤1,m;𝐤2,m;…;𝐤H,m]\\mathbf{k}_{m}=[\\mathbf{k}_{1,m};\\mathbf{k}_{2,m};...;\\mathbf{k}_{H,m}], and 𝐪c,𝐤m∈ℝdH\\mathbf{q}_{c},\\mathbf{k}_{m}\\in\\mathbb{R}^{d_{H}}, dH=H×dd_{H}=H\\times d. Denote the dimensionality reduction on queries and keys as follows:",
+            "where, 𝐪c′,𝐤m′∈ℝd′\\mathbf{q}_{c}^{\\prime},\\mathbf{k}_{m}^{\\prime}\\in\\mathbb{R}^{d^{\\prime}}, d′<dHd^{\\prime}<d_{H}. The dimension-reduced representation 𝐤m′\\mathbf{k}_{m}^{\\prime} will be cached and reused during the subsequent computation steps. With the lower-dimensional surrogates of queries and keys, the importance score is approximated with",
+            "The computational cost is therefore reduced compared with using the full-dimensional queries and keys. To maintain accuracy, the lower-dimensional representations should retrain the token order as faithfully as possible. To this end, we perform a one-time offline procedure to learn fθqf_{\\theta_{q}} and fθkf_{\\theta_{k}} in each layer by minimizing the discrepancy between the importance scores before and after dimensionality reduction, formally:",
+            "We model fθqf_{\\theta_{q}} and fθkf_{\\theta_{k}} jointly, where each is a linear layer that projects a high-dimensional input to a low-dimensional output. In preparation of the training data for the neural networks, we first perform token selection with full-dimensional queries and keys with a calibration dataset. All the queries and keys calculated during the process are saved. Subsequently, we use the saved queries and keys to train fθqf_{\\theta_{q}} and fθkf_{\\theta_{k}} for each layer. The learnt fθqf_{\\theta_{q}} and fθkf_{\\theta_{k}} will be utilized in our ESA to compress queries and keys with dimensionality reduction. Since the low-dimensional keys are cached and reused, the additional computational load introduced by Equation 5 is marginal compared to the reduction achieved by Equation 6. We conducted a quantitative analysis of efficiency in Section 3.3."
+          ]
+        },
+        {
+          "title": "Proximity Influence.",
+          "paragraphs": [
+            "Considering proximity influence, if a token in MM has a high importance score, it affects the scores of the surrounding tokens. We propose adaptive selection which is achieved by updating the importance score of a token based on its neighbors. Specifically, the score of the jj-th token, where j∈[lI,lI+lM−1]j\\in[l_{I},l_{I}+l_{M}-1], is determined as the maximum score within a window of size ϵ\\epsilon surrounding it. The importance score of the jj-th token, computed using the low-dimensional query and key, is denoted by sjs_{j}. The updated score is given by",
+            "where, ϵ\\epsilon represents the proximity influence distance, which is used to control the continuity of the selected tokens."
+          ]
+        },
+        {
+          "title": "3.2 Position Encoding",
+          "paragraphs": [
+            "We follow the extrapolated position encoding settings as described in (Su, Jianlin, 2023; Xiao et al., 2024). The attention weights in Equation 1 can be divided into (a) Long-distance attention of CC with respect to I,MI,M: The positions of tokens in CC are all modified to a fixed position ww, and the positions of tokens from I,MI,M are set to 0. The relative position will always be ww; and (b) Local attention of CC with respect to LL and itself: The query and key positions from L,CL,C are arranged in order of their relative positions (i.e., 0, 1, 2, …, lL+lC−1l_{L}+l_{C}-1). To normalize the attention weights, we fuse the two categories of attention based on their respective weights. The specific algorithm for computing attention is shown in Appendix G."
+          ]
+        },
+        {
+          "title": "3.3 Complexity Analysis",
+          "paragraphs": [
+            "When inferring over a long-context sequence of total length SS, using full-dimensional queries and keys for computing the importance score in Equation 3 incurs a time complexity of O​(S2​dH)O(S^{2}d_{H}). By utilizing low-dimensional queries and keys, the computation is reduced to O​(S2​d′)O(S^{2}d^{\\prime}). The additional computation for dimensionality reduction is O​(S​dH​d′+S​d′)O(Sd_{H}d^{\\prime}+Sd^{\\prime}), which scales linearly with context length and thus marginal to the quadratic savings.",
+            "In each step, ESA computes the attention matrix for a constant number of selected tokens. Considering the long sequence scenario where MM occupies the majority of the tokens, this approach significantly reduces computational costs, with only a minor overhead for token selection. Compared to vanilla full attention, the complexity of computing one step of attention can be reduced by ratio rr in Equation 9. The derivation can be found in Appendix A.",
+            "We introduce an additional cache alongside the traditional KV cache, which stores the dimension-reduced keys from MM. By incorporating a model that applies GQA (Ainslie et al., 2023), a widely used technique for reducing the KV cache, we analyze the impact of our approach on memory usage. Assuming the number of heads is denoted as HGH_{G} in GQA, the total dimensions of the kvs are given by dG=HG×dd_{G}=H_{G}\\times d. Given that lM≫lI,lL,lCl_{M}\\gg l_{I},l_{L},l_{C} for long sequences, we focus our analysis on the memory usage related to MM. The cache size increased by the dimension-reduced keys is d′2​dG\\frac{d^{\\prime}}{2d_{G}} of the traditional KV cache."
+          ]
+        },
+        {
+          "title": "Computational Complexity Analysis.",
+          "paragraphs": [
+            "When inferring over a long-context sequence of total length SS, using full-dimensional queries and keys for computing the importance score in Equation 3 incurs a time complexity of O​(S2​dH)O(S^{2}d_{H}). By utilizing low-dimensional queries and keys, the computation is reduced to O​(S2​d′)O(S^{2}d^{\\prime}). The additional computation for dimensionality reduction is O​(S​dH​d′+S​d′)O(Sd_{H}d^{\\prime}+Sd^{\\prime}), which scales linearly with context length and thus marginal to the quadratic savings.",
+            "In each step, ESA computes the attention matrix for a constant number of selected tokens. Considering the long sequence scenario where MM occupies the majority of the tokens, this approach significantly reduces computational costs, with only a minor overhead for token selection. Compared to vanilla full attention, the complexity of computing one step of attention can be reduced by ratio rr in Equation 9. The derivation can be found in Appendix A."
+          ]
+        },
+        {
+          "title": "Cache Analysis.",
+          "paragraphs": [
+            "We introduce an additional cache alongside the traditional KV cache, which stores the dimension-reduced keys from MM. By incorporating a model that applies GQA (Ainslie et al., 2023), a widely used technique for reducing the KV cache, we analyze the impact of our approach on memory usage. Assuming the number of heads is denoted as HGH_{G} in GQA, the total dimensions of the kvs are given by dG=HG×dd_{G}=H_{G}\\times d. Given that lM≫lI,lL,lCl_{M}\\gg l_{I},l_{L},l_{C} for long sequences, we focus our analysis on the memory usage related to MM. The cache size increased by the dimension-reduced keys is d′2​dG\\frac{d^{\\prime}}{2d_{G}} of the traditional KV cache."
+          ]
+        }
+      ]
+    },
+    "4 Experiments": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "4.1 Experimental Setup",
+          "paragraphs": [
+            "ESA can be applied to all decoder-only LLMs that utilize RoPE as their position encoding. We evaluate ESA using Mistral-7B-Instruct-v0.2 and Llama-3-8B-Instruct, with context lengths of 32k and 8k, respectively. We select the following three selective attention methods as our baselines: (a) InfLLM, (b) LM-Infinite (Infinite), (c) StreamingLLM (Stream). Additionally, we also choose two methods with position extrapolation: (a) NTK-aware (NTK), (b) YaRN. We conduct extensive evaluations on LongBench, ∞\\inftyBENCH, NeedleBench, and Counting-Stars.",
+            "We employ a small subset of Books3 data from Pile (Gao et al., 2020) as our calibration dataset to train the networks fθqf_{\\theta_{q}} and fθkf_{\\theta_{k}}. There are 50k tokens in total and therefore 50k concatenated query-key pairs for training the networks in each layer. The learning rate and global batch size is 0.00050.0005 and 128, respectively. We trained the dimensionality reduction networks for 10 epochs.",
+            "The number of attention heads (HH) is 32. We compress the original size of query and key from dH=4096d_{H}=4096 to d′=128d^{\\prime}=128. Since the number of GQA heads is 8, the additional size required for the reduced-dimensionality keys is 6.25% of the original KV cache. Compared to computing full attention, the computational complexity is reduced to up to 1.56% in each step according to Equation 9. ESA and three other baselines with selective attention select the same number of tokens. The length of initial tokens (lIl_{I}) is 128. InfLLM and ESA both choose the lengths of middle tokens and local tokens to be 2048 and 4096, respectively."
+          ]
+        },
+        {
+          "title": "Baselines and Benchmarks.",
+          "paragraphs": [
+            "ESA can be applied to all decoder-only LLMs that utilize RoPE as their position encoding. We evaluate ESA using Mistral-7B-Instruct-v0.2 and Llama-3-8B-Instruct, with context lengths of 32k and 8k, respectively. We select the following three selective attention methods as our baselines: (a) InfLLM, (b) LM-Infinite (Infinite), (c) StreamingLLM (Stream). Additionally, we also choose two methods with position extrapolation: (a) NTK-aware (NTK), (b) YaRN. We conduct extensive evaluations on LongBench, ∞\\inftyBENCH, NeedleBench, and Counting-Stars."
+          ]
+        },
+        {
+          "title": "Calibration Dataset.",
+          "paragraphs": [
+            "We employ a small subset of Books3 data from Pile (Gao et al., 2020) as our calibration dataset to train the networks fθqf_{\\theta_{q}} and fθkf_{\\theta_{k}}. There are 50k tokens in total and therefore 50k concatenated query-key pairs for training the networks in each layer. The learning rate and global batch size is 0.00050.0005 and 128, respectively. We trained the dimensionality reduction networks for 10 epochs."
+          ]
+        },
+        {
+          "title": "Parameters.",
+          "paragraphs": [
+            "The number of attention heads (HH) is 32. We compress the original size of query and key from dH=4096d_{H}=4096 to d′=128d^{\\prime}=128. Since the number of GQA heads is 8, the additional size required for the reduced-dimensionality keys is 6.25% of the original KV cache. Compared to computing full attention, the computational complexity is reduced to up to 1.56% in each step according to Equation 9. ESA and three other baselines with selective attention select the same number of tokens. The length of initial tokens (lIl_{I}) is 128. InfLLM and ESA both choose the lengths of middle tokens and local tokens to be 2048 and 4096, respectively."
+          ]
+        },
+        {
+          "title": "4.2 Results on LongBench",
+          "paragraphs": [
+            "LongBench includes six different categories of tasks, with an average context length range from less than 10k to around 32k. We adjust the scaling factors of NTK and YaRN to accommodate the benchmark. The context length for Mistral is 32k, which does not necessitate any modification to the model’s scaling factor. Consequently, we omit the NTK and YaRN for Mistral in this section. The results of the 16 English tasks are presented in Table 1. We draw the following conclusions: (a) Our method achieves improvement over the best baselines of selective attention (including Infinite, Stream, InfLLM) for both Llama and Mistral across a variety of tasks. Particularly, our method outperforms other methods of selective attention on the PassageRetrieval-en significantly, demonstrating the benefit of token-level selection. (b) Our method is comparable to the baselines that compute full attention (including Origin, NTK, YaRN). The gap between our method and the best among these approaches is within 1 percentage point."
+          ]
+        },
+        {
+          "title": "4.3 Results on∞\\inftyBENCH",
+          "paragraphs": [
+            "We select 6 tasks from ∞\\inftyBENCH with an average length up to around 200k, encompassing open-form question answering (QA), code, retrieval tasks, and other domains. We set the scaling factor for NTK and YaRN to accommodate contexts of up to 200k. The results of the tasks are presented in Table 2. Firstly, our method slightly outperforms the scores of InfLLM. The performance of our method exhibits minimal differences in retrieval tasks compared to InfLLM. This may be due to the fact that retrieval tasks only require the model to focus on a single relevant piece of information. InfLLM retrieves the most relevant chunks from the context, which is sufficient for solving long-text tasks that require attention to only a small amount of local information. Our method, on the other hand, opts for retrieval at a finer granularity, resulting in performance that is close to that of InfLLM on such tasks. In other tasks, our method outperforms other selective attention methods. Secondly, our method outperforms NTK and YaRN, especially on Llama. This superiority may arise from the fact that methods with position embedding scaling tend to suffer a significant decline when extrapolated to excessively long contexts, such as a 8-fold extension. It demonstrates that our approach can extrapolate to significantly longer contexts, even up to a ×25\\times 25 extension for Llama."
+          ]
+        },
+        {
+          "title": "4.4 Results on NeedleBench and Counting-Stars",
+          "paragraphs": [
+            "NeedleBench and Counting-Stars evaluate the ability of LLMs to retrieve multiple pieces of related information. The two benchmarks places higher demands on the model’s capacity to handle long context. Sample examples from the benchmarks are provided in Appendix C. The context length for these two benchmarks ranges from 4k to 256k, assessing the model’s capability to retrieve multiple pieces of information across varying lengths. We uniformly set the scaling factor for NTK and YaRN to accommodate contexts of up to 200k tokens. We follow (Li et al., 2024a; Song et al., 2024) to use the recall accuracy as a metric to evaluate the performance of the models.",
+            "Our method exhibits great strength in extracting critical information distributed across the context. The experimental results on Counting-Stars and NeedleBench are shown in Table 3 and 4, respectively. Details of the Counting-Stars are provided in Appendix LABEL:sec:Counting-Stars-Results. Firstly, when multiple pieces of relevant information need to be retrieved, our method significantly outperforms Infinite, Stream, and InfLLM. This is attributed to our method’s flexibility in selecting middle tokens at the token level. Secondly, the performance of ESA is comparable to that of NTK and YaRN. NTK and YaRN achieve promising performance by computing full attention when extrapolation is limited. When extrapolated to tasks involving longer sequences, NTK and YaRN may experience performance degradation. Lastly, within the original training lengths, ESA does not exhibit significant performance degradation, whereas the NTK and YaRN show a noticeable decline."
+          ]
+        },
+        {
+          "title": "4.5 Ablation Study",
+          "paragraphs": [
+            "The parameter ϵ\\epsilon in Equation 8 controls the continuity of the selected tokens. As demonstrated in Table 5, we find this parameter to be crucial for the model, especially with regard to its retrieval capabilities. Furthermore, we observe that in Retrieve.KV, when ϵ=0,1\\epsilon=0,1, even when the model’s predictions are incorrect, it is still able to retrieve parts of the correct values. For instance, the answer is \"49c65968-6319-44fc-b286-feb249694b07\", while the model’s prediction is \"49c65968-6319-44fc-9021-cfa198896071\". Retrieve.KV and NeedleBench exhibit different optimal values for ϵ\\epsilon. We speculate that the underlying reason may be the difference in the number of positions where answers are to be retrieved. In Retrieve.KV, there is typically only one segment that requires retrieval, and increasing ϵ\\epsilon may enhance the completeness of the retrieved answer. In contrast, NeedleBench involves the retrieval of answers from multiple positions. Increasing ϵ\\epsilon might lead to an over-concentration of attention on a limited number of positions.",
+            "Our method does not select tokens individually for each head but rather chooses tokens based on the average importance scores across all heads. This approach is beneficial for compressing the size of queries and keys, thereby enhancing inference efficiency. To verify whether there is a significant performance degradation, we design two experiments with Llama on LongBench as shown in Table 6. \"Individual\" refers to the importance score of each token being the maximum value among the scores of all heads, meaning that each head votes for the scores. This approach ensures that the selection process takes into account all heads. \"Uniform\" in Table 6 denotes our method of selecting tokens without dimensionality reduction. The scores for each subtask of LongBench are depicted in Appendix E. We extrapolate Llama from its original 8k to an average length of 32k on LongBench, and the performance on various category tasks for both token selection methods is very close.",
+            "We calculate the importance scores of tokens using the reduced-dimensionality queries and keys. To evaluate the impact of dimensionality reduction, we analyse experiments on LongBench with Llama using the full-dimensional query and key, as well as their reduced-dimensionality counterparts. As demonstrated in Table 6 and Table 1, their respective scores are 44.8 and 44.41. The difference between the two scores is only 0.39. Furthermore, we select samples from Books3 in Pile and employ Mistral to validate the recall rate of the top-k retrieval subsequent to dimensionality reduction. The ground truth is determined using the top-k tokens derived from the full-dimensional query and key. A total of 2,000 tokens are selected for this analysis, spanning positions from 23,000 to 25,000. In parallel, we execute comparative experiments utilizing principle component analysis (PCA) for dimensionality reduction inspired by (Singhania et al., 2024). The experimental results are depicted in Figure 2. It can be observed that our dimensionality reduction method achieves a recall rate of over 90% for the majority of the model’s layers, whereas PCA exhibits a recall rate below 90% in approximately half of the layers."
+          ]
+        },
+        {
+          "title": "Effectiveness of the proximity influence distanceϵ\\epsilon.",
+          "paragraphs": [
+            "The parameter ϵ\\epsilon in Equation 8 controls the continuity of the selected tokens. As demonstrated in Table 5, we find this parameter to be crucial for the model, especially with regard to its retrieval capabilities. Furthermore, we observe that in Retrieve.KV, when ϵ=0,1\\epsilon=0,1, even when the model’s predictions are incorrect, it is still able to retrieve parts of the correct values. For instance, the answer is \"49c65968-6319-44fc-b286-feb249694b07\", while the model’s prediction is \"49c65968-6319-44fc-9021-cfa198896071\". Retrieve.KV and NeedleBench exhibit different optimal values for ϵ\\epsilon. We speculate that the underlying reason may be the difference in the number of positions where answers are to be retrieved. In Retrieve.KV, there is typically only one segment that requires retrieval, and increasing ϵ\\epsilon may enhance the completeness of the retrieved answer. In contrast, NeedleBench involves the retrieval of answers from multiple positions. Increasing ϵ\\epsilon might lead to an over-concentration of attention on a limited number of positions."
+          ]
+        },
+        {
+          "title": "Uniform Token Selection for All Heads.",
+          "paragraphs": [
+            "Our method does not select tokens individually for each head but rather chooses tokens based on the average importance scores across all heads. This approach is beneficial for compressing the size of queries and keys, thereby enhancing inference efficiency. To verify whether there is a significant performance degradation, we design two experiments with Llama on LongBench as shown in Table 6. \"Individual\" refers to the importance score of each token being the maximum value among the scores of all heads, meaning that each head votes for the scores. This approach ensures that the selection process takes into account all heads. \"Uniform\" in Table 6 denotes our method of selecting tokens without dimensionality reduction. The scores for each subtask of LongBench are depicted in Appendix E. We extrapolate Llama from its original 8k to an average length of 32k on LongBench, and the performance on various category tasks for both token selection methods is very close."
+          ]
+        },
+        {
+          "title": "Dimension Reduction of Queries and Keys.",
+          "paragraphs": [
+            "We calculate the importance scores of tokens using the reduced-dimensionality queries and keys. To evaluate the impact of dimensionality reduction, we analyse experiments on LongBench with Llama using the full-dimensional query and key, as well as their reduced-dimensionality counterparts. As demonstrated in Table 6 and Table 1, their respective scores are 44.8 and 44.41. The difference between the two scores is only 0.39. Furthermore, we select samples from Books3 in Pile and employ Mistral to validate the recall rate of the top-k retrieval subsequent to dimensionality reduction. The ground truth is determined using the top-k tokens derived from the full-dimensional query and key. A total of 2,000 tokens are selected for this analysis, spanning positions from 23,000 to 25,000. In parallel, we execute comparative experiments utilizing principle component analysis (PCA) for dimensionality reduction inspired by (Singhania et al., 2024). The experimental results are depicted in Figure 2. It can be observed that our dimensionality reduction method achieves a recall rate of over 90% for the majority of the model’s layers, whereas PCA exhibits a recall rate below 90% in approximately half of the layers."
+          ]
+        }
+      ]
+    },
+    "5 Conclusions and Future work": {
+      "paragraphs": [
+        "In this paper, we propose an efficient token-level selective attention method for extending the context length of LLMs without incremental training of LLMs parameters. The insight is to select a constant number of the most important tokens at each step for computing attention at the token level, leveraging the sparsity of the attention matrix. When the input sequence is sufficiently long, we are able to reduce the computational complexity to up to nearly 1.56%1.56\\% of the original by compressing the queries and keys into low-dimensional representations. Our empirical evaluations demonstrate that ESA can effectively handle sequences of lengths up to 4×4\\times and even 25×25\\times the training length for various types of long sequence tasks. Future work could explore more accurate and efficient methods for selecting important tokens in extrapolation tasks."
+      ],
+      "subsections": []
+    },
+    "6 Limitations": {
+      "paragraphs": [
+        "Our method has the following limitations: 1. We apply the same compression ratio to the queries and keys across different layers; employing varying compression ratios for different layers may yield better performance. 2. There may exist more effective token selection methods and compression techniques that warrant further exploration. 3. A more suitable positional encoding for our approach may exist and requires further investigation."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Complexity Analysis Derivation": {
+      "paragraphs": [
+        "Denote lI,M,L,C=lI+lM+lL+lCl_{I,M,L,C}=l_{I}+l_{M}+l_{L}+l_{C}, the full attention in each step is computed as The complexity of computing full attention consists of the following parts:",
+        "1. The dot product of queries and keys:",
+        "2. The softmax operation (including exponential calculation, summation, and normalization):",
+        "3. The dot product of attention weights and values:",
+        "The overall complexity is",
+        "The complexity of our method comprises the following components: Given that lM>>lI,lL,lC,k,dH,d′l_{M}>>l_{I},l_{L},l_{C},k,d_{H},d^{\\prime}, the overall reduction ratio of complexity is:",
+        "1. Reduction of the dimensions of the query and key in Equation (5):",
+        "2. The complexity of token selection in Equation (4) and (8) is 2⋅lM⋅lC⋅d′+lM⋅lC+hmax​(2⋅lC⋅lM+(1+2​ϵ)⋅lM)2\\cdot l_{M}\\cdot l_{C}\\cdot d^{\\prime}+l_{M}\\cdot l_{C}+h_{\\text{max}}(2\\cdot l_{C}\\cdot l_{M}+(1+2\\epsilon)\\cdot l_{M}). The complexity of taking the maximum operation on multi-dimensional vectors is denoted as hmaxh_{\\text{max}}. Since (a) the complexity is lower than that of an equivalent number of Floating Point Operations (FLOPS) for the same scale; and (b) 2⋅lC⋅lM+(1+2​ϵ)⋅lM<2⋅lM⋅lC⋅d′2\\cdot l_{C}\\cdot l_{M}+(1+2\\epsilon)\\cdot l_{M}<2\\cdot l_{M}\\cdot l_{C}\\cdot d^{\\prime}, we neglect the impact of the max operation. Therefore, the complexity of token selection is:",
+        "3. Following the analogy of Equation (11), (12) and (13), after selecting kk tokens from MM, the complexity of computing sparse attention is as follows: where, lI,L,C≜lI+lL+lCl_{I,L,C}\\triangleq l_{I}+l_{L}+l_{C}."
+      ],
+      "subsections": []
+    },
+    "Appendix B Model Loading": {
+      "paragraphs": [
+        "All of our experiments were conducted on a device equipped with 4 ×\\times A800 GPUs. The evaluated models were partitioned across the 4 GPUs by layer using the accelerate (Gugger et al., 2022). Our model loading approach is capable of supporting the execution of all the aforementioned experiments. Additionally, we support loading the model onto a single A800 GPU by offloading the original KV cache to the CPU, while the dimension-reduced keys are always kept on the GPU. During each attention computation, a small number of keys and values in KV cache are loaded onto the GPU. By employing this cache management approach, we are able to perform inference on long sequence tasks with lengths of 700k+ on a single A800 GPU. For NTK and YaRN, we employ vLLM (Kwon et al., 2023) for inference on a device equipped with 4 ×\\times A800 GPUs."
+      ],
+      "subsections": []
+    },
+    "Appendix C Samples of NeedleBench and Counting-Stars": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "NeedleBench",
+          "paragraphs": [
+            "A sample from NeedleBench is shown below, where xxxxxxxx represents noise text:",
+            "You are an intelligent AI assistant skilled in answering user questions. Please keep your answers concise and clear. Do not talk about irrelevant topics or repeat your answers. The document given to you by the user is May 2001 xxxxxxxx Hidden on Hell Island is the legendary Dream Bubble. xxxxxxxx Hidden on Emerald Island is the legendary Ghost Pearl. xxxxxxxx Hidden on Sand Island is the legendary Stardust Shard.xxxxxxxx Now, the questions are: What legendary item is hidden on Hell Island?What legendary item is hidden on Emerald Island?What legendary item is hidden on Sand Island?Before answering, please consider what in the document is most relevant to this question. Please answer in the format of ’The legendary item hidden on the Hell Island is . The legendary item hidden on the Emerald Island is . The legendary item hidden on the Sand Island is "
+          ]
+        },
+        {
+          "title": "Counting-Stars",
+          "paragraphs": [
+            "A sample from Counting-Stars is shown below, where xxxxxxxx represents noise text:",
+            "xxxxxxxx The little penguin counted 15 ⋆\\star xxxxxxxx The little penguin counted 117 ⋆\\star xxxxxxxx The little penguin counted 42 ⋆\\star xxxxxxxx The little penguin counted 29 ⋆\\star On this moonlit and misty night, the little penguin is looking up at the sky and concentrating on counting ⋆\\star. Please help the little penguin collect the number of ⋆\\star, for example: {\"little_penguin\": [x, x, x,…]}. The summation is not required, and the numbers in [x, x, x,…] represent the counted number of ⋆\\star by the little penguin. Only output the results in JSON format without any explanation. “‘json {\"little_penguin\": ["
+          ]
+        }
+      ]
+    },
+    "Appendix D Proximity Influence Distance: Specific Experiments": {
+      "paragraphs": [
+        "We validate the ablation study results of the proximity influence distance, with the detailed findings presented in Table 7. When ϵ\\epsilon is set to 0 and 1, Mistral demonstrates superior performance across all subtasks ranging from 4k to 200k. As ϵ\\epsilon is further increased to 3 and 5, the scores on the short-sequence subtasks (4k-16k) remain comparable to the previous results. However, the model’s performance exhibits a significant decline on the long-sequence subtasks (48k-200k).",
+        "[Table: Table 7: We validate the performance across all subtasks of NeedleBench with varying ϵ\\epsilon using Mistral.]"
+      ],
+      "subsections": []
+    },
+    "Appendix E Token Selection for Heads: Specific Experiments": {
+      "paragraphs": [
+        "We employ Llama to investigate the impact of different token selection methods for heads. We extrapolate Llama’s original context length of 8k to 32k and conduct experiments using LongBench, which has an average length of 32k. The scores for each subtask are presented in Table 8.",
+        "[Table: Table 8: Llama’s specific experiments on LongBench using different token selection methods for heads. \"Individual\" refers to the importance score of each token being the maximum value among the scores of all heads, meaning that each head votes for the scores. This approach ensures that the selection process takes into account all heads. \"Uniform\" in the table denotes our method of selecting tokens without dimensionality reduction.]"
+      ],
+      "subsections": []
+    },
+    "Appendix F LM-Infinite with additional top-k middle tokens": {
+      "paragraphs": [
+        "LM-Infinite optionally select top-k middle tokens for some higher layers for each head. Following the settings in their paper, we evaluate the effectiveness of this method and the results are demonstrated in Table 9. The performance is improved compared to the original LM-Infinite setting. Nevertheless, it is not as competitive as our ESA method.",
+        "[Table: Table 9: Results on LongBench with Infinite-LM attending to top 5 tokens in the middle.]"
+      ],
+      "subsections": []
+    },
+    "Appendix G Pseudocode for Computing Attention": {
+      "paragraphs": [
+        "We support the computation of local and global attention using either Flash Attention (Dao et al., ) or PyTorch operators. The pseudocode for computing a step of attention with Flash Attention is shown in Algorithm 1. It is worth noting that we omit the exp-normalize trick in Step 12 of Algorithm 1 to avoid numerical overflow. We employ the function flash_attn_func provided by Flash Attention, which returns the logarithm of the softmax normalization factor as its second result. In environments where Flash Attention is not supported, we can replace the function flash_attn_func with PyTorch operators."
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "Agrawal et al. (2023) Amey Agrawal, Ashish Panwar, Jayashree Mohan, Nipun Kwatra, Bhargav S. Gulavani, and Ramachandran Ramjee. 2023. Sarathi: Efficient llm inference by piggybacking decodes with chunked prefills. ArXiv, abs/2308.16369.",
+    "Ahrabian et al. (2024) Kian Ahrabian, Alon Benhaim, Barun Patra, Jay Pujara, Saksham Singhal, and Xia Song. 2024. On the adaptation of unlimiformer for decoder-only transformers. In Proceedings of the 2024 Joint International Conference on Computational Linguistics, Language Resources and Evaluation (LREC-COLING 2024), pages 12395–12402.",
+    "AI@Meta (2024) AI@Meta. 2024. Llama 3 model card.",
+    "Ainslie et al. (2023) Joshua Ainslie, James Lee-Thorp, Michiel de Jong, Yury Zemlyanskiy, Federico Lebrón, and Sumit Sanghai. 2023. Gqa: Training generalized multi-query transformer models from multi-head checkpoints. arXiv preprint arXiv:2305.13245.",
+    "An et al. (2024) Chen An, Fei Huang, Jun Zhang, Shansan Gong, Xipeng Qiu, Chang Zhou, and Lingpeng Kong. 2024. Training-free long-context scaling of large language models. ArXiv, abs/2402.17463.",
+    "Bai et al. (2023) Yushi Bai, Xin Lv, Jiajie Zhang, Hongchang Lyu, Jiankai Tang, Zhidian Huang, Zhengxiao Du, Xiao Liu, Aohan Zeng, Lei Hou, et al. 2023. Longbench: A bilingual, multitask benchmark for long context understanding. arXiv preprint arXiv:2308.14508.",
+    "Beltagy et al. (2020) Iz Beltagy, Matthew E. Peters, and Arman Cohan. 2020. Longformer: The long-document transformer. ArXiv, abs/2004.05150.",
+    "Bertsch et al. (2024) Amanda Bertsch, Uri Alon, Graham Neubig, and Matthew Gormley. 2024. Unlimiformer: Long-range transformers with unlimited length input. Advances in Neural Information Processing Systems, 36.",
+    "bloc97 (2023) bloc97. 2023. Ntk-aware scaled rope allows llama models to have extended (8k+) context size without any fine-tuning and minimal perplexity degradation.",
+    "Cai et al. (2024) Zefan Cai, Yichi Zhang, Bofei Gao, Yuliang Liu, Tianyu Liu, Keming Lu, Wayne Xiong, Yue Dong, Baobao Chang, Junjie Hu, and Wen Xiao. 2024. Pyramidkv: Dynamic kv cache compression based on pyramidal information funneling. ArXiv, abs/2406.02069.",
+    "Chen et al. (2023a) Guanzheng Chen, Xin Li, Zaiqiao Meng, Shangsong Liang, and Lidong Bing. 2023a. Clex: Continuous length extrapolation for large language models. arXiv preprint arXiv:2310.16450.",
+    "Chen et al. (2023b) Shouyuan Chen, Sherman Wong, Liangjian Chen, and Yuandong Tian. 2023b. Extending context window of large language models via positional interpolation. arXiv preprint arXiv:2306.15595.",
+    "(13) T Dao, DY Fu, S Ermon, A Rudra, and C FlashAttention Ré. fast and memory-efficient exact attention with io-awareness. arxiv; 2022. arXiv preprint arXiv:2205.14135.",
+    "Ding et al. (2024) Yiran Ding, Li Lyna Zhang, Chengruidong Zhang, Yuanyuan Xu, Ning Shang, Jiahang Xu, Fan Yang, and Mao Yang. 2024. Longrope: Extending llm context window beyond 2 million tokens. ArXiv, abs/2402.13753.",
+    "Dong et al. (2022) Qingxiu Dong, Lei Li, Damai Dai, Ce Zheng, Zhiyong Wu, Baobao Chang, Xu Sun, Jingjing Xu, and Zhifang Sui. 2022. A survey on in-context learning. arXiv preprint arXiv:2301.00234.",
+    "Gao et al. (2020) Leo Gao, Stella Biderman, Sid Black, Laurence Golding, Travis Hoppe, Charles Foster, Jason Phang, Horace He, Anish Thite, Noa Nabeshima, et al. 2020. The pile: An 800gb dataset of diverse text for language modeling. arXiv preprint arXiv:2101.00027.",
+    "Gao et al. (2023) Yunfan Gao, Yun Xiong, Xinyu Gao, Kangxiang Jia, Jinliu Pan, Yuxi Bi, Yi Dai, Jiawei Sun, and Haofen Wang. 2023. Retrieval-augmented generation for large language models: A survey. arXiv preprint arXiv:2312.10997.",
+    "Ge et al. (2023) Suyu Ge, Yunan Zhang, Liyuan Liu, Minjia Zhang, Jiawei Han, and Jianfeng Gao. 2023. Model tells you what to discard: Adaptive kv cache compression for llms. arXiv preprint arXiv:2310.01801.",
+    "Gugger et al. (2022) Sylvain Gugger, Lysandre Debut, Thomas Wolf, Philipp Schmid, Zachary Mueller, Sourab Mangrulkar, Marc Sun, and Benjamin Bossan. 2022. Accelerate: Training and inference at scale made simple, efficient and adaptable. https://github.com/huggingface/accelerate.",
+    "Han et al. (2023) Chi Han, Qifan Wang, Wenhan Xiong, Yu Chen, Heng Ji, and Sinong Wang. 2023. Lm-infinite: Simple on-the-fly length generalization for large language models. arXiv preprint arXiv:2308.16137.",
+    "Jiang et al. (2023) Albert Q Jiang, Alexandre Sablayrolles, Arthur Mensch, Chris Bamford, Devendra Singh Chaplot, Diego de las Casas, Florian Bressand, Gianna Lengyel, Guillaume Lample, Lucile Saulnier, et al. 2023. Mistral 7b. arXiv preprint arXiv:2310.06825.",
+    "Jiang et al. (2024) Huiqiang Jiang, Yucheng Li, Chengruidong Zhang, Qianhui Wu, Xufang Luo, Surin Ahn, Zhenhua Han, Amir H Abdi, Dongsheng Li, Chin-Yew Lin, et al. 2024. Minference 1.0: Accelerating pre-filling for long-context llms via dynamic sparse attention. arXiv preprint arXiv:2407.02490.",
+    "Jin et al. (2024) Hongye Jin, Xiaotian Han, Jingfeng Yang, Zhimeng Jiang, Zirui Liu, Chia yuan Chang, Huiyuan Chen, and Xia Hu. 2024. Llm maybe longlm: Self-extend llm context window without tuning. ArXiv, abs/2401.01325.",
+    "kaiokendev (2023) kaiokendev. 2023. Things i’m learning while training superhot.",
+    "Kwon et al. (2023) Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph Gonzalez, Hao Zhang, and Ion Stoica. 2023. Efficient memory management for large language model serving with pagedattention. In Proceedings of the 29th Symposium on Operating Systems Principles, pages 611–626.",
+    "Li et al. (2024a) Mo Li, Songyang Zhang, Yunxin Liu, and Kai Chen. 2024a. Needlebench: Can llms do retrieval and reasoning in 1 million context window? arXiv preprint arXiv:2407.11963.",
+    "Li et al. (2024b) Yuhong Li, Yingbing Huang, Bowen Yang, Bharat Venkitesh, Acyr Locatelli, Hanchen Ye, Tianle Cai, Patrick Lewis, and Deming Chen. 2024b. Snapkv: Llm knows what you are looking for before generation. arXiv preprint arXiv:2404.14469.",
+    "Liu et al. (2023) Xiaoran Liu, Hang Yan, Shuo Zhang, Chen An, Xipeng Qiu, and Dahua Lin. 2023. Scaling laws of rope-based extrapolation. ArXiv, abs/2310.05209.",
+    "Liu et al. (2024) Zichang Liu, Aditya Desai, Fangshuo Liao, Weitao Wang, Victor Xie, Zhaozhuo Xu, Anastasios Kyrillidis, and Anshumali Shrivastava. 2024. Scissorhands: Exploiting the persistence of importance hypothesis for llm kv cache compression at test time. Advances in Neural Information Processing Systems, 36.",
+    "Lu et al. (2024) Yi Lu, Xin Zhou, Wei He, Jun Zhao, Tao Ji, Tao Gui, Qi Zhang, and Xuanjing Huang. 2024. Longheads: Multi-head attention is secretly a long context processor. arXiv preprint arXiv:2402.10685.",
+    "Mohtashami and Jaggi (2023) Amirkeivan Mohtashami and Martin Jaggi. 2023. Landmark attention: Random-access infinite context length for transformers. arXiv preprint arXiv:2305.16300.",
+    "Peng et al. (2023) Bowen Peng, Jeffrey Quesnelle, Honglu Fan, and Enrico Shippole. 2023. Yarn: Efficient context window extension of large language models. arXiv preprint arXiv:2309.00071.",
+    "Rozière et al. (2023) Baptiste Rozière, Jonas Gehring, Fabian Gloeckle, Sten Sootla, Itai Gat, Xiaoqing Tan, Yossi Adi, Jingyu Liu, Tal Remez, Jérémy Rapin, Artyom Kozhevnikov, I. Evtimov, Joanna Bitton, Manish P Bhatt, Cristian Cantón Ferrer, Aaron Grattafiori, Wenhan Xiong, Alexandre D’efossez, Jade Copet, Faisal Azhar, Hugo Touvron, Louis Martin, Nicolas Usunier, Thomas Scialom, and Gabriel Synnaeve. 2023. Code llama: Open foundation models for code. ArXiv, abs/2308.12950.",
+    "Singhania et al. (2024) Prajwal Singhania, Siddharth Singh, Shwai He, Soheil Feizi, and Abhinav Bhatele. 2024. Loki: Low-rank keys for efficient sparse attention. arXiv preprint arXiv:2406.02542.",
+    "Song et al. (2024) Mingyang Song, Mao Zheng, and Xuan Luo. 2024. Counting-stars: A simple, efficient, and reasonable strategy for evaluating long-context large language models. arXiv preprint arXiv:2403.11802.",
+    "Su (2023) Jianlin Su. 2023. Rectified rotary position embeddings. https://github.com/bojone/rerope.",
+    "Su et al. (2024) Jianlin Su, Murtadha Ahmed, Yu Lu, Shengfeng Pan, Wen Bo, and Yunfeng Liu. 2024. Roformer: Enhanced transformer with rotary position embedding. Neurocomputing, 568:127063.",
+    "Su, Jianlin (2023) Su, Jianlin. 2023. ReRoPE. https://kexue.fm/archives/9708.",
+    "Xiao et al. (2024) Chaojun Xiao, Pengle Zhang, Xu Han, Guangxuan Xiao, Yankai Lin, Zhengyan Zhang, Zhiyuan Liu, Song Han, and Maosong Sun. 2024. Infllm: Unveiling the intrinsic capacity of llms for understanding extremely long sequences with training-free memory. arXiv preprint arXiv:2402.04617.",
+    "Xiao et al. (2023) Guangxuan Xiao, Yuandong Tian, Beidi Chen, Song Han, and Mike Lewis. 2023. Efficient streaming language models with attention sinks. arXiv preprint arXiv:2309.17453.",
+    "Zaheer et al. (2020) Manzil Zaheer, Guru Guruganesh, Kumar Avinava Dubey, Joshua Ainslie, Chris Alberti, Santiago Ontañón, Philip Pham, Anirudh Ravula, Qifan Wang, Li Yang, and Amr Ahmed. 2020. Big bird: Transformers for longer sequences. ArXiv, abs/2007.14062.",
+    "Zhang et al. (2024a) Xinrong Zhang, Yingfa Chen, Shengding Hu, Zihang Xu, Junhao Chen, Moo Hao, Xu Han, Zhen Thai, Shuo Wang, Zhiyuan Liu, et al. 2024a. ∞\\inftybench: Extending long context evaluation beyond 100k tokens. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 15262–15277.",
+    "Zhang et al. (2024b) Zhenyu Zhang, Ying Sheng, Tianyi Zhou, Tianlong Chen, Lianmin Zheng, Ruisi Cai, Zhao Song, Yuandong Tian, Christopher Ré, Clark Barrett, et al. 2024b. H2o: Heavy-hitter oracle for efficient generative inference of large language models. Advances in Neural Information Processing Systems, 36."
+  ]
+}

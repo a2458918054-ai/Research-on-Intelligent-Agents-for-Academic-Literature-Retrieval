@@ -1,0 +1,451 @@
+{
+  "title": "Inner Thinking Transformer:Leveraging Dynamic Depth Scaling to Foster Adaptive Internal Thinking",
+  "authors": "Yilong Chen1,2,\n Junyuan Shang3‡,\n Zhenyu Zhang3,\n Yanxi Xie4,Jiawei Sheng1,Tingwen Liu1,2†,Shuohuan Wang3,Yu Sun3,Hua Wu3,Haifeng Wang31Institute of Information Engineering, Chinese Academy of Sciences2School of Cyber Security, University of Chinese Academy of Sciences3Baidu Inc.4School of Artificial Intelligence, Beijing Normal University{chenyilong, shengjiawei, liutingwen}@iie.ac.cn{shangjunyuan, zhangzhenyu07, wangshuohuan, sunyu02}@baidu.com",
+  "abstract": "Large language models (LLMs) face inherent performance bottlenecks under parameter constraints, particularly in processing critical tokens that demand complex reasoning. Empirical analysis reveals challenging tokens induce abrupt gradient spikes across layers, exposing architectural stress points in standard Transformers. Building on this insight, we propose Inner Thinking Transformer (ITT), which reimagines layer computations as implicit thinking steps. ITT dynamically allocates computation through Adaptive Token Routing, iteratively refines representations via Residual Thinking Connections, and distinguishes reasoning phases using Thinking Step Encoding. ITT enables deeper processing of critical tokens without parameter expansion. Evaluations across 162M-466M parameter models show ITT achieves 96.5% performance of a 466M Transformer using only 162M parameters, reduces training data by 43.2%, and outperforms Transformer/Loop variants in 11 benchmarks. By enabling elastic computation allocation during inference, ITT balances performance and efficiency through architecture-aware optimization of implicit thinking pathways.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Large language models (LLMs) Anthropic (2023); OpenAI (2023); Touvron et al. (2023) have demonstrated remarkable performance across numerous natural language tasks. Recent studies Fernandez et al. (2024); Hoffmann et al. (2022); Wang et al. (2024b) indicate that scaling laws for LLM parameters exhibit diminishing returns under constrained data availability and computational resource budgets. Scaling model parameters increases computational and deployment costs, making high-performance models impractical for resource-constrained environments. Meanwhile, smaller models encounter performance bottlenecks primarily attributable to limited parameter space.",
+        "Recent approaches, such as Test-Time Scaling (\"Slow-Thinking\") Muennighoff et al. (2025); Snell et al. (2024); Ma et al. (2025), aim to enhance performance by allocating more computation during the inference search process. While effective, these methods are limited by the reliance on accurately generating key tokens, which can lead to catastrophic reasoning failures Lin et al. (2025); Singh et al. (2024); Jiang et al. (2024b), especially in smaller models. Some works enhance model performance through layer sharing Mu et al. (2024); Wang et al. (2024a), recursion Ng and Wang (2024); Dehghani et al. (2019a); Geiping et al. (2025), or implicit reasoning Deng et al. (2023); Shalev et al. (2024), but they fail to flexibly improve the model’s reasoning ability on key tokens, which either suffer from insufficient performance or redundant overhead.",
+        "In this work, we aim to explore how the model can allocate more computation to individual tokens, enhancing testing performance without increasing parameters. Through analysis in Section 2, we explore how models learn and reason about critical tokens. Our findings reveal that simple tokens are resolved efficiently in early layers with stable low-gradient flows, while complex tokens cause difficulties across layers, with sudden gradient spikes indicating architectural or parametric issues. The differentiated properties of layers inspire us to propose a novel perspective on the model’s internal reasoning process: Inner Thinking. Inner thinking conceptualizes the evolution of hidden states layer by layer, with each layer representing a distinct implicit reasoning step for deriving a single token.",
+        "Intuitively, we can extend and combine multiple inner thinking steps to break the model’s performance bottleneck. Therefore, we propose a novel approach called Inner Thinking Transformer (ITT). ITT enhances token-level reasoning by dynamically allocating additional thinking steps to key tokens and iteratively accumulating residual thinking results to refine tokens’ representations. As shown in Figure 1, the model learns to “think” more deeply on important information during training. Specifically, we design a dynamic token-wise depth architecture based on Adaptive Token Routing networks and adopt a Residual Thinking Connection mechanism (RTC) that gradually converges toward better outcomes at each step. In addition, we introduce a Thinking Step Encoding scheme to better differentiate between successive thinking steps.",
+        "Notably, while trained under specific thinking settings, our architecture can flexibly allocate more computational resources during testing time to improve performance or achieve a balanced trade-off between resources and performance (see Figure 6). The routing network autonomously develops a thinking pattern that strategically balances depth and breadth: specific thinking steps are allocated for intensive processing of complex tokens, while more efficient pathways handle simpler tokens (see Figure 7). In general, ITT mitigates the performance bottleneck in reasoning for individual tokens and can be combined with COT methods to resolving reasoning challenges for critical tokens.",
+        "Experimentally, we construct both vanilla Transformer, Loop variants and ITT variants across three scales (162M, 230M, and 466M parameters) following the LLaMA architecture. Evaluated on an 11-task benchmark, ITT consistently outperforms Transformer and Loop variants with an equivalent parameters. ITT achieves higher performance with the same FLOPs and saves 43.2% of the training data budget compared to Transformer. Notably, the ITT ×4 -162M model significantly surpasses the 230M Transformer and even achieves 96.5% performance of 466M Transformer. Overall, ITT introduces an inherent test-time scaling in the model, achieving both performance and efficiency balance through its elastic deep computation paradigm."
+      ],
+      "subsections": []
+    },
+    "2 Observation": {
+      "paragraphs": [
+        "To investigate how models learn about critical tokens, our empirical analysis of GPT-2’s attention matrices through gradient nuclear norm (GNN) measurements Li et al. (2024) reveals systematic patterns in layer-wise dynamics. Using the AQuA corpus Ling et al. (2017), we firstly train GPT-2 in 100 samples then categorize samples in evaluation into easy (model answers correctly) and hard (model answers incorrectly). In Figure 2, for easy samples, GNN values decay exponentially across early layers (L0-L2) and final layers (L11), stabilizing below 3 in layers (L3-L10). In contrast, hard samples exhibit persistent GNN oscillations throughout all 12 layers, punctuated by abrupt spikes at strategic layer positions (L3, L5, L7, L9).",
+        "These observations reveal one of the underlying reasons for the presence of hard-to-learn samples in models: as shown in Figure 1, certain parameters face significant optimization difficulties due to architectural limitations (e.g., insufficient depth) or parameter constraints. Many studies suggest that Transformer layers exhibit unique functional characteristics and training variances Alizadeh et al. (2024); Sun et al. (2025); Takase and Kiyono (2023).. This inspires us to propose a framework where each layer transformation in the model is viewed as a single thinking step on latent information. By studying the inner thinking process, we aim to design corresponding architectures to optimize model’s learning difficulty and inference performance."
+      ],
+      "subsections": []
+    },
+    "3 Method": {
+      "paragraphs": [
+        "In this section, we introduce our Inner Thinking (ITT) framework (Figure 3) to enhance transformer models by dynamically deepening token-level reasoning. We begin in Section 3.1 by formalizing inner thinking steps within the transformer. Section 3.2 then details the Residual Thinking Connection, where inner steps are extended via residual accumulation. In Section 3.3, we present the Adaptive Token Routing, which employs a weight predictor to select the most critical tokens for further thinking. Finally, Section 3.4 demonstrate how ITT enhances learning efficiency in backporpogation."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Inner Thinking Step in Transformer",
+          "paragraphs": [
+            "Traditional reasoning in Transformer models typically relies on token-by-token generation. Given an input xx, the output sequence y=(y1,y2,…,yN)y=(y_{1},y_{2},\\ldots,y_{N}) is generated as",
+            "However, errors in key tokens can propagate, potentially leading to an incorrect result. To investigate the intrinsic mechanisms in single-token generating, we propose a novel concept of Inner Thinking in model’s depth that decomposes the generation of each token into a series of internal thinking steps. Specifically, given an initial state x(0)x^{(0)}, we define Inner Thinking as",
+            "where f(t)​(⋅)f^{(t)}(\\cdot) represents the transformation corresponding to the tt-th thinking step (consist of one or more Transformer layers) and TT is the maximum number of steps. The final token is then generated based on the output of the last thinking step:",
+            "with WW and bb denoting the weights and bias for the output projection. Define ℒ​(⋅,y)\\mathcal{L}(\\cdot,y) measures the discrepancy between final state X(T)X^{(T)} and the target token yy, we have two scenarios:",
+            "If at an intermediate step t0<Tt_{0}<T, the state x(t0)x^{(t_{0})} is close enough to the target (i.e., ℒ​(x(t0),y)<ϵ\\mathcal{L}\\big{(}x^{(t_{0})},y\\big{)}<\\epsilon, where ϵ\\epsilon is a threshold), the model can stop and output the token as y=ψ​(x(t0))y=\\psi\\big{(}x^{(t_{0})}\\big{)}, where ψ​(⋅)\\psi(\\cdot) is the decoding function. This allows the model to achieve correct results with fewer Inner Thinking Steps, improving efficiency.",
+            "Conversely, if even after all TT internal steps the discrepancy remains high (i.e., ℒ​(x(T),y)>ϵ\\mathcal{L}\\big{(}x^{(T)},y\\big{)}>\\epsilon), it indicates that the Inner Thinking was insufficient to correctly approximate the target. This scenario highlights potential areas for improvement in the model’s reasoning capacity or its internal step design."
+          ]
+        },
+        {
+          "title": "Early Exit:",
+          "paragraphs": [
+            "If at an intermediate step t0<Tt_{0}<T, the state x(t0)x^{(t_{0})} is close enough to the target (i.e., ℒ​(x(t0),y)<ϵ\\mathcal{L}\\big{(}x^{(t_{0})},y\\big{)}<\\epsilon, where ϵ\\epsilon is a threshold), the model can stop and output the token as y=ψ​(x(t0))y=\\psi\\big{(}x^{(t_{0})}\\big{)}, where ψ​(⋅)\\psi(\\cdot) is the decoding function. This allows the model to achieve correct results with fewer Inner Thinking Steps, improving efficiency."
+          ]
+        },
+        {
+          "title": "Performance Deficiency:",
+          "paragraphs": [
+            "Conversely, if even after all TT internal steps the discrepancy remains high (i.e., ℒ​(x(T),y)>ϵ\\mathcal{L}\\big{(}x^{(T)},y\\big{)}>\\epsilon), it indicates that the Inner Thinking was insufficient to correctly approximate the target. This scenario highlights potential areas for improvement in the model’s reasoning capacity or its internal step design."
+          ]
+        },
+        {
+          "title": "3.2 Residual Thinking Connection",
+          "paragraphs": [
+            "Under the framework defined in Section 3.1, we aim to enhance the model’s performance to reduce Performance Deficiencies. For challenging examples, high gradient values are observed in Section 2, indicating that the model faces optimization difficulties. To address these issues, a natural approach is to increase the number of inner thinking steps in one layer’s computation. Therefore, we propose a Residual Thinking Connection (RTC) mechanism that train model’s layer parameters to learn iterative thinking capabilities, reducing the difficulty of single-step thinking and enabling multiple uses of parameters to break performance bottlenecks.",
+            "Let x(0)∈ℝdx^{(0)}\\in\\mathbb{R}^{d} denote RTC Layer input of a token representation, where dd is the hidden dimension. We denote f:ℝd→ℝdf:\\mathbb{R}^{d}\\rightarrow\\mathbb{R}^{d} as the layer transformation, TT is the maximum number of thinking steps. In RTC, the final output after tt iterative steps is computed by cumulatively accumulating each step’s outputs:",
+            "where ϕ(t)∈ℝd\\phi^{(t)}\\in\\mathbb{R}^{d} the learnable thinking position encoding associated with the tt-th inner thinking step, which measuring the differences and importance of each step. Rather than processing the input representation only once, RTC Layer iteratively refine it by adding the residual contributions of each step’s layer-output together with a learnable encoding. Compared to direct looping Ng and Wang (2024); Dehghani et al. (2019a), RTC not only enables deeper thinking but also effectively measures and combines each thinking step, allowing them to complement each other. RTC provides the foundation for scaling Inner Thinking during testing."
+          ]
+        },
+        {
+          "title": "3.3 Adaptive Token Routing",
+          "paragraphs": [
+            "RTC in Section 3.2 provides a method to enhance inner thinking. However, different tokens require a varying number of thinking steps in the model, as show in Section 2. Moreover, we aim for the model to learn detailed, task-specific information at each step. To avoid unnecessary computation and information interference from processing all tokens at once, we introduce Adaptive Token Routing (ATR). Inspired by deep conditional computation Raposo et al. (2024); Zhang et al. (2024), ATR, based on a routing network, selects the most important tokens for thinking at each step.",
+            "Let the input sequence be denoted by X∈ℝn×dX\\in\\mathbb{R}^{n\\times d}, where nn is the sequence length. We perform a forward pass to obtain the output Y(0)∈ℝn×dY^{(0)}\\in\\mathbb{R}^{n\\times d}, and then linear weight predictor ℛ(0)∈ℝd×1\\mathcal{R}^{(0)}\\in\\mathbb{R}^{d\\times 1} is applied to Y(0)Y^{(0)} to generate an importance score:",
+            "and we denote by Pρ​(w(1))P_{\\rho}(w^{(1)}) the ρ\\rho-th percentile of these scores, with ρ\\rho being a predefined selection ratio. For a given thinking step tt, the calculation process in ITT layer can be formulated as:",
+            "where α(t)\\alpha^{(t)} is a hyperparam in tt step, wi(t)>Pρ​(w(t))w^{(t)}_{i}>P_{\\rho}(w^{(t)}) is the indicator function selecting only the tokens with predicted weights exceeding the threshold. The router ℛ(t)\\mathcal{R}^{(t)}modulates the decision to execute an additional thinking iteration based on the current token representation and the step-specific encoding. For tokens deemed important, the model applies an extra weighted transformation. Conversely, tokens that do not meet the selection criteria bypass the extra processing, preserving their previous representation. The router’s weights are part of the gradient path, allowing the routing parameters to be updated through backpropagation.",
+            "Finally, ITT (in Figure 3) combine the results of each step using RTC, following Equation 4:",
+            "This unified update thus integrates RTC with dynamic, token-level routing, enabling the model to adaptively allocate computational resources only where deeper thinking is required. By iteratively selecting a subset of tokens for deeper processing, the model can efficiently reinforce key tokens without increasing the model parameter. In practice, the ITT layer can be flexibly improved based on the model layers. We insert the ITT layer at regular intervals alongside the model’s original layers to construct a flexible inner thinking model, and optimize all model parameters using the language modeling cross-entropy loss: 𝕃=𝕃CE\\mathbb{L}=\\mathbb{L}_{\\text{CE}}."
+          ]
+        },
+        {
+          "title": "3.4 Optimization",
+          "paragraphs": [
+            "In this section, we prove Residual Thinking Learning extends single-step optimization into multi-step optimization, making it easier to converge during backpropagation compared to a direct one-step mapping. Let y∗∈ℝdy^{*}\\in\\mathbb{R}^{d} the corresponding ground-truth, Θ′\\Theta^{\\prime} represents the origin Layer parameters, and θ\\theta represents th ITT layer parameters. The optimization objective is to minimize the loss:",
+            "For each step’s parameter θ\\theta, the gradient is computed using the chain rule:",
+            "Assuming that the corrections Δj\\Delta_{j} are small, we can approximate the product term by the identity matrix II, yielding:",
+            "This shows that the gradient update at each small step is nearly equal to the global gradient multiplied by the derivative of the local mapping, aligning with global loss reduction. Assuming each iteration reduces the error by a factor of cc, this leads to exponential decay ctc^{t}, proving that iterative corrections ensure stable, efficient convergence. In summary, our method avoids excessive scaling or distortion from deep chain propagation. It extends single-step optimization to multi-step, easing convergence and preventing gradient vanishing or explosion."
+          ]
+        }
+      ]
+    },
+    "4 Experiments": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "4.1 Setup",
+          "paragraphs": [
+            "To pretrain ITT models and baseline models, we employ the RedPajama TogetherAI (2023), which parallels the LLaMA training data across seven domains: CommonCrawl, C4, GitHub, Wikipedia, Books, ArXiv, and Stack-Exchange. This dataset comprises a 2 million tokens validation set and a 50 billion tokens training set.",
+            "Our experimental framework utilizes the Sheared-LLaMA codebase Xia et al. (2023) implemented on the Composer package Team (2021), and is executed on 8 NVIDIA A100 GPUs (80GB). The models are trained with a sequence length of 4096, employing a global batch size of 256. ITT models are trained for 50000 steps (50B token budget). The learning rates were set at 3e-4 for all parameters. The baselines and all ITT models follow the same training setup, starting from random initialization and training on the same dataset.",
+            "We employed the lm-evaluation-harness Gao et al. (2023) to evaluate our models. For common sense and reading comprehension tasks, we report 0-shot accuracy for SciQ Welbl et al. (2017), PIQA Bisk et al. (2020), WinoGrande (WG) Sakaguchi et al. (2020), ARC Easy(ARC-E) Clark et al. (2018a), and 10-shot HellaSwag (Hella.) Zellers et al. (2019), alongside 25-shot accuracy for ARC Challenge (ARC-C) Clark et al. (2018b). For continued QA and text understanding, we report 0-shot accuracy for LogiQA Liu et al. (2020), 32-shot BoolQ Clark et al. (2019), and 0-shot LAMBADA (Lam.) Paperno et al. (2016). All reported results are calculated with the mean and stderr of multiple experiments.",
+            "Following the architecture of LLaMA2, we constructed models at three parameter scales: 162M, 230M, and 466M, with hidden dimensions of 1024, 1536, and 2048, as shown in Table 5. For each parameter scale, we develop three variants: We experiment with three thinking step scaling factors—2×2\\times, 3×3\\times and 4×4\\times. We replace every other layer of original model with a Loop or ITT layer.",
+            "• Vanilla Transformers in LLaMA architecture Touvron et al. (2023).",
+            "• The Loop Neural Network design Ng and Wang (2024); Dehghani et al. (2019a) implements recurrence for iterative refinement.",
+            "• Our ITT architecture, adaptively selecting a subset of tokens for deeper thinking.",
+            "Vanilla Transformers in LLaMA architecture Touvron et al. (2023).",
+            "The Loop Neural Network design Ng and Wang (2024); Dehghani et al. (2019a) implements recurrence for iterative refinement.",
+            "Our ITT architecture, adaptively selecting a subset of tokens for deeper thinking."
+          ]
+        },
+        {
+          "title": "Data.",
+          "paragraphs": [
+            "To pretrain ITT models and baseline models, we employ the RedPajama TogetherAI (2023), which parallels the LLaMA training data across seven domains: CommonCrawl, C4, GitHub, Wikipedia, Books, ArXiv, and Stack-Exchange. This dataset comprises a 2 million tokens validation set and a 50 billion tokens training set."
+          ]
+        },
+        {
+          "title": "Training.",
+          "paragraphs": [
+            "Our experimental framework utilizes the Sheared-LLaMA codebase Xia et al. (2023) implemented on the Composer package Team (2021), and is executed on 8 NVIDIA A100 GPUs (80GB). The models are trained with a sequence length of 4096, employing a global batch size of 256. ITT models are trained for 50000 steps (50B token budget). The learning rates were set at 3e-4 for all parameters. The baselines and all ITT models follow the same training setup, starting from random initialization and training on the same dataset."
+          ]
+        },
+        {
+          "title": "Evaluation.",
+          "paragraphs": [
+            "We employed the lm-evaluation-harness Gao et al. (2023) to evaluate our models. For common sense and reading comprehension tasks, we report 0-shot accuracy for SciQ Welbl et al. (2017), PIQA Bisk et al. (2020), WinoGrande (WG) Sakaguchi et al. (2020), ARC Easy(ARC-E) Clark et al. (2018a), and 10-shot HellaSwag (Hella.) Zellers et al. (2019), alongside 25-shot accuracy for ARC Challenge (ARC-C) Clark et al. (2018b). For continued QA and text understanding, we report 0-shot accuracy for LogiQA Liu et al. (2020), 32-shot BoolQ Clark et al. (2019), and 0-shot LAMBADA (Lam.) Paperno et al. (2016). All reported results are calculated with the mean and stderr of multiple experiments."
+          ]
+        },
+        {
+          "title": "Baseline.",
+          "paragraphs": [
+            "Following the architecture of LLaMA2, we constructed models at three parameter scales: 162M, 230M, and 466M, with hidden dimensions of 1024, 1536, and 2048, as shown in Table 5. For each parameter scale, we develop three variants: We experiment with three thinking step scaling factors—2×2\\times, 3×3\\times and 4×4\\times. We replace every other layer of original model with a Loop or ITT layer.",
+            "• Vanilla Transformers in LLaMA architecture Touvron et al. (2023).",
+            "• The Loop Neural Network design Ng and Wang (2024); Dehghani et al. (2019a) implements recurrence for iterative refinement.",
+            "• Our ITT architecture, adaptively selecting a subset of tokens for deeper thinking.",
+            "Vanilla Transformers in LLaMA architecture Touvron et al. (2023).",
+            "The Loop Neural Network design Ng and Wang (2024); Dehghani et al. (2019a) implements recurrence for iterative refinement.",
+            "Our ITT architecture, adaptively selecting a subset of tokens for deeper thinking."
+          ]
+        },
+        {
+          "title": "4.2 Result",
+          "paragraphs": [
+            "Table 1 shows the performance improvements of ITT (pink) and Loop (blue) on LLaMA 2’s 162M, 230M, and 466M versions. Both methods enhance model performance by increasing computational allocation during training and inference without expanding parameters. Thanks to its unique RTC design, ITT achieves better test-time scaling performance than Loop, as shown in Figure 5. For example, the 162M ITT ×\\times4 configuration improves the baseline by 1.7% with 4-step deep thinking in 50% of layers, while Loop improves only by 0.3% after 4 iterations. The advantages of ITT become clearer as model scale increases, with improvements of 1.7%, 2.1%, and 1.7% for the 162M, 230M, and 466M models. ITT shows overall enhancement across nearly all metrics, with notable improvements in ARC-E, BoolQ, and LAMBADA, reflecting gains in generative and reasoning abilities.",
+            "Figure 4 Left and Middle visualize the training loss and eval perplexity during 50B-token pre-training for LLaMA 2-2162M, Loop×\\times4, and ITT ×\\times4. ITT demonstrates superior training stability and efficiency, with smoother, lower perplexity trajectories compared to LLaMA 2-230M and Loop. Notably, ITT ×\\times4 shows a 0.09 loss reduction compared to baseline and 0.4 to Loop at 50B tokens. ITT also reveals remarkable data efficiency: it matches LLaMA 2-162M’s performance using only 56.8% of the training data, showcasing its capability in parameter-efficient scaling and data-efficient learning.",
+            "As shown in Figure 4 (Right), Figure 6 (Left), and Table 1, ITT maintains high computational efficiency during test-time scaling. With 3-step deep thinking, ITT incurs only 84% of Loop’s computational cost, dropping to 70% at 4 steps. Remarkably, ITT outperforms Loop with fewer computational FLOPs, achieving performance similar to models with more parameters. Our experiments show that ITT ×\\times2 outperforms Loop×\\times3 while using only 72% of the computation and exceeds the 230M Dense model with just 70.4% of the parameters. These results highlight the substantial computational efficiency gains from token-wise selective inner thinking in the ITT framework.",
+            "Our experiments show that ITT models can elastically allocate computations for inner thinking. As seen in Table 2, with 4-step thinking and 70% token participation during training, we can flexibly adjust token selections to enhance performance (e.g., 10.21 PPL in the 70%, 70%, 90% setting, 0.31 PPL lower than the training config), or reduce token selections to lower costs with no performance loss (e.g., 10.47 PPL in the 50%, 50%, 50% setting). We can even remove a thinking step while maintaining near-identical results to the training configuration. Figure 6 Left shows the FLOPs and Eval PPL of ITT’s elastic inference. Compared to the baselines, ITT achieves a performance-efficiency balance, with the dashed line illustrating the near-linear tradeoff trend of ITT during testing. ITT’s elastic thinking enables flexible deployment in diverse scenarios."
+          ]
+        },
+        {
+          "title": "Foundational Capabilities.",
+          "paragraphs": [
+            "Table 1 shows the performance improvements of ITT (pink) and Loop (blue) on LLaMA 2’s 162M, 230M, and 466M versions. Both methods enhance model performance by increasing computational allocation during training and inference without expanding parameters. Thanks to its unique RTC design, ITT achieves better test-time scaling performance than Loop, as shown in Figure 5. For example, the 162M ITT ×\\times4 configuration improves the baseline by 1.7% with 4-step deep thinking in 50% of layers, while Loop improves only by 0.3% after 4 iterations. The advantages of ITT become clearer as model scale increases, with improvements of 1.7%, 2.1%, and 1.7% for the 162M, 230M, and 466M models. ITT shows overall enhancement across nearly all metrics, with notable improvements in ARC-E, BoolQ, and LAMBADA, reflecting gains in generative and reasoning abilities."
+          ]
+        },
+        {
+          "title": "Convergence.",
+          "paragraphs": [
+            "Figure 4 Left and Middle visualize the training loss and eval perplexity during 50B-token pre-training for LLaMA 2-2162M, Loop×\\times4, and ITT ×\\times4. ITT demonstrates superior training stability and efficiency, with smoother, lower perplexity trajectories compared to LLaMA 2-230M and Loop. Notably, ITT ×\\times4 shows a 0.09 loss reduction compared to baseline and 0.4 to Loop at 50B tokens. ITT also reveals remarkable data efficiency: it matches LLaMA 2-162M’s performance using only 56.8% of the training data, showcasing its capability in parameter-efficient scaling and data-efficient learning."
+          ]
+        },
+        {
+          "title": "Computational Efficiency.",
+          "paragraphs": [
+            "As shown in Figure 4 (Right), Figure 6 (Left), and Table 1, ITT maintains high computational efficiency during test-time scaling. With 3-step deep thinking, ITT incurs only 84% of Loop’s computational cost, dropping to 70% at 4 steps. Remarkably, ITT outperforms Loop with fewer computational FLOPs, achieving performance similar to models with more parameters. Our experiments show that ITT ×\\times2 outperforms Loop×\\times3 while using only 72% of the computation and exceeds the 230M Dense model with just 70.4% of the parameters. These results highlight the substantial computational efficiency gains from token-wise selective inner thinking in the ITT framework."
+          ]
+        },
+        {
+          "title": "Elastic Thinking.",
+          "paragraphs": [
+            "Our experiments show that ITT models can elastically allocate computations for inner thinking. As seen in Table 2, with 4-step thinking and 70% token participation during training, we can flexibly adjust token selections to enhance performance (e.g., 10.21 PPL in the 70%, 70%, 90% setting, 0.31 PPL lower than the training config), or reduce token selections to lower costs with no performance loss (e.g., 10.47 PPL in the 50%, 50%, 50% setting). We can even remove a thinking step while maintaining near-identical results to the training configuration. Figure 6 Left shows the FLOPs and Eval PPL of ITT’s elastic inference. Compared to the baselines, ITT achieves a performance-efficiency balance, with the dashed line illustrating the near-linear tradeoff trend of ITT during testing. ITT’s elastic thinking enables flexible deployment in diverse scenarios."
+          ]
+        },
+        {
+          "title": "4.3 Ablation Studies",
+          "paragraphs": [
+            "In Table 3, we compare the ablation results of ITT ×4 with 162M parameters to the baseline under zero-shot pretraining on 50B tokens, based on Eval PPL. The specific analysis is as follows:",
+            "Removing this core mechanism causes the largest performance drop (+0.77 PPL), validating our hypothesis about multi-step reasoning. The residual accumulation enables iterative refinement of token representations, particularly crucial for processing linguistically complex patterns. Without RTC, the model may also lose the ability for elastic computation.",
+            "Thinking Position Encoding provides the model with key information for each thinking step. As shown in Table 3, removing it results in +0.31 PPL., as model loses information about importance of each thinking step.",
+            "Disabling the dynamic routing mechanism results in a moderate PPL. increase (+0.19), but significantly impacts computational efficiency. This demonstrates the router’s dual role: while maintaining prediction quality through selective processing, it achieves more than 50% FLOPs reduction by focusing computation on 50% most critical tokens in each step.",
+            "Our experiments validate three critical design choices: The RTC design of ITT relies on explicit token selection signals (e.g., a 0.5 threshold in Sigmoid) for error correction and progressive disambiguation. The cumulative probability characteristic of Top-P conflicts with this deterministic routing mechanism, leading to a disruption in the iterative processing chain of key tokens. Sigmoid Normalization outperforms Tanh by 0.13 PPL., as it provides unambiguous activation signals for token selection whereas Tanh’s negative values may disrupt RTC. Only Select Reweighting surpasses symmetric approaches by 0.15 PPL. through focused computation – selectively enhancing critical tokens while preserving original features for others. This targeted refinement minimizes interference between primary and augmented features."
+          ]
+        },
+        {
+          "title": "Residual Thinking Connection.",
+          "paragraphs": [
+            "Removing this core mechanism causes the largest performance drop (+0.77 PPL), validating our hypothesis about multi-step reasoning. The residual accumulation enables iterative refinement of token representations, particularly crucial for processing linguistically complex patterns. Without RTC, the model may also lose the ability for elastic computation."
+          ]
+        },
+        {
+          "title": "Thinking Position Encoding.",
+          "paragraphs": [
+            "Thinking Position Encoding provides the model with key information for each thinking step. As shown in Table 3, removing it results in +0.31 PPL., as model loses information about importance of each thinking step."
+          ]
+        },
+        {
+          "title": "Adaptive Token Routing.",
+          "paragraphs": [
+            "Disabling the dynamic routing mechanism results in a moderate PPL. increase (+0.19), but significantly impacts computational efficiency. This demonstrates the router’s dual role: while maintaining prediction quality through selective processing, it achieves more than 50% FLOPs reduction by focusing computation on 50% most critical tokens in each step."
+          ]
+        },
+        {
+          "title": "Router Setting.",
+          "paragraphs": [
+            "Our experiments validate three critical design choices: The RTC design of ITT relies on explicit token selection signals (e.g., a 0.5 threshold in Sigmoid) for error correction and progressive disambiguation. The cumulative probability characteristic of Top-P conflicts with this deterministic routing mechanism, leading to a disruption in the iterative processing chain of key tokens. Sigmoid Normalization outperforms Tanh by 0.13 PPL., as it provides unambiguous activation signals for token selection whereas Tanh’s negative values may disrupt RTC. Only Select Reweighting surpasses symmetric approaches by 0.15 PPL. through focused computation – selectively enhancing critical tokens while preserving original features for others. This targeted refinement minimizes interference between primary and augmented features."
+          ]
+        },
+        {
+          "title": "4.4 Analysis",
+          "paragraphs": [
+            "As shown in Figure 6 Left, the performance gains from ITT’s deep thinking mechanism do not diminish with more iterations, unlike Loop’s diminishing returns. The 162M ITT ×\\times4 configuration improves 0.6% over ×\\times3, while Loop ×\\times4 only shows a 0.3% gain over ×\\times3. This suggests that with sufficient computational resources, increasing ITT’s thinking steps can unlock additional capabilities. The architectural advantage of ITT becomes more apparent with larger model widths, implying that smaller ITT models can adopt wider hidden dimensions to boost representational capacity.",
+            "In Table 4, ITT x4 reduces the selection rate of the 4th step to 50%, achieving a -0.26 PPL reduction compared to the training config, showing that fewer tokens are needed for deeper thinking steps. Additionally, different thinking steps compensate for each other, maintaining a PPL advantage of over 0.7 even when a step is removed. Figure 6 Middle shows the average Position Encoding values, indicating that the model prioritizes earlier steps while assigning high weights to deeper ones. This demonstrates the model’s ability to optimize deep thinking with fewer, more impactful tokens, with potential for even deeper thinking steps.",
+            "Visualization of token selection paths (Figure 7) demonstrates that approximately 30%-50% of tokens receive iterative thinking, with task-critical tokens (e.g., verbs, semantic pivots in red) being more likely to undergo multi-step thinking than low-information tokens. Moreover,the dynamic routing exhibits complementary thinking across steps: In consecutive steps, important tokens are prioritized for deeper thinking. However, the 3-3 and 7-3 steps demonstrate compensatory choices for broader thinking. These two steps focus on simple tokens that were not given attention in previous steps, compensating for any missed details. Finally, interpretability analysis in Figure 7 Right demonstrate that ITT extend inner thinking steps, thereby preventing the failures observed in the baseline model. This routing strategy developed during training, allows ITT to achieve both depth and comprehensiveness."
+          ]
+        },
+        {
+          "title": "More Thinking for Better Performance.",
+          "paragraphs": [
+            "As shown in Figure 6 Left, the performance gains from ITT’s deep thinking mechanism do not diminish with more iterations, unlike Loop’s diminishing returns. The 162M ITT ×\\times4 configuration improves 0.6% over ×\\times3, while Loop ×\\times4 only shows a 0.3% gain over ×\\times3. This suggests that with sufficient computational resources, increasing ITT’s thinking steps can unlock additional capabilities. The architectural advantage of ITT becomes more apparent with larger model widths, implying that smaller ITT models can adopt wider hidden dimensions to boost representational capacity."
+          ]
+        },
+        {
+          "title": "Deeper Thinking with Fewer Tokens.",
+          "paragraphs": [
+            "In Table 4, ITT x4 reduces the selection rate of the 4th step to 50%, achieving a -0.26 PPL reduction compared to the training config, showing that fewer tokens are needed for deeper thinking steps. Additionally, different thinking steps compensate for each other, maintaining a PPL advantage of over 0.7 even when a step is removed. Figure 6 Middle shows the average Position Encoding values, indicating that the model prioritizes earlier steps while assigning high weights to deeper ones. This demonstrates the model’s ability to optimize deep thinking with fewer, more impactful tokens, with potential for even deeper thinking steps."
+          ]
+        },
+        {
+          "title": "Routing Analysis.",
+          "paragraphs": [
+            "Visualization of token selection paths (Figure 7) demonstrates that approximately 30%-50% of tokens receive iterative thinking, with task-critical tokens (e.g., verbs, semantic pivots in red) being more likely to undergo multi-step thinking than low-information tokens. Moreover,the dynamic routing exhibits complementary thinking across steps: In consecutive steps, important tokens are prioritized for deeper thinking. However, the 3-3 and 7-3 steps demonstrate compensatory choices for broader thinking. These two steps focus on simple tokens that were not given attention in previous steps, compensating for any missed details. Finally, interpretability analysis in Figure 7 Right demonstrate that ITT extend inner thinking steps, thereby preventing the failures observed in the baseline model. This routing strategy developed during training, allows ITT to achieve both depth and comprehensiveness."
+          ]
+        }
+      ]
+    },
+    "5 Related Work": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Recurrent Computation",
+          "paragraphs": [
+            "The concept of recurrence in machine learning traces back to foundational works on neural computation (Braitenberg, 1986) and LSTM networks (Gers et al., 2000). Modern extensions integrate recurrence into transformers through depth recurrence (Dehghani et al., 2019b; Lan et al., 2020; Ng and Wang, 2024). Recent works have re-discovered this idea for implicit reasoning Deng et al. (2023); Hao et al. (2024) and test-time scaling Geiping et al. (2025). In contrast, ITT establishes a general-purpose recursive reasoning framework within individual layers and designs the Residual Thinking Cnnection (RTC) for enhanced capability."
+          ]
+        },
+        {
+          "title": "Dynamic Computation Allocation",
+          "paragraphs": [
+            "Dynamic Computation Allocation, like Mixture-of-Expert (MoE), reduce computational overhead by activating only a subset of networks Fedus et al. (2022); Riquelme et al. (2021); Zhou et al. (2022); Jiang et al. (2024a); Xue et al. (2024). Some works focus on elastic computation in depth, such as early exit Elhoushi et al. (2024); Chen et al. (2024), parameter sharing Mu et al. (2024); Wang et al. (2024a) or using token-routing for dynamic layer skipping Zhang et al. (2024). Inspired by these works, ITT designs an elastic deep thinking architecture with Adaptive Token Routing (ATR) for efficient and adaptive computational resources allocation."
+          ]
+        }
+      ]
+    },
+    "6 Conclusion": {
+      "paragraphs": [
+        "We propose ITT, a dynamic architecture enabling LLMs to allocate additional computation to critical tokens through adaptive inner thinking steps. By integrating token-wise depth routing, residual thinking connections, and step encoding, ITT enhance inner thinking without parameters expansion. Experiments demonstrate its potential for balancing efficiency with enhanced capabilities."
+      ],
+      "subsections": []
+    },
+    "Limitations": {
+      "paragraphs": [
+        "While ITT demonstrates promising results, several limitations warrant discussion: First, our current implementation employs fixed routing patterns during training, potentially limiting dynamic adaptation to diverse token complexities. Second, our experiments focus on models up to 466M parameters - validation at larger scales could reveal new architectural interactions. Third, the residual thinking connections introduce additional memory overhead during backward passes, requiring optimization for industrial deployment. Finally, while our step encoding effectively differentiates thinking stages, more sophisticated temporal modeling might further enhance reasoning depth. These limitations present valuable directions for future research."
+      ],
+      "subsections": []
+    },
+    "Ethical Considerations": {
+      "paragraphs": [
+        "Our work adheres to ethical AI principles through three key aspects: 1) All experiments use publicly available datasets with proper anonymization, 2) The enhanced parameter efficiency reduces environmental impact from model training/inference, and 3) Our architecture-agnostic approach promotes accessible performance improvements without proprietary dependencies. We acknowledge potential risks of enhanced reasoning capabilities being misapplied, and recommend implementing output verification mechanisms when deploying ITT-based systems. Our work is committed to advancing accessible and efficient NLP technologies, fostering a more inclusive and automated future for AI."
+      ],
+      "subsections": []
+    },
+    "Acknowledgments": {
+      "paragraphs": [
+        "We would like to thank members of the IIE KDsec group for their valuable feedback and discussions. We sincerely thank Sean McLeish for his diligent review and critical feedback on this work. We are very grateful to Mengzhou Xia for providing the concise and effective ShearingLLaMA experimental code and for her assistance during the reproduction process. Work done during Yilong Chen’s internship in Baidu Inc. This research is supported by the Youth Innovation Promotion Association of CAS (Grant No.2021153)."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Appendix": {
+      "paragraphs": [
+        "[Table: Table 4: Eval Perplexity in the ITT setting is performed for extend 3 steps’ thinking. † refers to the model’s training configuration.]",
+        "[Table: Table 5: Detailed configuration, activation parameters, and total parameters of the models included in our study. L.2-162M represents the LLaMA-2 architecture model with 162M total parameters.]"
+      ],
+      "subsections": [
+        {
+          "title": "A.1 Algorithm",
+          "paragraphs": [
+            "As described in Section 3, the core algorithm of our proposed Inner Thinking Transformer implements fine-grained token-level reasoning optimization through dynamic depth computation. The detailed procedure is presented in Algorithm 1, which features three key innovations:",
+            "• Adaptive Capacity Scheduling with temperature annealing: The getCapacity function gradually increases processed token count during initial training stages, enabling coarse-to-fine learning dynamics.",
+            "• Hierarchical Residual Architecture: Each thinking step tt scales and fuses current results (α(t)⋅ϕ(t)\\alpha^{(t)}\\cdot\\phi^{(t)}) with positional encoding before integrating with previous hidden states.",
+            "• Multi-grained Routing Network utilizes hierarchical routing modules {ℛ(0),…,ℛ(T)}\\{\\mathcal{R}^{(0)},...,\\mathcal{R}^{(T)}\\} to automatically identify critical tokens at different depth levels.",
+            "Adaptive Capacity Scheduling with temperature annealing: The getCapacity function gradually increases processed token count during initial training stages, enabling coarse-to-fine learning dynamics.",
+            "Hierarchical Residual Architecture: Each thinking step tt scales and fuses current results (α(t)⋅ϕ(t)\\alpha^{(t)}\\cdot\\phi^{(t)}) with positional encoding before integrating with previous hidden states.",
+            "Multi-grained Routing Network utilizes hierarchical routing modules {ℛ(0),…,ℛ(T)}\\{\\mathcal{R}^{(0)},...,\\mathcal{R}^{(T)}\\} to automatically identify critical tokens at different depth levels.",
+            "Notably, when training step PP stabilizes, the processing capacity CC progressively expands to cover all tokens, equipping the network with self-adaptive depth allocation capabilities. Theoretically, this algorithm extends the model’s effective depth to T+1T+1 times the baseline while maintaining FLOPs overhead of merely O​(k​T/S)O(kT/S). This establishes a parameter-efficient approach for enhancing reasoning capacity through explicit computation budgeting."
+          ]
+        },
+        {
+          "title": "A.2 Extend Related Work",
+          "paragraphs": [
+            "The concept of recurrence in machine learning traces back to foundational works on neural computation (Braitenberg, 1986) and LSTM networks (Gers et al., 2000). Modern extensions integrate recurrence into transformers through depth recurrence (Dehghani et al., 2019b; Lan et al., 2020; Ng and Wang, 2024), with recent improvements demonstrating algorithmic generalization via randomized unrolling (Schwarzschild, 2023; Tu et al., 2020). From an optimization perspective, these models relate to energy-based gradient dynamics (Hinton et al., 2006) and test-time adaptation (Xiao and Snoek, 2024). Recent works have introduced it for implicit reasoning Deng et al. (2023); Hao et al. (2024) and test-time scaling Geiping et al. (2025). Inspired by these, ITT focuses on recursive reasoning within individual layers and designs the RTC architecture with theoretical support to enhance this capability.",
+            "Dynamic Computation Allocation in architectures, like Sparse Mixture-of-Expert (MoE), utilize input adaptivity to reduce computational overhead by activating only a subset of subnetworks, or \"experts,\" for each input token Fedus et al. (2022); Riquelme et al. (2021); Zhou et al. (2022); Jiang et al. (2024a); Xue et al. (2024). Recent developments have introduced heterogeneous experts, integrating experts with varying capacities and specializations Wu et al. (2024); He (2024); Dean (2021); Zhou et al. (2022). Some works focus on elastic computation in depth, such as early exit Elhoushi et al. (2024); Chen et al. (2024), parameter sharing Mu et al. (2024); Wang et al. (2024a) or using token-routing for dynamic layer skipping (Mixture of Depth) Zhang et al. (2024). Inspired by these works, ITT designs an elastic deep thinking architecture and uses Residual Thinking Connections to address the issue of non-continuous layer skipping."
+          ]
+        },
+        {
+          "title": "Recurrent Computation",
+          "paragraphs": [
+            "The concept of recurrence in machine learning traces back to foundational works on neural computation (Braitenberg, 1986) and LSTM networks (Gers et al., 2000). Modern extensions integrate recurrence into transformers through depth recurrence (Dehghani et al., 2019b; Lan et al., 2020; Ng and Wang, 2024), with recent improvements demonstrating algorithmic generalization via randomized unrolling (Schwarzschild, 2023; Tu et al., 2020). From an optimization perspective, these models relate to energy-based gradient dynamics (Hinton et al., 2006) and test-time adaptation (Xiao and Snoek, 2024). Recent works have introduced it for implicit reasoning Deng et al. (2023); Hao et al. (2024) and test-time scaling Geiping et al. (2025). Inspired by these, ITT focuses on recursive reasoning within individual layers and designs the RTC architecture with theoretical support to enhance this capability."
+          ]
+        },
+        {
+          "title": "Dynamic Computation Allocation",
+          "paragraphs": [
+            "Dynamic Computation Allocation in architectures, like Sparse Mixture-of-Expert (MoE), utilize input adaptivity to reduce computational overhead by activating only a subset of subnetworks, or \"experts,\" for each input token Fedus et al. (2022); Riquelme et al. (2021); Zhou et al. (2022); Jiang et al. (2024a); Xue et al. (2024). Recent developments have introduced heterogeneous experts, integrating experts with varying capacities and specializations Wu et al. (2024); He (2024); Dean (2021); Zhou et al. (2022). Some works focus on elastic computation in depth, such as early exit Elhoushi et al. (2024); Chen et al. (2024), parameter sharing Mu et al. (2024); Wang et al. (2024a) or using token-routing for dynamic layer skipping (Mixture of Depth) Zhang et al. (2024). Inspired by these works, ITT designs an elastic deep thinking architecture and uses Residual Thinking Connections to address the issue of non-continuous layer skipping."
+          ]
+        },
+        {
+          "title": "A.3 Theoretical Proof of Multi-Step Residual Thinking Connection’s Convergence",
+          "paragraphs": [
+            "In this Section, we provide a theoretical derivation showing that multi-step residual learning, used in Transformer architectures, is more effective than direct one-step learning in terms of gradient flow and convergence. We show that the multi-step process allows for more stable gradient propagation and faster convergence through geometric decay of the error, in contrast to the difficulties caused by gradient vanishing or explosion in direct one-step learning.",
+            "In deep learning models, especially in transformer-based architectures, the issue of gradient propagation across multiple layers has been a key challenge. Residual learning, where each layer updates the model with small corrections rather than directly mapping inputs to outputs, has shown promise in improving the stability of training and facilitating deeper networks. In this section, we will theoretically compare multi-step residual learning with direct one-step mapping to highlight why the former leads to better convergence and stability.",
+            "Let us consider the overall goal of a Transformer model. The final output F​(x;Θ)F(x;\\Theta) is a function of the input xx, parameterized by the model’s parameters Θ\\Theta, and is trained to minimize the loss function",
+            "where y∗y^{*} is the target output.",
+            "For a single block BB within the Transformer, we define an iterative process where the output at step kk, denoted by yky_{k}, is updated by adding a small residual term:",
+            "where θ\\theta is the shared parameter used for the residual function Δk\\Delta_{k}. The goal is to iteratively refine the output by accumulating these residuals. After KK iterations, the final output becomes:",
+            "where y0y_{0} is the initial input to the block.",
+            "In the direct one-step mapping, we try to learn the function F​(x;θ)F(x;\\theta) directly from the input to the output. The loss function is defined as:",
+            "The gradient of the loss function with respect to the parameters θ\\theta is:",
+            "In deep networks, the term ∂F​(x;θ)∂θ\\frac{\\partial F(x;\\theta)}{\\partial\\theta} involves multiple layers of non-linear transformations. This can cause the gradients to either vanish or explode as they propagate back through the layers, leading to unstable training. Specifically, when θ\\theta is deep within the network, the gradient may be subject to shrinking (vanishing) or growing (exploding) due to the repeated chain rule applications, which impedes effective training.",
+            "Now, we consider the multi-step residual learning process. After KK iterations, the output of the block is:",
+            "We want to compute the gradient of the loss function ℒ\\mathcal{L} with respect to the shared parameters θ\\theta. Using the chain rule, the gradient of yKy_{K} with respect to θ\\theta is:",
+            "For each residual update, we have:",
+            "where II is the identity matrix, and ∂Δk​(yk;θ)∂yk\\frac{\\partial\\Delta_{k}(y_{k};\\theta)}{\\partial y_{k}} represents the gradient of the residual function. Therefore, the total gradient is:",
+            "If each residual update Δk​(yk;θ)\\Delta_{k}(y_{k};\\theta) is small, we can approximate:",
+            "This leads to:",
+            "Thus, the gradient flow in each step is relatively stable and doesn’t suffer from drastic shrinking or explosion, allowing for efficient and stable training.",
+            "For direct one-step learning, the model learns the entire transformation from xx to yy in one step, which can be represented as:",
+            "The training objective is to minimize the loss function:",
+            "However, due to the complexity of the non-linear function F​(x;θ)F(x;\\theta), the gradients can either vanish or explode as they propagate through the layers. In the worst case, the gradients may become extremely small (vanishing gradients) or extremely large (exploding gradients), causing the optimization process to stall or fail to converge to an optimal solution.",
+            "In multi-step residual learning, each step updates the output with a small correction, and the final output is the sum of all the incremental corrections. The error at step kk is given by:",
+            "where T​(x)T(x) is the target. The error at step k+1k+1 is:",
+            "If the residual updates Δk​(yk;θ)\\Delta_{k}(y_{k};\\theta) are small, the error at each step decreases geometrically:",
+            "After KK iterations, the error will decrease exponentially:",
+            "This shows that the error decays exponentially with the number of steps, leading to fast convergence as the number of iterations increases."
+          ]
+        },
+        {
+          "title": "Gradient Propagation in Direct One-Step Mapping",
+          "paragraphs": [
+            "In the direct one-step mapping, we try to learn the function F​(x;θ)F(x;\\theta) directly from the input to the output. The loss function is defined as:",
+            "The gradient of the loss function with respect to the parameters θ\\theta is:",
+            "In deep networks, the term ∂F​(x;θ)∂θ\\frac{\\partial F(x;\\theta)}{\\partial\\theta} involves multiple layers of non-linear transformations. This can cause the gradients to either vanish or explode as they propagate back through the layers, leading to unstable training. Specifically, when θ\\theta is deep within the network, the gradient may be subject to shrinking (vanishing) or growing (exploding) due to the repeated chain rule applications, which impedes effective training."
+          ]
+        },
+        {
+          "title": "Gradient Propagation in Multi-Step Residual Learning",
+          "paragraphs": [
+            "Now, we consider the multi-step residual learning process. After KK iterations, the output of the block is:",
+            "We want to compute the gradient of the loss function ℒ\\mathcal{L} with respect to the shared parameters θ\\theta. Using the chain rule, the gradient of yKy_{K} with respect to θ\\theta is:",
+            "For each residual update, we have:",
+            "where II is the identity matrix, and ∂Δk​(yk;θ)∂yk\\frac{\\partial\\Delta_{k}(y_{k};\\theta)}{\\partial y_{k}} represents the gradient of the residual function. Therefore, the total gradient is:",
+            "If each residual update Δk​(yk;θ)\\Delta_{k}(y_{k};\\theta) is small, we can approximate:",
+            "This leads to:",
+            "Thus, the gradient flow in each step is relatively stable and doesn’t suffer from drastic shrinking or explosion, allowing for efficient and stable training."
+          ]
+        },
+        {
+          "title": "Convergence in Direct One-Step Learning",
+          "paragraphs": [
+            "For direct one-step learning, the model learns the entire transformation from xx to yy in one step, which can be represented as:",
+            "The training objective is to minimize the loss function:",
+            "However, due to the complexity of the non-linear function F​(x;θ)F(x;\\theta), the gradients can either vanish or explode as they propagate through the layers. In the worst case, the gradients may become extremely small (vanishing gradients) or extremely large (exploding gradients), causing the optimization process to stall or fail to converge to an optimal solution."
+          ]
+        },
+        {
+          "title": "Convergence in Multi-Step Residual Learning",
+          "paragraphs": [
+            "In multi-step residual learning, each step updates the output with a small correction, and the final output is the sum of all the incremental corrections. The error at step kk is given by:",
+            "where T​(x)T(x) is the target. The error at step k+1k+1 is:",
+            "If the residual updates Δk​(yk;θ)\\Delta_{k}(y_{k};\\theta) are small, the error at each step decreases geometrically:",
+            "After KK iterations, the error will decrease exponentially:",
+            "This shows that the error decays exponentially with the number of steps, leading to fast convergence as the number of iterations increases."
+          ]
+        },
+        {
+          "title": "A.4 Extend Analysis",
+          "paragraphs": [
+            "The observed normal distribution of routing weights in the ITT framework, with its distinctive concentration within the 0.6-0.8 range, emerges as a self-regulating mechanism that fundamentally reconciles computational efficiency with model effectiveness. This central tendency facilitates dynamic resource allocation through probabilistic token selection, where moderately high weights enable smooth computational load balancing while preserving residual information pathways. The distribution’s avoidance of extreme values inherently supports flexible top-k adjustments, allowing the system to scale computation across contexts without abrupt performance degradation - a critical feature for processing variable-length inputs and maintaining throughput consistency.",
+            "The weight concentration further ensures training stability through continuous differentiability across routing decisions. By preventing abrupt 0/1 selection thresholds, the architecture maintains stable gradient flows during backpropagation, effectively distributing learning signals between activated and bypassed tokens."
+          ]
+        },
+        {
+          "title": "Router Weights Visulization",
+          "paragraphs": [
+            "The observed normal distribution of routing weights in the ITT framework, with its distinctive concentration within the 0.6-0.8 range, emerges as a self-regulating mechanism that fundamentally reconciles computational efficiency with model effectiveness. This central tendency facilitates dynamic resource allocation through probabilistic token selection, where moderately high weights enable smooth computational load balancing while preserving residual information pathways. The distribution’s avoidance of extreme values inherently supports flexible top-k adjustments, allowing the system to scale computation across contexts without abrupt performance degradation - a critical feature for processing variable-length inputs and maintaining throughput consistency.",
+            "The weight concentration further ensures training stability through continuous differentiability across routing decisions. By preventing abrupt 0/1 selection thresholds, the architecture maintains stable gradient flows during backpropagation, effectively distributing learning signals between activated and bypassed tokens."
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "Alizadeh et al. (2024) Keivan Alizadeh, Iman Mirzadeh, Hooman Shahrokhi, Dmitry Belenko, Frank Sun, Minsik Cho, Mohammad Hossein Sekhavat, Moin Nabi, and Mehrdad Farajtabar. 2024. Duo-llm: A framework for studying adaptive computation in large language models. Preprint, arXiv:2410.10846.",
+    "Anthropic (2023) Anthropic. 2023. Introducing claude.",
+    "Bisk et al. (2020) Yonatan Bisk, Rowan Zellers, Ronan Le Bras, Jianfeng Gao, and Yejin Choi. 2020. PIQA: reasoning about physical commonsense in natural language. In The Thirty-Fourth AAAI Conference on Artificial Intelligence, AAAI 2020, The Thirty-Second Innovative Applications of Artificial Intelligence Conference, IAAI 2020, The Tenth AAAI Symposium on Educational Advances in Artificial Intelligence, EAAI 2020, New York, NY, USA, February 7-12, 2020, pages 7432–7439. AAAI Press.",
+    "Braitenberg (1986) Valentino Braitenberg. 1986. Vehicles: Experiments in Synthetic Psychology. MIT Press, Cambridge, MA.",
+    "Chen et al. (2024) Yanxi Chen, Xuchen Pan, Yaliang Li, Bolin Ding, and Jingren Zhou. 2024. Ee-llm: Large-scale training and inference of early-exit large language models with 3d parallelism.",
+    "Clark et al. (2019) Christopher Clark, Kenton Lee, Ming-Wei Chang, Tom Kwiatkowski, Michael Collins, and Kristina Toutanova. 2019. Boolq: Exploring the surprising difficulty of natural yes/no questions. arXiv preprint arXiv:1905.10044.",
+    "Clark et al. (2018a) Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa Schoenick, and Oyvind Tafjord. 2018a. Think you have solved question answering? try arc, the ai2 reasoning challenge. arXiv preprint arXiv:1803.05457.",
+    "Clark et al. (2018b) Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa Schoenick, and Oyvind Tafjord. 2018b. Think you have solved question answering? try arc, the AI2 reasoning challenge. CoRR, abs/1803.05457.",
+    "Dean (2021) Jeff Dean. 2021. Introducing pathways: A next-generation ai architecture. Google Blog, 366.",
+    "Dehghani et al. (2019a) Mostafa Dehghani, Stephan Gouws, Oriol Vinyals, Jakob Uszkoreit, and Łukasz Kaiser. 2019a. Universal transformers. Preprint, arXiv:1807.03819.",
+    "Dehghani et al. (2019b) Mostafa Dehghani, Stephan Gouws, Oriol Vinyals, Jakob Uszkoreit, and Łukasz Kaiser. 2019b. Universal transformers.",
+    "Deng et al. (2023) Yuntian Deng, Kiran Prasad, Roland Fernandez, Paul Smolensky, Vishrav Chaudhary, and Stuart Shieber. 2023. Implicit chain of thought reasoning via knowledge distillation. Preprint, arXiv:2311.01460.",
+    "Elhoushi et al. (2024) Mostafa Elhoushi, Akshat Shrivastava, Diana Liskovich, Basil Hosmer, Bram Wasti, Liangzhen Lai, Anas Mahmoud, Bilge Acun, Saurabh Agarwal, Ahmed Roman, Ahmed Aly, Beidi Chen, and Carole-Jean Wu. 2024. Layerskip: Enabling early exit inference and self-speculative decoding. page 12622–12642.",
+    "Fedus et al. (2022) William Fedus, Barret Zoph, and Noam Shazeer. 2022. Switch transformers: Scaling to trillion parameter models with simple and efficient sparsity. The Journal of Machine Learning Research, 23(1):5232–5270.",
+    "Fernandez et al. (2024) Jared Fernandez, Luca Wehrstedt, Leonid Shamis, Mostafa Elhoushi, Kalyan Saladi, Yonatan Bisk, Emma Strubell, and Jacob Kahn. 2024. Hardware scaling trends and diminishing returns in large-scale distributed training. arXiv preprint arXiv:2411.13055.",
+    "Gao et al. (2023) Leo Gao, Jonathan Tow, Baber Abbasi, Stella Biderman, Sid Black, Anthony DiPofi, Charles Foster, Laurence Golding, Jeffrey Hsu, Alain Le Noac’h, Haonan Li, Kyle McDonell, Niklas Muennighoff, Chris Ociepa, Jason Phang, Laria Reynolds, Hailey Schoelkopf, Aviya Skowron, Lintang Sutawika, Eric Tang, Anish Thite, Ben Wang, Kevin Wang, and Andy Zou. 2023. A framework for few-shot language model evaluation.",
+    "Geiping et al. (2025) Jonas Geiping, Sean McLeish, Neel Jain, John Kirchenbauer, Siddharth Singh, Brian R. Bartoldson, Bhavya Kailkhura, Abhinav Bhatele, and Tom Goldstein. 2025. Scaling up test-time compute with latent reasoning: A recurrent depth approach. Preprint, arXiv:2502.05171.",
+    "Gers et al. (2000) Felix Alexander Gers, Jürgen Schmidhuber, and Fred Cummins. 2000. Learning to forget: Continual prediction with lstm. Neural Computation, 12:2451–2471.",
+    "Hao et al. (2024) Shibo Hao, Sainbayar Sukhbaatar, DiJia Su, Xian Li, Zhiting Hu, Jason Weston, and Yuandong Tian. 2024. Training large language models to reason in a continuous latent space. Preprint, arXiv:2412.06769.",
+    "He (2024) XO He. 2024. Mixture of a million experts. arXiv preprint arXiv:2407.04153.",
+    "Hinton et al. (2006) Geoffrey E Hinton, Simon Osindero, and Yee-Whye Teh. 2006. A fast learning algorithm for deep belief nets. Neural computation, 18(7):1527–1554.",
+    "Hoffmann et al. (2022) Jordan Hoffmann, Sebastian Borgeaud, Arthur Mensch, Elena Buchatskaya, Trevor Cai, Eliza Rutherford, Diego de Las Casas, Lisa Anne Hendricks, Johannes Welbl, Aidan Clark, et al. 2022. Training compute-optimal large language models. arXiv preprint arXiv:2203.15556.",
+    "Jiang et al. (2024a) A Q Jiang, Alexandre Sablayrolles, Antoine Roux, Arthur Mensch, Benoît Savary, Charles Bamford, Devendra Singh Chaplot, Daniele de la Casas, Emily Bressand Hanna, François Bressand, et al. 2024a. Mixtral of experts. arXiv preprint arXiv:2401.04088.",
+    "Jiang et al. (2024b) Bowen Jiang, Yangxinyu Xie, Zhuoqun Hao, Xiaomeng Wang, Tanwi Mallick, Weijie J. Su, Camillo J. Taylor, and Dan Roth. 2024b. A peek into token bias: Large language models are not yet genuine reasoners. Preprint, arXiv:2406.11050.",
+    "Lan et al. (2020) Zhenzhong Lan, Mingda Chen, Sebastian Goodman, Kevin Gimpel, Piyush Sharma, and Radu Soricut. 2020. Albert: A lite bert for self-supervised learning of language representations. Preprint, arXiv:1909.11942.",
+    "Li et al. (2024) Ming Li, Yanhong Li, and Tianyi Zhou. 2024. What happened in llms layers when trained for fast vs. slow thinking: A gradient perspective. Preprint, arXiv:2410.23743.",
+    "Lin et al. (2025) Zicheng Lin, Tian Liang, Jiahao Xu, Qiuzhi Lin, Xing Wang, Ruilin Luo, Chufan Shi, Siheng Li, Yujiu Yang, and Zhaopeng Tu. 2025. Critical tokens matter: Token-level contrastive estimation enhances llm’s reasoning capability. Preprint, arXiv:2411.19943.",
+    "Ling et al. (2017) Wang Ling, Dani Yogatama, Chris Dyer, and Phil Blunsom. 2017. Program induction by rationale generation: Learning to solve and explain algebraic word problems. arXiv preprint arXiv:1705.04146.",
+    "Liu et al. (2020) Jian Liu, Leyang Cui, Hanmeng Liu, Dandan Huang, Yile Wang, and Yue Zhang. 2020. Logiqa: A challenge dataset for machine reading comprehension with logical reasoning. arXiv preprint arXiv:2007.08124.",
+    "Ma et al. (2025) Nanye Ma, Shangyuan Tong, Haolin Jia, Hexiang Hu, Yu-Chuan Su, Mingda Zhang, Xuan Yang, Yandong Li, Tommi Jaakkola, Xuhui Jia, and Saining Xie. 2025. Inference-time scaling for diffusion models beyond scaling denoising steps. Preprint, arXiv:2501.09732.",
+    "Mu et al. (2024) Yongyu Mu, Yuzhang Wu, Yuchun Fan, Chenglong Wang, Hengyu Li, Qiaozhi He, Murun Yang, Tong Xiao, and Jingbo Zhu. 2024. Cross-layer attention sharing for large language models. Preprint, arXiv:2408.01890.",
+    "Muennighoff et al. (2025) Niklas Muennighoff, Zitong Yang, Weijia Shi, Xiang Lisa Li, Li Fei-Fei, Hannaneh Hajishirzi, Luke Zettlemoyer, Percy Liang, Emmanuel Candès, and Tatsunori Hashimoto. 2025. s1: Simple test-time scaling. Preprint, arXiv:2501.19393.",
+    "Ng and Wang (2024) Kei-Sing Ng and Qingchen Wang. 2024. Loop neural networks for parameter sharing. Preprint, arXiv:2409.14199.",
+    "OpenAI (2023) OpenAI. 2023. Gpt-4 technical report. ArXiv, page abs/2303.08774.",
+    "Paperno et al. (2016) Denis Paperno, Germán Kruszewski, Angeliki Lazaridou, Quan Ngoc Pham, Raffaella Bernardi, Sandro Pezzelle, Marco Baroni, Gemma Boleda, and Raquel Fernández. 2016. The lambada dataset: Word prediction requiring a broad discourse context. arXiv preprint arXiv:1606.06031.",
+    "Raposo et al. (2024) David Raposo, Sam Ritter, Blake Richards, Timothy Lillicrap, Peter Conway Humphreys, and Adam Santoro. 2024. Mixture-of-depths: Dynamically allocating compute in transformer-based language models. Preprint, arXiv:2404.02258.",
+    "Riquelme et al. (2021) Carlos Riquelme, Joan Puigcerver, Basil Mustafa, Mario Neumann, Rodolphe Jenatton, António Susano Pinto, Daniel Keysers, and Neil Houlsby. 2021. Scaling vision with sparse mixture of experts. In Advances in Neural Information Processing Systems, volume 34, pages 8583–8595.",
+    "Sakaguchi et al. (2020) Keisuke Sakaguchi, Ronan Le Bras, Chandra Bhagavatula, and Yejin Choi. 2020. Winogrande: An adversarial winograd schema challenge at scale. In The Thirty-Fourth AAAI Conference on Artificial Intelligence, AAAI 2020, The Thirty-Second Innovative Applications of Artificial Intelligence Conference, IAAI 2020, The Tenth AAAI Symposium on Educational Advances in Artificial Intelligence, EAAI 2020, New York, NY, USA, February 7-12, 2020, pages 8732–8740. AAAI Press.",
+    "Schwarzschild (2023) A. Schwarzschild. 2023. Deep Thinking Systems: Logical Extrapolation with Recurrent Neural Networks. Ph.D. thesis, University of Maryland, College Park.",
+    "Shalev et al. (2024) Yuval Shalev, Amir Feder, and Ariel Goldstein. 2024. Distributional reasoning in llms: Parallel reasoning processes in multi-hop reasoning. Preprint, arXiv:2406.13858.",
+    "Singh et al. (2024) Joykirat Singh, Akshay Nambi, and Vibhav Vineet. 2024. Exposing the achilles’ heel: Evaluating llms ability to handle mistakes in mathematical reasoning. Preprint, arXiv:2406.10834.",
+    "Snell et al. (2024) Charlie Snell, Jaehoon Lee, Kelvin Xu, and Aviral Kumar. 2024. Scaling llm test-time compute optimally can be more effective than scaling model parameters. Preprint, arXiv:2408.03314.",
+    "Sun et al. (2025) Qi Sun, Marc Pickett, Aakash Kumar Nain, and Llion Jones. 2025. Transformer layers as painters. Preprint, arXiv:2407.09298.",
+    "Takase and Kiyono (2023) Sho Takase and Shun Kiyono. 2023. Lessons on parameter sharing across layers in transformers. Preprint, arXiv:2104.06022.",
+    "Team (2021) The Mosaic ML Team. 2021. composer. https://github.com/mosaicml/composer/.",
+    "TogetherAI (2023) TogetherAI. 2023. Redpajama: An open source recipe to reproduce llama training dataset.",
+    "Touvron et al. (2023) Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, Dan Bikel, Lukas Blecher, Cristian Canton Ferrer, Moya Chen, Guillem Cucurull, David Esiobu, Jude Fernandes, Jeremy Fu, Wenyin Fu, Brian Fuller, Cynthia Gao, Vedanuj Goswami, Naman Goyal, Anthony Hartshorn, Saghar Hosseini, Rui Hou, Hakan Inan, Marcin Kardas, Viktor Kerkez, Madian Khabsa, Isabel Kloumann, Artem Korenev, Punit Singh Koura, Marie-Anne Lachaux, Thibaut Lavril, Jenya Lee, Diana Liskovich, Yinghai Lu, Yuning Mao, Xavier Martinet, Todor Mihaylov, Pushkar Mishra, Igor Molybog, Yixin Nie, Andrew Poulton, Jeremy Reizenstein, Rashi Rungta, Kalyan Saladi, Alan Schelten, Ruan Silva, Eric Michael Smith, Ranjan Subramanian, Xiaoqing Ellen Tan, Binh Tang, Ross Taylor, Adina Williams, Jian Xiang Kuan, Puxin Xu, Zheng Yan, Iliyan Zarov, Yuchen Zhang, Angela Fan, Melanie Kambadur, Sharan Narang, Aurelien Rodriguez, Robert Stojnic, Sergey Edunov, and Thomas Scialom. 2023. Llama 2: Open Foundation and Fine-Tuned Chat Models. arXiv preprint.",
+    "Tu et al. (2020) Zhuozhuo Tu, Fengxiang He, and Dacheng Tao. 2020. Understanding generalization in recurrent neural networks. In International Conference on Learning Representations.",
+    "Wang et al. (2024a) Jingcun Wang, Yu-Guang Chen, Ing-Chao Lin, Bing Li, and Grace Li Zhang. 2024a. Basis sharing: Cross-layer parameter sharing for large language model compression. Preprint, arXiv:2410.03765.",
+    "Wang et al. (2024b) Siqi Wang, Zhengyu Chen, Bei Li, Keqing He, Min Zhang, and Jingang Wang. 2024b. Scaling laws across model architectures: A comparative analysis of dense and moe models in large language models. Preprint, arXiv:2410.05661.",
+    "Welbl et al. (2017) Johannes Welbl, Nelson F. Liu, and Matt Gardner. 2017. Crowdsourcing multiple choice science questions. In Proceedings of the 3rd Workshop on Noisy User-generated Text, NUT@EMNLP 2017, Copenhagen, Denmark, September 7, 2017, pages 94–106. Association for Computational Linguistics.",
+    "Wu et al. (2024) X. Wu, S. Huang, and F. Wei. 2024. Multi-head mixture-of-experts. arXiv preprint arXiv:2404.15045.",
+    "Xia et al. (2023) Mengzhou Xia, Tianyu Gao, Zhiyuan Zeng, and Danqi Chen. 2023. Sheared LLaMA: Accelerating Language Model Pre-training via Structured Pruning. arXiv preprint.",
+    "Xiao and Snoek (2024) Zehao Xiao and Cees G. M. Snoek. 2024. Beyond model adaptation at test time: A survey.",
+    "Xue et al. (2024) F. Xue, Z. Zheng, Y. Fu, J. Ni, and W. Zhou. 2024. Openmoe: An early effort on open mixture-of-experts language models. arXiv preprint arXiv:2402.01739.",
+    "Zellers et al. (2019) Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin Choi. 2019. Hellaswag: Can a machine really finish your sentence? In Proceedings of the 57th Conference of the Association for Computational Linguistics, ACL 2019, Florence, Italy, July 28- August 2, 2019, Volume 1: Long Papers, pages 4791–4800. Association for Computational Linguistics.",
+    "Zhang et al. (2024) Jun Zhang, Desen Meng, Ji Qi, Zhenpeng Huang, Tao Wu, and Limin Wang. 2024. p-mod: Building mixture-of-depths mllms via progressive ratio decay. Preprint, arXiv:2412.04449.",
+    "Zhou et al. (2022) Yutian Zhou, Tao Lei, Henry Liu, Nan Du, Yanping Huang, Vincent Zhao, Andrew M Dai, Quoc V Le, James Laudon, et al. 2022. Mixture-of-experts with expert choice routing. In Advances in Neural Information Processing Systems."
+  ]
+}

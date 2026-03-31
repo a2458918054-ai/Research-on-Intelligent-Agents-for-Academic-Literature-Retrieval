@@ -1,0 +1,273 @@
+{
+  "title": "Top-Theta Attention: Sparsifying Transformers by Compensated Thresholding",
+  "authors": "Konstantin BerestizshevskyRenzo AndriLukas Cavigelli",
+  "abstract": "The attention mechanism is essential for the impressive capabilities of transformer-based Large Language Models (LLMs). However, calculating attention is computationally intensive due to its quadratic dependency on the sequence length. We introduce a novel approach called Top-Theta Attention, or simply Top-{greek}j, which selectively prunes less essential attention elements by comparing them against carefully calibrated thresholds. This method greatly improves the efficiency of self-attention matrix multiplication while preserving model accuracy, reducing the number of required V cache rows by 3x during generative decoding and the number of attention elements by 10x during the prefill phase. Our method does not require model retraining; instead, it requires only a brief calibration phase to be resilient to distribution shifts, thus not requiring the thresholds for different datasets to be recalibrated. Unlike top-k attention, Top-{greek}j eliminates full-vector dependency, making it suitable for tiling and scale-out and avoiding costly top-k search. A key innovation of our approach is the development of efficient numerical compensation techniques, which help preserve model accuracy even under aggressive pruning of attention scores.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "The transformer architecture has revolutionized both natural language processing (Vaswani, 2017) and computer vision (Dosovitskiy, 2020) by enabling models to capture complex dependencies through self-attention mechanisms effectively. However, despite its advantages, the attention mechanism suffers from quadratic time and linear memory complexity (Keles et al., 2023). Furthermore, the commonly used key-value (KV) cache optimization increases the memory requirement linearly with sequence length during the generative decoding phase. As a result, cache size requirements often exceed the physical limits of available memory (Ge et al., 2024), and memory bandwidth becomes a major bottleneck.",
+        "Attention approximations (Wang et al., 2024; Fuad & Chen, 2023), such as sparsification, promise a solution to these challenges by reducing the number of computations and the amount of data moved, focusing only on the most relevant tokens in a sequence. Research on sparsification has been predominantly focused on either fixed-sparsity patterns, which assume that specific token locations in the sequence are always more important (e.g., the first and last tokens in the sequence), or the content-based sparsity patterns, which require evaluating the attention scores to decide which tokens are more important (e.g., Top-k attention (Gupta et al., 2021)).",
+        "Our work focuses on the more challenging, content-based sparsity patterns. To exploit the sparsity potential, we investigate the sparsification of the attention elements through pruning by comparing to a threshold value. We calibrate the thresholds to select a desired average number of kk important tokens in every attention row. We find that calibrating model-specific thresholds is sufficient to replace the top-k search over the attention elements. Once the important tokens have been quickly determined by thresholding, the remaining tokens can be excluded from participating in the softmax computation and in the multiplication by the V-matrix, thus avoiding the need to load them. Moreover, to preserve the high accuracy in the downstream task, we propose numerical compensation methods such as softmax denominator compensation and mean V-row compensation."
+      ],
+      "subsections": []
+    },
+    "2 Background": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "2.1 Transformer Models",
+          "paragraphs": [
+            "Transformer-based models consist of layers that process token sequences. Most current large language models (LLMs) for text generation are autoregressive decoder-only transformer layers, known for their strong zero-shot generalization (Wang et al., 2022) and use in chatbots and productivity tools. These models first process the entire input sequence in a single forward pass (prefill phase) and then generate additional tokens one at a time, each requiring a separate forward computation (generative decoding phase). This research aims to enhance the decoder-only transformers."
+          ]
+        },
+        {
+          "title": "2.2 Self-Attention and Sparsity",
+          "paragraphs": [
+            "Multi-head self-attention (MHA) is the first computational step of the transformer layer. The MHA receives as an input a sequence of tokens X∈ℝn×DX\\in\\mathbb{R}^{n\\times D} where nn is the sequence length and DD is the hidden dimension. Each of the heads processes XX in parallel by first multiplying it by 3 different trained matrices WQ,WK,WV∈ℝD×dW_{Q},W_{K},W_{V}\\in\\mathbb{R}^{D\\times d} obtaining 3 matrices Q,K,V∈ℝn×dQ,K,V\\in\\mathbb{R}^{n\\times d} and adding a positional encoding (e.g., RoPE (Su et al., 2024)) to them.",
+            "Then, a pre-softmax attention matrix AA is computed from matrices QQ and KK (2). Although AA matrix is often normalized by d\\sqrt{d} for numerical stability and masked by a causality mask, we omit these 2 steps for simplicity.",
+            "After that, each row of the AA matrix is normalized by the Softmax operation yielding the post-softmax attention matrix SS (3) followed by a multiplication by VV (4).",
+            "Both pre-, and post-softmax matrices are of the shape n×nn\\times n, in which the element (i,j)(i,j) element signifies the importance of token jj for token ii. The pre-softmax attention AA has a range of all real numbers distributed normally, whereas the post-softmax SS has the range of [0,1][0,1] and is distributed log-normally. The attention elements in the initial layers exhibit a less skewed distribution (i.e., high entropy), whereas the following layers have a more concentrated distribution (i.e., low entropy) with a few rare high-attention values (Vig & Belinkov, 2019; Nahshan et al., 2024). In both AA and SS, a lower attention value has a lower contribution to the further computation because SS is obtained through an order-preserving transformation of AA, after which SS is multiplied by the matrix V∈ℝn×dV\\in\\mathbb{R}^{n\\times d} resulting in the output matrix P∈ℝn×dP\\in\\mathbb{R}^{n\\times d} (4). Therefore, small values in column ii in SS diminish the impact of the row ii of the VV matrix. This fundamental property of the attention elements allows ranking them according to their significance and pruning the least significant ones for sparsification.",
+            "MHA employs a well-established performance optimization called KV-cache (Shi et al., 2024) which allows processing a single embedded token 𝒙∈ℝD\\bm{x}\\in\\mathbb{R}^{D}, computing only the current token’s 𝒒,𝒌,𝒗∈ℝd\\bm{q},\\bm{k},\\bm{v}\\in\\mathbb{R}^{d} vectors, while the complete K,VK,V matrices are loaded from the cache (avoiding recomputation) and the new 𝒌,𝒗\\bm{k},\\bm{v} vectors are appended to them. In this situation, the attention matrices simplify to vectors 𝒂,𝒔∈ℝn\\bm{a},\\bm{s}\\in\\mathbb{R}^{n} representing the attention of the currently generated token to all the previous tokens, and the PP matrix becomes a single token embedding 𝒑=𝒔​V∈ℝd\\bm{p}=\\bm{s}V\\in\\mathbb{R}^{d}. Due to the large size of the KV-caches, especially as the sequence length grows longer, the computation of the self-attention during the generative decoding is heavily limited by memory bandwidth, dominated by loading all the nn rows of the K and V matrices, while only performing 1 multiply-add per value read from memory. Due to the memory bottleneck, a reduction of memory reads directly leads to a corresponding speed up.",
+            "An established variant of multi-head self-attention is called grouped query attention (GQA). The GQA introduces sharing a single pair of K,VK,V matrices for a group of gg heads (queries), which reduces the amount of K,VK,V data to load by a factor of gg. Recent studies have shown that GQA has only a marginal impact on the accuracy of the downstream task, making it a favorable optimization (Ainslie et al., 2023)."
+          ]
+        },
+        {
+          "title": "2.3 Top-k Attention",
+          "paragraphs": [
+            "One widely adopted approach of sparsifying the attention row is finding its top kk out of nn elements and discarding the rest, where kk is a hyperparameter (Gupta et al., 2021). However, since the attention rows are often partitioned (tiling across the sequence dimension) and processed in parallel, computing the exact top-k values in a vector imposes an undesired full-row dependency, thereby constraining the partitioning strategies. Moreover, the computation of the top elements requires several computational steps (Zhang et al., 2023), leading to a logarithmic complexity at the very best case. We conjecture that the top-k search algorithms can be replaced by comparison to a carefully calibrated threshold."
+          ]
+        }
+      ]
+    },
+    "3 Top-{greek}j Method": {
+      "paragraphs": [
+        "Top-{greek}j attention involves comparing each attention vector against a calibrated threshold. Attention elements that fall below the threshold are pruned away from subsequent computations, enhancing the efficiency and focus of the model. Our underlying assumption is that a particular distribution of values characterizes each row of the attention matrix, therefore using a static threshold should keep approximately the desired number of selected attention elements. The benefit of using a threshold instead of computing the top-k attention values is that thresholding is a simple elementwise operation, requiring only a constant time and involving no row dependency. In contrast, ranking the elements of a vector requires at least logarithmic time and depends on the full length of the vector. Top-{greek}j can be seen as an approximation of Top-k attention, as it allows calibrating the thresholds for specific user-defined kk.",
+        "The rest of this section provides a detailed discussion of (1) the calibration process for the thresholds and (2) their application for efficient inference."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Threshold Calibration",
+          "paragraphs": [
+            "Given a transformer model, a set 𝒞\\mathcal{C} of calibration data samples, and the desirable number kk of elements to keep per attention row, we propose to calibrate a single scalar threshold θl,h,r​(k)∈ℝ\\theta_{l,h,r}(k)\\in\\mathbb{R} for every transformer layer ll, head hh, and attention row id rr. The objective of the threshold calibration is to determine a threshold value θl,h,r​(k)\\theta_{l,h,r}(k) such that on average kk elements are greater than θl,h,r​(k)\\theta_{l,h,r}(k). The calibration procedure listed in Algorithm 1 calibrates the thresholds of a single attention head in a single layer, thus it can be launched as a part of the forward computation of self-attention. The key step in the calibration is collecting the (r−kk)(\\frac{r-k}{k})-quantile of the rthr^{\\mathrm{th}} attention row values for each calibration sample into a set Θr\\Theta_{r} (i.e., l. 7). Each quantile is essentially a per-calibration sample threshold. After collecting the per-sample thresholds, the final threshold for attention row rr is computed as an average over Θr\\Theta_{r} (l. 19). In Section 4.4, we show the importance of calibrating individual thresholds for every row id. To obtain the thresholds for the entire model, Algorithm 1 should be applied independently to all other layers and heads in the model.",
+            "The main parameter is kk, controlling the target number of elements to keep per attention row. Generally, kk can be individually chosen for every layer, head, and token position. To reduce the hyperparameterization, we found that selecting a single kk for all heads and attention row indices within the given layer is sufficient to preserve the quality of results. However, it is necessary to allow the flexibility of choosing different kk values for the different layers due to their inherently different sparsity levels. The hyperparameter α\\alpha is used to offset the threshold to a higher value when keeping the target kk elements should be followed more conservatively (l. 19 in Alg. 1). See Figure 2 for the visualization of the threshold values collected for a specific layer, head, row, and selected threshold.",
+            "Algorithm 1 in its current form is calibrating pre-softmax thresholds, whereas it can be adapted to post-softmax by taking the quantile on the post-softmax attention S,𝒔S,\\bm{s} rather than on the A,𝒂A,\\bm{a}. Another detail is that no calibration is needed for rows 0 – kk since, due to the causality mask, these rows will contain at most kk non-zero elements already. In addition, our calibration includes a special “Top-k at calibration” (TAC) step (lines 8, 5) that emulates the impact of Top-{greek}j sparsification already during the calibration by keeping the top kk elements (topk​(𝒗)\\text{top}_{k}(\\bm{v}) in the algorithm stands for a subroutine returning a kk-long vector of the kk largest elements in the vector 𝒗\\bm{v}). This step modifies the activations passed to the subsequent layer being calibrated such that these resemble more closely the activations that will be in place once Top-{greek}j is deployed. The size of the calibration set 𝒞\\mathcal{C} can be relatively small, as we observed that a few hundred to 2 thousand calibration samples are sufficient to calibrate stable thresholds.",
+            "Figure 3 visualizes the threshold values of the 11th layer of LLaMA2-7b, which were calibrated for k=64k=64. It is worth noticing that the different heads (different colors) have distinct threshold values, hence the importance of calibrating per-head thresholds. Secondly, thresholds obtained from the AA matrix approach a constant value as the sequence length increases, whereas thresholds obtained from the SS matrix tend to decrease in the longer sequence lengths. The latter is an effect of the softmax normalization that reduces the share of essential tokens out of the total row sum of 1 as the sequence length increases; therefore, keeping them requires lowering the threshold. The noisiness of the thresholds in the very last calibrated sequence length is purely due to the scarcity of the calibration samples in the dataset that corresponded to these sequence lengths (lower purple bars in Figure 3). For more examples of threshold values, refer to Appendix B.",
+            "Our main proposal is to deploy the calibrated thresholds as complementary model parameters (one threshold parameter per every layer, head, and sequence length). However, as can be observed in Figure 3, the thresholds have a rather regular behavior as a function of the sequence length (i.e., of the attention row id). We can fit a function to it and thereby parameterize hundreds of thresholds by a few parameters.",
+            "It is possible to calibrate multiple threshold sets θl​(k1),θl​(k2),…\\theta_{l}(k_{1}),\\theta_{l}(k_{2}),... targeted at different number of top elements k1,k2,…k_{1},k_{2},... to be preserved. Such calibration will allow one to dynamically decide at inference time on the desired accuracy-performance tradeoff by applying a set of thresholds of a different kk, an attractive capability for LLM serving (Miao et al., 2023). Instead of applying Algorithm 1 several times with the different kk values, we have developed a generalized calibration algorithm, which performs a single pass over the calibration samples. The generalized procedure collects up to nn thresholds for every attention vector of length nn in the calibration sample, merges these thresholds information, and eventually outputs for each (layer, head, row) a function θ​(k)\\theta(k) from kk to a threshold that satisfies it. Although such a calibration procedure poses large memory requirements, reducing its intensity by sampling fewer than nn thresholds per vector is possible. (see Appendix C)."
+          ]
+        },
+        {
+          "title": "3.2 Top-{greek}j Attention Inference",
+          "paragraphs": [
+            "The inference procedure is depicted in Figure 1, focusing on a single transformer layer ll, single head hh, and single attention row nn of length nn (as in generative decoding). The attention vector is compared against the calibrated threshold value θl,h,n\\theta_{l,h,n}. Attention elements that do not pass the threshold are discarded. Instead of multiplying by the entire VV matrix, only the selected k~\\tilde{k} row indices are loaded to a compact matrix V~\\tilde{V}, which is used to compute the final product pp. The calibrated thresholds can be stored alongside the model parameters. Since the calibration might not cover the entire range of sequence lengths r∈{k,k+1,…}r\\in\\{k,k+1,\\ldots\\}, a threshold of the nearest calibrated sequence length (rr) can be used.",
+            "Applying a threshold calibrated towards a specific kk allows selecting kk attention row elements on average because the distribution of the attention values slightly varies across the processed inputs. To address the cases when thresholding results in more attention elements than desired (k~>k\\tilde{k}>k), we experimented with capping the number of selected elements to at most k, prioritizing first and last tokens (we dubbed this technique CAPK). However, in generative tasks, CAPK caused a noticeable degradation in performance.",
+            "We propose two compensation methods that recover the accuracy degradation incurred by the Top-{greek}j by providing a better mathematical approximation of the overall self-attention operation. These methods introduce a minor additional compute but may be crucial for accuracy-sensitive tasks. Moreover, these compensations apply to other attention sparsification approaches such as the Top-k attention.",
+            "Since the post-softmax sparsification showed higher accuracies in our experiments compared to pre-softmax, we are interested in approximating post-softmax-sparsified attention (𝒔~\\tilde{\\bm{s}}) using pre-softmax-sparsified attention (𝒂~\\tilde{\\bm{a}}). Let ℐ⊆{0,…,n−1}\\mathcal{I}\\subseteq\\left\\{0,\\dots,n-1\\right\\} denote a set of indices that we intend to keep during the sparsification, and let us establish the relation between post-softmax sparsified vector 𝒔~\\tilde{\\bm{s}} and the pre-softmax sparsified vector that underwent softmax (softmax​(𝒂~)\\mathrm{softmax}(\\tilde{\\bm{a}})). Let RR and EE denote sums of exponents of the selected and discarded elements, respectively. In other words, to achieve a post-softmax sparsification effect, one can perform pre-softmax sparsification, estimate E~≈E\\tilde{E}\\approx E, and compensate by multiplying by a factor of R/(R+E~)R/(R+\\tilde{E}). The multiplication step can be applied after the softmax (3) or even after the SV product (4) similarly to the flash-attention (Dao et al., 2022). We consider 3 estimations:",
+            "1. offline-calibrated: calibrate the compensation value E~\\tilde{E} for every (layer, head, row) similarly to the method of threshold calibration.",
+            "2. exp-threshold: E~=γ​(n−k~)​eθ\\tilde{E}=\\gamma(n-\\tilde{k})e^{\\theta} where θ\\theta is the calibrated threshold for the current sequence length nn, and k~\\tilde{k} is the number of selected attention elements. The intuition behind this approximation is that all the not-selected attention elements are less than θ\\theta. The γ\\gamma is a small constant hyperparameter that we set to 0.050.05 to approximate the difference between the sum of exponentiated thresholds and actual exponentiated discarded attention elements.",
+            "3. exact: compute the exact E~=E\\tilde{E}=E using the sum of exponents of the non-selected row elements.",
+            "offline-calibrated: calibrate the compensation value E~\\tilde{E} for every (layer, head, row) similarly to the method of threshold calibration.",
+            "exp-threshold: E~=γ​(n−k~)​eθ\\tilde{E}=\\gamma(n-\\tilde{k})e^{\\theta} where θ\\theta is the calibrated threshold for the current sequence length nn, and k~\\tilde{k} is the number of selected attention elements. The intuition behind this approximation is that all the not-selected attention elements are less than θ\\theta. The γ\\gamma is a small constant hyperparameter that we set to 0.050.05 to approximate the difference between the sum of exponentiated thresholds and actual exponentiated discarded attention elements.",
+            "exact: compute the exact E~=E\\tilde{E}=E using the sum of exponents of the non-selected row elements.",
+            "Assuming that argmaxl​al\\mathrm{argmax}_{l}{a_{l}} is included in the selected elements ℐ\\mathcal{I}, we do not correct the maximum value subtracted from the exponents during softmax computation.",
+            "Applying Top-{greek}j in the following two cases will result in attention vector rows not summing up to 1: (i) post-softmax, (ii) pre-softmax followed by SDC. As a result, any attention element dropped due to thresholding will cancel the effect of its product by the corresponding row of the VV matrix in the final p=s​Vp=sV product (4). In these situations, we propose compensating for the missing value by adding a mean row 𝝁\\bm{\\mu} (9) of the VV matrix scaled by the sum of all the discarded attention elements β\\beta (10). Let 𝒔~∈[0,1]k~\\bm{\\tilde{\\bm{s}}}\\in[0,1]^{\\tilde{k}} be a post-softmax attention vector that underwent Top-{greek}j and is eligible for VMC, and let 𝒔∈[0,1]n\\bm{s}\\in[0,1]^{n} be the non-sparsified version of it. Equations 9–11 show how we compute the corresponding V-mean-compensated product p^≈𝒔​V\\hat{p}\\approx\\bm{s}V.",
+            "We justify the VMC approximation in Appendix D. The intuition behind it is to approximate each of the n−k~n-\\tilde{k} discarded values by an average and to multiply it by an average row of the V matrix. Such compensation can improve as the sequence length nn increases because the number of the averaged elements in (9) and (10) will increase accordingly. During generative decoding, 𝝁\\bm{\\mu} can be maintained as a running-mean to avoid full recalculation (9)."
+          ]
+        }
+      ]
+    },
+    "4 Evaluations": {
+      "paragraphs": [
+        "We use the LM Evaluation Harness (Gao et al., 2024) to evaluate the normalized accuracy metric on multiple-choice Q&A datasets, including their standard few-shot settings. In addition, we assess the Human-eval dataset using the official library (Chen et al., 2021) to measure the pass@1 metric on all 164 code generation tasks. Our source code is available111https://github.com/kostyanoob/top-theta-attention.",
+        "We evaluate 3 main attention variants: (i) Baseline – full attention, without any sparsification; (ii) Top-k – keep kk attention elements per row; (iii) Top-{greek}j – keep k~≈k\\tilde{k}\\approx k attention elements by thresholding. We apply our compensation methods also to the Top-k baselines for a fair comparison."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Top-{greek}j Overall Performance",
+          "paragraphs": [
+            "This section evaluates the best configurations of Top-{greek}j, comparing them to the non-sparsified baseline and to Top-k.",
+            "In Figure 4, LLaMA2 and LLaMA3 models are evaluated on Q&A tasks, where the kk parameter of Top-k and of the Top-{greek}j is swept from 32 to 512. The first two layers are kept at k=512k=512. The calibration set used for Top-{greek}j in each dataset is 10%10\\% of the training or validation sets (different from the test set). The xx-axis shows the fraction of the attention elements that are involved in computation, normalized to an average number of attention elements in the entire model in a given forward pass. The yy-axis shows the normalized accuracy. The main observation is that in all models, both Top-k and Top-{greek}j have increased the accuracy (by 0.2%−1%0.2\\%-1\\%) compared to the baseline while pruning away a significant portion of attention elements (2×2\\times – 5×5\\times fewer elements were active). Second, post-softmax sparsification performs consistently better in both Top-k and Top-{greek}j, compared to the pre-softmax sparsification.",
+            "In Figure 5, we focus on the generative tasks of the Human-eval dataset. We investigate the tradeoff between pass@1 score and two related metrics: the number of required V-rows (Figures 5(a) and 5(b)) Importantly, for this benchmark, we use the instruction-tuned version of the LLaMA-3 models, and we apply the same system prompt to all the evaluated attention variants. The generation is done greedily (i.e. no sampling, T=0). To demonstrate domain adaptation capabilities of the calibrated Top-{greek}j thresholds, they were first calibrated on a different dataset (ARC-C) and then loaded for Human-eval evaluation. Notably, the post-softmax Top-{greek}j performs the best in both LLaMA-3-8B and LLaMA-3-70B models, preserving pass@1 within 0.5%0.5\\% of the baseline while reducing the required V-rows by 3×3\\times. Impressively, in the 70B model, Top-{greek}j offered a 5× reduction at the expense of 1%1\\% of the pass@1.",
+            "Overall, both Top-{greek}j and Top-k performed similarly well on both Q&A and generative tasks. For a version of Figures 4 and 5 with standard deviations of the collected metrics, the reader can refer to Appendix E. The remaining subsections closely evaluate the various aspects of our method."
+          ]
+        },
+        {
+          "title": "4.2 Pre- vs Post-Softmax Thresholding",
+          "paragraphs": [
+            "We evaluate the impact of attention matrix sparsification in its two main variants: on matrix AA and on the post-softmax matrix (SS), where each of these two variants requires individual calibration. Figure 6 depicts how the different thresholdings impact the accuracy of LLaMA2-7b on the Hellaswag dataset. For comparison, the Top-k approach is also evaluated alongside Top-{greek}j. We conclude that post-softmax preserves more accuracy compared to pre-softmax thresholding. This conclusion is confirmed on extended evaluations on other datasets (see Appendix F)."
+          ]
+        },
+        {
+          "title": "4.3 Thresholding Different Layers",
+          "paragraphs": [
+            "We explored the impact of thresholding different layers with a different target kk. For the LLaMA models, we have observed that targeting a slightly higher kk in the first layers is crucial. As a best practice, we found keeping 2 initial layers at k=512k=512, whereas the rest of the layers could be sparsified more aggressively. Figure 7 shows the LLaMA2-7b model accuracy on Hellaswag, comparing Top-k and Top-{greek}j using higher kk in first 2 layers against using equal kk in all layers. All variants do not perform any compensations. The conclusion is that preserving denser attention matrices in the early layers is beneficial for the accuracy of a downstream task, which is aligned with some of the works on quantization (Tang et al., 2024; Huang et al., 2024)."
+          ]
+        },
+        {
+          "title": "4.4 Thresholding Different Attention Rows",
+          "paragraphs": [
+            "In Section 4.3, we have shown that Top-{greek}j attention should use individually calibrated thresholds for every transformer layer in the model due to inherently different attention element distributions across the layers, and in Section 3.1, we saw that different heads require individual thresholds. However, it is less obvious whether the different rows of the attention matrix require different thresholds within a single head. Evaluations of the LLaMA2-7b model on Hellaswag (Figure 8) show that calibrating individual thresholds per-attention row is beneficial, especially for the pre-softmax setting. For more supporting results, refer to Appendix H."
+          ]
+        },
+        {
+          "title": "4.5 Numerical Compensations",
+          "paragraphs": [
+            "We evaluate the proposed numerical compensation methods SDC, and VMC. Figure 9 shows that the more explicit SDC versions (exp-threshold, exact) reclaim more of the degraded accuracy on the hard task of Hellaswag. Moreover, when applying the VMC as well, the benefit is further increased.",
+            "Figure 9 focuses on the Hellaswag task, LLaMA2-7b model with Top-{greek}j attention pre-softmax, in which the non-compensated Top-{greek}j attention incurred up to 1.5% accuracy degradation, whereas the compensations have effectively closed the gap to the baseline accuracy.",
+            "In similar experiments on ARC-C and ARC-E datasets, Top-{greek}j has outperformed the baseline attention without the compensations thanks to increasing the focus of the model, or in other words, reducing the attention noise. In such cases, the compensations do not contribute much and may only bring back the noise, thereby degrading the accuracy down to the baseline accuracy levels."
+          ]
+        },
+        {
+          "title": "4.6 Impact of Grouped Query Attention (GQA)",
+          "paragraphs": [
+            "In GQA, multiple attention heads share the same V matrix. In LLaMA-3-8B models, the GQA group size is g=4g=4; therefore, when Top-k attention is applied, in the worst case of total disagreement between the heads, there could be 4⋅k4\\cdot k rows of V necessary. However, as seen in Figure 10, both Top-k and Top-{greek}j set for k=128k=128 remain at approximately 250-300 selected V-rows per group. Similar results were observed in numerous layers, indicating that different heads in the group do have a certain agreement. To observe the selected tokens of the heads in the group, refer to Appendix I.",
+            "In our experiments, each head in the group only used its selected attention elements and V-rows. However, we envision 2 potentially better methods to deal with GQA from a sparsification perspective: 1) discarding V-rows that were requested by the Top-{greek}j masks in very few heads in the group. 2) Augment the per-head ℐ\\mathcal{I} with the group’s union - to reclaim more accuracy using V rows that are loaded anyway for the group."
+          ]
+        },
+        {
+          "title": "4.7 Distribution Shifts",
+          "paragraphs": [
+            "To examine how resilient the calibrated threshold is, we evaluate on Human-eval the two following Top-{greek}j variants: 1) calibrated on Q&A dataset of ARC-C, and 2) calibrated on the first 10% of Human-eval tasks. As seen in Figure 11, the Top-{greek}j post-softmax is even more accurate when using thresholds calibrated on a different dataset. For pre-softmax, there is a benefit of calibrating on the same dataset. Overall, the thresholds show resilience towards distribution shift, which suggests that they are strongly associated with the model rather than with the data. This allows calibrating thresholds once per model."
+          ]
+        }
+      ]
+    },
+    "5 Related Work": {
+      "paragraphs": [
+        "In the line of work on the content-based sparsity, the most fundamental approach is Top-k attention (Gupta et al., 2021), which selects the kk highest values in each row of the AA matrix. However, in practical kernel implementations, where the attention rows are tiled, it is highly difficult to implement the top-k search algorithm due to the full row dependency. Works such as Energon (Zhou et al., 2022) went further and aimed at reducing the reads from the K-cached matrix by iteratively quantizing K, computing the AA matrix, and keeping the higher values. However, reducing access to K prohibits Energon from accurately computing the SS matrix, which is therefore as limited as not using our compensation methods in Top-{greek}j. The SpAtten (Wang et al., 2021) and A3 (Ham et al., 2020) present Top-k attention variants which require specialized hardware for accelerating the top-k search, which can be avoided by Top-{greek}j. The SparQ (Ribar et al., 2023) work also relies on the top-k search, however, it performs a similar compensation to our VMC to compensate for the rows of V matrix, which did not participate in the SV product ( 4) due to the sparsification of the attention. The Swin Transformer (Liu et al., 2021) focuses on a vision transformer (i.e., no autoregressive decoding) applying a fixed sparsity pattern, where each token (patch) attends to its neighboring M×M patches.",
+        "Learned Token Pruning (LTP) (Kim et al., 2022) is closely related to our work as it discards tokens in the attention matrix based on a model-trained threshold. While LTP benefits from the simplicity of the thresholding approach, it requires full model retraining. Our method shares the threshold concept but improves upon it by identifying an inductive threshold within an already-trained model. This makes our approach more appealing for large models, where training or fine-tuning can be prohibitively expensive. Similarly, the work of Lou et al. (Lou et al., 2024) also targets the selection of top-k elements but requires retraining.",
+        "Numerous works focused on fixed attention sparsity. For example, in Longformer (Beltagy et al., 2020), only a few manually picked “global attention” tokens are allowed to attend to other tokens, whereas other tokens are restricted to the neighboring tokens in a dilated sliding window. Our work, on the other hand, capitalizes on identifying content-based sparsity in the attention matrix, as it offers higher accuracy gains. The work of Kim and Cho (Kim & Cho, 2021) requires retraining, although accommodates dynamic shortening of the sequence on demand at inference time."
+      ],
+      "subsections": []
+    },
+    "6 Conclusion": {
+      "paragraphs": [
+        "We have presented Top-{greek}j, a new sparse attention algorithm based on fixed and calibrated thresholds. At inference time, it boils down to a simple elementwise operation, which overcomes the limitation of full-row dependent algorithms, such as Top-k, and thereby unconstraining tiling and distributed inference implementations. Moreover, only a small subset of calibration samples is required to calibrate the thresholds, which we showed to be resilient to distribution shifts. Therefore, a short calibration is needed once per every model. Furthermore, we show minor to no performance degradation using 10× less attention elements at the computationally-bound prefill phase and using 3× less V matrix rows at the memory bandwidth-bound generative decoding phase. These reductions unlock promising speedups for inference."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Impact Statement": {
+      "paragraphs": [
+        "This paper presents work whose goal is to advance the field of efficient Machine Learning. All potential societal consequences are unrelated to the specific work but are related to machine learning applications in general."
+      ],
+      "subsections": []
+    },
+    "Appendix B Threshold Calibration": {
+      "paragraphs": [
+        "In this appendix section, we show more calibrated threshold values (as a function of the sequence length) in more layers and heads. Figure 12 visualizes the thresholds as a function of a sequence length that was calibrated for The LLaMA2-7b model for the Hellaswag dataset. Different heads have evidently different threshold values, hence the importance of per-head individual calibrations",
+        "[Figure: (a) Pre-softmax]",
+        "[Figure: (a) Pre-softmax]",
+        "[Figure: (b) Post-softmax]"
+      ],
+      "subsections": []
+    },
+    "Appendix C Multi-k Cumulative Calibration": {
+      "paragraphs": [
+        "Algorithm 1, which we presented in the paper, calibrates thresholds of a single attention head for a single target kk. We propose to generalize it to calibrate all thresholds for a broader range of target kk and to do it in one pass over the calibration samples. We call such a calibration procedure “Multi-k Cumulative” (MKC).",
+        "The goal of MKC calibration is to construct a multi-k threshold function θ​(k):ℕ→ℝ\\theta(k):\\mathbb{N}\\rightarrow\\mathbb{R} for every (layer ll, head hh, attention row id rr). The user will be able to query such a function using their kk of choice and obtain the threshold needed to accommodate this kk. Such an ability allows a very flexible control over the sparsification of the model, which is a highly desirable tool for LLM inference service that should be able to dynamically trade some accuracy for speedup.",
+        "[Figure: Figure 13: MergeIntervals(Θr\\Theta_{r}) subroutine is merging the set Θr\\Theta_{r} of interval sequences by averaging effective kk of all overlapping intervals across all interval sequences in the set Θr\\Theta_{r}]",
+        "[Figure: (a) Pre-softmax]",
+        "[Figure: (a) Pre-softmax]",
+        "[Figure: (b) Post-softmax]"
+      ],
+      "subsections": []
+    },
+    "Appendix D V-Mean Compensation": {
+      "paragraphs": [
+        "In this section, we provide a formal proof for our V-Mean Compensation (VMC) serving as a good approximation of the sparsified 𝒔~​V~\\tilde{\\bm{s}}\\tilde{V} product to the full 𝐬​V\\mathbf{s}V product.",
+        "Under the following assumptions:",
+        "1. s⟂⟂Vjs\\perp\\!\\!\\!\\!\\perp V_{j}, that is the attention vector 𝒔\\bm{s} is statistically independent on the elements in the columns of matrix VV. They are conditionally independent given the input XX from which they were originally computed (1).",
+        "2. The distribution of si,∀i∈ℐ¯s_{i},\\forall i\\in\\bar{\\mathcal{I}} within the long tail of the non-selected indices is close to uniform and hence we can approximate its expectation by an average.",
+        "3. The expectation of Vi​jV_{ij} can be approximated by its average."
+      ],
+      "subsections": []
+    },
+    "Appendix E Evaluation statistics": {
+      "paragraphs": [
+        "In this section, we present again the experimental results from Section 4.1; however, to demonstrate statistical significance, we show the error bars. This is important since every data point is aggregated using averaging across layers, heads, and test examples, as we will describe below. Therefore standard deviation of such an averaged metric is of interest.",
+        "Figure 15 focus on Q& tasks, showing the tradeoff between the model’s accuracy (y-axis) and the number of attention elements as selected by the Top-k or Top-{greek}j (x-axis). The standard deviation in the accuracy was provided by the LM-Eval evaluation harness, as a part of the standardized evaluation procedure. The average ratio presented on the x-axis and its standard deviation were computed over the following population: number of test samples ×\\times number of model layers ×\\times number of attention heads. To present the ratios, we first compute the absolute average and absolute standard deviation of the total count of attention elements and in the attention matrix, second - we normalize both the standard deviation and the average by the average number of attention elements when no sparsification took place.",
+        "Figures 16 and 17 show the evaluation on Human-eval dataset. Figure 16 is similar to the Q&A plots as it shows how the reduction in the number of attention elements during prefill phase impacts the accuracy score (pass@1). Figure 17 focuses on the generative decoding phase and shows how the number of the needed V rows is affected by the elements that were selected in every row independently, which introduces the effect of GQA - since the indices of the selected elements are united across the heads in the group. The average and the standard deviation in this plot are taken across the following population of samples: number of test tasks ×\\times number of autoregressive forward passes ×\\times number of model layers ×\\times number of attention heads ×\\times.",
+        "[Figure: (a) LLaMA2-7b ARC-C ]",
+        "[Figure: (a) LLaMA2-7b ARC-C ]",
+        "[Figure: (b) LLaMA2-7b ARC-E ]",
+        "[Figure: (c) LLaMA2-7B Hellaswag ]",
+        "[Figure: (d) LLaMA3-8B ARC-C ]",
+        "[Figure: (e) LLaMA3-8B ARC-E ]",
+        "[Figure: (f) LLaMA3-8B Hellaswag ]",
+        "[Figure: (g) LLaMA3-70B ARC-C ]",
+        "[Figure: (h) LLaMA3-70B ARC-E ]",
+        "[Figure: (i) LLaMA3-70B Hellaswag ]",
+        "[Figure: (a) LLaMA3-8B-Instruct fraction of attention elements needed]",
+        "[Figure: (a) LLaMA3-8B-Instruct fraction of attention elements needed]",
+        "[Figure: (b) LLaMA3-70B-Instruct fraction of attention elements needed]",
+        "[Figure: (a) LLaMA3-8B-Instruct fraction of V-rows needed]",
+        "[Figure: (a) LLaMA3-8B-Instruct fraction of V-rows needed]",
+        "[Figure: (b) LLaMA3-70B-Instruct fraction of V-rows needed]"
+      ],
+      "subsections": []
+    },
+    "Appendix F Pre- vs. post-softmax sparsification": {
+      "paragraphs": [
+        "This section provides extended experiment plots comparing pure pre-softmax and post-softmax accuracy on Q&A tasks. In all of them the post softmax consistently achieves higher scores.",
+        "[Figure: Figure 18: Comparison of Pre- and post-softmax thresholding]"
+      ],
+      "subsections": []
+    },
+    "Appendix G Thresholding different layers": {
+      "paragraphs": [
+        "In this appendix, we present more results that support the decision to use denser initial layers. That is to use higher kk for Top-k or calibrating towards a higher kk in Top-{greek}j. Figure 19 shows LLaMA2-7b model accuracy on Q&A datasets, and LLaMA2-70b model accuracy for Hellaswag dataset. The figure compares Top-k and Top-{greek}j using higher kk in the first 2 layers against using equal kk in all layers. All variants do not perform any compensations.",
+        "[Figure: Figure 19: The positive impact of keeping first two layers dense (higher k for calibration), compared to keeping equal k in all layers]"
+      ],
+      "subsections": []
+    },
+    "Appendix H Thresholding different attention rows": {
+      "paragraphs": [
+        "[Figure: Figure 20: Calibrating per-attention-row thresholds vs a unified threshold for all rows (sequence lengths)]"
+      ],
+      "subsections": []
+    },
+    "Appendix I Impact of GQA": {
+      "paragraphs": [
+        "In Figure 21, we show how the different attention sparsification approaches (Top-k, Top-{greek}j with and without CAPK) affect the number of required V rows. Top-k ( Figure 21(a)) guarantees exactly 128 selected elements per row of every head. However, the unified set of 4 heads in the group reaches only about 250, which indicates a certain agreement between the heads, which is mostly found in the recent tokens (as seen on the heatmap). We observed very similar characteristics in other heads and layers. Top-{greek}j approach with capping the number of selected elements to at most 128 per head yielded degraded quality of the generated text since it mainly focused attention on the most recent tokens. Finally, the ordinary Top-{greek}j in Figure 21(c), which provided good quality results, does seem to exhibit a certain variability in the number of selected elements per group, sometimes selecting more than 128 per group.",
+        "[Figure: (a) Top-k attention with k=128k=128]",
+        "[Figure: (a) Top-k attention with k=128k=128]",
+        "[Figure: (b) Top-{greek}j with CAPK, and k=128k=128 ]",
+        "[Figure: (c) Top-{greek}j with k=128k=128 without CAPK]"
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "Ainslie et al. (2023) Ainslie, J., Lee-Thorp, J., de Jong, M., Zemlyanskiy, Y., Lebrón, F., and Sanghai, S. GQA: Training generalized multi-query transformer models from multi-head checkpoints. arXiv preprint arXiv:2305.13245, 2023.",
+    "Beltagy et al. (2020) Beltagy, I., Peters, M. E., and Cohan, A. Longformer: The long-document transformer. CoRR, abs/2004.05150, 2020. URL https://arxiv.org/abs/2004.05150.",
+    "Chen et al. (2021) Chen, M., Tworek, J., Jun, H., Yuan, Q., de Oliveira Pinto, H. P., Kaplan, J., Edwards, H., Burda, Y., Joseph, N., Brockman, G., Ray, A., Puri, R., Krueger, G., Petrov, M., Khlaaf, H., Sastry, G., Mishkin, P., Chan, B., Gray, S., Ryder, N., Pavlov, M., Power, A., Kaiser, L., Bavarian, M., Winter, C., Tillet, P., Such, F. P., Cummings, D., Plappert, M., Chantzis, F., Barnes, E., Herbert-Voss, A., Guss, W. H., Nichol, A., Paino, A., Tezak, N., Tang, J., Babuschkin, I., Balaji, S., Jain, S., Saunders, W., Hesse, C., Carr, A. N., Leike, J., Achiam, J., Misra, V., Morikawa, E., Radford, A., Knight, M., Brundage, M., Murati, M., Mayer, K., Welinder, P., McGrew, B., Amodei, D., McCandlish, S., Sutskever, I., and Zaremba, W. Evaluating large language models trained on code, 2021. URL https://arxiv.org/abs/2107.03374.",
+    "Dao et al. (2022) Dao, T., Fu, D., Ermon, S., Rudra, A., and Ré, C. Flashattention: Fast and memory-efficient exact attention with io-awareness. In Koyejo, S., Mohamed, S., Agarwal, A., Belgrave, D., Cho, K., and Oh, A. (eds.), Advances in Neural Information Processing Systems, volume 35, pp. 16344–16359. Curran Associates, Inc., 2022.",
+    "Dosovitskiy (2020) Dosovitskiy, A. An image is worth 16x16 words: Transformers for image recognition at scale. arXiv preprint arXiv:2010.11929, 2020.",
+    "Fuad & Chen (2023) Fuad, K. A. A. and Chen, L. A survey on sparsity exploration in transformer-based accelerators. Electronics, 12(10):2299, 2023.",
+    "Gao et al. (2024) Gao, L., Tow, J., Abbasi, B., Biderman, S., Black, S., DiPofi, A., Foster, C., Golding, L., Hsu, J., Le Noac’h, A., Li, H., McDonell, K., Muennighoff, N., Ociepa, C., Phang, J., Reynolds, L., Schoelkopf, H., Skowron, A., Sutawika, L., Tang, E., Thite, A., Wang, B., Wang, K., and Zou, A. A framework for few-shot language model evaluation, 07 2024. URL https://zenodo.org/records/12608602.",
+    "Ge et al. (2024) Ge, S., Zhang, Y., Liu, L., Zhang, M., Han, J., and Gao, J. Model tells you what to discard: Adaptive kv cache compression for llms, 2024. URL https://arxiv.org/abs/2310.01801.",
+    "Gupta et al. (2021) Gupta, A., Dar, G., Goodman, S., Ciprut, D., and Berant, J. Memory-efficient transformers via top-k attention. CoRR, abs/2106.06899, 2021. URL https://arxiv.org/abs/2106.06899.",
+    "Ham et al. (2020) Ham, T. J., Jung, S. J., Kim, S., Oh, Y. H., Park, Y., Song, Y., Park, J.-H., Lee, S., Park, K., Lee, J. W., and Jeong, D.-K. A3: Accelerating attention mechanisms in neural networks with approximation, 2020. URL https://arxiv.org/abs/2002.10941.",
+    "Huang et al. (2024) Huang, X., Shen, Z., Dong, P., and Cheng, K.-T. Quantization variation: A new perspective on training transformers with low-bit precision. Transactions on Machine Learning Research, 2024. ISSN 2835-8856. URL https://openreview.net/forum?id=MHfoA0Qf6g.",
+    "Keles et al. (2023) Keles, F. D., Wijewardena, P. M., and Hegde, C. On the computational complexity of self-attention. In International Conference on Algorithmic Learning Theory, pp. 597–619. PMLR, 2023.",
+    "Kim & Cho (2021) Kim, G. and Cho, K. Length-adaptive transformer: Train once with length drop, use anytime with search, 2021. URL https://arxiv.org/abs/2010.07003.",
+    "Kim et al. (2022) Kim, S., Shen, S., Thorsley, D., Gholami, A., Kwon, W., Hassoun, J., and Keutzer, K. Learned token pruning for transformers. In Proceedings of the 28th ACM SIGKDD Conference on Knowledge Discovery and Data Mining, pp. 784–794, 2022.",
+    "Liu et al. (2021) Liu, Z., Lin, Y., Cao, Y., Hu, H., Wei, Y., Zhang, Z., Lin, S., and Guo, B. Swin transformer: Hierarchical vision transformer using shifted windows. In Proceedings of the IEEE/CVF international conference on computer vision, pp. 10012–10022, 2021.",
+    "Lou et al. (2024) Lou, C., Jia, Z., Zheng, Z., and Tu, K. Sparser is faster and less is more: Efficient sparse attention for long-range transformers, 2024. URL https://arxiv.org/abs/2406.16747.",
+    "Miao et al. (2023) Miao, X., Oliaro, G., Zhang, Z., Cheng, X., Jin, H., Chen, T., and Jia, Z. Towards efficient generative large language model serving: A survey from algorithms to systems, 2023. URL https://arxiv.org/abs/2312.15234.",
+    "Nahshan et al. (2024) Nahshan, Y., Kampeas, J., and Haleva, E. Linear log-normal attention with unbiased concentration, 2024. URL https://arxiv.org/abs/2311.13541.",
+    "Ribar et al. (2023) Ribar, L., Chelombiev, I., Hudlass-Galley, L., Blake, C., Luschi, C., and Orr, D. SparQ attention: Bandwidth-efficient llm inference. arXiv preprint arXiv:2312.04985, 2023.",
+    "Shi et al. (2024) Shi, L., Zhang, H., Yao, Y., Li, Z., and Zhao, H. Keep the cost down: A review on methods to optimize llm’s kv-cache consumption, 2024. URL https://arxiv.org/abs/2407.18003.",
+    "Su et al. (2024) Su, J., Ahmed, M., Lu, Y., Pan, S., Bo, W., and Liu, Y. Roformer: Enhanced transformer with rotary position embedding. Neurocomputing, 568:127063, 2024. ISSN 0925-2312. doi: https://doi.org/10.1016/j.neucom.2023.127063. URL https://www.sciencedirect.com/science/article/pii/S0925231223011864.",
+    "Tang et al. (2024) Tang, J., Zhao, Y., Zhu, K., Xiao, G., Kasikci, B., and Han, S. Quest: Query-aware sparsity for efficient long-context llm inference. arXiv preprint arXiv:2406.10774, 2024.",
+    "Vaswani (2017) Vaswani, A. Attention is all you need. Advances in Neural Information Processing Systems, 2017.",
+    "Vig & Belinkov (2019) Vig, J. and Belinkov, Y. Analyzing the structure of attention in a transformer language model, 2019. URL https://arxiv.org/abs/1906.04284.",
+    "Wang et al. (2021) Wang, H., Zhang, Z., and Han, S. SpAtten: Efficient sparse attention architecture with cascade token and head pruning. In 2021 IEEE International Symposium on High-Performance Computer Architecture (HPCA), pp. 97–110. IEEE, 2021.",
+    "Wang et al. (2022) Wang, T., Roberts, A., Hesslow, D., Scao, T. L., Chung, H. W., Beltagy, I., Launay, J., and Raffel, C. What language model architecture and pretraining objective work best for zero-shot generalization?, 2022. URL https://arxiv.org/abs/2204.05832.",
+    "Wang et al. (2024) Wang, X., Salmani, M., Omidi, P., Ren, X., Rezagholizadeh, M., and Eshaghi, A. Beyond the limits: A survey of techniques to extend the context length in large language models, 2024. URL https://arxiv.org/abs/2402.02244.",
+    "Zhang et al. (2023) Zhang, J., Naruse, A., Li, X., and Wang, Y. Parallel top-k algorithms on gpu: A comprehensive study and new methods. In Proceedings of the International Conference for High Performance Computing, Networking, Storage and Analysis, SC ’23, New York, NY, USA, 2023. Association for Computing Machinery. ISBN 9798400701092. doi: 10.1145/3581784.3607062. URL https://doi.org/10.1145/3581784.3607062.",
+    "Zhou et al. (2022) Zhou, Z., Liu, J., Gu, Z., and Sun, G. Energon: Toward efficient acceleration of transformers using dynamic sparse attention. IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems, 42(1):136–149, 2022."
+  ]
+}

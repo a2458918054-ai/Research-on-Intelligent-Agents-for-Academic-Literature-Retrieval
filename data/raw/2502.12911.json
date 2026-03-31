@@ -1,0 +1,310 @@
+{
+  "title": "Knapsack Optimization-based Schema Linking forLLM-based Text-to-SQL Generation",
+  "authors": "Zheng Yuan1, Hao Chen2, Zijin Hong1, Qinggang Zhang1Feiran Huang3, Xiao Huang11The Hong Kong Polytechnic University2City University of Macau,3Jinan University{yzheng.yuan, zijin.hong, qinggangg.zhang}@connect.polyu.hksundaychenhao@gmail.com;huangfr@jnu.edu.cn;xiao.huang@polyu.edu.hk",
+  "abstract": "Generating SQLs from user queries is a long-standing challenge, where the accuracy of initial schema linking significantly impacts subsequent SQL generation performance. However, current schema linking models still struggle with missing relevant schema elements or an excess of redundant ones. A crucial reason for this is that commonly used metrics, recall and precision, fail to capture relevant element missing and thus cannot reflect actual schema linking performance. Motivated by this, we propose an enhanced schema linking metric by introducing a restricted missing indicator. Accordingly, we introduce Knapsack optimization-based Schema Linking Agent (KaSLA), a plug-in schema linking agent designed to prevent the missing of relevant schema elements while minimizing the inclusion of redundant ones. KaSLA employs a hierarchical linking strategy that first identifies the optimal table linking and subsequently links columns within the selected table to reduce linking candidate space. In each linking process, it utilize a knapsack optimization approach to link potentially relevant elements while accounting for a limited tolerance of potential redundant ones. With this optimization, KaSLA-1.6B achieves superior schema linking results compared to large-scale LLMs, including deepseek-v3 with state-of-the-art (SOTA) schema linking method. Extensive experiments on Spider and BIRD benchmarks verify that KaSLA can significantly improve the SQL generation performance of SOTA text-to-SQL models by substituting their schema linking processes.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "With the advent of large language models (LLMs) (Achiam et al., 2023; Dubey et al., 2024), LLM-based text-to-SQL is emerging as the next-generation interface for database users (Hong et al., 2024b). Typically, text-to-SQL frameworks employ a two-step process: first linking database schema elements (tables and columns) to user queries, then generating the corresponding SQL statements. However, the accurate SQL generation requires the linking to the correct schema elements, meaning that errors in early stages are inevitably propagated to later SQL generation. For instance, inaccurate schema linking—such as overlooking relevant schema elements or linking to irrelevant ones—will lead to incorrect SQL statements.",
+        "Recent state-of-the-art text-to-SQL models tend to focus primarily on final SQL generation while employing relatively simplistic schema linking strategies or neglecting it. DTS-SQL (Pourreza and Rafiei, 2024) finetunes a local LLM to select relevant tables based on user queries. Solid-SQL (Liu et al., 2025) present a data augmentation method for the finetuning of Schema linking method. Chess (Talaei et al., 2024) and CodeS (Li et al., 2024b) use semantic-based retrieval models to enhance the schema linking process by retrieving relevant information from databases. RSL-SQL (Cao et al., 2024) introduces a bidirectional approach to simplify the full schema. E-SQL (Qu et al., 2024) and (Maamari et al., 2024) assert that schema linking remains challenging for current LLMs and thus directly use the full schema as input for SQL generation.",
+        "Even though schema linking is crucial, current widely used metrics, such as Precision and Recall (Li et al., 2023a, 2024b; Qu et al., 2024), cannot adequately evaluate instances when relevant elements are missing. As demonstrated in Figure 1, missing a single relevant table or column can significantly decrease the accuracy of SQL generation, yet still result in high Recall and Precision scores. Because Recall does not significantly penalize the model as long as the majority of the relevant elements are identified, allowing it to achieve an artificially high score, even when crucial elements are missing. Similarly, regardless of the severity of the missing, as long as the number of correctly linked elements is proportionally high compared to the total predicted relevant elements, the model can achieve an unreasonably high Precision score. This discrepancy distorts the assessment of a schema linking model’s effectiveness, potentially hindering progress in text-to-SQL development.",
+        "To address this, we firstly design a tailored schema linking metrics that accurately assess linking performance with a restricted element missing indicator. Additionally, we propose the Knapsack optimization-based Schema Linking Agent (KaSLA), designed to link the most relevant and minimally redundant schema elements according to the given queries. KaSLA introduces a binary-probabilistic score function to predict a robust relevance score of each element. Additionally, KaSLA identifies redundancy of each element and the upper redundancy tolerance for each query based on its most similar queries in the training dataset, effectively minimizing the inclusion of redundant elements. Finally, KaSLA links tables and columns with an hierarchical strategy to reduce the column linking candidate space for efficiency and employs a 0-1 knapsack optimization approach to select the most relevant element set under the upper redundancy tolerance to reduce the redundant linking. Extensive experiments demonstrate that KaSLA can improve SQL generation accuracy by reducing missing and redundant information in the schema linking.",
+        "In summary, our contributions are as follows:",
+        "• We introduce an enhanced schema linking metric, which can accurately capture the missing of relevant elements and reflect the actual linking performance aligning with the SQL generation performance.",
+        "• We propose the Knapsack optimization-based Schema Linking Agent (KaSLA) to ensure the linking of relevant schema elements and minimizing the inclusion of redundant ones.",
+        "• KaSLA can serve as a general agent to enhance LLM-based text-to-SQL framework by provide optimal linking results. Extensive experiments demonstrate improved performance in the SOTA text-to-SQL models when using KaSLA for schema linking."
+      ],
+      "subsections": []
+    },
+    "2 Preliminaries": {
+      "paragraphs": [
+        "In this section, we outline the definitions for the schema linking and 0-1 Knapsack Optimization."
+      ],
+      "subsections": [
+        {
+          "title": "Schema Linking Task.",
+          "paragraphs": [
+            "Given a natural language query qq and a corresponding database schema 𝒮q{\\mathcal{S}}_{q} containing schema elements, tables 𝒯={t1,⋯,t|𝒯|}{\\mathcal{T}}=\\{t_{1},\\cdots,t_{|{\\mathcal{T}}|}\\} and columns 𝒞={c1,⋯,c|𝒞|}{\\mathcal{C}}=\\{c_{1},\\cdots,c_{|{\\mathcal{C}}|}\\} in each table. Schema linking is a common process used in text-to-SQL to predict the relevant schema entities with qq from 𝒮q{\\mathcal{S}}_{q}:",
+            "where 𝑺^q\\widehat{{\\bm{S}}}_{q} is the subset of 𝒮q{\\mathcal{S}}_{q} that includes schema element s∈𝒮qs\\in{\\mathcal{S}}_{q} that relevant to qq. Each ss could represent a specific table or column. Additionally, we denote 𝑺q∗{\\bm{S}}_{q}^{*} as the ground truth linking results."
+          ]
+        },
+        {
+          "title": "0-1 Knapsack Optimization.",
+          "paragraphs": [
+            "The 0-1 knapsack problem Fréville (2004) is a classic combinatorial optimization challenge. It involves selecting items from a finite item set, each with a value 𝒱{\\mathcal{V}} and weight 𝒲{\\mathcal{W}}, to place into a knapsack with a maximum weight capacity 𝒞{\\mathcal{C}}. Each item can be selected only once. Formally, the objective of 0-1 knapsack optimization is to select items such that their total weight remains below 𝒞{\\mathcal{C}} while maximizing total value of these selected items:",
+            "where N^\\widehat{N} is the selected item set for the knapsack."
+          ]
+        }
+      ]
+    },
+    "3 Enhanced Schema Linking Metrics": {
+      "paragraphs": [
+        "In this section, we introduce enhanced schema linking metrics considering the missing of relevant elements during evaluation, thereby accurately assess the true performance of schema linking models.",
+        "For a query qq with predicted schema linking result 𝑺^q\\widehat{{\\bm{S}}}_{q} and ground truth linking result 𝑺q∗{\\bm{S}}^{*}_{q}, Recall and Precision are two commonly used metreics (Li et al., 2023a, 2024b; Qu et al., 2024). Recall, 𝑹​(q)=|𝑺^q∩𝑺q∗||𝑺q∗|{\\bm{R}}(q)=\\frac{|\\widehat{{\\bm{S}}}_{q}\\cap{\\bm{S}}^{*}_{q}|}{|{\\bm{S}}^{*}_{q}|}, measures the proportion of relevant elements correctly identified, specifically how many of the actual relevant elements in 𝑺q∗{\\bm{S}}^{*}_{q} are found in 𝑺^q\\widehat{{\\bm{S}}}_{q}. Conversely, Precision, 𝑷​(q)=|𝑺^q∩𝑺q∗||𝑺^q|{\\bm{P}}(q)=\\frac{|\\widehat{{\\bm{S}}}_{q}\\cap{\\bm{S}}^{*}_{q}|}{|\\widehat{{\\bm{S}}}_{q}|}, assesses the accuracy of predictions by determining the proportion of elements predicted as relevant in 𝑺^q\\widehat{{\\bm{S}}}_{q} that are indeed correct.",
+        "As illustrated in Figure 1, these metrics can yield high scores even in the missing of relevant elements. This underscores that they do not effectively address the issue of missing relevant elements, which can undermine the true accuracy of schema linking models.",
+        "To address the limitations of Recall and Precision, we firstly introduce a restricted element missing indicator to detect whether relevant elements are missing in the predicted schema linking result 𝑺^q\\widehat{{\\bm{S}}}_{q}, The formal definition is as follows:",
+        "It takes a value of 1 when the predicted result 𝑺^q\\widehat{{\\bm{S}}}_{q} contain all the elements in the ground truth 𝑺q∗{\\bm{S}}^{*}_{q}, meaning no relevant elements are missing. Conversely, it is set to 0 when there are any missing. Building on this missing indicator, we define enhanced Recall and Precision as follows:",
+        "Such metrics strengthen the penalty for missing relevant elements, as schema linking results with missing are inherently incorrect for SQL generation. For simplicity, we use the harmonic mean of enhanced Recall and Precision, referred to as the enhanced F1 score, as the overall measure for evaluating schema linking results:",
+        "This approach provides a comprehensive evaluation of both recall and precision while incorporating the critical aspect of missing elements."
+      ],
+      "subsections": []
+    },
+    "4 Knapsack Optimization-based Schema Linking Agent (KaSLA)": {
+      "paragraphs": [
+        "In this section, we introduce the proposed KaSLA framework, which focuses on ensuring the linking of relevant schema elements to avoid missing and minimizing the inclusion of redundant ones. As illustrated in Figure 2, We begin by detailing a binary-probabilistic score function used for assessing the relevance of schema elements and an estimation function for the redundancy tolerance of each schema linking process. We then outline the knapsack optimization approach to link potential relevant element while reducing the potential redundant ones under the tolerance constraint. Finally, we describe the hierarchical schema linking process, demonstrating its efficiency for reducing the column linking candidate."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Relevance Estimation",
+          "paragraphs": [
+            "To precisely assess the relevance of each schema element ss in relation to the given query qq, we employ a hybrid binary-probabilistic score function. This function integrates a generative model for binary scoring alongside an encoding model for probabilistic scoring, allowing for a comprehensive estimation of relevance.",
+            "This component is tasked with providing binary relevance assessments, determining whether a schema element is relevant or not in a straightforward manner:",
+            "where rib∈{0,1}r^{b}_{i}\\in\\{0,1\\} represents the binary score assigned to the ii-th element si∈𝒮qs_{i}\\in{\\mathcal{S}}_{q}. A score of 1 indicates relevant while 0 signifies redundant.",
+            "Considering efficiency, we finetune a lightweight LLM, DeepSeek-Coder-1.3B (Guo et al., 2024), using LoRA (Hu et al., 2021), a well-established parameter-efficient technique. We employ a strategy whereby the initial generation of a simulated SQL provides a contextual foundation for the subsequent generation of schema linking. The loss function during fine-tuning is defined as follows:",
+            "where QQ is the set of queries in the training dataset. SQLq∗{\\text{SQL}}^{*}_{q} and 𝑺∗{\\bm{S}}^{*} are the ground truth SQL and linking result, respectively. This formulation utilizes a joint generation of a simulated SQL and the schema linking result, thereby ensuring that the linking generation benefits from the contextual alignment provided by the simulated SQL during both fine-tuning and inference. Noted that the simulated SQL generated during this process will not be utilized in subsequent steps. The input and output examples are provided in Table 6 in Appendix B.",
+            "In conjunction with the binary scoring model, we introduce a probabilistic scoring model to enhance prediction robustness. The primary motivation is to mitigate the risk of the binary model misclassifing relevant elements. The probabilistic scoring model assigns a soft score to each element as the linking probability to reduce the likelihood of relevant elements missing , thereby supporting the binary model:",
+            "where rip∈[0,1]r^{p}_{i}\\in[0,1] represents the probabilistic score assigned to the ii-th element si∈𝒮qs_{i}\\in{\\mathcal{S}}_{q}.",
+            "For the probabilistic scoring model, we utilize an encoding model, RoBERTa-Large (Liu et al., 2019), to derive the semantic embeddings for the query and all schema elements. Following the methodology of (Li et al., 2023a, 2024b), we employ a cross-attention network to jointly embed the semantic representations of tables and their columns. The dot product of the query embedding and the element embedding yields the final probabilistic score. This probabilistic model is trained using the presence of ss in 𝑺∗{\\bm{S}}^{*} as the learning objective. The loss function is defined as follows:",
+            "where FL​(⋅)\\text{FL}(\\cdot) denotes the focal loss function (Ross and Dollár, 2017), designed to emphasize learning from hard negative samples.",
+            "The final function for estimating the relevance of each schema element integrates the scores derived from both the binary and probabilistic functions:",
+            "where rir_{i} denotes the relevance score assigned to the ii-th schema element si∈𝒮qs_{i}\\in{\\mathcal{S}}_{q} given the query qq. An upper limit of 1 is imposed on rir_{i} to prevent excessively strong contrasts between potentially relevant elements, as each relevant schema element is equally important for accurate SQL generation."
+          ]
+        },
+        {
+          "title": "Binary scoring function.",
+          "paragraphs": [
+            "This component is tasked with providing binary relevance assessments, determining whether a schema element is relevant or not in a straightforward manner:",
+            "where rib∈{0,1}r^{b}_{i}\\in\\{0,1\\} represents the binary score assigned to the ii-th element si∈𝒮qs_{i}\\in{\\mathcal{S}}_{q}. A score of 1 indicates relevant while 0 signifies redundant.",
+            "Considering efficiency, we finetune a lightweight LLM, DeepSeek-Coder-1.3B (Guo et al., 2024), using LoRA (Hu et al., 2021), a well-established parameter-efficient technique. We employ a strategy whereby the initial generation of a simulated SQL provides a contextual foundation for the subsequent generation of schema linking. The loss function during fine-tuning is defined as follows:",
+            "where QQ is the set of queries in the training dataset. SQLq∗{\\text{SQL}}^{*}_{q} and 𝑺∗{\\bm{S}}^{*} are the ground truth SQL and linking result, respectively. This formulation utilizes a joint generation of a simulated SQL and the schema linking result, thereby ensuring that the linking generation benefits from the contextual alignment provided by the simulated SQL during both fine-tuning and inference. Noted that the simulated SQL generated during this process will not be utilized in subsequent steps. The input and output examples are provided in Table 6 in Appendix B."
+          ]
+        },
+        {
+          "title": "Probabilistic scoring function.",
+          "paragraphs": [
+            "In conjunction with the binary scoring model, we introduce a probabilistic scoring model to enhance prediction robustness. The primary motivation is to mitigate the risk of the binary model misclassifing relevant elements. The probabilistic scoring model assigns a soft score to each element as the linking probability to reduce the likelihood of relevant elements missing , thereby supporting the binary model:",
+            "where rip∈[0,1]r^{p}_{i}\\in[0,1] represents the probabilistic score assigned to the ii-th element si∈𝒮qs_{i}\\in{\\mathcal{S}}_{q}.",
+            "For the probabilistic scoring model, we utilize an encoding model, RoBERTa-Large (Liu et al., 2019), to derive the semantic embeddings for the query and all schema elements. Following the methodology of (Li et al., 2023a, 2024b), we employ a cross-attention network to jointly embed the semantic representations of tables and their columns. The dot product of the query embedding and the element embedding yields the final probabilistic score. This probabilistic model is trained using the presence of ss in 𝑺∗{\\bm{S}}^{*} as the learning objective. The loss function is defined as follows:",
+            "where FL​(⋅)\\text{FL}(\\cdot) denotes the focal loss function (Ross and Dollár, 2017), designed to emphasize learning from hard negative samples."
+          ]
+        },
+        {
+          "title": "Relevance scoring estimation.",
+          "paragraphs": [
+            "The final function for estimating the relevance of each schema element integrates the scores derived from both the binary and probabilistic functions:",
+            "where rir_{i} denotes the relevance score assigned to the ii-th schema element si∈𝒮qs_{i}\\in{\\mathcal{S}}_{q} given the query qq. An upper limit of 1 is imposed on rir_{i} to prevent excessively strong contrasts between potentially relevant elements, as each relevant schema element is equally important for accurate SQL generation."
+          ]
+        },
+        {
+          "title": "4.2 Redundancy Estimation",
+          "paragraphs": [
+            "To minimize the inclusion of redundant elements during schema linking, we define both a redundancy score for each schema element s∈𝒮qs\\in{\\mathcal{S}}_{q} and the upper redundancy tolerance for query qq.",
+            "Recognizing that elements with lower relevance scores are more likely to be redundant, whereas those with higher scores are more essential, we assign a redundancy score wiw_{i} to each schema element si∈𝒮qs_{i}\\in{\\mathcal{S}}_{q} in relation to query qq. This score is calculated as the inverse of its relevance score rir_{i}, formulated as follows:",
+            "It ensures elements with lower relevance scores contribute more to redundancy, thereby effectively prioritizing more relevant schema elements.",
+            "Redundancy tolerance defines the limit on the total redundancy score of elements in the schema linking results, as an excess of redundant elements can significantly disrupt subsequent SQL generation. Estimating it during inference is challenging. For the SQL generation of some queries, a lenient tolerance may be beneficial since it allowing the inclusion of more potentially relevant elements in the linking results to prevent missing. However, for other queries, a lenient tolerance could introduce to many redundant elements, which may significantly disrupt the final SQL generation process.",
+            "To address this challenge, we hypothesize that similar queries exhibit comparable tolerance levels for redundancy and leverage queries from the training dataset, where ground truth linking results are available, to aid in predicting redundancy tolerance for given query qq during inference. We first retrieve the top-KK queries in the training dataset that closely resemble qq using sentence similarity measures (Gao et al., 2021). For a query qkq_{k} in the retrieved top-KK queries, we calculate the total redundancy score for its ground truth linking results 𝒮qk∗{\\mathcal{S}}^{*}_{q_{k}} and use it as its upper redundancy tolerance. The maximum of these upper redundancy tolerances from the KK most similar queries in the training dataset is then used as the redundancy tolerance estimate for query qq:",
+            "By capturing the maximum sum from the most similar queries, this approach effectively defines an upper bound on redundancy tolerance that is both efficient and adaptable, ensuring that while redundant elements are excluded, the risk of missing relevant elements is minimized."
+          ]
+        },
+        {
+          "title": "Redundancy scoring estimation.",
+          "paragraphs": [
+            "Recognizing that elements with lower relevance scores are more likely to be redundant, whereas those with higher scores are more essential, we assign a redundancy score wiw_{i} to each schema element si∈𝒮qs_{i}\\in{\\mathcal{S}}_{q} in relation to query qq. This score is calculated as the inverse of its relevance score rir_{i}, formulated as follows:",
+            "It ensures elements with lower relevance scores contribute more to redundancy, thereby effectively prioritizing more relevant schema elements."
+          ]
+        },
+        {
+          "title": "Upper Redundancy Tolerance.",
+          "paragraphs": [
+            "Redundancy tolerance defines the limit on the total redundancy score of elements in the schema linking results, as an excess of redundant elements can significantly disrupt subsequent SQL generation. Estimating it during inference is challenging. For the SQL generation of some queries, a lenient tolerance may be beneficial since it allowing the inclusion of more potentially relevant elements in the linking results to prevent missing. However, for other queries, a lenient tolerance could introduce to many redundant elements, which may significantly disrupt the final SQL generation process.",
+            "To address this challenge, we hypothesize that similar queries exhibit comparable tolerance levels for redundancy and leverage queries from the training dataset, where ground truth linking results are available, to aid in predicting redundancy tolerance for given query qq during inference. We first retrieve the top-KK queries in the training dataset that closely resemble qq using sentence similarity measures (Gao et al., 2021). For a query qkq_{k} in the retrieved top-KK queries, we calculate the total redundancy score for its ground truth linking results 𝒮qk∗{\\mathcal{S}}^{*}_{q_{k}} and use it as its upper redundancy tolerance. The maximum of these upper redundancy tolerances from the KK most similar queries in the training dataset is then used as the redundancy tolerance estimate for query qq:",
+            "By capturing the maximum sum from the most similar queries, this approach effectively defines an upper bound on redundancy tolerance that is both efficient and adaptable, ensuring that while redundant elements are excluded, the risk of missing relevant elements is minimized."
+          ]
+        },
+        {
+          "title": "4.3 Schema Linking with Knapsack Optimization",
+          "paragraphs": [
+            "Given the relevance score rir_{i}, the redundancy score wiw_{i} for each si∈𝒮qs_{i}\\in{\\mathcal{S}}_{q}, and the upper redundancy tolerance uqu_{q} for query qq, we introduce a hierarchical schema linking strategy with knapsack optimization. This approach is designed to ensure the linking of relevant schema elements to avoid missing and minimize the inclusion of redundant ones for a precise schema linking.",
+            "The 0-1 knapsack problem (Fréville, 2004) is a classic combinatorial optimization challenge. It involves selecting items from a finite set, each item characterized by a specific value and weight, to place into a knapsack with a limited weight capacity. The objective of 0-1 knapsack optimization is to choose items that maximize the total value while ensuring the total weight remains below the knapsack’s capacity.",
+            "Inspired by this, we develop a knapsack optimization-based schema linking strategy to ensure the inclusion of relevant schema elements while minimizing redundant ones, thus ach ieving optimal schema linking. Formally, the optimization objective are defined as follows:",
+            "This formulation aims to maximize the total relevance scores of the linked schema elements. The constraint ensures that the cumulative redundancy score remains within the upper redundancy tolerance of query qq. To tackle this optimization problem and achieve the optimal linking result, We employ an efficient dynamic programming approach. Detailed pseudocode of this dynamic programming algorithm is provided in Algorithm A in Appendix.",
+            "For efficiency, our KaSLA employs a hierarchical process in schema linking: initially linking tables and subsequently linking columns within each selected table. This strategy effectively reduces the dimensionality of candidate columns, enhancing KaSLA’s capacity to handle large-scale schema linking and text-to-SQL generation tasks.",
+            "In the initial phase for a given query qq, KaSLA aims to identify the relevant tables from the set of all available tables in schema 𝒮q{\\mathcal{S}}_{q}, denoted as 𝒯q{\\mathcal{T}}_{q}:",
+            "After determining tables, for each t∈𝑻^qt\\in\\widehat{{\\bm{T}}}_{q}, let 𝒞qt{\\mathcal{C}}^{t}_{q} represent the columns in table tt. KaSLA then optimizes column linking within each selected table:",
+            "The final schema linking result 𝑺^q\\widehat{{\\bm{S}}}_{q} is the union of all selected tables and their corresponding selected columns, represented as:",
+            "We provide a complexity analysis is detailed in Appendix D, offering insights into KaSLA’s implementation and computational efficiency."
+          ]
+        },
+        {
+          "title": "Knapsack Optimization",
+          "paragraphs": [
+            "The 0-1 knapsack problem (Fréville, 2004) is a classic combinatorial optimization challenge. It involves selecting items from a finite set, each item characterized by a specific value and weight, to place into a knapsack with a limited weight capacity. The objective of 0-1 knapsack optimization is to choose items that maximize the total value while ensuring the total weight remains below the knapsack’s capacity.",
+            "Inspired by this, we develop a knapsack optimization-based schema linking strategy to ensure the inclusion of relevant schema elements while minimizing redundant ones, thus ach ieving optimal schema linking. Formally, the optimization objective are defined as follows:",
+            "This formulation aims to maximize the total relevance scores of the linked schema elements. The constraint ensures that the cumulative redundancy score remains within the upper redundancy tolerance of query qq. To tackle this optimization problem and achieve the optimal linking result, We employ an efficient dynamic programming approach. Detailed pseudocode of this dynamic programming algorithm is provided in Algorithm A in Appendix."
+          ]
+        },
+        {
+          "title": "Hierarchical Linking Strategy",
+          "paragraphs": [
+            "For efficiency, our KaSLA employs a hierarchical process in schema linking: initially linking tables and subsequently linking columns within each selected table. This strategy effectively reduces the dimensionality of candidate columns, enhancing KaSLA’s capacity to handle large-scale schema linking and text-to-SQL generation tasks.",
+            "In the initial phase for a given query qq, KaSLA aims to identify the relevant tables from the set of all available tables in schema 𝒮q{\\mathcal{S}}_{q}, denoted as 𝒯q{\\mathcal{T}}_{q}:",
+            "After determining tables, for each t∈𝑻^qt\\in\\widehat{{\\bm{T}}}_{q}, let 𝒞qt{\\mathcal{C}}^{t}_{q} represent the columns in table tt. KaSLA then optimizes column linking within each selected table:",
+            "The final schema linking result 𝑺^q\\widehat{{\\bm{S}}}_{q} is the union of all selected tables and their corresponding selected columns, represented as:",
+            "We provide a complexity analysis is detailed in Appendix D, offering insights into KaSLA’s implementation and computational efficiency."
+          ]
+        }
+      ]
+    },
+    "5 Experiments": {
+      "paragraphs": [
+        "We conducted comprehensive experiments to evaluate KaSLA and address the following research questions: RQ1: Does KaSLA enhance existing text-to-SQL baselines by improving their schema linking capabilities? RQ2: Does KaSLA demonstrate superior schema linking performance by handling element missing and redundancy? RQ3: Does each component in KaSLA contribute to the overall performance, and is KaSLA an efficient model for real-world text-to-SQL applications?"
+      ],
+      "subsections": [
+        {
+          "title": "5.1 Experiment Setup",
+          "paragraphs": [
+            "We conducted experiments on two well-know large-scale text-to-SQL datasets, BIRD (Li et al., 2023b) and Spider (Yu et al., 2018), incorporating multiple robust baselines based on LLMs with in-context learning and fine-tuning. For evaluating text-to-SQL, we utilized Execution Accuracy (EX) (Yu et al., 2018; Li et al., 2023b) and Valid Efficiency Score (VES) (Li et al., 2023b). We included multiple robust baselines from two categories:(i) LLMs + in-context learning baselines: C3-SQL (Dong et al., 2023), DIN-SQL (Pourreza and Rafiei, 2023), MAC-SQL (Wang et al., 2024), DAIL-SQL (Gao et al., 2024), SuperSQL (Li et al., 2024a), Dubo-SQL (Thorpe et al., 2024), TA-SQL (Qu et al., 2024), E-SQL (Caferoğlu and Ulusoy, 2024), CHESS (Talaei et al., 2024); and (ii) LLMs + fine-tuning baselines: DTS-SQL (Pourreza and Rafiei, 2024), CodeS (Li et al., 2024b)."
+          ]
+        },
+        {
+          "title": "5.2 Main Results of SQL Generation (RQ1)",
+          "paragraphs": [
+            "To address RQ1, we conducted experiments to evaluate the SQL generation capabilities of state-of-the-art (SOTA) baselines enhanced by our KaSLA, with results presented in Table 1. KaSLA replaces the original schema linking component in models that already have schema linking capabilities or implements a full schema prompt substitution for those that do not.",
+            "The results demonstrate that incorporating KaSLA consistently improves both Execution Accuracy (EX) and Valid Efficiency Score (VES) across baselines with diverse base models, including GPT-4, CodeS-15B, StarCoder2-15B, and Deepseek-v3. Notably, in the BIRD-dev dataset, KaSLA enhances the EX of CHESS with Deepseek-v3 from 61.34% to 63.30%. For local LLMs, both \"CodeS + KaSLA\" and \"TA-SL + KaSLA\" with CodeS-15B and StarCoder-15B achieve impressive increases in Execution Accuracy compared to their original versions. These results underscore KaSLA’s effectiveness and flexibility as a plug-in, showing that KaSLA plays an important role in improving complex text-to-SQL tasks. This adaptability not only confirms its robustness but also broadens its applicability across different models, achieving superior performance outcomes and making it a versatile addition to existing systems."
+          ]
+        },
+        {
+          "title": "5.3 Experimental Results of Schema Linking (RQ2)",
+          "paragraphs": [
+            "To answer the RQ2, we conduct the experiments and report the evaluation results of schema linking methods on BIRD-dev in Figure 2. We measured the performance of these schema linking methods in both table linking and column linking. The results indicate that, under the enhanced F1 score which specifically evaluates missing elements, only KaSLA achieves high accuracy in the challenging task of column linking. Schema linking models using LLMs often perform well in table linking but fall short in column linking due to the lack of additional optimizations for missing elements. This highlights the advantages of KaSLA’s framework and demonstrates how enhanced metrics can reveal the significant issue of element missing in current schema linking practices."
+          ]
+        },
+        {
+          "title": "5.4 Empirical studies (RQ3)",
+          "paragraphs": [
+            "We presented the ablation study results for the key components in KaSLA in Table 3, the results concerning the choice of language model for the probabilistic scoring model are shown in Table 8 in Apendix and the scaling up performance of the scoring model are shown in Table 7 in Apendix, respectively.",
+            "As shown in Table 3: (i) Removing the binary scoring model results in a lack of confirmation for high-confidence elements, leading to the inclusion of more redundant ones. This underscores the binary model’s role in filtering out less relevant elements by ensuring that elements with high certainty are correctly identified. (ii) Omitting the probabilistic scoring model risks missing potentially relevant elements, resulting in gaps within schema linking. The probabilistic model is essential for assigning a non-zero probability to all elements, thus capturing those with potential relevance. (iii) The hierarchical strategy effectively reduces the number of candidate columns, thereby lowering complexity and improving efficiency. By structuring the linking process in stages, KaSLA can more precisely target relevant schema components. (iv) Without the upper limit set at 1, the model introduces disproportionate comparisons among similarly relevant items, potentially excluding some relevant elements. This constraint is crucial to maintain balanced relevance assessments, preventing the overshadowing of items that might otherwise contribute positively to SQL generation. These ablation study highlights the significance of key components within KaSLA.",
+            "We conducted two experiments to evaluate KaSLA’s performance in cross-scenario transfer. We trained the binary and probabilistic scoring models on the Spider training dataset and evaluated it on the BIRD dev dataset, and vice versa, to explore its cross-scenario transfer ability. Results are provided in Table 5. We can find that pre-training KaSLA on public datasets yields results that outperform the baselines and are only slightly lower than what domain-specific fine-tuning would achieve. The results show that KaSLA demonstrates strong cross-scenario transferability, highlighting its robustness and adaptability across different data domains.",
+            "We evaluated the inference time cost of integrating KaSLA into text-to-SQL frameworks in Table 4. By utilizing the lightweight LLM DeepSeek-coder-1.3B and significantly reducing the number of tokens in the input prompts through optimized schema linking, KaSLA achieves improved SQL generation accuracy with only a modest increase in inference time. This showcases KaSLA’s efficiency in balancing performance and computational demands."
+          ]
+        },
+        {
+          "title": "Ablation Study.",
+          "paragraphs": [
+            "We presented the ablation study results for the key components in KaSLA in Table 3, the results concerning the choice of language model for the probabilistic scoring model are shown in Table 8 in Apendix and the scaling up performance of the scoring model are shown in Table 7 in Apendix, respectively.",
+            "As shown in Table 3: (i) Removing the binary scoring model results in a lack of confirmation for high-confidence elements, leading to the inclusion of more redundant ones. This underscores the binary model’s role in filtering out less relevant elements by ensuring that elements with high certainty are correctly identified. (ii) Omitting the probabilistic scoring model risks missing potentially relevant elements, resulting in gaps within schema linking. The probabilistic model is essential for assigning a non-zero probability to all elements, thus capturing those with potential relevance. (iii) The hierarchical strategy effectively reduces the number of candidate columns, thereby lowering complexity and improving efficiency. By structuring the linking process in stages, KaSLA can more precisely target relevant schema components. (iv) Without the upper limit set at 1, the model introduces disproportionate comparisons among similarly relevant items, potentially excluding some relevant elements. This constraint is crucial to maintain balanced relevance assessments, preventing the overshadowing of items that might otherwise contribute positively to SQL generation. These ablation study highlights the significance of key components within KaSLA."
+          ]
+        },
+        {
+          "title": "Transferability.",
+          "paragraphs": [
+            "We conducted two experiments to evaluate KaSLA’s performance in cross-scenario transfer. We trained the binary and probabilistic scoring models on the Spider training dataset and evaluated it on the BIRD dev dataset, and vice versa, to explore its cross-scenario transfer ability. Results are provided in Table 5. We can find that pre-training KaSLA on public datasets yields results that outperform the baselines and are only slightly lower than what domain-specific fine-tuning would achieve. The results show that KaSLA demonstrates strong cross-scenario transferability, highlighting its robustness and adaptability across different data domains."
+          ]
+        },
+        {
+          "title": "Inference time cost.",
+          "paragraphs": [
+            "We evaluated the inference time cost of integrating KaSLA into text-to-SQL frameworks in Table 4. By utilizing the lightweight LLM DeepSeek-coder-1.3B and significantly reducing the number of tokens in the input prompts through optimized schema linking, KaSLA achieves improved SQL generation accuracy with only a modest increase in inference time. This showcases KaSLA’s efficiency in balancing performance and computational demands."
+          ]
+        }
+      ]
+    },
+    "6 Related Work": {
+      "paragraphs": [
+        "Schema linking is essential for aligning natural language queries with database components, playing a pivotal role in the overall text-to-SQL process. Recent approaches utilize large language models (LLMs) to enhance schema linkage through methods such as semantic retrieval, historical query integration, and bidirectional linking (Pourreza and Rafiei, 2024; Cao et al., 2024; Zhang et al., 2024). Techniques like DAIL-SQL and E-SQL refine linkage by leveraging LLMs’ contextual understanding and query enrichment capabilities (Gao et al., 2024; Caferoğlu and Ulusoy, 2024). Retrieval-based strategies focus on retrieve information from database to improve SQL generation (Pourreza and Rafiei, 2024). Chess (Talaei et al., 2024) and CodeS (Li et al., 2024b) utilize semantic retrieval to improve schema linking by accessing relevant database information. Despite these advancements, many state-of-the-art text-to-SQL models emphasize fine-tuning strategy. DTS-SQL (Pourreza and Rafiei, 2024) fine-tunes a local LLM to select relevant tables from user queries, while Solid-SQL (Liu et al., 2025) introduces a data augmentation method for enhancing schema linking. DELLM (Hong et al., 2024a) finetuned a specialized data expert LLM to provide additional knowledge for schema linking and SQL generation. Approaches like TA-SQL (Qu et al., 2024) use in-context learning to guide LLMs, generating dummy SQL for linked element abstraction. Similarly, RSL-SQL (Cao et al., 2024) employs a bidirectional approach for schema simplification. Meanwhile, E-SQL (Qu et al., 2024) and (Maamari et al., 2024) note that schema linking challenges persist, leading some models to use the entire schema directly as input for SQL generation.",
+        "Different with the previous research, our KaSLA utilize a knapsack optimization framework to avoid the relevant elements missing and the inclusion of redundant elements, optimizing schema linking to enhance SQL generation accuracy effectively."
+      ],
+      "subsections": []
+    },
+    "7 Conclusion": {
+      "paragraphs": [
+        "This paper introduced the Knapsack Schema Linking Agent (KaSLA), a pioneering approach to overcoming schema linking challenges in text-to-SQL tasks. Based on knapsack optimization, KaSLA effectively prevent the missing of relevant elements and excess redundancy, thereby significantly enhancing SQL generation accuracy. Our introduction of an enhanced schema linking metric, sets a new standard for evaluating schema linking performance. KaSLA utilizes a hierarchical linking strategy, starting with optimal table linking and then proceeding to column linking within selected tables, effectively reducing the candidate search space. In each step, KaSLA employs a knapsack optimization strategy to link potentially relevant elements while considering a limited tolerance for potential redundancy. Extensive experiments on the Spider and BIRD benchmarks have demonstrated that KaSLA can significantly enhance the SQL generation performance of existing text-to-SQL models by substituting their current schema linking processes. These findings underscore KaSLA’s potential to revolutionize schema linking and advance the broader capabilities of text-to-SQL systems, offering a robust solution that paves the way for more precise and efficient database interactions."
+      ],
+      "subsections": []
+    },
+    "8 Limitation": {
+      "paragraphs": [
+        "There are mainly two limitations of this work. First, although KaSLA demonstrates significant advancements in schema linking accuracy and efficiency, its performance traditionally depends on a comprehensive training dataset with detailed ground truth linking results. However, our experiments indicate that KaSLA possesses a degree of transferability, showing promise even in scenarios where training data is sparse or less diverse. This adaptability suggests that KaSLA can maintain reasonable effectiveness across different database environments, although performance might still be impacted in highly dynamic or rapidly evolving schema structures. Additionally, the reliance on a fine-tuning process of LLMs, integrating DeepSeek-coder-1.3B, could pose scalability challenges in resource-constrained settings. Despite these limitations, KaSLA remains a powerful tool for schema linking optimization in text-to-SQL tasks, and future work could focus on enhancing its adaptability and efficiency."
+      ],
+      "subsections": []
+    },
+    "9 Ethics Statement": {
+      "paragraphs": [
+        "We confirm that we have fully complied with the ACL Ethics Policy in this study. All the datasets are publicly available and have been extensively used in research related to text-to-SQL."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Implementation Details.": {
+      "paragraphs": [
+        "We implemented the proposed KaSLA and baselines under the following settings: For top-KK used in the redundancy tolerance estimation of KaSLA, we set it to 30. For method using fine-tuned LLM, We utilized LoRA (Hu et al., 2021) for parameter-efficient fine-tuning. The learning rate was initialized to 1​e−41e-4 with a cosine decay, the batch size was set to 16, and the training epoch was 3."
+      ],
+      "subsections": []
+    },
+    "Appendix B Input formats": {
+      "paragraphs": [
+        "We provided the input and output formats of the binary scoring function of KaSLA introduced in section 4.1 in Table 6.",
+        "[Table: Table 6: Input and output formats of the binary scoring model.]"
+      ],
+      "subsections": []
+    },
+    "Appendix C The Dynamic Programming Approach used in KaSLA": {
+      "paragraphs": [
+        "We illustrate the details of the dynamic programming algorithm used in KaSLA in Algorithm 1."
+      ],
+      "subsections": []
+    },
+    "Appendix D Complexity Analysis": {
+      "paragraphs": [
+        "The efficiency of KaSLA stems from its hierarchical approach, dynamic programming and inherent parallelism. KaSLA’s time complexity is determined by two main phases: table linking and column linking within the linked tables. For a database with ntn_{t} tables and a table capacity of CtC_{t}, the table linking phase has a time complexity of O​(nt​Ct)O(n_{t}C_{t}). KaSLA then links columns within the selected table. Let ncn_{c} and CcC_{c} represent the number of columns and the column capacity of a selected table, respectively. The time complexity of the column linking phase is O​(nc​Cc)O(n_{c}C_{c}). Consequently, the total time complexity of KaSLA is O​(nt​Ct+nt​(nc​Cc))O(n_{t}C_{t}+n_{t}(n_{c}C_{c})), indicating that the complexity of KaSLA scales relevant with the database dimensions."
+      ],
+      "subsections": []
+    },
+    "Appendix E The Ablation Studies for Different Language Models": {
+      "paragraphs": [
+        "We present the ablation studies on the choice of language models for the probabilistic scoring model, as well as the performance scaling of various language models for the binary scoring model used in KaSLA. These studies are detailed in Table 8 and Table 7, respectively.",
+        "",
+        "[Table: Table 7: Execution Accuracy (EX) (%) of the scaling up performance about the choice of language model for binary scoring model. We conduct the experiments for CodeS + KaSLA on BIRD-dev and use CodeS with CodeS-15B as the text-to-SQL backbone.]",
+        "[Table: Table 8: Execution Accuracy (EX) (%) of the ablation study about the choice of language model for probabilistic scoring model. We conduct the experiments for CodeS + KaSLA on BIRD-dev and use CodeS with CodeS-15B as the text-to-SQL backbone.]"
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "Achiam et al. (2023) Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Florencia Leoni Aleman, Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal Anadkat, et al. 2023. Gpt-4 technical report. arXiv preprint arXiv:2303.08774.",
+    "Caferoğlu and Ulusoy (2024) Hasan Alp Caferoğlu and Özgür Ulusoy. 2024. E-sql: Direct schema linking via question enrichment in text-to-sql. arXiv preprint arXiv:2409.16751.",
+    "Cao et al. (2024) Zhenbiao Cao, Yuanlei Zheng, Zhihao Fan, Xiaojin Zhang, and Wei Chen. 2024. Rsl-sql: Robust schema linking in text-to-sql generation. arXiv preprint arXiv:2411.00073.",
+    "Chen et al. (2024) Hao Chen, Yuanchen Bei, Qijie Shen, Yue Xu, Sheng Zhou, Wenbing Huang, Feiran Huang, Senzhang Wang, and Xiao Huang. 2024. Macro graph neural networks for online billion-scale recommender systems. In Proceedings of the ACM on Web Conference 2024, pages 3598–3608.",
+    "Dong et al. (2023) Xuemei Dong, Chao Zhang, Yuhang Ge, Yuren Mao, Yunjun Gao, Jinshu Lin, Dongfang Lou, et al. 2023. C3: Zero-shot text-to-sql with chatgpt. arXiv preprint arXiv:2307.07306.",
+    "Dubey et al. (2024) Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Amy Yang, Angela Fan, et al. 2024. The llama 3 herd of models. arXiv preprint arXiv:2407.21783.",
+    "Fréville (2004) Arnaud Fréville. 2004. The multidimensional 0–1 knapsack problem: An overview. European Journal of Operational Research.",
+    "Gao et al. (2024) Dawei Gao, Haibin Wang, Yaliang Li, Xiuyu Sun, Yichen Qian, Bolin Ding, and Jingren Zhou. 2024. Text-to-sql empowered by large language models: A benchmark evaluation. In International Conference on Very Large Data Bases (VLDB).",
+    "Gao et al. (2021) Tianyu Gao, Xingcheng Yao, and Danqi Chen. 2021. Simcse: Simple contrastive learning of sentence embeddings. arXiv preprint arXiv:2104.08821.",
+    "Guo et al. (2024) Daya Guo, Qihao Zhu, Dejian Yang, Zhenda Xie, Kai Dong, Wentao Zhang, Guanting Chen, Xiao Bi, Yu Wu, YK Li, et al. 2024. Deepseek-coder: When the large language model meets programming–the rise of code intelligence. arXiv preprint arXiv:2401.14196.",
+    "Hong et al. (2025) Zijin Hong, Hao Wu, Su Dong, Junnan Dong, Yilin Xiao, Yujing Zhang, Zhu Wang, Feiran Huang, Linyi Li, Hongxia Yang, et al. 2025. Benchmarking large language models via random variables. arXiv preprint arXiv:2501.11790.",
+    "Hong et al. (2024a) Zijin Hong, Zheng Yuan, Hao Chen, Qinggang Zhang, Feiran Huang, and Xiao Huang. 2024a. Knowledge-to-sql: Enhancing sql generation with data expert llm. In Findings of Association for Computational Linguistics (ACL).",
+    "Hong et al. (2024b) Zijin Hong, Zheng Yuan, Qinggang Zhang, Hao Chen, Junnan Dong, Feiran Huang, and Xiao Huang. 2024b. Next-generation database interfaces: A survey of llm-based text-to-sql. arXiv preprint arXiv:2406.08426.",
+    "Hu et al. (2021) Edward J Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and Weizhu Chen. 2021. Lora: Low-rank adaptation of large language models. arXiv preprint arXiv:2106.09685.",
+    "Huang et al. (2024) Feiran Huang, Zhenghang Yang, Junyi Jiang, Yuanchen Bei, Yijie Zhang, and Hao Chen. 2024. Large language model interaction simulator for cold-start item recommendation. arXiv preprint arXiv:2402.09176.",
+    "Li et al. (2024a) Boyan Li, Yuyu Luo, Chengliang Chai, Guoliang Li, and Nan Tang. 2024a. The dawn of natural language to sql: Are we fully ready? arXiv preprint arXiv:2406.01265.",
+    "Li et al. (2023a) Haoyang Li, Jing Zhang, Cuiping Li, and Hong Chen. 2023a. Resdsql: Decoupling schema linking and skeleton parsing for text-to-sql. In Conference on Artificial Intelligence (AAAI).",
+    "Li et al. (2024b) Haoyang Li, Jing Zhang, Hanbing Liu, Ju Fan, Xiaokang Zhang, Jun Zhu, Renjie Wei, Hongyan Pan, Cuiping Li, and Hong Chen. 2024b. Codes: Towards building open-source language models for text-to-sql. In Conference on Management of Data (SIGMOD).",
+    "Li et al. (2023b) Jinyang Li, Binyuan Hui, GE QU, Jiaxi Yang, Binhua Li, Bowen Li, Bailin Wang, Bowen Qin, Ruiying Geng, Nan Huo, Xuanhe Zhou, Chenhao Ma, Guoliang Li, Kevin Chang, Fei Huang, Reynold Cheng, and Yongbin Li. 2023b. Can LLM already serve as a database interface? a BIg bench for large-scale database grounded text-to-SQLs. In Advances in Neural Information Processing Systems (NeurIPS).",
+    "Liu et al. (2025) Geling Liu, Yunzhi Tan, Ruichao Zhong, Yuanzhen Xie, Lingchen Zhao, Qian Wang, Bo Hu, and Zang Li. 2025. Solid-SQL: Enhanced schema-linking based in-context learning for robust text-to-SQL. In Proceedings of the 31st International Conference on Computational Linguistics, pages 9793–9803. Association for Computational Linguistics.",
+    "Liu et al. (2019) Yinhan Liu, Myle Ott, Naman Goyal, Jingfei Du, Mandar Joshi, Danqi Chen, Omer Levy, Mike Lewis, Luke Zettlemoyer, and Veselin Stoyanov. 2019. Roberta: A robustly optimized bert pretraining approach. arXiv preprint arXiv:1907.11692.",
+    "Maamari et al. (2024) Karime Maamari, Fadhil Abubaker, Daniel Jaroslawicz, and Amine Mhedhbi. 2024. The death of schema linking? text-to-sql in the age of well-reasoned language models. arXiv preprint arXiv:2408.07702.",
+    "Pourreza et al. (2024) Mohammadreza Pourreza, Hailong Li, Ruoxi Sun, Yeounoh Chung, Shayan Talaei, Gaurav Tarlok Kakkar, Yu Gan, Amin Saberi, Fatma Ozcan, and Sercan O Arik. 2024. Chase-sql: Multi-path reasoning and preference optimized candidate selection in text-to-sql. arXiv preprint arXiv:2410.01943.",
+    "Pourreza and Rafiei (2023) Mohammadreza Pourreza and Davood Rafiei. 2023. DIN-SQL: Decomposed in-context learning of text-to-SQL with self-correction. In Advances in Neural Information Processing Systems (NeurIPS).",
+    "Pourreza and Rafiei (2024) Mohammadreza Pourreza and Davood Rafiei. 2024. Dts-sql: Decomposed text-to-sql with small large language models. arXiv preprint arXiv:2402.01117.",
+    "Qu et al. (2024) Ge Qu, Jinyang Li, Bowen Li, Bowen Qin, Nan Huo, Chenhao Ma, and Reynold Cheng. 2024. Before generation, align it! a novel and effective strategy for mitigating hallucinations in text-to-sql generation. arXiv preprint arXiv:2405.15307.",
+    "Ren et al. (2024) Tonghui Ren, Yuankai Fan, Zhenying He, Ren Huang, Jiaqi Dai, Can Huang, Yinan Jing, Kai Zhang, Yifan Yang, and X. Sean Wang. 2024. Purple: Making a large language model a better sql writer. In International Conference on Data Engineering (ICDE).",
+    "Ross and Dollár (2017) T-YLPG Ross and GKHP Dollár. 2017. Focal loss for dense object detection. In proceedings of the IEEE conference on computer vision and pattern recognition, pages 2980–2988.",
+    "Talaei et al. (2024) Shayan Talaei, Mohammadreza Pourreza, Yu-Chen Chang, Azalia Mirhoseini, and Amin Saberi. 2024. Chess: Contextual harnessing for efficient sql synthesis. arXiv preprint arXiv:2405.16755.",
+    "Thorpe et al. (2024) Dayton G Thorpe, Andrew J Duberstein, and Ian A Kinsey. 2024. Dubo-sql: Diverse retrieval-augmented generation and fine tuning for text-to-sql. arXiv preprint arXiv:2404.12560.",
+    "Wang et al. (2024) Bing Wang, Changyu Ren, Jian Yang, Xinnian Liang, Jiaqi Bai, Linzheng Chai, Zhao Yan, Qian-Wen Zhang, Di Yin, Xing Sun, and Zhoujun Li. 2024. Mac-sql: A multi-agent collaborative framework for text-to-sql. arXiv preprint arXiv:2312.11242.",
+    "Yu et al. (2018) Tao Yu, Rui Zhang, Kai Yang, Michihiro Yasunaga, Dongxu Wang, Zifan Li, James Ma, Irene Li, Qingning Yao, Shanelle Roman, Zilin Zhang, and Dragomir Radev. 2018. Spider: A large-scale human-labeled dataset for complex and cross-domain semantic parsing and text-to-SQL task. In Empirical Methods in Natural Language Processing (EMNLP).",
+    "Zhang et al. (2025) Qinggang Zhang, Shengyuan Chen, Yuanchen Bei, Zheng Yuan, Huachi Zhou, Zijin Hong, Junnan Dong, Hao Chen, Yi Chang, and Xiao Huang. 2025. A survey of graph retrieval-augmented generation for customized large language models. arXiv preprint arXiv:2501.13958.",
+    "Zhang et al. (2024) Qinggang Zhang, Junnan Dong, Hao Chen, Wentao Li, Feiran Huang, and Xiao Huang. 2024. Structure guided large language model for sql generation. arXiv preprint arXiv:2402.13284."
+  ]
+}

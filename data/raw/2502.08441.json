@@ -1,0 +1,389 @@
+{
+  "title": "Better Embeddings with Coupled Adam",
+  "authors": "Felix StollenwerkAI Sweden\n&Tobias StollenwerkForschungszentrum JülichCorresponding author:felix.stollenwerk@ai.se",
+  "abstract": "Despite their remarkable capabilities, LLMs learn word representations that exhibit the undesirable yet poorly understood feature of anisotropy. In this paper, we argue that the second moment in Adam is a cause of anisotropic embeddings, and suggest a modified optimizer called Coupled Adam to mitigate the problem. Our experiments demonstrate that Coupled Adam significantly improves the quality of embeddings, while also leading to better upstream and downstream performance on large enough datasets.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Anisotropic Embeddings",
+          "paragraphs": [
+            "Large Language Models (LLMs) take a sequence of tokens as input and predict the next token. An embedding matrix is used to map the input tokens to the hidden space of the model, while an unembedding matrix provides the inverse mapping to the output token space. Although the two matrices can in principle be different, it is common practice to apply weight tying Press and Wolf (2017) and use the transpose of the embedding matrix for unembedding. During training, the model learns an embedding vector in hidden space for each token in the vocabulary. However, it is observed that those embedding vectors are clustered in a small subspace away from the origin Gao et al. (2019). This anisotropy limits the semantic usefulness of the embeddings and, in turn, the expressiveness and generalizability of the model. Multiple attempts have been made to both explain the root cause of the problem and alleviate it (more on this in Sec. 7). In particular, Biś et al. (2021) have shown that the problem can be traced back to a mere shift of the mean embedding vector away from the origin. With the mean embedding vector as reference point, the embeddings feature near-perfect isotropy. However, the role of the employed optimization algorithm has, to the best of our knowledge, not yet been investigated."
+          ]
+        },
+        {
+          "title": "Optimization Algorithms",
+          "paragraphs": [
+            "Optimization algorithms are an indispensable ingredient in the training of neural networks generally and LLMs in particular. While SGD is the foundational optimization technique, Adam Kingma and Ba (2014) is the most widely used optimization techniques for LLMs due to its superior performance and robustness. While it provides multiple conceptional advantages over SGD, see e.g. Ruder (2017) for a detailed discussion, the one that is particularly striking with regard to word embeddings is that Adam is well-suited for sparse data. More concretely, this means that using Adam, the embedding update vectors for rare words are scaled up in comparison to those of more frequent words. This is relevant in the context of LLMs as word frequencies in the training data are typically very skewed and may differ by several orders of magnitude. Formally, this is captured by the unigram probability distribution p~∈[0,1]V\\widetilde{p}\\in[0,1]^{V}, which for a given dataset dd and tokenizer tt is defined by",
+            "where i∈𝒱≡{1,…,V}i\\in\\mathcal{V}\\equiv\\{1,\\dots,V\\} is the vocabulary index and nin_{i} is the total number of occurrences of the ii-th token in the tokenized dataset. A visualization of an example unigram probability distribution can be found in App. A."
+          ]
+        },
+        {
+          "title": "Our Contributions",
+          "paragraphs": [
+            "In this work, we combine the research areas of anisotropic embeddings and optimization algorithms and provide the following contributions:",
+            "• We show that the Adam optimizer plays a crucial role in causing anisotropic embeddings.",
+            "• We suggest Coupled Adam, an easy-to-implement yet efficient adjustment of the original Adam optimization algorithm, which is specifically designed for embedding parameters in order to alleviate the anisotropy problem.",
+            "• We demonstrate that our method not only significantly improves the quality of word embeddings, but also has a beneficial effect on upstream and downstream performance for sufficiently large datasets.",
+            "We show that the Adam optimizer plays a crucial role in causing anisotropic embeddings.",
+            "We suggest Coupled Adam, an easy-to-implement yet efficient adjustment of the original Adam optimization algorithm, which is specifically designed for embedding parameters in order to alleviate the anisotropy problem.",
+            "We demonstrate that our method not only significantly improves the quality of word embeddings, but also has a beneficial effect on upstream and downstream performance for sufficiently large datasets."
+          ]
+        }
+      ]
+    },
+    "2 On the Root Cause of Anisotropic Embeddings": {
+      "paragraphs": [
+        "We study the collective shift of the embeddings (that underlies the anisotropy problem), by analyzing their vector updates based on the optimization algorithms SGD and Adam. Weight tying is assumed, but only contributions from the output layer are considered, following Biś et al. (2021). Our results apply to all model architectures with a standard language modeling head."
+      ],
+      "subsections": [
+        {
+          "title": "2.1 Language Modeling Head",
+          "paragraphs": [
+            "The equations for the standard language modeling head read",
+            "where ℒ∈ℝ≥0\\mathcal{L}\\in\\mathbb{R}_{\\geq 0} is the loss for next token prediction, and pt∈[0,1]p_{t}\\in[0,1] is the predicted probability of the true token t∈𝒱t\\in\\mathcal{V}. li∈ℝl_{i}\\in\\mathbb{R} and ei∈ℝHe_{i}\\in\\mathbb{R}^{H} denote the logits and embeddings for each token i∈𝒱i\\in\\mathcal{V}, respectively. h∈ℝHh\\in\\mathbb{R}^{H} is the final hidden state provided by the model for a single token. Note that the operation in Eq. (4) is the dot product of two vectors in ℝH\\mathbb{R}^{H}. Backward propagation yields the following gradients with respect to the input vectors eie_{i} and hh of Eq. (4):",
+            "This result was first reported using a different notation in Biś et al. (2021), and is rederived in App. B for the reader’s convenience."
+          ]
+        },
+        {
+          "title": "2.2 Vanishing Sum of Embedding Gradients",
+          "paragraphs": [
+            "Optimization algorithms for neural networks usually update the model parameters iteratively, using an additive update vector that points in direction opposite to the gradient of the loss with respect to the parameters. In the case of embedding vectors, this can be expressed by",
+            "with",
+            "where ui(τ)u_{i}^{(\\tau)} is the update vector for ei(τ)e_{i}^{(\\tau)} at time step τ\\tau. Eq. (5) implies that the embedding vector ete_{t} of the true token is updated in direction +h+h, while the update vectors uiu_{i} for all the other embedding vectors eie_{i} with i≠ti\\neq t are proportional to −h-h, see Fig. 1.",
+            "This circumstance is referred to in the literature as the \"common enemy effect\" Biś et al. (2021), and regarded as the cause of the representation degeneration problem. However, as we will see in the following sections, this explanation is incomplete, as it does not take into account the scaling of the gradients with the predicted probabilities pip_{i}, see Eq. (5). The basis for our argumentation is the observation that the sum of embedding gradients vanishes, as the following simple calculation shows:",
+            "Next, we will study how Eq. (8) translates to the sum ∑i=1Vui(τ)\\sum_{i=1}^{V}u_{i}^{(\\tau)} of embedding update vectors, as well as the mean embedding vector",
+            "Since the exact definition of the embedding update vector uiu_{i}, i.e. the proportionality factor in Eq. (7), depends on the optimization algorithm, we discuss SGD and Adam separately."
+          ]
+        },
+        {
+          "title": "2.3 Invariant Mean Embedding with SGD",
+          "paragraphs": [
+            "We consider the application of the SGD optimization algorithm on the embedding vectors111Details are given in App. C.. At each training step, an embedding vector is simply updated by adding the associated negative gradient −gi-g_{i}, multiplied by a global learning rate η\\eta. Hence, Eq. (7) becomes",
+            "Together with Eq. (8), this implies that the sum of embedding update vectors vanishes at any time step τ\\tau:",
+            "Consequently, the mean embedding vector will stay invariant during the training process:",
+            "This holds even though the different embeddings eie_{i} will be individually updated in different directions with different magnitudes. Moreover, all of the above is true also in the case of SGD with momentum, which follows from linearity and mathematical induction. Eq. (12) has far-reaching implications with regard to the anisotropy problem. It entails that the embedding vectors do not collectively shift away from the origin if SGD (with or without momentum) is used."
+          ]
+        },
+        {
+          "title": "2.4 Shifted Mean Embedding with Adam",
+          "paragraphs": [
+            "In this section, we analyze the behavior of the mean embedding during optimization with Adam Kingma and Ba (2014), see Algorithm 1.",
+            "The update vector Eq. (7) for the Adam algorithm is given by",
+            "where we have introduced an ii-dependent effective learning rate",
+            "Note that m^i(τ)\\widehat{m}_{i}^{(\\tau)} and v^i(τ)\\widehat{v}_{i}^{(\\tau)} denote the exponentially averaged first and second moments, respectively, defined according to lines 2-5 in Algorithm 1. The ii-dependent learning rate serves the purpose of individually normalizing the update vectors for different parameters in the Adam optimizer. However, it also has an unwanted effect specifically on the embedding vectors. While we know from Eq. (8) and Algorithm 1 (lines 2,4) that the unweighted sum over the first moments vanishes, ∑i=1Vm^i(τ)=0\\sum_{i=1}^{V}\\widehat{m}_{i}^{(\\tau)}=0, this is not true for the weighted sum,",
+            "unless ηi(τ)=ηj(τ)\\eta^{(\\tau)}_{i}=\\eta^{(\\tau)}_{j} for all i,j∈𝒱i,j\\in\\mathcal{V}. Hence, the sum of embedding update vectors does not vanish in general,",
+            "This, in turn, causes the mean embedding to change during training,",
+            "which is in stark contrast to the case of SGD (cf. Eq. (12)). We have thus identified that an ii-dependency of the second moment v^i(τ)\\widehat{v}_{i}^{(\\tau)} of the Adam optimizer leads to the observed collective shift of the embedding vectors away from the origin. Next, we will show that the second moment indeed depends on ii. More concretely, we will argue that its expectation value is proportional to the unigram probabilitity222Note that from here until Eq. (23), the time index (τ\\tau) is dropped for the sake of readability. (see Eq. (1)),",
+            "In App. D.1, Eq. (18) is derived using minimal assumptions and experimental input. Here, we restrict ourselves to confirming the relationship in a purely experimental manner. 𝔼​[v^i]\\mathbb{E}\\left[\\widehat{v}_{i}\\right] is estimated directly by measuring v^i\\widehat{v}_{i} multiple times during training, using different models. We then perform linear fits of 𝔼​[v^i]\\mathbb{E}\\left[\\widehat{v}_{i}\\right] as a function of p~i\\widetilde{p}_{i}. Indeed, the fits yield a high coefficient of determination, on average R2=0.85​(7)R^{2}=0.85(7), and a proportionality constant of",
+            "Details about the exact procedure and plots showing the data and linear fits can be found in App. D.2."
+          ]
+        }
+      ]
+    },
+    "3 Coupled Adam": {
+      "paragraphs": [
+        "In the previous section, we have identified the individual scales of the second moments viv_{i} for different embedding vectors eie_{i} as the root cause of the anisotropy problem. This implies that a solution to the problem is to enforce that the second moments are the same for every ii. The question arises whether and how this can be done in the best way, without harming the performance of the model. To answer this, we note that the normalization of the embedding update vector by the Adam second moment can be split into two parts:",
+        "The first factor introduces a global scale to all update vectors simultaneously:",
+        "where the numbers correspond to our experiments from the previous section with V≈50000V\\approx 50000. The second factor scales the update vectors individually. It is one on average:",
+        "Our goal is to retain the first, global factor and get rid of the second, individual factor. The canonical way to do this is to simply take the average of the second moment over the vocabulary items ii:",
+        "In practice, the exponentially averaged second moments v^i(τ)\\widehat{v}_{i}^{(\\tau)} as they appear in Eq. (14) are replaced by their average:",
+        "We call the resulting algorithm Coupled Adam, as it couples the second moments of the embedding vectors via Eq. (24). It is displayed in Algorithm 1. Evidently, with Coupled Adam, the effective learning rate in Eq. (14) that enters the update vector in Eq. (13) becomes independent of ii. Hence, like SGD but unlike standard Adam, the sum of embedding updates vanishes. However, like standard Adam but unlike SGD, Coupled Adam uses a second moment to normalize the embedding update vectors."
+      ],
+      "subsections": []
+    },
+    "4 Experiments": {
+      "paragraphs": [
+        "Two types of experiments are conducted to study the impact of coupling the second moments of the embedding update vectors. First, a set of small-scale experiments (Sec. 4.1) with models and datasets of varying sizes up to 1B parameters and 20B tokens, respectively. Afterwards, we perform a few large-scale experiments (Sec. 4.2) to verify that the usefulness of our method extrapolates to the realm of large language models with more than 1B parameters trained on at least the corresponding compute-optimal Hoffmann et al. (2022) amount of data. In order to verify the generalizability of our method, the small- and large-scale experiments involve different datasets, training frameworks and dense transformer model architectures. An overview of the model and dataset sizes employed in our experiments is given in App. E.1. For each combination, two models are trained: one using standard Adam and one using Coupled Adam for the embeddings, see Eq. (24). Both variants use standard Adam for all non-embedding parameters. The various metrics we employ to assess both the general model performance and the quality of the model embeddings will be discussed in Sec. 4.3."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Small-scale Experiments",
+          "paragraphs": [
+            "Our small-scale experiments use the OpenWebText Corpus Gokaslan and Cohen (2019) and the GPT-2 tokenizer Radford et al. (2019). The model architecture also follows GPT-2, while the hyperparameter setup is taken from GPT-3 Brown et al. (2020), see App. E.2 for further details. An implementation based on nanoGPT Karpathy (2022) is used. We define a grid (D,N)(D,N) with dataset sizes D∈{5​B,10​B,20​B}D\\in\\{5\\rm B,10\\rm B,20\\rm B\\} and model sizes N∈{125​M,355​M,760​M}N\\in\\{125\\rm M,355\\rm M,760\\rm M\\}, and repeat each experiment S=3S=3 times with different seeds in order to estimate uncertainties and assess statistical significance."
+          ]
+        },
+        {
+          "title": "4.2 Large-scale Experiments",
+          "paragraphs": [
+            "For our large-scale experiments, we use the SlimPajama dataset Soboleva et al. (2023) and the GPT-2 tokenizer. A state-of-the-art dense transformer model architecture akin to Touvron et al. (2023) is chosen, including e.g. RoPE embeddings Su et al. (2023) and the SwiGLU activation function Shazeer (2020). Details can be found in App. E.2. The experiments are conducted using Modalities Lübbering et al. (2024) as the training framework. We consider two model sizes, 1.3B and 2.6B. In order to cover the two common scenarios of compute-optimal training and overtraining, we conduct two sets of experiments: Firstly, we use near compute-optimal dataset sizes, 26B and 52B tokens, respectively. Secondly, we increase the number of tokens by a factor 4, resulting in 105B and 210B tokens, respectively. Each large-scale experiment is performed S=1S=1 times."
+          ]
+        },
+        {
+          "title": "4.3 Evaluation",
+          "paragraphs": [
+            "Upstream performance is measured in terms of test loss, while downstream performance is evaluated using the Language Model Evaluation Harness Gao et al. (2023) on the following tasks: ARC easy and challenge Clark et al. (2018), HellaSwag Zellers et al. (2019), LAMBADA Paperno et al. (2016), RACE Lai et al. (2017), TruthfulQA Lin et al. (2022) and WinoGrande Sakaguchi et al. (2020). More concretely, the considered metric is the average accuracy, which we will denote by Acc\\rm Acc. To assess the quality of the embeddings, we first compute their isotropy, defined as Arora et al. (2016); Mu et al. (2018)",
+            "where E∈ℝH×VE\\in\\mathbb{R}^{H\\times V} is the embedding matrix, Z​(c)=∑i=1Vexp⁡(cT​ei)Z(c)=\\sum_{i=1}^{V}\\exp(c^{T}e_{i}) is the partition function and X={c}X=\\{c\\} is the set of eigenvectors c∈ℝHc\\in\\mathbb{R}^{H} of E​ET∈ℝH×HEE^{T}\\in\\mathbb{R}^{H\\times H}. Secondly, the 2-norm ‖μ‖\\|\\mu\\| of the mean embedding, see Eq. (9), and the average 2-norm of the embeddings ‖ei‖¯=1V​∑i=1V‖ei‖\\overline{\\|e_{i}\\|}=\\frac{1}{V}\\sum_{i=1}^{V}\\|e_{i}\\| as well as their ratio",
+            "are determined. In addition, we evaluate the models on embedding benchmarks for word similarity and relatedness, to assess how well they represent semantic meaning. Following Biś et al. (2021), we consider the benchmarks SimLex999 Hill et al. (2015), MEN Bruni et al. (2014), WordSim353 Finkelstein et al. (2001) and Stanford Rare Words Luong et al. (2013). Each dataset provides pairs of words labeled with a ground truth score that represents the words’ semantic similarity. We derive model scores from the cosine similarity of the corresponding embedding vectors, and report the Pearson correlation of the two scores averaged over the datasets, which we denote by r¯\\overline{r}. Finally, some additional important properties of the embedding matrix are investigated. We study the correlation between the length of an embedding vector and the unigram probability,",
+            "to measure how well the former represents the latter. Furthermore, the condition number κ\\kappa, defined as the ratio of the smallest and largest singular values of the embedding matrix, is determined in percent:",
+            "Here, E=U​Σ​VTE=U\\Sigma V^{T} denotes the singular value decomposition of the embedding matrix. 5B & 125M Standard 3.14 (0) 0.340 (2) 0.31 (2) 1.10 (6) 0.67 (3) 15 (3) -54 (3) 0.6 (1) Coupled 3.12 (1) 0.339 (2) 0.94 (1) 0.02 (0) 0.01 (0) 55 (0) 87 (1) 4.8 (2) 355M Standard 2.95 (0) 0.352 (3) 0.44 (2) 0.81 (2) 0.67 (1) 16 (2) -47 (0) 0.8 (0) Coupled 2.93 (0) 0.350 (4) 0.98 (0) 0.01 (0) 0.01 (0) 56 (1) 86 (0) 6.8 (4) 760M Standard 2.85 (0) 0.360 (3) 0.43 (1) 0.84 (1) 0.63 (0) 14 (3) -49 (2) 0.7 (0) Coupled 2.86 (0) 0.357 (3) 0.97 (0) 0.01 (0) 0.01 (0) 55 (1) 85 (1) 6.9 (3) 10B 125M Standard 3.07 (0) 0.343 (3) 0.21 (3) 1.58 (5) 0.75 (0) 9 (2) -64 (5) 0.4 (0) Coupled 3.03 (0) 0.343 (1) 0.91 (1) 0.05 (0) 0.02 (0) 57 (2) 82 (0) 3.6 (8) 355M Standard 2.86 (0) 0.359 (2) 0.35 (2) 1.01 (4) 0.74 (2) 10 (3) -55 (3) 0.5 (0) Coupled 2.83 (0) 0.365 (2) 0.96 (0) 0.02 (0) 0.01 (0) 57 (1) 83 (1) 5.3 (2) 760M Standard 2.75 (0) 0.375 (2) 0.38 (3) 0.97 (4) 0.66 (2) 11 (2) -56 (1) 0.5 (0) Coupled 2.74 (1) 0.372 (3) 0.96 (0) 0.02 (0) 0.01 (0) 57 (0) 84 (0) 6.2 (0) 20B 125M Standard 3.03 (0) 0.346 (1) 0.10 (3) 2.14 (7) 0.82 (2) 5 (1) -66 (2) 0.3 (0) Coupled 2.97 (0) 0.350 (1) 0.83 (1) 0.11 (0) 0.03 (0) 57 (2) 77 (0) 1.7 (5) 355M Standard 2.79 (0) 0.366 (4) 0.25 (2) 1.32 (8) 0.82 (2) 5 (2) -65 (4) 0.3 (0) Coupled 2.75 (0) 0.372 (6) 0.95 (2) 0.04 (0) 0.02 (0) 57 (1) 78 (0) 4.1 (3) 760M Standard 2.68 (1) 0.385 (3) 0.28 (2) 1.21 (8) 0.73 (3) 3 (4) -64 (2) 0.3 (0) Coupled 2.65 (0) 0.392 (2) 0.94 (2) 0.03 (0) 0.01 (0) 58 (0) 81 (0) 4.4 (2) 26B 1.3B Standard 2.433 0.402 0.50 0.67 0.45 53 -41 1.2 Coupled 2.448 0.396 0.96 0.05 0.03 66 74 4.5 52B 2.6B Standard 2.257 0.451 0.51 0.68 0.40 55 -44 1.0 Coupled 2.273 0.441 0.86 0.10 0.06 66 74 3.0 105B 1.3B Standard 2.278 0.446 0.40 0.87 0.43 52 -52 0.6 Coupled 2.277 0.447 0.82 0.23 0.09 67 71 2.2 210B 2.6B Standard 2.131 0.490 0.34 0.96 0.41 54 -52 0.5 Coupled 2.129 0.492 0.65 0.49 0.14 67 69 1.5 "
+          ]
+        }
+      ]
+    },
+    "5 Results": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "5.1 Small-scale Experiments",
+          "paragraphs": [
+            "The results of the small-scale experiments (Sec. 4.1) are shown in Tab. 1. We find that both upstream and downstream performance are better with Coupled Adam if the dataset size is sufficiently large. In fact, the improvement appears to increase monotonically with the dataset size DD. In addition, the embedding-specific metrics benefit greatly from Coupled Adam. In particular, the isotropy reaches values above 0.900.90 (with a single exception), while r¯\\overline{r} and κ\\kappa are hugely improved as well. The mean embedding is evidently close to the origin. Finally, Coupled Adam leads to a significantly stronger (positive) correlation ρ\\rho between the length of an embedding vector and its associated unigram probability."
+          ]
+        },
+        {
+          "title": "5.2 Large-scale Experiments",
+          "paragraphs": [
+            "The results of the large-scale experiments (Sec. 4.2) are shown in Tab. 2. We observe very similar patterns as for the small-scale experiments. Although upstream and downstream performance are worse with Coupled Adam for compute-optimal dataset sizes, they are better if 4 times larger datasets are used. Note that for the small-scale experiments, the upstream and downstream performance were found to be better already for compute-optimal dataset sizes. We attribute this to the fact that the batch size for the large-scale experiments is five times larger (cf. App. E.2), which results in fewer optimization steps for the same dataset size. Regarding the embedding-specific metrics, we again find significant and consistent improvements throughout all experiments. However, we do observe a certain shift of the mean embedding vector away from the origin, even if Coupled Adam is used. The shift becomes more pronounced as the model and dataset sizes increase, and is also reflected in a reduced isotropy. As we shall see in the following section, it comes along with optimal model performance though. An obvious hypothesis in light of our analysis in Sec. 2 is that the residual shift of the mean embeddings is due to weight tying. This is supported by the results of Machina and Mercer (2024), who find improved isotropy for models without weight tying. We leave it for future work to verify the hypothesis.",
+            "-5 2.99 (0) 0.349 (2) 0.97 (0) 0.01 (0) 0.01 (0) 55 (1) 76 (3) 6.0 (6) -4 2.99 (0) 0.348 (5) 0.97 (1) 0.02 (0) 0.01 (0) 55 (1) 78 (3) 4.4 (1) -3 2.98 (0) 0.352 (5) 0.95 (1) 0.03 (0) 0.02 (0) 57 (2) 78 (2) 2.7 (5) -2 2.98 (0) 0.352 (1) 0.94 (2) 0.04 (0) 0.02 (0) 57 (1) 78 (2) 2.3 (4) -1 2.98 (0) 0.348 (3) 0.87 (2) 0.07 (0) 0.02 (0) 57 (1) 79 (2) 2.1 (3) 0 2.97 (0) 0.350 (1) 0.83 (1) 0.11 (0) 0.03 (0) 57 (2) 77 (0) 1.7 (5) 1 2.97 (0) 0.351 (4) 0.66 (6) 0.20 (1) 0.03 (0) 56 (0) 78 (2) 1.6 (5) 2 2.98 (0) 0.353 (2) 0.47 (6) 0.34 (1) 0.04 (0) 58 (1) 78 (2) 1.6 (9) 3 2.97 (0) 0.352 (0) 0.27 (4) 0.54 (2) 0.05 (0) 58 (2) 78 (1) 2.0 (7) 4 2.97 (1) 0.352 (1) 0.09 (0) 0.83 (2) 0.05 (0) 58 (1) 77 (1) 2.3 (2) 5 2.98 (0) 0.349 (4) 0.01 (1) 1.32 (2) 0.06 (0) 57 (1) 75 (1) 2.1 (6) 5B 125M SGD (300) 3.17 (0) 0.333 (3) 0.99 (0) 0.00 (0) 0.01 (0) 45 (1) 71 (1) 15.5 (4) Coupled Adam 3.12 (1) 0.339 (2) 0.94 (1) 0.02 (0) 0.01 (0) 55 (0) 87 (1) 4.8 (2) 10B 125M SGD (300) 3.07 (1) 0.341 (4) 0.99 (0) 0.01 (0) 0.01 (0) 49 (1) 71 (4) 12.2 (2) Coupled Adam 3.03 (0) 0.343 (1) 0.91 (1) 0.05 (0) 0.02 (0) 57 (2) 82 (0) 3.6 (8) 20B 125M SGD (400) 3.00 (0) 0.346 (5) 0.98 (1) 0.01 (0) 0.02 (0) 54 (0) 76 (5) 7.4 (1.1) Coupled Adam 2.97 (0) 0.350 (1) 0.83 (1) 0.11 (0) 0.03 (0) 57 (2) 77 (0) 1.7 (5) "
+          ]
+        }
+      ]
+    },
+    "6 Ablations": {
+      "paragraphs": [
+        "We perform some additional experiments to shed further light on how Coupled Adam works. A model size of N=125​MN=125\\rm M and the dataset sizes D∈{5​B,10​B,20​B}D\\in\\{5\\rm B,10\\rm B,20\\rm B\\} from the small-scale experiments (Sec. 4.1) are used, and each experiment is repeated S=3S=3 times with different seeds."
+      ],
+      "subsections": [
+        {
+          "title": "6.1 Scaled Coupled Adam",
+          "paragraphs": [
+            "While coupling the second moment of the embedding gradients using the average in Eq. (24) is the canonical choice, one could also use a multiple of the average. We conduct additional experiments where the coupled second moment is scaled by powers of 22:",
+            "with scaling exponents n∈{z∈ℤ|−5≤z≤5}n\\in\\{z\\in\\mathbb{Z}~|-5\\leq z\\leq 5\\}. Note that using a scaling exponent n≠0n\\neq 0 is equivalent to using a different effective learning rate for the embeddings than for all the other parameters, via Eqs. (24) and (14). In particular, a smaller scaling exponent nn corresponds to a smaller effective learning rate and vice versa. The results for D=20​BD=20\\rm B are shown in Tab. 3, and the dependency of the loss on the scaling exponent nn for that very dataset size is visualized in Fig. 2.",
+            "Results for other dataset sizes and plots for the other evaluation metrics can be found in App. G.2. Our data shows that the loss reaches a minimum close to n=0n=0, with a rather weak dependence on the scaling exponent in its vicinity. Nevertheless, for the smallest and largest scaling exponents studied, we find that the loss gets significantly worse. Regarding downstream performance, we see indications of a similar pattern, although the statistical uncertainties are too large to draw definite conclusions. The semantic usefulness of the embedding vectors as measured by r¯\\overline{r} seems to suffer from a scaling exponent n<0n<0. For the isotropy and the mean embedding, we observe the opposite behavior. They benefit from a smaller scaling exponent nn and the associated smaller embedding updates, with the effect being more pronounced the larger the training dataset size DD. However, this also negatively affects the model performance. Hence, we conclude that, at least within the range of our experiments, the optimal setting is to have the same learning rate for the embedding parameters as for all the other model parameters, as implied by n=0n=0 and Eq. (24)."
+          ]
+        },
+        {
+          "title": "6.2 SGD",
+          "paragraphs": [
+            "We train several models using SGD with momentum γ=0.9\\gamma=0.9 as the optimizer for the embeddings. Since Adam via the inverse square root of its second moment effectively scales the learning rate up by a factor comprising orders of magnitude (see Eq. (21)), we explicitly multiply the learning rate in SGD by a factor ff of comparable size333Note that the difference between momentum in SGD and the first moment in Adam also plays a role here.. A hyperparameter search using f∈{100,200,300,400,500,600}f\\in\\{100,200,300,400,500,600\\} is performed to search for the optimum with respect to upstream performance (loss), see App. G.3 for details. It is found at f=300f=300 for D∈{5​B,10​B}D\\in\\{5\\rm B,10\\rm B\\} and f=400f=400 for D=20​BD=20\\rm B. The respective optimal model is compared to its counterpart trained with Coupled Adam in Tab. 4.",
+            "The results show that, although SGD is advantageous with respect to isotropy, the mean embedding shift and the condition number, Coupled Adam consistently achieves better results on all upstream and downstream task metrics, while having one less hyperparameter to fine-tune."
+          ]
+        }
+      ]
+    },
+    "7 Related Work": {
+      "paragraphs": [
+        "Gao et al. (2019) first described the anisotropy issue, which they referred to as representation degeneration problem, and suggested cosine regularization as a mitigation strategy. Alternative techniques to address the problem have been developed, including adversarial noise Wang et al. (2019), spectrum control Wang et al. (2020) and Laplacian regularization Zhang et al. (2020). Biś et al. (2021) have shown that the anisotropy of embeddings can for the most part be traced back to a common shift of the embeddings in a dominant direction. They called this phenomenon common enemy effect, and provided a semi-quantitative explanation (Eq. (5)), which we developed further in the present work by including the optimizer in the analysis. In Yu et al. (2022), Adaptive Gradient Gating is proposed, based on the empirical observation that it is the gradients for embeddings of rare tokens that cause anisotropy. Our analysis conforms to this finding and attributes it to a massive up-scaling of the gradients for rare embeddings with Adam, cf. Fig. 1. Machina and Mercer (2024) have demonstrated that large Pythia models Biderman et al. (2023) show improved isotropy compared to similar models, and attribute this to the absence of weight tying. This is in accordance with our analysis of the unembedding gradients in conjunction with Adam, Sec. 2. While all the previously mentioned papers use average cosine similarity Ethayarajh (2019) or Iso{\\rm Iso} from Eq. (25) to quantify the geometry of embedding vectors, Rudman et al. (2022) deviate from this. Their notion of isotropy is based solely on the embeddings’ covariance matrix and embodied by the metric IsoScore. In particular, IsoScore is mean-agnostic, while Iso{\\rm Iso} strongly correlates with the mean embedding (see e.g. Tab. 1). Finally, concurrent to our work, Zhao et al. (2024) have investigated the importance of using the second moment in Adam with regard to performance and stability. They found that simplified variants of Adam that use the same effective learning rate either for the whole embedding matrix (Adalayer) or each embedding vector (Adalayer*) are slightly worse than Adam but better than SGD. Adalayer* is similar to Coupled Adam, but corresponds to the second moment averaged over hidden space instead of vocabulary space."
+      ],
+      "subsections": []
+    },
+    "8 Conclusions": {
+      "paragraphs": [
+        "Our work addresses the well-known anisotropy problem for LLM embeddings. We have advanced the theoretical understanding of the phenomenon by showing that it is a combination of the common enemy effect and the individual second moments in Adam that causes a collective shift of the embedding vectors away from the origin. To mitigate the problem, we have introduced Coupled Adam, which enforces the same effective learning rate for every embedding vector, and thus suppresses the collective shift of the embeddings. We have found that Coupled Adam consistently improves embedding-specific metrics across all experiments, while also achieving better downstream and upstream performance for large datasets, as they are typically used in LLM training. The code to reproduce our results is available at github.com/flxst/coupled-adam ."
+      ],
+      "subsections": []
+    },
+    "9 Limitations": {
+      "paragraphs": [
+        "Although our method is generally applicable to all common LLM architectures, as they share the same language modeling head and embeddings, only dense decoders were used in our experiments. In addition, only models with up to N=2.6​BN=2.6\\rm B parameters have been tested. The cosine decay learning rate schedule was applied throughout all experiments (App. E.2). Alternatives such as an infinite learning rate schedule are not incorporated in our study. Furthermore, as mentioned at the end of Sec. 5, we have not explicitly verified that the slight residual shift of the mean embedding, which is observed even for Coupled Adam, is caused by weight tying. Finally, we have used a straightforward implementation of Coupled Adam, closely following Algorithm 1. More sophisticated implementations might lead to increased efficiency and further improvements; we leave it for future work to investigate this."
+      ],
+      "subsections": []
+    },
+    "Acknowledgements": {
+      "paragraphs": [
+        "Our computational experiments used around 20000 GPU hours. They were partly run on the EuroHPC supercomputers MeluXina and MareNostrum5 in conjunction with the grants EHPC-DEV-2023D10-032 and EHPC-EXT-2023E02-038."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Unigram Probability Distribution": {
+      "paragraphs": [
+        "Fig. 3 shows the unigram probability distribution for the example of the OpenWebText Corpus dataset and the GPT-2 tokenizer.",
+        "[Figure: Figure 3: Logarithm log⁡(pi~)\\log(\\widetilde{p_{i}}) of the unigram probability distribution for the OpenWebText Corpus and the GPT-2 tokenizer. The maximum probability is maxi⁡pi~≈0.037\\max_{i}\\widetilde{p_{i}}\\approx 0.037 or maxi⁡log⁡(pi~)≈−3.30\\max_{i}\\log(\\widetilde{p_{i}})\\approx-3.30. The minimum probability (not shown) is mini⁡pi~=0\\min_{i}\\widetilde{p_{i}}=0 or mini⁡log⁡(pi~)=−∞\\min_{i}\\log(\\widetilde{p_{i}})=-\\infty.]"
+      ],
+      "subsections": []
+    },
+    "Appendix B Embedding Gradients": {
+      "paragraphs": [
+        "We explicitly derive Eq. (5), which we recall here for convenience:",
+        "The chain rule yields",
+        "where the individual factors can directly be obtained from Eqs. (2)-(4):",
+        "Note that in the first line of Eq. (32), we use the abbreviation Σ=(∑j=1Vexp⁡(lj))\\Sigma=\\Big{(}\\sum_{j=1}^{V}\\exp{(l_{j})}\\Big{)}. Inserting Eqs. (31), (32) and (33) into Eq. (30) directly leads to Eq. (5):"
+      ],
+      "subsections": []
+    },
+    "Appendix C SGD Algorithm": {
+      "paragraphs": [
+        "For completeness and comparison to (Coupled) Adam as displayed in Algorithm 1, we summarize the SGD algorithm in Algorithm 2."
+      ],
+      "subsections": []
+    },
+    "Appendix D Magnitude of the Second Moment in Adam": {
+      "paragraphs": [
+        "In this appendix, the validity of",
+        "is verified. Due to the linearity of lines 5 and 7 in Algorithm 2, it suffices to show that the squared gradient has the property in question:",
+        "We do this in two different ways. First, we derive Eq. (34) using a semi-theoretical approach with minimal experimental input. Afterwards, we confirm the relationship in a purely experimental manner.",
+        "[Figure: Figure 4: Experimental results for 𝔼​[v^i]\\mathbb{E}\\left[\\widehat{v}_{i}\\right] (vertical axis) vs. p~i\\widetilde{p}_{i} (horizontal axis) for N=125​MN=125\\rm M and D=D′=20​BD=D^{\\prime}=20\\rm B. The blue line shows the linear fit with R2=0.91R^{2}=0.91.]",
+        "[Figure: Figure 5: Experimental results for the linear fit parameter AA as a function of NN and D′D^{\\prime}.]"
+      ],
+      "subsections": [
+        {
+          "title": "D.1 Semi-theoretical Derivation",
+          "paragraphs": [
+            "Here, we derive an expression for the expectation value of the squared gradient in terms of simple observables (Theorem 2). Subsequently, the dependency of those observables on p~i\\widetilde{p}_{i} is determined experimentally. Together, this will yield the proportionality expressed by Eq. (34). We begin our reasoning with a lemma.",
+            "The expectation value of the squared gradient can be decomposed into conditional expectation values as follows:",
+            "Our starting point is the definition of the expectation value for the continuous random variable gi2g_{i}^{2}:",
+            "where pp denotes the probability distribution of gig_{i}. Since the vocabulary item ii can only be either the true token tt or not, we can decompose pp into a sum of joint probability distributions (using the law of total probabilities), each of which can be expressed in terms of conditional probabilities like so:",
+            "Using the unigram probability p~i=p​(i=t)\\widetilde{p}_{i}=p(i=t), this can also be written as",
+            "If we insert Eq. (38) back into Eq. (36), the expectation value becomes",
+            "which by definition of the (conditional) expectation value, Eq. (36), is equivalent to Eq. (35). ∎",
+            "Given that the squared hidden state vector h2h^{2} is independent of pip_{i} and whether ii is the true token or not, the expectation value of the squared gradient gi2g_{i}^{2} is given by",
+            "with",
+            "We start from Lemma 1 and the square of the gradient,",
+            "Note that squared variables of vectors in ℝH\\mathbb{R}^{H} always denote the elementwise (Hadamard) product, e.g.",
+            "with strictly non-negative elements. Using Eq. (44), the expectation values on the right side of Eq. (35) can be expressed as",
+            "Given our assumptions regarding h2h^{2}, its expectation value can be factored out:",
+            "Inserting Eqs. (48) and (49) into Eq. (35) yields Eq. (40). ∎",
+            "Note that Eq. (40) is a vector equation, with 𝔼​[gi2],S∈ℝ≥0H\\mathbb{E}\\left[g_{i}^{2}\\right],S\\in\\mathbb{R}_{\\geq 0}^{H} and p~i,Xi(i=t),Xi(i≠t)∈ℝ≥0\\widetilde{p}_{i},X_{i}^{(i=t)},X_{i}^{(i\\neq t)}\\in\\mathbb{R}_{\\geq 0}. It states that the expectation value of gi2g_{i}^{2} factorizes into a global constant SS that is ii-independent, and a factor that is ii-dependent. The latter is a specific combination of the unigram probability p~i\\widetilde{p}_{i}, determined by the data, and the conditional expectation values Xi(i=t)X_{i}^{(i=t)} and Xi(i≠t)X_{i}^{(i\\neq t)}, determined by the model.",
+            "Regarding the unigram probability, we know that The conditional expectation values Xi(i=t)X_{i}^{(i=t)} and Xi(i≠t)X_{i}^{(i\\neq t)} can be empirically estimated by applying training data to different checkpoints. We consider the three small-scale experiments of Sec. 4.1 with N∈{125​M,355​M,760​M}N\\in\\{125\\rm M,355\\rm M,760\\rm M\\} and D=20​BD=20\\rm B, and take ten equidistant checkpoints after D′∈{2​B,4​B,…,20​B}D^{\\prime}\\in\\{2\\rm B,4\\rm B,\\ldots,20\\rm B\\} seen tokens for each of them. We then continue pseudo-training on 20 batches (≈\\approx 2k samples or 2M tokens, see Tab. 5) of data using a zero learning rate, and measure the conditional probabilities in Eqs. (42, 43) from which our target quantities can be estimated. Subsequently, linear fits of the form with fit parameters A(i=t)A^{(i=t)} and A(i≠t)A^{(i\\neq t)} are performed. R2R^{2} is used to assess the quality of the fits. In addition, the mutual information I{\\rm I} between the response and the explanatory variable is computed. Since we observe only a very weak dependence of the results for R2R^{2} and I{\\rm I} on NN and D′D^{\\prime}, we specify the mean and standard deviation over all experiments for them. Our findings are:",
+            "1. p~i≪1\\widetilde{p}_{i}\\ll 1. This is the case for virtually all natural language datasets with a common vocabulary size of V>10000V>10000, according to Zipf’s law.",
+            "2. Xi(i=t)X_{i}^{(i=t)} is independent of p~i\\widetilde{p}_{i}. The linear fits yield R2=0.003​(1)R^{2}=0.003(1), and the mutual information is I​(Xi(i=t);p~i)=0.14​(2){\\rm I}\\left(X_{i}^{(i=t)};\\widetilde{p}_{i}\\right)=0.14(2).",
+            "3. Xi(i≠t)X_{i}^{(i\\neq t)} is proportional to p~i\\widetilde{p}_{i}. The linear fits yield R2=0.92​(1)R^{2}=0.92(1), and the mutual information is I​(Xi(i≠t);p~i)=0.50​(2){\\rm I}\\left(X_{i}^{(i\\neq t)};\\widetilde{p}_{i}\\right)=0.50(2).",
+            "p~i≪1\\widetilde{p}_{i}\\ll 1. This is the case for virtually all natural language datasets with a common vocabulary size of V>10000V>10000, according to Zipf’s law.",
+            "Xi(i=t)X_{i}^{(i=t)} is independent of p~i\\widetilde{p}_{i}. The linear fits yield R2=0.003​(1)R^{2}=0.003(1), and the mutual information is I​(Xi(i=t);p~i)=0.14​(2){\\rm I}\\left(X_{i}^{(i=t)};\\widetilde{p}_{i}\\right)=0.14(2).",
+            "Xi(i≠t)X_{i}^{(i\\neq t)} is proportional to p~i\\widetilde{p}_{i}. The linear fits yield R2=0.92​(1)R^{2}=0.92(1), and the mutual information is I​(Xi(i≠t);p~i)=0.50​(2){\\rm I}\\left(X_{i}^{(i\\neq t)};\\widetilde{p}_{i}\\right)=0.50(2).",
+            "The three empirical results above, together with Theorem 2, immediately lead to Eq. (34)."
+          ]
+        },
+        {
+          "title": "Experimental Input",
+          "paragraphs": [
+            "Regarding the unigram probability, we know that The conditional expectation values Xi(i=t)X_{i}^{(i=t)} and Xi(i≠t)X_{i}^{(i\\neq t)} can be empirically estimated by applying training data to different checkpoints. We consider the three small-scale experiments of Sec. 4.1 with N∈{125​M,355​M,760​M}N\\in\\{125\\rm M,355\\rm M,760\\rm M\\} and D=20​BD=20\\rm B, and take ten equidistant checkpoints after D′∈{2​B,4​B,…,20​B}D^{\\prime}\\in\\{2\\rm B,4\\rm B,\\ldots,20\\rm B\\} seen tokens for each of them. We then continue pseudo-training on 20 batches (≈\\approx 2k samples or 2M tokens, see Tab. 5) of data using a zero learning rate, and measure the conditional probabilities in Eqs. (42, 43) from which our target quantities can be estimated. Subsequently, linear fits of the form with fit parameters A(i=t)A^{(i=t)} and A(i≠t)A^{(i\\neq t)} are performed. R2R^{2} is used to assess the quality of the fits. In addition, the mutual information I{\\rm I} between the response and the explanatory variable is computed. Since we observe only a very weak dependence of the results for R2R^{2} and I{\\rm I} on NN and D′D^{\\prime}, we specify the mean and standard deviation over all experiments for them. Our findings are:",
+            "1. p~i≪1\\widetilde{p}_{i}\\ll 1. This is the case for virtually all natural language datasets with a common vocabulary size of V>10000V>10000, according to Zipf’s law.",
+            "2. Xi(i=t)X_{i}^{(i=t)} is independent of p~i\\widetilde{p}_{i}. The linear fits yield R2=0.003​(1)R^{2}=0.003(1), and the mutual information is I​(Xi(i=t);p~i)=0.14​(2){\\rm I}\\left(X_{i}^{(i=t)};\\widetilde{p}_{i}\\right)=0.14(2).",
+            "3. Xi(i≠t)X_{i}^{(i\\neq t)} is proportional to p~i\\widetilde{p}_{i}. The linear fits yield R2=0.92​(1)R^{2}=0.92(1), and the mutual information is I​(Xi(i≠t);p~i)=0.50​(2){\\rm I}\\left(X_{i}^{(i\\neq t)};\\widetilde{p}_{i}\\right)=0.50(2).",
+            "p~i≪1\\widetilde{p}_{i}\\ll 1. This is the case for virtually all natural language datasets with a common vocabulary size of V>10000V>10000, according to Zipf’s law.",
+            "Xi(i=t)X_{i}^{(i=t)} is independent of p~i\\widetilde{p}_{i}. The linear fits yield R2=0.003​(1)R^{2}=0.003(1), and the mutual information is I​(Xi(i=t);p~i)=0.14​(2){\\rm I}\\left(X_{i}^{(i=t)};\\widetilde{p}_{i}\\right)=0.14(2).",
+            "Xi(i≠t)X_{i}^{(i\\neq t)} is proportional to p~i\\widetilde{p}_{i}. The linear fits yield R2=0.92​(1)R^{2}=0.92(1), and the mutual information is I​(Xi(i≠t);p~i)=0.50​(2){\\rm I}\\left(X_{i}^{(i\\neq t)};\\widetilde{p}_{i}\\right)=0.50(2).",
+            "The three empirical results above, together with Theorem 2, immediately lead to Eq. (34)."
+          ]
+        },
+        {
+          "title": "D.2 Experimental Confirmation",
+          "paragraphs": [
+            "We reuse the experiments from the previous section to measure the second moment v^i\\widehat{v}_{i} directly, in order to estimate 𝔼​[v^i]\\mathbb{E}\\left[\\widehat{v}_{i}\\right]. Again, linear fits of the form are performed and the mutual information is computed. We find The results for N=125​MN=125\\rm M and D=D′=20​BD=D^{\\prime}=20\\rm B are depicted in Fig. 4, as an example.",
+            "4. 𝔼​[v^i]\\mathbb{E}\\left[\\widehat{v}_{i}\\right] is proportional to p~i\\widetilde{p}_{i}. The linear fits yield R2=0.85​(7)R^{2}=0.85(7), and the mutual information is I​(𝔼​[v^i];p~i)=1.18​(9){\\rm I}\\left(\\mathbb{E}\\left[\\widehat{v}_{i}\\right];\\widetilde{p}_{i}\\right)=1.18(9).",
+            "𝔼​[v^i]\\mathbb{E}\\left[\\widehat{v}_{i}\\right] is proportional to p~i\\widetilde{p}_{i}. The linear fits yield R2=0.85​(7)R^{2}=0.85(7), and the mutual information is I​(𝔼​[v^i];p~i)=1.18​(9){\\rm I}\\left(\\mathbb{E}\\left[\\widehat{v}_{i}\\right];\\widetilde{p}_{i}\\right)=1.18(9).",
+            "Note that while R2R^{2} and I{\\rm I} are again virtually independent of NN and D′D^{\\prime}, the fit parameter AA is not. Instead, it seems to increase with D′D^{\\prime}, as shown in Fig. 5.",
+            "However, as stated in Eq. (19), the order of magnitude is A≈10−4A\\approx 10^{-4} throughout our experiments.",
+            "[Figure: Figure 4: Experimental results for 𝔼​[v^i]\\mathbb{E}\\left[\\widehat{v}_{i}\\right] (vertical axis) vs. p~i\\widetilde{p}_{i} (horizontal axis) for N=125​MN=125\\rm M and D=D′=20​BD=D^{\\prime}=20\\rm B. The blue line shows the linear fit with R2=0.91R^{2}=0.91.]",
+            "[Figure: Figure 5: Experimental results for the linear fit parameter AA as a function of NN and D′D^{\\prime}.]"
+          ]
+        }
+      ]
+    },
+    "Appendix E Experimental Details": {
+      "paragraphs": [
+        "[Figure: Figure 6: Overview of the dataset (horizontal axis) and model sizes (vertical axis) involved in our small-scale (blue, green and orange circles) and large-scale (red squares) experiments. The dashed, black line shows N=D/20N=D/20, which is approximately the compute-optimal trajectory according to Hoffmann et al. (2022).]",
+        "[Table: Table 5: General hyperparameters used in our two sets of experiments.]",
+        "[Table: Table 6: Model-size dependent hyperparameter used in our experiments. NN denotes the model size in terms of parameters, while lr corresponds to the maximum learning rate.]"
+      ],
+      "subsections": [
+        {
+          "title": "E.1 Model and Dataset Sizes",
+          "paragraphs": [
+            "The model sizes NN and dataset sizes DD employed in our experiments are depicted in Fig. 6.",
+            "[Figure: Figure 6: Overview of the dataset (horizontal axis) and model sizes (vertical axis) involved in our small-scale (blue, green and orange circles) and large-scale (red squares) experiments. The dashed, black line shows N=D/20N=D/20, which is approximately the compute-optimal trajectory according to Hoffmann et al. (2022).]"
+          ]
+        },
+        {
+          "title": "E.2 Training Hyperparameters",
+          "paragraphs": [
+            "In Tab. 5, we list the general hyperparameters used in our small-scale (Sec. 4.1) and large-scale (Sec. 4.2) experiments.",
+            "During warm-up, the learning rate is increased from zero to the maximum learning rate. This is followed by a cosine decay which reduces the learning rate to 10%10\\% of the maximum at the end of training. Note that weight decay is applied only to linear layers, not layer norms or embeddings. Tab. 6 shows the hyperparameters related to model size, following GPT-3 Brown et al. (2020)."
+          ]
+        }
+      ]
+    },
+    "Appendix F Error Analysis and Statistical Significance": {
+      "paragraphs": [
+        "For the error analysis, two separate random variables, X0X_{0} and X1X_{1}, are considered. The symbol XX represents one of the metrics discussed in Sec. 4.3, while 0 and 11 stand for two approaches that are to be compared, like standard Adam and Coupled Adam, for instance. For each of the two random variables i={0,1}i=\\{0,1\\}, we conduct and evaluate SS training runs with different seeds, yielding results",
+        "While it is desirable to have a large sample size SS, it is prohibitively expensive for large model and dataset sizes to repeat training runs. We use",
+        "except for the large-scale experiments (Sec. 4.2), where we restrict ourselves to",
+        "We are interested in the difference",
+        "For S=1S=1, it can be computed straight forwardly. However, no statement about the statistical uncertainty or significance of dd can be made. In the case of S=3S=3, we apply a one-sided Student’s t-test with a confidence level of",
+        "First, the sample means",
+        "and the corrected sample standard deviations",
+        "for the two samples i∈{0,1}i\\in\\{0,1\\} are estimated. The sample means from Eq. (58) are combined to an estimate for their difference,",
+        "and the sample standard deviations from Eq. (59) are propagated to the sample standard deviation of dd via Gaussian error propagation:",
+        "Student’s t-distribution for the chosen confidence level α\\alpha (see Eq. (57)) and the",
+        "degrees of freedom yields",
+        "With SS, σd\\sigma_{d} and tα,νt_{\\alpha,\\nu} from Eqs. (54), (61) and (63) as ingredients, the one-sided confidence threshold for the difference can be computed as",
+        "Hence, the estimate d¯\\bar{d} from Eq. (60) is considered a statistically significant improvement of approach i=1i=1 over approach i=0i=0 if",
+        "for metrics where smaller values are desirable (e.g. ℒ\\mathcal{L}), and",
+        "for metrics where larger values are better (e.g. Acc\\rm Acc). 5B 125M SGD (100) 3.23 (0) 0.325 (1) 1.00 (0) 0.00 (0) 0.01 (0) 33 (1) 59 (1) 25.0 (1.1) SGD (200) 3.19 (1) 0.327 (2) 1.00 (0) 0.00 (0) 0.01 (0) 41 (1) 66 (1) 19.2 (9) SGD (300) 3.17 (0) 0.333 (3) 0.99 (0) 0.00 (0) 0.01 (0) 45 (1) 71 (1) 15.5 (4) SGD (400) 3.18 (2) 0.332 (3) 0.99 (0) 0.01 (0) 0.01 (0) 48 (3) 75 (1) 14.2 (5) SGD (500) 3.19 (2) 0.330 (6) 0.99 (0) 0.01 (0) 0.01 (0) 49 (1) 77 (1) 13.2 (2) SGD (600) 3.24 (2) 0.326 (3) 0.99 (0) 0.01 (0) 0.01 (0) 48 (2) 79 (1) 11.6 (2) Standard Adam 3.14 (0) 0.340 (2) 0.31 (2) 1.10 (6) 0.67 (3) 15 (3) -54 (3) 0.6 (1) Coupled Adam 3.12 (1) 0.339 (2) 0.94 (1) 0.02 (0) 0.01 (0) 55 (0) 87 (1) 4.8 (2) 10B 125M SGD (100) 3.13 (1) 0.337 (4) 1.00 (0) 0.00 (0) 0.01 (0) 41 (1) 58 (4) 22.2 (7) SGD (200) 3.09 (0) 0.339 (4) 0.99 (0) 0.01 (0) 0.01 (0) 48 (1) 65 (4) 16.1 (3) SGD (300) 3.07 (1) 0.341 (4) 0.99 (0) 0.01 (0) 0.01 (0) 49 (1) 71 (4) 12.2 (2) SGD (400) 3.07 (0) 0.340 (3) 0.99 (1) 0.01 (0) 0.01 (0) 51 (2) 76 (3) 10.7 (8) SGD (500) 3.09 (0) 0.338 (3) 0.99 (0) 0.01 (0) 0.01 (0) 52 (1) 79 (3) 10.3 (2) SGD (600) 3.11 (1) 0.341 (4) 0.98 (1) 0.01 (0) 0.01 (0) 53 (0) 81 (1) 9.4 (7) Standard Adam 3.07 (0) 0.343 (3) 0.21 (3) 1.58 (5) 0.75 (0) 9 (2) -64 (5) 0.4 (0) Coupled Adam 3.03 (0) 0.343 (1) 0.91 (1) 0.05 (0) 0.02 (0) 57 (2) 82 (0) 3.6 (8) 20B 125M SGD (100) 3.05 (1) 0.343 (2) 0.99 (0) 0.01 (0) 0.01 (0) 50 (1) 57 (7) 18.4 (4) SGD (200) 3.02 (0) 0.345 (1) 0.99 (0) 0.01 (0) 0.01 (0) 52 (1) 64 (7) 12.7 (7) SGD (300) 3.01 (1) 0.350 (1) 0.98 (1) 0.01 (0) 0.02 (0) 53 (2) 70 (6) 9.0 (2) SGD (400) 3.00 (0) 0.346 (5) 0.98 (1) 0.01 (0) 0.02 (0) 54 (0) 76 (5) 7.4 (1.1) SGD (500) 3.01 (1) 0.348 (4) 0.98 (1) 0.02 (0) 0.02 (0) 55 (1) 78 (5) 7.5 (1.6) SGD (600) 3.04 (3) 0.348 (5) 0.95 (3) 0.02 (0) 0.02 (0) 52 (5) 81 (5) 6.8 (2.8) Standard Adam 3.03 (0) 0.346 (1) 0.10 (3) 2.14 (7) 0.82 (2) 5 (1) -66 (2) 0.3 (0) Coupled Adam 2.97 (0) 0.350 (1) 0.83 (1) 0.11 (0) 0.03 (0) 57 (2) 77 (0) 1.7 (5) "
+      ],
+      "subsections": []
+    },
+    "Appendix G Additional Results": {
+      "paragraphs": [
+        "[Figure: Figure 7: Difference in loss (left) and average downstream task accuracy (right) between Coupled Adam and standard Adam, for the different dataset sizes DD (horizontal axis) and model sizes NN (colors) of the small-scale experiments. The vertical bars indicate the one-sided 95%95\\% confidence interval for the difference to be significant. In order to avoid overlaps, the data points for N=125​MN=125\\rm M and N=760​MN=760\\rm M are slightly shifted to the left and right, respectively. ]",
+        "[Figure: Figure 8: Dependency of different metrics on the scaling exponent nn, see Eq. (29). From top to bottom: loss (upstream performance), average accuracy (downstream performance), isotropy, mean embedding norm ratio and r¯\\overline{r}. Each plot shows the difference to the respective metric obtained for n=0n=0. The arrows indicate whether larger (↑\\uparrow) or smaller (↓\\downarrow) values are desirable.]",
+        "[Table: Table 7: Results of our experiments with SGD. Values are highlighted in bold if they are significantly better than all the other values in the same column.]"
+      ],
+      "subsections": [
+        {
+          "title": "G.1 Small-scale Experiments",
+          "paragraphs": [
+            "In Fig. 7, we visualize the results of our small-scale experiments (Sec. 5.1) for the loss ℒ\\mathcal{L} and the average downstream task accuracy Acc\\rm Acc, as listed in Tab. 1.",
+            "[Figure: Figure 7: Difference in loss (left) and average downstream task accuracy (right) between Coupled Adam and standard Adam, for the different dataset sizes DD (horizontal axis) and model sizes NN (colors) of the small-scale experiments. The vertical bars indicate the one-sided 95%95\\% confidence interval for the difference to be significant. In order to avoid overlaps, the data points for N=125​MN=125\\rm M and N=760​MN=760\\rm M are slightly shifted to the left and right, respectively. ]"
+          ]
+        },
+        {
+          "title": "G.2 Scaled Coupled Adam",
+          "paragraphs": [
+            "Tab. 3 of Sec. 6.1 shows the results of varying the scaling exponent nn (see Eq. (29)) for D=20​BD=20\\rm B. The dependency of the loss is visualized in Fig. 2. Here, in Fig. 8, we extend the visualization of the results to D∈{5​B,10​B,20​B}D\\in\\{5\\rm B,10\\rm B,20\\rm B\\} and the other evaluation metrics.",
+            "[Figure: Figure 8: Dependency of different metrics on the scaling exponent nn, see Eq. (29). From top to bottom: loss (upstream performance), average accuracy (downstream performance), isotropy, mean embedding norm ratio and r¯\\overline{r}. Each plot shows the difference to the respective metric obtained for n=0n=0. The arrows indicate whether larger (↑\\uparrow) or smaller (↓\\downarrow) values are desirable.]"
+          ]
+        },
+        {
+          "title": "G.3 SGD",
+          "paragraphs": [
+            "In Tab. 4 of Sec. 6.2, we showed results for SGD using the best hyperparameter ff. Detailed results of the corresponding hyperparameter searches can be found in Tab. 7."
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "Arora et al. (2016) Sanjeev Arora, Yuanzhi Li, Yingyu Liang, Tengyu Ma, and Andrej Risteski. 2016. A latent variable model approach to PMI-based word embeddings. Transactions of the Association for Computational Linguistics, 4:385–399.",
+    "Biderman et al. (2023) Stella Biderman, Hailey Schoelkopf, Quentin Gregory Anthony, Herbie Bradley, Kyle O’Brien, Eric Hallahan, Mohammad Aflah Khan, Shivanshu Purohit, Usvsn Sai Prashanth, Edward Raff, Aviya Skowron, Lintang Sutawika, and Oskar Van Der Wal. 2023. Pythia: A suite for analyzing large language models across training and scaling. In Proceedings of the 40th International Conference on Machine Learning, volume 202 of Proceedings of Machine Learning Research, pages 2397–2430. PMLR.",
+    "Biś et al. (2021) Daniel Biś, Maksim Podkorytov, and Xiuwen Liu. 2021. Too much in common: Shifting of embeddings in transformer language models and its implications. In North American Chapter of the Association for Computational Linguistics (NAACL).",
+    "Brown et al. (2020) Tom B. Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared Kaplan, Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, Sandhini Agarwal, Ariel Herbert-Voss, Gretchen Krueger, Tom Henighan, Rewon Child, Aditya Ramesh, Daniel M. Ziegler, Jeffrey Wu, Clemens Winter, Christopher Hesse, Mark Chen, Eric Sigler, Mateusz Litwin, Scott Gray, Benjamin Chess, Jack Clark, Christopher Berner, Sam McCandlish, Alec Radford, Ilya Sutskever, and Dario Amodei. 2020. Language models are few-shot learners.",
+    "Bruni et al. (2014) Elia Bruni, Nam Khanh Tran, and Marco Baroni. 2014. Multimodal distributional semantics. J. Artif. Int. Res., 49(1):1–47.",
+    "Clark et al. (2018) Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa Schoenick, and Oyvind Tafjord. 2018. Think you have solved question answering? try arc, the ai2 reasoning challenge.",
+    "Ethayarajh (2019) Kawin Ethayarajh. 2019. How contextual are contextualized word representations? Comparing the geometry of BERT, ELMo, and GPT-2 embeddings. In Proceedings of the 2019 Conference on Empirical Methods in Natural Language Processing and the 9th International Joint Conference on Natural Language Processing (EMNLP-IJCNLP), pages 55–65, Hong Kong, China. Association for Computational Linguistics.",
+    "Finkelstein et al. (2001) Lev Finkelstein, Evgeniy Gabrilovich, Yossi Matias, Ehud Rivlin, Zach Solan, Gadi Wolfman, and Eytan Ruppin. 2001. Placing search in context: The concept revisited. volume 20, pages 406–414.",
+    "Gao et al. (2019) Jun Gao, Di He, Xu Tan, Tao Qin, Liwei Wang, and Tie-Yan Liu. 2019. Representation degeneration problem in training natural language generation models.",
+    "Gao et al. (2023) Leo Gao, Jonathan Tow, Baber Abbasi, Stella Biderman, Sid Black, Anthony DiPofi, Charles Foster, Laurence Golding, Jeffrey Hsu, Alain Le Noac’h, Haonan Li, Kyle McDonell, Niklas Muennighoff, Chris Ociepa, Jason Phang, Laria Reynolds, Hailey Schoelkopf, Aviya Skowron, Lintang Sutawika, Eric Tang, Anish Thite, Ben Wang, Kevin Wang, and Andy Zou. 2023. A framework for few-shot language model evaluation.",
+    "Gokaslan and Cohen (2019) Aaron Gokaslan and Vanya Cohen. 2019. Openwebtext corpus. http://Skylion007.github.io/OpenWebTextCorpus.",
+    "Hill et al. (2015) Felix Hill, Roi Reichart, and Anna Korhonen. 2015. SimLex-999: Evaluating semantic models with (genuine) similarity estimation. Computational Linguistics, 41(4):665–695.",
+    "Hoffmann et al. (2022) Jordan Hoffmann, Sebastian Borgeaud, Arthur Mensch, Elena Buchatskaya, Trevor Cai, Eliza Rutherford, Diego de Las Casas, Lisa Anne Hendricks, Johannes Welbl, Aidan Clark, Tom Hennigan, Eric Noland, Katie Millican, George van den Driessche, Bogdan Damoc, Aurelia Guy, Simon Osindero, Karen Simonyan, Erich Elsen, Jack W. Rae, Oriol Vinyals, and Laurent Sifre. 2022. Training compute-optimal large language models.",
+    "Karpathy (2022) Andrej Karpathy. 2022. NanoGPT. https://github.com/karpathy/nanoGPT.",
+    "Kingma and Ba (2014) Diederik Kingma and Jimmy Ba. 2014. Adam: A method for stochastic optimization. International Conference on Learning Representations.",
+    "Lai et al. (2017) Guokun Lai, Qizhe Xie, Hanxiao Liu, Yiming Yang, and Eduard Hovy. 2017. RACE: Large-scale ReAding comprehension dataset from examinations. In Proceedings of the 2017 Conference on Empirical Methods in Natural Language Processing, pages 785–794, Copenhagen, Denmark. Association for Computational Linguistics.",
+    "Lin et al. (2022) Stephanie Lin, Jacob Hilton, and Owain Evans. 2022. TruthfulQA: Measuring how models mimic human falsehoods. In Proceedings of the 60th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 3214–3252, Dublin, Ireland. Association for Computational Linguistics.",
+    "Luong et al. (2013) Thang Luong, Richard Socher, and Christopher Manning. 2013. Better word representations with recursive neural networks for morphology. In Proceedings of the Seventeenth Conference on Computational Natural Language Learning, pages 104–113, Sofia, Bulgaria. Association for Computational Linguistics.",
+    "Lübbering et al. (2024) Max Lübbering, Mehdi Ali, Felix Stollenwerk, Michael Fromm, Alexander Arno Weber, and Richard Rutmann. 2024. Modalities: A pytorch-native framework for distributed and reproducible foundation model training. https://github.com/Modalities/modalities.",
+    "Machina and Mercer (2024) Anemily Machina and Robert Mercer. 2024. Anisotropy is not inherent to transformers. In Proceedings of the 2024 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers), pages 4892–4907, Mexico City, Mexico. Association for Computational Linguistics.",
+    "Mu et al. (2018) Jiaqi Mu, Suma Bhat, and Pramod Viswanath. 2018. All-but-the-top: Simple and effective postprocessing for word representations.",
+    "Paperno et al. (2016) Denis Paperno, Germán Kruszewski, Angeliki Lazaridou, Ngoc Quan Pham, Raffaella Bernardi, Sandro Pezzelle, Marco Baroni, Gemma Boleda, and Raquel Fernández. 2016. The LAMBADA dataset: Word prediction requiring a broad discourse context. In Proceedings of the 54th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 1525–1534, Berlin, Germany. Association for Computational Linguistics.",
+    "Press and Wolf (2017) Ofir Press and Lior Wolf. 2017. Using the output embedding to improve language models. In Proceedings of the 15th Conference of the European Chapter of the Association for Computational Linguistics: Volume 2, Short Papers, pages 157–163, Valencia, Spain. Association for Computational Linguistics.",
+    "Radford et al. (2019) Alec Radford, Jeff Wu, Rewon Child, David Luan, Dario Amodei, and Ilya Sutskever. 2019. Language models are unsupervised multitask learners.",
+    "Ruder (2017) Sebastian Ruder. 2017. An overview of gradient descent optimization algorithms.",
+    "Rudman et al. (2022) William Rudman, Nate Gillman, Taylor Rayne, and Carsten Eickhoff. 2022. IsoScore: Measuring the uniformity of embedding space utilization. In Findings of the Association for Computational Linguistics: ACL 2022, pages 3325–3339, Dublin, Ireland. Association for Computational Linguistics.",
+    "Sakaguchi et al. (2020) Keisuke Sakaguchi, Ronan Le Bras, Chandra Bhagavatula, and Yejin Choi. 2020. Winogrande: An adversarial winograd schema challenge at scale. Proceedings of the AAAI Conference on Artificial Intelligence, 34(05):8732–8740.",
+    "Shazeer (2020) Noam Shazeer. 2020. Glu variants improve transformer.",
+    "Soboleva et al. (2023) Daria Soboleva, Faisal Al-Khateeb, Robert Myers, Jacob R Steeves, Joel Hestness, and Nolan Dey. 2023. SlimPajama: A 627B token cleaned and deduplicated version of RedPajama.",
+    "Su et al. (2023) Jianlin Su, Yu Lu, Shengfeng Pan, Ahmed Murtadha, Bo Wen, and Yunfeng Liu. 2023. Roformer: Enhanced transformer with rotary position embedding.",
+    "Touvron et al. (2023) Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, Dan Bikel, Lukas Blecher, Cristian Canton Ferrer, Moya Chen, Guillem Cucurull, David Esiobu, Jude Fernandes, Jeremy Fu, Wenyin Fu, Brian Fuller, Cynthia Gao, Vedanuj Goswami, Naman Goyal, Anthony Hartshorn, Saghar Hosseini, Rui Hou, Hakan Inan, Marcin Kardas, Viktor Kerkez, Madian Khabsa, Isabel Kloumann, Artem Korenev, Punit Singh Koura, Marie-Anne Lachaux, Thibaut Lavril, Jenya Lee, Diana Liskovich, Yinghai Lu, Yuning Mao, Xavier Martinet, Todor Mihaylov, Pushkar Mishra, Igor Molybog, Yixin Nie, Andrew Poulton, Jeremy Reizenstein, Rashi Rungta, Kalyan Saladi, Alan Schelten, Ruan Silva, Eric Michael Smith, Ranjan Subramanian, Xiaoqing Ellen Tan, Binh Tang, Ross Taylor, Adina Williams, Jian Xiang Kuan, Puxin Xu, Zheng Yan, Iliyan Zarov, Yuchen Zhang, Angela Fan, Melanie Kambadur, Sharan Narang, Aurelien Rodriguez, Robert Stojnic, Sergey Edunov, and Thomas Scialom. 2023. Llama 2: Open foundation and fine-tuned chat models.",
+    "Wang et al. (2019) Dilin Wang, Chengyue Gong, and Qiang Liu. 2019. Improving neural language modeling via adversarial training. In Proceedings of the 36th International Conference on Machine Learning, volume 97 of Proceedings of Machine Learning Research, pages 6555–6565. PMLR.",
+    "Wang et al. (2020) Lingxiao Wang, Jing Huang, Kevin Huang, Ziniu Hu, Guangtao Wang, and Quanquan Gu. 2020. Improving neural language generation with spectrum control. In International Conference on Learning Representations.",
+    "Yu et al. (2022) Sangwon Yu, Jongyoon Song, Heeseung Kim, Seongmin Lee, Woo-Jong Ryu, and Sungroh Yoon. 2022. Rare tokens degenerate all tokens: Improving neural text generation via adaptive gradient gating for rare token embeddings. In Proceedings of the 60th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 29–45, Dublin, Ireland. Association for Computational Linguistics.",
+    "Zellers et al. (2019) Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin Choi. 2019. HellaSwag: Can a machine really finish your sentence? In Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics, pages 4791–4800, Florence, Italy. Association for Computational Linguistics.",
+    "Zhang et al. (2020) Zhong Zhang, Chongming Gao, Cong Xu, Rui Miao, Qinli Yang, and Junming Shao. 2020. Revisiting representation degeneration problem in language modeling. In Findings of the Association for Computational Linguistics: EMNLP 2020, pages 518–527, Online. Association for Computational Linguistics.",
+    "Zhao et al. (2024) Rosie Zhao, Depen Morwani, David Brandfonbrener, Nikhil Vyas, and Sham Kakade. 2024. Deconstructing what makes a good optimizer for language models."
+  ]
+}

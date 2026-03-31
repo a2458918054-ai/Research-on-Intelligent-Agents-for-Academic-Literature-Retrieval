@@ -1,0 +1,252 @@
+{
+  "title": "Data Valuation using Neural Networks for Efficient Instruction Fine-Tuning",
+  "authors": "Ishika AgarwalUIUCishikaa2@illinois.edu&Dilek Hakkani-TürUIUCdilek@illinois.edu",
+  "abstract": "Influence functions provide crucial insights into model training, but existing methods suffer from large computational costs and limited generalization. Particularly, recent works have proposed various metrics and algorithms to calculate the influence of data using language models, which do not scale well with large models and datasets. This is because of the expensive forward and backward passes required for computation, substantial memory requirements to store large models, and poor generalization of influence estimates to new data. In this paper, we explore the use of small neural networks – which we refer to as the InfluenceNetwork – to estimate influence values, achieving up to 99% cost reduction. Our evaluation demonstrates that influence values can be estimated with models just 0.0027% the size of full language models (we use 7B and 8B versions). We apply our algorithm of estimating influence values (called NN-CIFT: Neural Networks for effiCient Instruction Fine-Tuning) to the downstream task of subset selection for general instruction fine-tuning. In our study, we include four state-of-the-art influence functions and show no compromise in performance, despite large speedups, between NN-CIFT and the original influence functions. We provide an in-depth hyperparameter analyses of NN-CIFT. The code for our method can be found here: https://github.com/agarwalishika/NN-CIFT.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "The strong instruction-following abilities of large language models (LLMs) can be attributed to instruction fine-tuning (IFT) (Zhang et al., 2024). IFT builds on top of current language modeling capabilities and strengthens the instruction following abilities of models. Recent works have taken data efficient approaches for IFT. The goal is to select a small subset of samples on which to fine-tune a model Agarwal et al. (2025); Mirzasoleiman et al. (2020); Das and Khetan (2024); Xia et al. (2024); Renduchintala et al. (2024); Liu et al. (2024c) that emulates the full dataset.",
+        "Data efficient pipelines typically consist of two stages: (1) data valuation: designing functions to estimate the influence of data points, and (2) data selection: using influence estimates to choose a balanced set of influential data. Usually, data selection is cheaper than valuation – for instance, DELIFT (SE)111Short for ”Sentence Embedding”. (Agarwal et al., 2025) computes the similarity of sentence embeddings between pairs of data (expensive) for valuation and selects representative data using a submodular function (cheap).",
+        "Formally, influence functions estimate the value of data. For instance, brute force influence functions use leave-one-out (LOO) training to measure impact by omitting each data point and evaluating performance Scanlon (1982). More recent influence functions use LLMs to estimate influence. Table 1 outlines the expenses of state-of-the-art (SOTA) influence functions, which comes from the large amount of forward and backward passes through highly parameterized models.",
+        "In this paper, we introduce NN-CIFT: Neural Networks for effiCient Instruction Fine-Tuning and explore how to train influence functions efficiently. We improve efficiency by using compact neural networks – which we coin as the InfluenceNetwork – that are 0.0027% the size of LLMs, to estimate influence. Figure 1 outlines our methodology with a pairwise influence function (more details about pairwise influence functions in Appendix B.1).",
+        "As depicted, NN-CIFT is a three-step algorithm. The neural network must be trained to estimate influence values effectively. Hence, we first use the influence function (with LLMs) to output influence values for a very small subset of data. This becomes our training data for the InfluenceNetwork. We find that a small neural network can sufficiently learn to estimate influence with very few data (covered in Section 4).",
+        "Second, we train the InfluenceNetwork, and use it to estimate the influence values for the rest of the data points. Finally, we apply a data selection algorithm on the influence values. This helps to obtain a small subset of IFT data to enhance language models. After fine-tuning language models on the chosen subsets, we find that NN-CIFT achieves comparable performance to the original influence functions (covered in Section 5).",
+        "Our contributions and findings are listed as follows. NN-CIFT:",
+        "1. alleviates the cost of using expensive LLMs during data valuation by using smaller and cheaper neural networks, without affecting the performance on downstream tasks (Tables 2 and 3);",
+        "2. achieves competitive performance to previous data valuation methods, despite using only 0.25%-5% of the data. The average mean square error in influence values between NN-CIFT and the original influence functions is merely 0.067 (Figure 2);",
+        "3. is shown to be effective for new data points, circumventing the need to retrain an influence function for new data – previous works incur this cost (Figure 2).",
+        "4. reduces costs by 77-99% time during data valuation (Table 4).",
+        "Section 2 outlines the current state of research in data valuation and data selection. Section 3 explains the problem setting. Section 4 presents the main methodology for NN-CIFT and motivating results. Finally, Section 5 reports results on the downstream task of subset selection after the data valuation stage. In our evaluation, we find that using a small LLM with the original influence functions results in degraded performance. Our hyperparameter studies are in Section 4.4, Figure 3 and Section 5.2, Figure 4. Lastly, the SOTA influence functions are detailed in Appendix B."
+      ],
+      "subsections": []
+    },
+    "2 Related Works": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "2.1 Data Valuation",
+          "paragraphs": [
+            "Wei et al. (2023) hint that different models extract different information from the same data. Hence, effective fine-tuning requires datasets to be specific to each model. Not all data points affect the model equally - models learn more from certain data points than others. Therefore, data valuation methods prune out such low-influence data for efficient fine-tuning (Xia et al., 2024; Agarwal et al., 2025). Current research is divided into model-independent and model-dependent valuation metrics.",
+            "Model-independent methods, such as distance or clustering-based methods (Das and Khetan, 2024; Liu et al., 2024c; Renduchintala et al., 2024) are faster and less computationally expensive. Distance-based methods assign more \"influence\" to data points that are further from each other, optimizing for a diverse subset. Clustering-based methods assign more \"influence\" to data points that are representative (i.e., the centroids of clusters).",
+            "On the other hand, model-dependent methods – such as inference-based and gradient-based – are more resource intensive. Inference-based methods (Liu et al., 2024a; Agarwal et al., 2025) use model inference signals (e.g., token distributions) to evaluate the performance or confidence of models, and valuate data based on how performative/confident they are. Gradient based methods (Xia et al., 2024; Mirzasoleiman et al., 2020; Killamsetty et al., 2021; Koh and Liang, 2020), on the other hand, can assign higher influence to data points with (1) higher magnitudes of gradients, or (2) gradients that match domain-specific data (for domain-specific fine-tuning, for example).",
+            "While they are expensive to calculate, when paired with data selection algorithms, model-dependent data valuation metrics can be used to select subsets of data that are specific to a model’s capabilities. Model-dependent data valuation metrics help to select data that will maximize a certain objective for each model, rendering fine-tuning more effective."
+          ]
+        },
+        {
+          "title": "2.2 Data Selection",
+          "paragraphs": [
+            "Data selection aims to prune redundant and noisy data samples from large datasets to produce a small, information-rich subset (Agarwal et al., 2025; Xia et al., 2024). This subset should be representative of the larger dataset while performing comparably, if not better, than using the full dataset. Data selection methods usually have objectives for selecting data: (1) instruction tuning (Liu et al., 2024a), (2) task-specific fine-tuning (Liu et al., 2024c), (3) continual learning (Agarwal et al., 2025), (4) preference alignment (Liu et al., 2024b), etc. While certain objectives are subsets of others (e.g. (2) is subset of (1)), the data selected for each purpose may not necessarily overlap. For instance, (1) requires data that is representative of a particular dataset, whereas (2) focuses on samples that reflect specific tasks like math reasoning, question answering, or summarization. Similarly, (3)’s samples are specifically chosen to introduce new information to a model without overriding or repeating previously learned information."
+          ]
+        }
+      ]
+    },
+    "3 Problem Formulation": {
+      "paragraphs": [
+        "Given a model ℳ\\mathcal{M} and fine-tuning data 𝒟ℱ\\mathcal{D_{F}}, the goal is to select a small subset 𝒮ℱ⊂𝒟ℱ\\mathcal{S_{F}}\\subset\\mathcal{D_{F}} that maximizes the performance of ℳ\\mathcal{M} after fine-tuning ℳ\\mathcal{M} on 𝒮ℱ\\mathcal{S_{F}}. 𝒮ℱ\\mathcal{S_{F}} is the optimal subset if it can be used to train a model that is comparable to a model trained on 𝒟ℱ\\mathcal{D_{F}}. However, more recent works jointly optimize other objectives during subset selection. Examples of objectives include not only representation, but also task-specific refinement and continual learning. For such joint optimization, the subset 𝒮ℱ\\mathcal{S_{F}} is aligned with another target domain dataset 𝒟𝒯\\mathcal{D_{T}}. The choice of 𝒟𝒯\\mathcal{D_{T}} can guide the subset selection towards various objectives. For example, if the objective is representation or task-specific refinement, 𝒮ℱ\\mathcal{S_{F}} will contain points from 𝒟ℱ\\mathcal{D_{F}} that are similar to 𝒟𝒯\\mathcal{D_{T}} (Liu et al., 2024c; Xia et al., 2024; Das and Khetan, 2024). Alternatively, if the objective is continual learning, 𝒮ℱ\\mathcal{S_{F}} will contain points from 𝒟ℱ\\mathcal{D_{F}} that would allow the model ℳ\\mathcal{M} to learn new information that is present in 𝒟𝒯\\mathcal{D_{T}} Agarwal et al. (2025); Tiwari et al. (2022).",
+        "As mentioned before, computing influence functions can be a very expensive process. There are two kinds of influence functions: pairwise and pointwise – both require forward/backward passes through language models, but the costs slightly differ. Pairwise influence functions compute the influence between every pair of points in a dataset. We study three SOTA pairwise functions, whose formulations are details in Appendix B.1. This paper also studies one pointwise influence functions that simply compute the influence of each data point individually, formally outlined in Appendix B.2. While pointwise influence functions are more efficient than pairwise, they are not as performant during subset selection Xia et al. (2024); Agarwal et al. (2025)."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Our motivation",
+          "paragraphs": [
+            "Overall, our aim is to reduce the total number of forward or back propagations through models with millions and billions of parameters by replacing a large portion with forward propagations through small neural networks with (merely) hundreds of thousands of parameters. Pairwise influence functions calculate the similarity between two data points (denoted as s​i​m​(i,j)sim(i,j)). Because influence values are usually not learned, they need to be recomputed for any data beyond the training data. In other words, as data is constantly being collected, influence values for new data must be recomputed. However, NN-CIFT is learned. Hence, our method does not require any extra computation to estimate influence values, unlike previous work."
+          ]
+        }
+      ]
+    },
+    "4 Learning Influence Estimation": {
+      "paragraphs": [
+        "This section describes in detail Steps 1 and 2 in Figure 1. It outlines the structure and initial experimentation of the InfluenceNetwork."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Defining the InfluenceNetwork.",
+          "paragraphs": [
+            "For estimating the influence values of data samples, we call our neural network the InfluenceNetwork. It is a 2-layer neural network with a hidden size of 100 neurons, and an output size of 1 neuron. For activation, we use ReLU in between the layers. The function I​NθIN_{\\theta} represents the neural network with parameters θ\\theta. As input, I​NθIN_{\\theta} takes two data points ii and jj and outputs the estimated influence of ii on jj. Specifically, embeddings for ii and jj are computed (denoted as emb() below) using the BAAI General Embedding model (bge-large-en-v1.5, in particular) (Xiao et al., 2023) and are concatenated:",
+            "The bge-large-en-v1.5 model generates embeddings of size 1,024, which means the input has a total length of 2,048. Hence, the InfluenceNetwork has exactly 204,900 parameters. For training, we use 20 epochs and a learning rate η=0.0001\\eta=0.0001."
+          ]
+        },
+        {
+          "title": "4.2 Training the InfluenceNetwork.",
+          "paragraphs": [
+            "Below is an illustration of the quadratic similarity matrix that is computed during the data valuation stages. Previous influence compute the entire matrix for data valuation – we only use Q1.",
+            "Using the predefined influence functions in Appendix B, a small fraction of influence values are computed – we call this fraction uu. We use uu% of data from 𝒟ℱ\\mathcal{D_{F}} and uu% of data from 𝒟𝒯\\mathcal{D_{T}} to compute the training set for the InfluenceNetwork. As mentioned above, this training set is represented by Q1 in the illustration.",
+            "The quadrants Q1 to Q4 represent the subset of influence values between a combination of in-distribution (ID) data and out-of-distribution (OOD) data. ID and OOD data is determined by whether the InfluenceNetwork was trained on the data (ID) or not (OOD):",
+            "• Q1: Fully ID data from 𝒟ℱ\\mathcal{D_{F}} and 𝒟𝒯\\mathcal{D_{T}}",
+            "• Q2: ID data from 𝒟ℱ\\mathcal{D_{F}} and OOD data from 𝒟𝒯\\mathcal{D_{T}}",
+            "• Q3: OOD data from 𝒟ℱ\\mathcal{D_{F}} and ID data from 𝒟𝒯\\mathcal{D_{T}}",
+            "• Q4: Fully OOD data from 𝒟ℱ\\mathcal{D_{F}} and 𝒟𝒯\\mathcal{D_{T}}",
+            "Q1: Fully ID data from 𝒟ℱ\\mathcal{D_{F}} and 𝒟𝒯\\mathcal{D_{T}}",
+            "Q2: ID data from 𝒟ℱ\\mathcal{D_{F}} and OOD data from 𝒟𝒯\\mathcal{D_{T}}",
+            "Q3: OOD data from 𝒟ℱ\\mathcal{D_{F}} and ID data from 𝒟𝒯\\mathcal{D_{T}}",
+            "Q4: Fully OOD data from 𝒟ℱ\\mathcal{D_{F}} and 𝒟𝒯\\mathcal{D_{T}}"
+          ]
+        },
+        {
+          "title": "4.3 Evaluating the InfluenceNetwork.",
+          "paragraphs": [
+            "To ensure our InfluenceNetwork is able to output influence values correctly, we compute the average mean squared error (MSE) between the ground truth influence values (from Appendix B) and the predicted influence values:",
+            "We separate the evaluation between the four quadrants of data to study the performance with ID and OOD data.",
+            "To train the InfluenceNetwork, we use DELIFT’s influence values on the MixInstruct dataset (Jiang et al., 2023) to train our InfluenceNetwork (more dataset details in Section 5). We report the results from InfluenceNetwork and two other baselines: (1) Randomly generating a number between 0 and 1, and (2) only Predicting 0 influence. These results can be found in Figure 2.",
+            "The InfluenceNetwork is able to predict influence values with low error rates. After just u=0.05u=0.05, it is consistently better than random influence values and predicting only 0. The average MSE between the InfluenceNetwork’s influence scores and DELIFT’s influence scores is 0.072, 0.072, 0.062, 0.063 for Q1 to Q4, respectively (averaging to 0.067). Furthermore, the error rate stays consistent across all four quadrants, showing that NN-CIFT does not need to be retrained to estimate the influence of new data points that are collected after the training data. One thing to note is that although u=0.05u=0.05, with pairwise influence functions, we end up using only 0.25% of the data to train the InfluenceNetwork because we use 5% of 𝒟ℱ\\mathcal{D_{F}} and 5% of 𝒟𝒯\\mathcal{D_{T}}."
+          ]
+        },
+        {
+          "title": "4.4 Hyperparameter Study #1: InfluenceNetwork sizes",
+          "paragraphs": [
+            "We vary the number of layers and dimensions of each layer. For simplicity, we plot the number of parameters in the InfluenceNetwork versus the MSE. The results can be found in Figure 3. This figure shows that small InfluenceNetwork’s perform comparatively well as larger InfluenceNetwork’s."
+          ]
+        }
+      ]
+    },
+    "5 Subset Selection Evaluation": {
+      "paragraphs": [
+        "Motivated by the results in Figure 2, we apply the InfluenceNetwork to the downstream task of subset selection: can we achieve the same performance when using the InfluenceNetwork instead of the original influence function? Thus, this section corresponds to Step 3 in Figure 1."
+      ],
+      "subsections": [
+        {
+          "title": "Datasets and models.",
+          "paragraphs": [
+            "We use MixInstruct as well as Alpaca (Taori et al., 2023) to evaluate NN-CIFT. These are both instruction tuning datasets where we use 15k for training, 5k for validation, and 5k for testing. We evaluate using two models: microsoft/Phi-3-small-8k-instruct (Abdin et al., 2024) and meta-llama/Llama-3.1-8B (Grattafiori et al., 2024). Note: we use Phi-3 and Llama-8B as shorthand for these models, respectively. Phi-3 has 7.39B parameters and LLama-8B has 8.03B parameters."
+          ]
+        },
+        {
+          "title": "Metrics.",
+          "paragraphs": [
+            "To evaluate the instruction following capabilities of our fine-tuned model ℳ′\\mathcal{M}^{\\prime}, we employ a variety of metrics to capture the similarity between ground truth answers and predicted answers from ℳ′\\mathcal{M}^{\\prime}: (1) ROUGE (Lin, 2004): nn-gram word overlap (specifically, rouge-1), (2) BGE: semantic similarity of embeddings using bge-large-en-v1.5, and (3) LAJ: an LLM-as-a-Judge, namely the prometheus-7b-v2.0 model (Kim et al., 2023). Prometheus’ grading rubric is borrowed from Agarwal et al. (2025) in Appendix B. Next, to evaluate the costs of each method, we use time (in seconds) took on 2 Nvidia A40 GPUs."
+          ]
+        },
+        {
+          "title": "Baselines.",
+          "paragraphs": [
+            "Besides the influence functions DELIFT, DELIFT (SE), LESS, and SelectIT, we include three other baselines: Initial, DistilGPT2, and Full Data. Initial is the setting where v=0.0v=0.0. This is the base model’s performance on the dataset. Next, we use a small language model DistilGPT2 (distilbert/distilgpt2) (Sanh et al., 2020) which has 88.2M parameters as the underlying language/embedding model in the influence functions. Finally, Full Data is the setting where v=1.0v=1.0, i.e., the model’s performance when the full dataset is used."
+          ]
+        },
+        {
+          "title": "Setup.",
+          "paragraphs": [
+            "We use u=0.05u=0.05 for training the InfluenceNetwork. We also use a small fraction of 𝒟ℱ\\mathcal{D_{F}} to fine-tune the language model – we call this fraction vv. We evaluate with v=0.3v=0.3. Our evaluation framework includes two different settings to fine-tune the language model: using the selected subset of data points as (1) PEFT data for QLoRA (Dettmers et al., 2023) on ℳ\\mathcal{M}, or (2) in-context learning (ICL) examples. To elaborate on the ICL set up, we choose the top-5 most semantically similar samples from the chosen subset to add in-context. To measure semantic similarity, we again use bge-large-en-v1.5. Table 2 reports results for Phi-3 on both datasets with v=0.3v=0.3; Table 3 reports results for Llama-8B on both datasets with v=0.3v=0.3; Table 4 reports the cost in time for each method. All tables report the results for one run."
+          ]
+        },
+        {
+          "title": "5.1 Analysis",
+          "paragraphs": [
+            "Table 4 reports the costs for each method, in seconds. It shows that data valuation can be performed at 77-99% faster than the original influence functions. This is because the number of parameters in NN-CIFT is 0.0026-0.0029% the size of the language model in the original influence function. Also, when using the DistilGPT2 model, which is near 1% the size of the language model, the costs are reduced by 54-91%. While these results are promising, the results on the downstream task of subset selection clearly differentiate NN-CIFT and the DistilGPT2 baseline. To elaborate, despite the significant speedups, NN-CIFT shows no compromise to performance. Table 2 reports the results for Phi-3 and Table 3 reports the results for Llama-8B for v=0.3v=0.3.",
+            "To begin, the pairwise functions outperform the pointwise function (SelectIT) because they are able to capture more fine-grained effects of the data point on a model’s learning. Next, DELIFT and DELIFT (SE) are able to outperform LESS because the theoretical guarantees of using submodular functions yields improved empirical performance. Finally, DELIFT uses model dependent information, tailoring the subset to the model’s weaknesses, allowing it to outperform DELIFT (SE).",
+            "Keeping these in mind, NN-CIFT is able to achieve performance comparable to the original data valuation methods, even across models and datasets. However, DistilGPT2 shows performance degradations, which is more pronounced in the model-dependent methods (DELIFT, LESS, and SelectIT). This is because the model-dependent methods experience significant performance gains when the data valuation model is the same as the fine-tuning model.",
+            "The absolute average performance difference across metrics between the original influence functions and NN-CIFT is only 1.40%222The average performance difference is calculated by taking the absolute difference in performance, dividing it by the original performance, and then averaging this ratio across all settings (datasets, methods, metrics, baselines).. Because the neural network is able to estimate the influence values with great accuracy, the selected subsets of data would be mostly the same between the original influence function and NN-CIFT. Hence, the performance difference of 1.40% can be attributed as the variability in the language model’s performance between two runs. Additionally, this trend is consistent across datasets and models, which shows the wide applicability of our method."
+          ]
+        },
+        {
+          "title": "5.2 Hyperparameter study #2: Trade-off betweenuuandvv",
+          "paragraphs": [
+            "We perform a hyperparameter study between uu and vv on MixInstruct using DELIFT’s influence function (Equation 1). We perform a grid search where u=v={0,0.01,0.05,0.1,0.15,0.20,0.25,0.3,0.4,0.5,0.6,0.7,0.8}u=v=\\{0,0.01,0.05,\\allowbreak 0.1,0.15,0.20,0.25,0.3,0.4,0.5,0.6,0.7,0.8\\}, amounting to 169 experiments. Figure 4 shows the results using the BGE metric from each of these experiments. As shown, the two figures in each row follow the same general trend, showcasing that NN-CIFT can effectively replace the expensive influence function estimation.",
+            "As expected, we notice a few trends. (1) QLoRA generally has better performance than ICL. This is because fine-tuning has more impact on the model than simply adding examples to the prompt (i.e., prompt engineering). (2) The bottom right tends to be darker as fewer IFT data lead to insufficient training. (3) Larger IFT subsets, especially in the ICL setting, lead to poorer performance. During ICL, the top-5 semantically similar samples are chosen from the subset to add as in-context examples. However, semantic similarity does not always translate to performance enhancement as these samples can be harmful to the model’s performance. Finally, a follow-up to (3), the highest performance regions tend to be around v=0.2v=0.2 - 0.40.4. Appendix A contains results on smaller subsets of IFT data (v=0.1v=0.1 and 0.20.2)."
+          ]
+        }
+      ]
+    },
+    "6 Conclusion": {
+      "paragraphs": [
+        "In this paper, we introduce NN-CIFT: Neural Networks for effiCient Instruction Fine-Tuning to distill highly parameterized models used in modern influence functions into small neural networks. We empirically show the effectiveness of our InfluenceNetwork design through low prediction error rates, and competitive performance on the downstream task of subset selection for IFT. We use four different influence functions to test with NN-CIFT; our experimentation shows that NN-CIFT can lower costs for expensive data valuation, is adaptive to all kinds of influence functions (model-dependent or -independent; pairwise or pointwise), and does not require retraining for new data."
+      ],
+      "subsections": []
+    },
+    "7 Limitations": {
+      "paragraphs": [
+        "While NN-CIFT is effective, it is heavily dependent on the influence function. The influence functions that were studied require large datasets to be annotated, which can be infeasible. Furthermore, NN-CIFT cannot yet be used for areas such as task-specific dataset selection or continual learning. In these cases, the objectives of data selection are beyond representation. Finally, even though costs were shown to be much smaller, NN-CIFT still incurs a quadratic cost. Although we show results for SelectIT, which runs in linear time, SelectIT is not able to outperform the pairwise methods. Future work will involve finding a solution that can estimate influence of a data point to a data set (or a model’s training dynamics) while also incurring linear time cost."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Evaluation on smaller subsets": {
+      "paragraphs": [
+        "Tables 5 and 7 report extra results for the Phi-3 model on v=0.1v=0.1 and v=0.2v=0.2, respectively. Similarly, Tables 6 and 8 report results for Llama-8B on v=0.1v=0.1 and v=0.2v=0.2, respectively. With Tables 2 and 3 in the main text, these results show an increasing trend in performance with a higher subset of IFT data (i.e., higher vv). They also show similar trends where NN-CIFT performs similarly to the original influence function.",
+        "[Table: Table 5: Results on the Phi-3 model with v=0.1,u=0.05v=0.1,u=0.05. NN-CIFT + Method and DistilGPT2 + Method follow the same definitions as in Table 2. The average performance difference between NN-CIFT and the original influence function is merely 1.91%.]",
+        "[Table: Table 6: Results on the Llama-8b model with v=0.1,u=0.05v=0.1,u=0.05. NN-CIFT + Method and DistilGPT2 + Method follow the same definitions as in Table 2. The average performance difference between NN-CIFT and the original influence function is merely 1.14%.]",
+        "[Table: Table 7: Results on the Llama-8b model with v=0.2,u=0.05v=0.2,u=0.05. NN-CIFT + Method and DistilGPT2 + Method follow the same definitions as in Table 2. The average performance difference between NN-CIFT and the original influence function is merely 1.08%.]",
+        "[Table: Table 8: Results on the Llama-8b model with v=0.2,u=0.05v=0.2,u=0.05. NN-CIFT + Method and DistilGPT2 + Method follow the same definitions as in Table 2. The average performance difference between NN-CIFT and the original influence function is merely 1.26%.]"
+      ],
+      "subsections": []
+    },
+    "Appendix B Influence Functions": {
+      "paragraphs": [
+        "Following the problem formulation, we formally define the influence functions we used throughout our evaluation."
+      ],
+      "subsections": [
+        {
+          "title": "B.1 Pairwise Influence Functions",
+          "paragraphs": [
+            "(Agarwal et al., 2025) is a model-dependent, inference-based metric. Samples (ix,iy)∈𝒟ℱ(i_{x},i_{y})\\in\\mathcal{D_{F}} are used as in-context examples for evaluating (jx,jy)∈𝒟𝒯(j_{x},j_{y})\\in\\mathcal{D_{T}}, and those with improved model performance are chosen to represent 𝒟𝒯\\mathcal{D_{T}}. This can be calculated by comparing the performance with and without (ix,iy)(i_{x},i_{y}) as an in-context example (where D​(⋅,⋅)∈[0,1]D(\\cdot,\\cdot)\\in[0,1] is a function to measure distance between two probability distributions, and f​(q|θ)f(q|\\theta) is a language model with parameters θ\\theta and input query qq):",
+            "After data valuation, the data selection stage consists of using submodular functions (Bilmes, 2022). In particular, we use the Facility Location submodular function. It takes as input a similarity kernel that will optimize the maximum similarity between the chosen subset and the overall dataset while also minimizing the size of the chosen subset. To minimize the subset size, the Facility Location – and submodular functions, in general – employ a diminishing gains property. This property states that samples added to a smaller subset have more value than samples added to a larger subset. Hence, we rely on our influence function to capture the informativeness of samples, and submodular functions to choose a set of representative samples, resulting in a small, information-rich subset on which to fine-tune a model.",
+            "(Agarwal et al., 2025) is a model-independent metric, and chooses samples from 𝒟ℱ\\mathcal{D_{F}} which are semantically closest to the samples from 𝒟𝒯\\mathcal{D_{T}}. Semantic distance is calculated by the cosine distance between embeddings of samples:",
+            ", where emb​(q)\\text{emb}(q) is an embedding model with input data qq. Similar to DELIFT, DELIFT (SE) also uses the Facility Location function to select a small, information-rich subset of samples.",
+            "(Xia et al., 2024) is model-dependent, gradient-based metric. Here, gradients between samples in 𝒟ℱ\\mathcal{D_{F}} and 𝒟𝒯\\mathcal{D_{T}} are matched by cosine similarity, and those that match the highest are chosen to represent 𝒟𝒯\\mathcal{D_{T}} (where ∇(q;θ)\\nabla(q;\\theta) is the gradient of data point qq from a model with parameters θ\\theta):",
+            "During the data selection stage, the top-kk matching gradients are chosen to be part of the subset. One thing to notice is that the above equation implies a quadratic computation while Table 1 in the main text denotes a linear computation – this is because the gradients for each data point only need to be computed once, while the cosine similarity can be computed many times inexpensively."
+          ]
+        },
+        {
+          "title": "DELIFT",
+          "paragraphs": [
+            "(Agarwal et al., 2025) is a model-dependent, inference-based metric. Samples (ix,iy)∈𝒟ℱ(i_{x},i_{y})\\in\\mathcal{D_{F}} are used as in-context examples for evaluating (jx,jy)∈𝒟𝒯(j_{x},j_{y})\\in\\mathcal{D_{T}}, and those with improved model performance are chosen to represent 𝒟𝒯\\mathcal{D_{T}}. This can be calculated by comparing the performance with and without (ix,iy)(i_{x},i_{y}) as an in-context example (where D​(⋅,⋅)∈[0,1]D(\\cdot,\\cdot)\\in[0,1] is a function to measure distance between two probability distributions, and f​(q|θ)f(q|\\theta) is a language model with parameters θ\\theta and input query qq):",
+            "After data valuation, the data selection stage consists of using submodular functions (Bilmes, 2022). In particular, we use the Facility Location submodular function. It takes as input a similarity kernel that will optimize the maximum similarity between the chosen subset and the overall dataset while also minimizing the size of the chosen subset. To minimize the subset size, the Facility Location – and submodular functions, in general – employ a diminishing gains property. This property states that samples added to a smaller subset have more value than samples added to a larger subset. Hence, we rely on our influence function to capture the informativeness of samples, and submodular functions to choose a set of representative samples, resulting in a small, information-rich subset on which to fine-tune a model."
+          ]
+        },
+        {
+          "title": "DELIFT (SE)",
+          "paragraphs": [
+            "(Agarwal et al., 2025) is a model-independent metric, and chooses samples from 𝒟ℱ\\mathcal{D_{F}} which are semantically closest to the samples from 𝒟𝒯\\mathcal{D_{T}}. Semantic distance is calculated by the cosine distance between embeddings of samples:",
+            ", where emb​(q)\\text{emb}(q) is an embedding model with input data qq. Similar to DELIFT, DELIFT (SE) also uses the Facility Location function to select a small, information-rich subset of samples."
+          ]
+        },
+        {
+          "title": "LESS",
+          "paragraphs": [
+            "(Xia et al., 2024) is model-dependent, gradient-based metric. Here, gradients between samples in 𝒟ℱ\\mathcal{D_{F}} and 𝒟𝒯\\mathcal{D_{T}} are matched by cosine similarity, and those that match the highest are chosen to represent 𝒟𝒯\\mathcal{D_{T}} (where ∇(q;θ)\\nabla(q;\\theta) is the gradient of data point qq from a model with parameters θ\\theta):",
+            "During the data selection stage, the top-kk matching gradients are chosen to be part of the subset. One thing to notice is that the above equation implies a quadratic computation while Table 1 in the main text denotes a linear computation – this is because the gradients for each data point only need to be computed once, while the cosine similarity can be computed many times inexpensively."
+          ]
+        },
+        {
+          "title": "B.2 Pointwise Influence Functions",
+          "paragraphs": [
+            "Finally, SelectIT Liu et al. (2024a) is another model-dependent metric that uses performance signals for data valuation, but incurs linear cost as it uses a model’s uncertainty to rank data samples. Still, as mentioned in Table 1 from the main text, the linear time operations are forward propagations through LLMs.",
+            "SelectIT ranks data points based on their token-level, sentence-level, and model-level uncertainty expressed via token distribution. The token-level uncertainty is represented as the maximum probability of a token during next-token prediction. The sentence-level uncertainty is computed based on the token-level uncertainties of all the tokens in a sentence, for each prompt in a pool of prompts. Finally, the model-level uncertainty is calculated by taking a weighted average of the sentence-level uncertainty scores for multiple model sizes (the weights are determined by model size). This three-stage process provides a ranking process – thus, during data selection, the points with the top-kk scores are chosen."
+          ]
+        }
+      ]
+    },
+    "Appendix C License": {
+      "paragraphs": [
+        "All the code of this project is under the Apache 2.0 License. The datasets MixInstruct and Alpaca are under the MIT and Creative Commons Attribution Non Commercial 4.0 International Licenses, respectively. The code for the baselines are under the MIT and Apache 2.0 Licenses. Our use of existing artifact(s) is consistent with their intended use. The artifacts are all in English, and do not contain data with personally identifiable information."
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "Abdin et al. (2024) Marah Abdin, Jyoti Aneja, Hany Awadalla, Ahmed Awadallah, Ammar Ahmad Awan, Nguyen Bach, Amit Bahree, Arash Bakhtiari, Jianmin Bao, Harkirat Behl, Alon Benhaim, Misha Bilenko, Johan Bjorck, Sébastien Bubeck, Martin Cai, Qin Cai, Vishrav Chaudhary, Dong Chen, Dongdong Chen, and 110 others. 2024. Phi-3 technical report: A highly capable language model locally on your phone. Preprint, arXiv:2404.14219.",
+    "Agarwal et al. (2025) Ishika Agarwal, Krishnateja Killamsetty, Lucian Popa, and Marina Danilevsky. 2025. DELIFT: Data efficient language model instruction fine-tuning. In The Thirteenth International Conference on Learning Representations.",
+    "Bilmes (2022) Jeff Bilmes. 2022. Submodularity in machine learning and artificial intelligence.",
+    "Das and Khetan (2024) Devleena Das and Vivek Khetan. 2024. Deft: Data efficient fine-tuning for pre-trained language models via unsupervised core-set selection. Preprint, arXiv:2310.16776.",
+    "Dettmers et al. (2023) Tim Dettmers, Artidoro Pagnoni, Ari Holtzman, and Luke Zettlemoyer. 2023. Qlora: Efficient finetuning of quantized llms. Preprint, arXiv:2305.14314.",
+    "Grattafiori et al. (2024) Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Alex Vaughan, Amy Yang, Angela Fan, Anirudh Goyal, Anthony Hartshorn, Aobo Yang, Archi Mitra, Archie Sravankumar, Artem Korenev, Arthur Hinsvark, and 542 others. 2024. The llama 3 herd of models.",
+    "Jiang et al. (2023) Dongfu Jiang, Xiang Ren, and Bill Yuchen Lin. 2023. Llm-blender: Ensembling large language models with pairwise ranking and generative fusion. arXiv preprint arXiv:2306.02561.",
+    "Killamsetty et al. (2021) Krishnateja Killamsetty, Durga Sivasubramanian, Ganesh Ramakrishnan, Abir De, and Rishabh Iyer. 2021. Grad-match: Gradient matching based data subset selection for efficient deep model training.",
+    "Kim et al. (2023) Seungone Kim, Jamin Shin, Yejin Cho, Joel Jang, Shayne Longpre, Hwaran Lee, Sangdoo Yun, Seongjin Shin, Sungdong Kim, James Thorne, and 1 others. 2023. Prometheus: Inducing fine-grained evaluation capability in language models. arXiv preprint arXiv:2310.08491.",
+    "Koh and Liang (2020) Pang Wei Koh and Percy Liang. 2020. Understanding black-box predictions via influence functions. Preprint, arXiv:1703.04730.",
+    "Lin (2004) Chin-Yew Lin. 2004. ROUGE: A package for automatic evaluation of summaries. In Text Summarization Branches Out, pages 74–81, Barcelona, Spain. Association for Computational Linguistics.",
+    "Liu et al. (2024a) Liangxin Liu, Xuebo Liu, Derek F. Wong, Dongfang Li, Ziyi Wang, Baotian Hu, and Min Zhang. 2024a. Selectit: Selective instruction tuning for large language models via uncertainty-aware self-reflection.",
+    "Liu et al. (2024b) Wei Liu, Weihao Zeng, Keqing He, Yong Jiang, and Junxian He. 2024b. What makes good data for alignment? a comprehensive study of automatic data selection in instruction tuning.",
+    "Liu et al. (2024c) Zifan Liu, Amin Karbasi, and Theodoros Rekatsinas. 2024c. Tsds: Data selection for task-specific model finetuning. Preprint, arXiv:2410.11303.",
+    "Mirzasoleiman et al. (2020) Baharan Mirzasoleiman, Jeff Bilmes, and Jure Leskovec. 2020. Coresets for data-efficient training of machine learning models. Preprint, arXiv:1906.01827.",
+    "Renduchintala et al. (2024) H S V N S Kowndinya Renduchintala, Sumit Bhatia, and Ganesh Ramakrishnan. 2024. Smart: Submodular data mixture strategy for instruction tuning.",
+    "Sanh et al. (2020) Victor Sanh, Lysandre Debut, Julien Chaumond, and Thomas Wolf. 2020. Distilbert, a distilled version of bert: smaller, faster, cheaper and lighter. Preprint, arXiv:1910.01108.",
+    "Scanlon (1982) Edmund S Scanlon. 1982. Residuals and influence in regression. New York: Chapman and Hall.",
+    "Taori et al. (2023) Rohan Taori, Ishaan Gulrajani, Tianyi Zhang, Yann Dubois, Xuechen Li, Carlos Guestrin, Percy Liang, and Tatsunori B. Hashimoto. 2023. Stanford alpaca: An instruction-following llama model. https://github.com/tatsu-lab/stanford_alpaca.",
+    "Tiwari et al. (2022) Rishabh Tiwari, Krishnateja Killamsetty, Rishabh Iyer, and Pradeep Shenoy. 2022. Gcr: Gradient coreset based replay buffer selection for continual learning. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), pages 99–108.",
+    "Wei et al. (2023) Jerry Wei, Jason Wei, Yi Tay, Dustin Tran, Albert Webson, Yifeng Lu, Xinyun Chen, Hanxiao Liu, Da Huang, Denny Zhou, and Tengyu Ma. 2023. Larger language models do in-context learning differently.",
+    "Xia et al. (2024) Mengzhou Xia, Sadhika Malladi, Suchin Gururangan, Sanjeev Arora, and Danqi Chen. 2024. Less: Selecting influential data for targeted instruction tuning. arXiv preprint arXiv:2402.04333.",
+    "Xiao et al. (2023) Shitao Xiao, Zheng Liu, Peitian Zhang, and Niklas Muennighoff. 2023. C-pack: Packaged resources to advance general chinese embedding. Preprint, arXiv:2309.07597.",
+    "Zhang et al. (2024) Shengyu Zhang, Linfeng Dong, Xiaoya Li, Sen Zhang, Xiaofei Sun, Shuhe Wang, Jiwei Li, Runyi Hu, Tianwei Zhang, Fei Wu, and Guoyin Wang. 2024. Instruction tuning for large language models: A survey. Preprint, arXiv:2308.10792."
+  ]
+}

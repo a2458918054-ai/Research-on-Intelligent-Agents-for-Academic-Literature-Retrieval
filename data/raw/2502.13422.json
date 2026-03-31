@@ -1,0 +1,411 @@
+{
+  "title": "TabSD: Large Free-Form Table Question Answering with SQL-Based Table Decomposition",
+  "authors": "Yuxiang Wang      Junhao Gan      Jianzhong QiSchool of Computing and Information Systems, The University of Melbourneyuxiang.wang8@student.unimelb.edu.au{junhao.gan, jianzhong.qi}@unimelb.edu.au",
+  "abstract": "Question answering on free-form tables (TableQA) is challenging due to the absence of predefined schemas and the presence of noise in large tables. While Large Language Models (LLMs) have shown promise in TableQA, they struggle with large free-form tables and noise sensitivity. To address these challenges, we propose TabSD, a SQL-based decomposition model that enhances LLMs’ ability to process large free-form tables. TabSD generates SQL queries to guide the table decomposition, remove noise, and processes sub-tables for better answer generation. Additionally, SQL Verifier refines SQL outputs to enhance decomposition accuracy. We introduce two TableQA datasets with large free-form tables, SLQA and SEQA, which consist solely of large free-form tables and will be publicly available. Experimental results on four benchmark datasets demonstrate that TabSD outperforms the best-existing baseline models by 23.07%23.07\\%, 2.84%2.84\\%, 23.24%23.24\\% and 9.32%9.32\\% in accuracy, respectively, highlighting its effectiveness in handling large and noisy free-form tables.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Tables play a crucial role in managing and analyzing large-scale data. Numerous studies have explored various tabular understanding tasks, such as Table Question Answering (TableQA) Pasupat and Liang (2015); Yin et al. (2020), Table Fact Verification Chen et al. (2020a); Herzig et al. (2020), Table-to-text Generation Bao et al. (2018); Zhang et al. (2024a). Among these tasks, TableQA remains one of the most challenging, requiring models to comprehend both natural language problems and the corresponding free-form tabular data. Unlike structured tables, free-form tables, such as web tables Cafarella et al. (2008), lack predefined schemas, making structural-query-based approaches Pasupat and Liang (2015); Zhong et al. (2017) inapplicable.",
+        "With the advent of LLMs demonstrating strong performance, extensive research has been directed towards Free-Form TableQA Liu et al. (2024); Wang et al. (2024a, b). While some work has demonstrated that the performance of LLM-based TableQA is highly sensitive to noise in tables, existing methods struggle to effectively handle noisy data Ye et al. (2023); Wang et al. (2024b). Besides, current TableQA datasets is insufficiently reflect real-world application scenarios, such as finance, healthcare, and scientific research Zavitsanos et al. (2024); Singhal et al. (2025); Pramanick et al. (2024), where large free-form tables are prevalent. Most existing studies focus on datasets with relatively small tables Cheng et al. (2023); Liu et al. (2024); Wang et al. (2024a), as large free-form tables are scarce in publicly available datasets Pasupat and Liang (2015); Nan et al. (2022); Chen et al. (2020a), which weakens model robustness. Furthermore, the inherent noise in large free-form tables remains an open challenge.",
+        "To address these challenges, we introduce two LLM-augmented datasets featuring large free-form tables: (1) Spider-LLM Large Table QA Dataset (denoted as SLQA), which directly adopts large tables from Spider dataset Yu et al. (2018) and generates QA pairs using an LLM; and (2) Spider-LLM Expanded Table QA Dataset (denoted as SEQA), which randomly selects small tables from Spider dataset, expands them into large tables and generates corresponding QA pairs using LLMs. Meanwhile, we extract large tables from the WikiTableQuestions dataset Pasupat and Liang (2015) and the HybridQA dataset Chen et al. (2020b) to supplement our benchmark. We then investigate how to enhance LLM-based TableQA models for large free-form tables. Our findings reveal that while LLMs struggle with large free-form tables, their accuracy significantly improves when noisy data is removed – see Figure 1 for an example. Moreover, although NL-to-SQL methods alone are insufficient for solving free-form TableQA Zhang et al. (2024b), we demonstrate that the SQL queries they generate can help extract relevant sub-tables containing only the necessary information for answering questions.",
+        "Based on these observations, we propose the TableQA SQL-based Decomposition model, TabSD. Leveraging few-shot in-context learning in LLMs Dong et al. (2024), our SQL Generator (an LLM) of TabSD first generates SQL queries. Instead of directly executing these queries to retrieve answers, our Table Decomposer, a rule-based parser, extracts key information: column names, values, and conditions from the SQL query to guide table decomposition. This decomposition process helps extract relevant information, resulting in a sub-table that contains only the necessary data for answering the question. Finally, the sub-table is passed to Answer Generator to generate the final answer.",
+        "Since the SQL queries generated by SQL Generator may be inaccurate, we introduce SQL Verifier, an additional LLM-based module that performs self-verification and refinement to improve SQL quality and further enhance table decomposition accuracy.",
+        "This paper makes the following contributions:",
+        "• We introduce two LLM-augmented TableQA datasets, SLQA and SEQA, which consist exclusively of large free-form tables (each exceeding 4096 tokens). To construct these datasets, we first employ an LLM to generate question-answer pairs and then expand small tables into large ones through data synthesis. Code and datasets will be publicly released with this paper.",
+        "• We propose TabSD, the first model designed to enhance TableQA performance on large free-form tables that typically contain substantial noisy data. By leveraging the SQL queries generated by SQL Generator, our Table Decomposer module extracts noise-free sub-tables, significantly improving the accuracy of Answer Generator.",
+        "• We introduce SQL Verifier, an LLM-based module that verifies and refines the SQL generated by SQL Generator, making the table decomposition process more reliable and precise.",
+        "• We conduct comprehensive evaluations on four datasets, including two public datasets: WikiTableQuesetions Pasupat and Liang (2015), HybridQA Chen et al. (2020b), and our two newly proposed datasets: SLQA and SEQA. The experimental results show that our TabSD achieves significant improvements, outperforming the second-best baseline models by 23.07%23.07\\%, 2.84%2.84\\%, 23.24%23.24\\%, and 9.32%9.32\\% in accuracy, respectively."
+      ],
+      "subsections": []
+    },
+    "2 Related Work": {
+      "paragraphs": [
+        "Existing TableQA studies fall into three groups: (1) NL-to-SQL-based, (2) pre-trained language model (PLM)-based, and (3) large language model (LLM)-based."
+      ],
+      "subsections": [
+        {
+          "title": "NL-to-SQL-based Methods",
+          "paragraphs": [
+            "NL-to-SQL-based methods translate natural language questions into logical forms, i.e., SQL queries, which are then executed to retrieve answers. These methods either train a language model or use in-context learning for the translation task. Seq2SQL Zhong et al. (2017) is a representative for the former category. It trains a seq2seq model using reinforcement learning, leveraging query execution results as feedback to refine SQL generation.",
+            "Recent works fall into the latter category. DIN-SQL Pourreza and Rafiei (2023) decomposes the NL-to-SQL task into sub-problems and employs in-context learning to generate the final SQL queries. LEVER Ni et al. (2023) generates multiple candidate answers via SQL execution and trains a verifier to select the most accurate one. SynTQA Zhang et al. (2024b) also uses a verifier. It chooses answers from an NL-to-SQL TableQA module and an end-to-end TableQA module. These methods struggle with free-form tables without predefined schemas, where SQL execution is ineffective."
+          ]
+        },
+        {
+          "title": "PLM-based Methods",
+          "paragraphs": [
+            "PLMs-based methods also have two sub-categories.",
+            "Structural adaptations for tabular data. These methods modify the Transformer Vaswani et al. (2017) to better capture tabular structures. TaBERT Yin et al. (2020) incorporates vertical self-attention to unify textual and tabular representations based on BERT Devlin et al. (2019). TUTA Wang et al. (2021) employs a hierarchical tree-based attention with column and table segment masking to model table representations. TAPAS Herzig et al. (2020) extends BERT by adding row, column, and rank embeddings, along with table cell masking.",
+            "Fine-tuned end-to-end models. TAPEX Liu et al. (2022) pre-trains BART Lewis et al. (2020) using a large synthetic dataset derived from the WikiTableQuestions dataset. OmniTab Jiang et al. (2022) also utilizes BART as its backbone while pre-training it on both real and synthetic data, including SQL queries from the Spider Yu et al. (2018) dataset and synthetic natural language sentences generated from SQL queries via its SQL2NL module. With smaller model sizes, PLMs exhibit limited effectiveness in grasping tabular semantics compared to the latest LLMs, resulting in sub-optimal TableQA accuracy in TableQA."
+          ]
+        },
+        {
+          "title": "LLM-based Methods",
+          "paragraphs": [
+            "LLM-based methods use either prompting or program-aided reasoning.",
+            "Prompting-based methods. These methods prompt LLMs to generate answers by providing it an input question and the corresponding table. For example, Mix-SC Liu et al. (2024) explores the stochastic nature of LLMs by generating multiple candidate answers for each question. It employs two types of prompting techniques: one directs the LLM to act as a Python agent for script execution, while the other utilizes Chain-of-Thought (CoT) prompting Wei et al. (2022) to guide step-by-step reasoning. The final answer is selected using a self-consistency mechanism, which chooses the most frequent answer.",
+            "Program-aided reasoning methods. These methods integrate program generation and execution with LLM prompting. Binder Cheng et al. (2023) first prompts the LLM to generate an initial program based on the input question, then it identifies and refines the challenging segments through iterative LLM engagement. The final refined program is executed by an interpreter to produce TableQA answers. Similarly, TabLaP Wang et al. (2024a) utilizes LLMs for Python script generation, targeting numerical reasoning. Despite their strong reasoning capabilities, LLM-based TableQA models struggle with complex table structures and are highly sensitive to noise, limiting their effectiveness on large free-form tables."
+          ]
+        },
+        {
+          "title": "Table Decomposition for TableQA",
+          "paragraphs": [
+            "Studies have shown that TableQA models perform significantly better when provided with a sub-table (instead of the full one) containing only question-relevant information Ye et al. (2023); Lee et al. (2024); Patnaik et al. (2024). Table decomposition aims to extract such sub-tables to enhance TableQA. Existing methods again fall into two groups.",
+            "Soft decomposition. These methods attenuates irrelevant information while emphasizing the key content, allowing models to focus on relevant data without explicitly removing extraneous entries. For example, CABINET Patnaik et al. (2024) proposes a relevance scorer and a relevant cell predictor to assign weights to table cells. These methods rely on model fine-tuning, which limits their model generalizability, and are often constrained by a fixed input token length, restricting scalability.",
+            "Hard decomposition. These methods removes irrelevant contents, extracting a sub-table as the final input table for the TableQA models. For example, Chain-of-Table Wang et al. (2024b) extends the CoT framework. It progressively extracts a sub-table at each step using an LLM. DATER Ye et al. (2023) also utilizes the CoT idea, breaking down both tables and input questions into structured sub-tables and sub-questions. Learn-to-Reduce Lee et al. (2024) introduces a column selector and a row selector, which are fine-tuned language models that extract only question-relevant rows and columns to form sub-tables. These methods often overlook table structures. They flatten tables and select rows/columns purely by semantic relevance, leading to information loss.",
+            "Our work integrates LLM-driven reasoning with NL-to-SQL techniques, enabling more structured-aware table decomposition while retaining key information for TableQA."
+          ]
+        }
+      ]
+    },
+    "3 Problem Formulation": {
+      "paragraphs": [
+        "Given a table TT and a question QQ about the data in TT, the objective of the TableQA task is to develop a model capable of generating an accurate answer for QQ. The question Q=(q1,q2,…,q|Q|)Q=(q_{1},q_{2},\\dots,q_{|Q|}) is expressed in natural language, where each qi∈Qq_{i}\\in Q (i∈[1,|Q|]i\\in[1,|Q|]) represents a token (e.g., a word). The table TT is also represented as a token sequence in natural language, where individual cells are separated by special characters such as ‘||’, and rows are delineated by newline characters. The model’s performance is evaluated by comparing its generated answers against ground-truth answers in a token-based manner. To tackle TableQA over large tables effectively, our approach addresses two key sub-problems: NL-to-SQL and Table Decomposition."
+      ],
+      "subsections": [
+        {
+          "title": "NL-to-SQL",
+          "paragraphs": [
+            "This problem involves generating an SQL query SS from question QQ and the table header information H=(h1,h2,…,h|H|)H=(h_{1},h_{2},\\dots,h_{|H|}) corresponding to table TT, where each hi∈Hh_{i}\\in H (i∈[1,|H|]i\\in[1,|H|]) represents a column in TT. The objective is to produce an SS that accurately captures the intent of QQ based on HH. Rather than executing SS, our focus is on parsing SS to extract key components for table decomposition, including the column names CC, the conditions PP (e.g., LIKE clauses), and the values VV involved in the filtering operations of SS."
+          ]
+        },
+        {
+          "title": "Table Decomposition",
+          "paragraphs": [
+            "This problem aims to extract a sub-table TSUBT_{\\text{SUB}} from table TT based on the extracted components: column names CC, conditions PP, and values VV. Given table TT, where C={c1,c2,…,c|C|}C=\\{c_{1},c_{2},\\dots,c_{|C|}\\} represents the set of selected columns, P={p1,p2,…,p|P|}P=\\{p_{1},p_{2},\\dots,p_{|P|}\\} represents the filtering conditions, and V={v1,v2,…,v|V|}V=\\{v_{1},v_{2},\\dots,v_{|V|}\\} is the values used in the conditions, the goal is to construct TSUBT_{\\text{SUB}} such that it retains only the specified columns in CC and includes only rows satisfying PP. This process is implemented using Python DataFrame operations, which handle both column selection and row filtering."
+          ]
+        }
+      ]
+    },
+    "4 Methodology": {
+      "paragraphs": [
+        "TabSD handles TableQA in three stages: (i) SQL generation, (ii) table decomposition, and (iii) answer generation, as outlined in Algorithm 1.",
+        "The SQL generation stage (Section 4.1) uses a SQL Generator and a SQL Verifier. The SQL Generator takes question QQ and the header information of table TT to generate a raw SQL query SRAWS_{\\text{RAW}}. Then, the SQL Verifier verifies and refines SRAWS_{\\text{RAW}} to produce the final SQL query SS.",
+        "The table decomposition stage (Section 4.2) uses a Table Decomposer to parse SS and extract a triple (C,P,V)(C,P,V), which represents column names, conditions, and values, respectively. The triple is consumed by Python DataFrame operations to construct a sub-table TSUBT_{\\text{SUB}} with only question-relevant rows and columns.",
+        "The answer generation stage (Section 4.3) uses a Answer Generator that takes QQ and TSUBT_{\\text{SUB}} to generate the final answer AA with an LLM."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 SQL Generation",
+          "paragraphs": [
+            "We use a SQL Generator to produce a raw SQL query SRAWS_{\\text{RAW}}, which is passed to a SQL Verifier for validation. If SRAWS_{\\text{RAW}} fails validation, the SQL Verifier refines it to generate a final SQL query SS.",
+            "The SQL Generator uses few-shot prompting with a backbone LLM. Given question QQ and the header information of table TT, we construct the prompt using examples from a manually annotated NL-to-SQL dataset SQUALL Shi et al. (2020).",
+            "To retrieve relevant NL-to-SQL examples, we compute the cosine similarity between the embedding of QQ and those of all questions in SQUALL, denoted as D={d1,d2,…,dN}D=\\{d_{1},d_{2},...,d_{N}\\}, using Sentence Transformers Song et al. (2020):",
+            "where f​(⋅)f(\\cdot) is an embedding model, 𝐞𝐐∈ℝ1×m\\mathbf{e_{Q}}\\in\\mathbb{R}^{1\\times m}, 𝐄𝐃∈ℝN×m\\mathbf{E_{D}}\\in\\mathbb{R}^{N\\times m}, and mm denotes dimensionality.",
+            "We select the top KK examples based on cosine similarity:",
+            "where i∈[1,|D|]i\\in[1,|D|], and K=5K=5 by default.",
+            "The SQL Generator uses the selected NL-to-SQL examples, the header information of TT, and the question QQ to build a prompt (see Appendix A). This prompt is then used to query the LLM, generating a raw SQL query SRAWS_{\\text{RAW}}.",
+            "Since our table decomposition highly relies on the quality of the SQL query SRAWS_{\\text{RAW}}, we introduce the SQL Verifier to verify whether SRAWS_{\\text{RAW}} leads to a correct sub-table. The verification procedure is as follow:",
+            "(1) Initial sub-table extraction. We use the Table Decomposer (detailed in the next section) to parse SRAWS_{\\text{RAW}} and obtain a raw sub-table TSUB′T_{\\text{SUB}}\\prime.",
+            "(2) Validation prompting. The SQL Verifier is prompted with TSUB′T_{\\text{SUB}}\\prime, the header information of TT , and the question QQ. It determines whether TSUB′T_{\\text{SUB}}\\prime contains all the necessary information to answer QQ (see the prompt template in Appendix A).",
+            "(3) Decision making. If the SQL Verifier outputs [True], SRAWS_{\\text{RAW}} is accepted as the final SQL query SS. Otherwise, the SQL Verifier refines SRAWS_{\\text{RAW}} by prompting the LLM to generate an improved SQL query (see the prompt template in Appendix A).",
+            "(4) Iteration control. This verification and refinement process can be conducted for up to nn rounds. By default, n=1n=1 for cost efficiency.",
+            "At the end of this SQL verification stage, we obtain the final SQL query SS."
+          ]
+        },
+        {
+          "title": "Example Selection",
+          "paragraphs": [
+            "To retrieve relevant NL-to-SQL examples, we compute the cosine similarity between the embedding of QQ and those of all questions in SQUALL, denoted as D={d1,d2,…,dN}D=\\{d_{1},d_{2},...,d_{N}\\}, using Sentence Transformers Song et al. (2020):",
+            "where f​(⋅)f(\\cdot) is an embedding model, 𝐞𝐐∈ℝ1×m\\mathbf{e_{Q}}\\in\\mathbb{R}^{1\\times m}, 𝐄𝐃∈ℝN×m\\mathbf{E_{D}}\\in\\mathbb{R}^{N\\times m}, and mm denotes dimensionality.",
+            "We select the top KK examples based on cosine similarity:",
+            "where i∈[1,|D|]i\\in[1,|D|], and K=5K=5 by default.",
+            "The SQL Generator uses the selected NL-to-SQL examples, the header information of TT, and the question QQ to build a prompt (see Appendix A). This prompt is then used to query the LLM, generating a raw SQL query SRAWS_{\\text{RAW}}."
+          ]
+        },
+        {
+          "title": "SQL Verification",
+          "paragraphs": [
+            "Since our table decomposition highly relies on the quality of the SQL query SRAWS_{\\text{RAW}}, we introduce the SQL Verifier to verify whether SRAWS_{\\text{RAW}} leads to a correct sub-table. The verification procedure is as follow:",
+            "(1) Initial sub-table extraction. We use the Table Decomposer (detailed in the next section) to parse SRAWS_{\\text{RAW}} and obtain a raw sub-table TSUB′T_{\\text{SUB}}\\prime.",
+            "(2) Validation prompting. The SQL Verifier is prompted with TSUB′T_{\\text{SUB}}\\prime, the header information of TT , and the question QQ. It determines whether TSUB′T_{\\text{SUB}}\\prime contains all the necessary information to answer QQ (see the prompt template in Appendix A).",
+            "(3) Decision making. If the SQL Verifier outputs [True], SRAWS_{\\text{RAW}} is accepted as the final SQL query SS. Otherwise, the SQL Verifier refines SRAWS_{\\text{RAW}} by prompting the LLM to generate an improved SQL query (see the prompt template in Appendix A).",
+            "(4) Iteration control. This verification and refinement process can be conducted for up to nn rounds. By default, n=1n=1 for cost efficiency.",
+            "At the end of this SQL verification stage, we obtain the final SQL query SS."
+          ]
+        },
+        {
+          "title": "4.2 Table Decomposition",
+          "paragraphs": [
+            "The Table Decomposer takes TT and SS (obtained in the SQL generation stage) as input and adopts a rule-based method to extract sub-table TSUBT_{\\text{SUB}}.",
+            "To extract key information from SS, we employ a regex-based rule-driven approach. We use regular expressions to parse SS and extract the column names CC, conditions PP (e.g., filtering clauses), and values VV (e.g., values in the filtering clauses). The detailed regular expressions are included in Appendix B.",
+            "With the extracted triple (C,P,V)(C,P,V), we perform table decomposition. We first convert table TT into a Python DataFrame. Then, we apply DataFrame operations to extract rows and columns based on (C,P,V)(C,P,V), obtaining the final sub-table TSUBT_{\\text{SUB}}. The correspondence between Python DataFrame operations and SQL queries is detailed in Appendix B."
+          ]
+        },
+        {
+          "title": "SQL Parsing",
+          "paragraphs": [
+            "To extract key information from SS, we employ a regex-based rule-driven approach. We use regular expressions to parse SS and extract the column names CC, conditions PP (e.g., filtering clauses), and values VV (e.g., values in the filtering clauses). The detailed regular expressions are included in Appendix B."
+          ]
+        },
+        {
+          "title": "Table Decomposition",
+          "paragraphs": [
+            "With the extracted triple (C,P,V)(C,P,V), we perform table decomposition. We first convert table TT into a Python DataFrame. Then, we apply DataFrame operations to extract rows and columns based on (C,P,V)(C,P,V), obtaining the final sub-table TSUBT_{\\text{SUB}}. The correspondence between Python DataFrame operations and SQL queries is detailed in Appendix B."
+          ]
+        },
+        {
+          "title": "4.3 Answer Generation",
+          "paragraphs": [
+            "At this stage, we exploit the strong semantic-parsing and reasoning capabilities of an LLM-based model to perform end-to-end TableQA. We construct a prompt (see prompt template in Appendix A) containing TSUBT_{\\text{SUB}} and QQ, which is fed into the Answer Generator (an LLM) to generate the final answer AA."
+          ]
+        }
+      ]
+    },
+    "5 Dataset Construction": {
+      "paragraphs": [
+        "Due to the limited availability of TableQA datasets with large tables, to study model performance in such settings, we construct two datasets.",
+        "SLQA is construed by extracting all the large tables (with more than 4,096 tokens) from the Spider dataset Yu et al. (2018). The original question-answering (QA) pairs in Spider are for NL-to-SQL tasks rather than TableQA. To bridge this gap, we propose an LLM-based QA pair generation method that prompts the LLM to generate questions that cannot be answered easily by NL-to-SQL solutions.",
+        "QA pair generation. We observe that directly prompting an LLM with a large table for QA generation, or arbitrarily selecting a table cell as the ground-truth answer and using it to generate the corresponding question, often leads to low-quality QA pairs, with an acceptance rate well below 50%50\\%.",
+        "To overcome this issue, we propose a self-adaptive QA generation method, where the LLM autonomously selects an answer – either a specific cell or an answer field (i.e., a section of the table) – and then generates the corresponding QA pair based on this selection. This method significantly improves QA pair quality, achieving an acceptance rate of over 70%70\\% (see details in Appendix C).",
+        "We propose three answer (field) selection strategies: (i) cell-based, which prompts the LLM to randomly select a single cell in the table as the ground-truth answer and generate a corresponding question; (ii) column/row-based, which prompts the LLM to randomly select a column/row in the table as the answer field and a generate QA pair accordingly; (iii) sub-table-based, which prompts the LLM to randomly select a sub-table (containing multiple rows and columns) as the answer field and generate a QA pair based on this sub-table. Figure 3 presents examples of the QA pairs generated. The prompt templates are included in Appendix C.",
+        "SEQA is constructed from small tables. We randomly select a subset of small tables (with at most 4,096 tokens) from the Spider dataset and leverage an LLM to expand them into larger tables (see prompt template in Appendix C). The generate the QA pairs, we reuse the same method as above.",
+        "The LLM used for dataset construction is GPT-4o mini OpenAI (2024).",
+        "Table 1 summarizes the datasets (including two existing ones also used in our experiments)."
+      ],
+      "subsections": []
+    },
+    "6 Experiments": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "6.1 Experimental Settings",
+          "paragraphs": [
+            "We evaluate our TabSD on four datasets, including SLQA and SEQA that we constructed, plus two widely used public datasets: WikiTableQuestions (denoted as WTQ) and HybridQA (denoted as HybQA).",
+            "WTQ is a public TableQA dataset derived from Wikipedia tables. To evaluate our model’s capability in handling large free-form tables, we extract all tables with more than 4,096 tokens from the WTQ dataset. We use ♠\\spadesuitWTQ to denote the resulting dataset. Additionally, we conduct experiments on the entire WTQ dataset to assess our model’s applicability over tables of different sizes.",
+            "HybQA is a public dataset that integrates free-form tables and texts from Wikipedia. To maintain consistency in prompt formatting, we incorporate the texts directly into the corresponding table cells. Then, we extract all the tables with more than 4,096 tokens to construct a large-table subset. We use ♠\\spadesuitHybQA to denote the resulting dataset.",
+            "Following a widely used approach in the literature Liu et al. (2024); Wang et al. (2024a, b), tables are linearized into sequences by flattening their structure and incorporating them into prompts for LLMs. Table cells are delineated using the symbol ‘||’, while rows are separated by line breaks. The questions are directly included in the prompts, whereas the answers are utilized only for model evaluation.",
+            "For the LLM in the SQL Generator, similar to NL-to-SQL based methods Pourreza and Rafiei (2023); Zhang et al. (2024b), it takes the question, the header information of the table, and in-context examples to form the prompt and generate the SQL query. For the Table Decomposer, it takes the generated SQL query and the original table to extract a sub-table. For the LLM in Answer Generator, it takes the question and the sub-table as input, forming a compact prompt that reduces both the token consumption and search space for the LLM.",
+            "We compare with models of three categories: (i) NL-to-SQL based: DIN-SQL Pourreza and Rafiei (2023); (ii) Pre-trained or fine-tuned PLM-based: TAPEX-Large Liu et al. (2022), OmniTab-Large Jiang et al. (2022), and CABINET Patnaik et al. (2024) (SOTA); (iii) LLM-based: End-to-End GPT-4o mini OpenAI (2024) (SOTA) and DATER Ye et al. (2023).",
+            "For all the LLM-based models including our TabSD, we use GPT-4o mini as the backbone model. For DIN-SQL, we also utilize GPT-4o mini as its backbone model. All experiments are run with an NVIDIA A100 80 GB GPU on a cloud GPU server.",
+            "We report the performance based on the exact-match Accuracy, following the evaluator from Pasupat and Liang (2015)."
+          ]
+        },
+        {
+          "title": "Datasets",
+          "paragraphs": [
+            "We evaluate our TabSD on four datasets, including SLQA and SEQA that we constructed, plus two widely used public datasets: WikiTableQuestions (denoted as WTQ) and HybridQA (denoted as HybQA).",
+            "WTQ is a public TableQA dataset derived from Wikipedia tables. To evaluate our model’s capability in handling large free-form tables, we extract all tables with more than 4,096 tokens from the WTQ dataset. We use ♠\\spadesuitWTQ to denote the resulting dataset. Additionally, we conduct experiments on the entire WTQ dataset to assess our model’s applicability over tables of different sizes.",
+            "HybQA is a public dataset that integrates free-form tables and texts from Wikipedia. To maintain consistency in prompt formatting, we incorporate the texts directly into the corresponding table cells. Then, we extract all the tables with more than 4,096 tokens to construct a large-table subset. We use ♠\\spadesuitHybQA to denote the resulting dataset."
+          ]
+        },
+        {
+          "title": "Model Input Preparation",
+          "paragraphs": [
+            "Following a widely used approach in the literature Liu et al. (2024); Wang et al. (2024a, b), tables are linearized into sequences by flattening their structure and incorporating them into prompts for LLMs. Table cells are delineated using the symbol ‘||’, while rows are separated by line breaks. The questions are directly included in the prompts, whereas the answers are utilized only for model evaluation.",
+            "For the LLM in the SQL Generator, similar to NL-to-SQL based methods Pourreza and Rafiei (2023); Zhang et al. (2024b), it takes the question, the header information of the table, and in-context examples to form the prompt and generate the SQL query. For the Table Decomposer, it takes the generated SQL query and the original table to extract a sub-table. For the LLM in Answer Generator, it takes the question and the sub-table as input, forming a compact prompt that reduces both the token consumption and search space for the LLM."
+          ]
+        },
+        {
+          "title": "Competitors",
+          "paragraphs": [
+            "We compare with models of three categories: (i) NL-to-SQL based: DIN-SQL Pourreza and Rafiei (2023); (ii) Pre-trained or fine-tuned PLM-based: TAPEX-Large Liu et al. (2022), OmniTab-Large Jiang et al. (2022), and CABINET Patnaik et al. (2024) (SOTA); (iii) LLM-based: End-to-End GPT-4o mini OpenAI (2024) (SOTA) and DATER Ye et al. (2023)."
+          ]
+        },
+        {
+          "title": "Implementation Details",
+          "paragraphs": [
+            "For all the LLM-based models including our TabSD, we use GPT-4o mini as the backbone model. For DIN-SQL, we also utilize GPT-4o mini as its backbone model. All experiments are run with an NVIDIA A100 80 GB GPU on a cloud GPU server."
+          ]
+        },
+        {
+          "title": "Evaluation Metric",
+          "paragraphs": [
+            "We report the performance based on the exact-match Accuracy, following the evaluator from Pasupat and Liang (2015)."
+          ]
+        },
+        {
+          "title": "6.2 Results and Analysis",
+          "paragraphs": [
+            "Table 2 reports the overall performance results. Our model TabSD consistently outperforms all competitors across all four datasets, improving the accuracy by 23.07%23.07\\%, 2.84%2.84\\%, 23.24%23.24\\%, and 9.32%9.32\\%, respectively. This confirms the effectiveness of TabSD for dealing with complex and large free-form tables.",
+            "Among all datasets, HybQA poses the greatest challenge due to the complexity of its tabular content. Each cell in it contains rich information, often integrating multiple entities and lengthy descriptive texts. This makes the NL-to-SQL-based model DIN-SQL nearly inapplicable. Despite this challenge, GPT-4o mini demonstrates the most stable performance by leveraging its strong text comprehension and reasoning capabilities, while our model still manages to surpass it by identifying the relevant sub-tables for a subset of the test data.",
+            "We perform chi-squared tests comparing TabSD against the strongest table decomposition-based models (CABINET on WTQ, DATER on HybQA, SLQA, and SEQA), yielding approximate p-vals of 0.060.06, 10−410^{-4}, 10−3510^{-35}, and 10−510^{-5}. These confirm that the results of TabSD on HybQA, SLQA, and SEQA are significantly better than the existing table decomposition-based models, while the larger p-val on WTQ is due to the small test set size.",
+            "As shown in Figure 4, our Table Decomposer effectively reduces the input table length by 69.8%69.8\\%, 48.5%48.5\\%, 84.0%84.0\\%, and 91.4%91.4\\% on the four datasets, respectively. This substantial reduction minimizes the prompt length for the Answer Generator, enabling the model to focus more effectively on important data while enhancing processing efficiency.",
+            "To evaluate the generalization capability of TabSD, we replace the GPT-4o mini backbone with TAPEX. We compare TabSD using TAPEX as the Answer Generator with the original TAPEX model, plus TAPEX combined with an LLM for table decomposition. The results in Table 3 shows that our Table Decomposer consistently outperforms using an LLM for table decomposition (see prompt in Appendix D). Moreover, our method can also be integrated with and strengthen existing PLM-based solutions.",
+            "We also conducted an experiment using the entire WTQ dataset including questions for both small and large tables to further assess our TabSD’s generalizability. The results (in Appendix D) verifies that TabSD enhances the accuracy of its backbone model (GPT-4o mini) by 25.67%25.67\\% on WTQ overall.",
+            "We run an ablation study with three model variants: (1) SG SQL execution: Directly executing SQL queries generated by the SQL Generator; (2) TabSD-w/o-SG+TD: TabSD without both SQL Generator and Table Decomposer, i.e., only using the Answer Generator; (3) TabSD-w/o-SV: TabSD without the SQL Verifier.",
+            "As shown in Table 4, directly executing the generated SQL queries results in substantial accuracy drops, because the SQL queries struggle to handle free-form tables. However, the SQL queries still capture structural information, which is valuable for table decomposition. Meanwhile, using only the Answer Generator also leads to accuracy drops, since LLMs struggle with large tables with noisy data. SQL Verifier helps to improve the quality of generated SQL queries and thus improves the overall model accuracy.",
+            "We conduct an error analysis on SQL execution failures. When executing the generated SQL queries, the execution error rates are 64.2%64.2\\%, 88.7%88.7\\%, 70.6%70.6\\%, and 61.5%61.5\\% for WTQ, HybQA, SLQA, and SEQA, respectively, further confirming that NL2SQL-based solutions struggle on these datasets. See Appendix E for detailed results.",
+            "For the SQL Verifier, the acceptance rates (i.e., cases where SRAWS_{\\text{RAW}} is accepted as SS) are 71.6%71.6\\%, 54.3%54.3\\%, 77.1%77.1\\%, and 78.7%78.7\\%, respectively. The lower acceptance rate for HybQA (54.3%54.3\\%) suggests that SQL generation struggles more with the hybrid table-text format, requiring frequent refinement.",
+            "We include two TableQA examples that fail existing table decomposition models, while TabSD successfully answers those questions (detailed in Appendix F)."
+          ]
+        },
+        {
+          "title": "Overall Results",
+          "paragraphs": [
+            "Table 2 reports the overall performance results. Our model TabSD consistently outperforms all competitors across all four datasets, improving the accuracy by 23.07%23.07\\%, 2.84%2.84\\%, 23.24%23.24\\%, and 9.32%9.32\\%, respectively. This confirms the effectiveness of TabSD for dealing with complex and large free-form tables.",
+            "Among all datasets, HybQA poses the greatest challenge due to the complexity of its tabular content. Each cell in it contains rich information, often integrating multiple entities and lengthy descriptive texts. This makes the NL-to-SQL-based model DIN-SQL nearly inapplicable. Despite this challenge, GPT-4o mini demonstrates the most stable performance by leveraging its strong text comprehension and reasoning capabilities, while our model still manages to surpass it by identifying the relevant sub-tables for a subset of the test data.",
+            "We perform chi-squared tests comparing TabSD against the strongest table decomposition-based models (CABINET on WTQ, DATER on HybQA, SLQA, and SEQA), yielding approximate p-vals of 0.060.06, 10−410^{-4}, 10−3510^{-35}, and 10−510^{-5}. These confirm that the results of TabSD on HybQA, SLQA, and SEQA are significantly better than the existing table decomposition-based models, while the larger p-val on WTQ is due to the small test set size."
+          ]
+        },
+        {
+          "title": "Effectiveness in Table Decomposition",
+          "paragraphs": [
+            "As shown in Figure 4, our Table Decomposer effectively reduces the input table length by 69.8%69.8\\%, 48.5%48.5\\%, 84.0%84.0\\%, and 91.4%91.4\\% on the four datasets, respectively. This substantial reduction minimizes the prompt length for the Answer Generator, enabling the model to focus more effectively on important data while enhancing processing efficiency."
+          ]
+        },
+        {
+          "title": "Model Generalizability",
+          "paragraphs": [
+            "To evaluate the generalization capability of TabSD, we replace the GPT-4o mini backbone with TAPEX. We compare TabSD using TAPEX as the Answer Generator with the original TAPEX model, plus TAPEX combined with an LLM for table decomposition. The results in Table 3 shows that our Table Decomposer consistently outperforms using an LLM for table decomposition (see prompt in Appendix D). Moreover, our method can also be integrated with and strengthen existing PLM-based solutions.",
+            "We also conducted an experiment using the entire WTQ dataset including questions for both small and large tables to further assess our TabSD’s generalizability. The results (in Appendix D) verifies that TabSD enhances the accuracy of its backbone model (GPT-4o mini) by 25.67%25.67\\% on WTQ overall."
+          ]
+        },
+        {
+          "title": "Ablation Study",
+          "paragraphs": [
+            "We run an ablation study with three model variants: (1) SG SQL execution: Directly executing SQL queries generated by the SQL Generator; (2) TabSD-w/o-SG+TD: TabSD without both SQL Generator and Table Decomposer, i.e., only using the Answer Generator; (3) TabSD-w/o-SV: TabSD without the SQL Verifier.",
+            "As shown in Table 4, directly executing the generated SQL queries results in substantial accuracy drops, because the SQL queries struggle to handle free-form tables. However, the SQL queries still capture structural information, which is valuable for table decomposition. Meanwhile, using only the Answer Generator also leads to accuracy drops, since LLMs struggle with large tables with noisy data. SQL Verifier helps to improve the quality of generated SQL queries and thus improves the overall model accuracy."
+          ]
+        },
+        {
+          "title": "Error Analysis",
+          "paragraphs": [
+            "We conduct an error analysis on SQL execution failures. When executing the generated SQL queries, the execution error rates are 64.2%64.2\\%, 88.7%88.7\\%, 70.6%70.6\\%, and 61.5%61.5\\% for WTQ, HybQA, SLQA, and SEQA, respectively, further confirming that NL2SQL-based solutions struggle on these datasets. See Appendix E for detailed results.",
+            "For the SQL Verifier, the acceptance rates (i.e., cases where SRAWS_{\\text{RAW}} is accepted as SS) are 71.6%71.6\\%, 54.3%54.3\\%, 77.1%77.1\\%, and 78.7%78.7\\%, respectively. The lower acceptance rate for HybQA (54.3%54.3\\%) suggests that SQL generation struggles more with the hybrid table-text format, requiring frequent refinement."
+          ]
+        },
+        {
+          "title": "Case Study",
+          "paragraphs": [
+            "We include two TableQA examples that fail existing table decomposition models, while TabSD successfully answers those questions (detailed in Appendix F)."
+          ]
+        }
+      ]
+    },
+    "7 Conclusions": {
+      "paragraphs": [
+        "We proposed TabSD, a TableQA model for large free-form tables. TabSD utilizes an LLM (SQL Generator) to generate an SQL query for each input question, exploiting SQL to capture the table structure information, especially for complex and large tables, while avoiding the limitations in directly executing SQL queries to obtain answers. To further enhance the SQL quality, we introduce the SQL Verifier. For table decomposition, we adopt a rule-based Table Decomposer, which achieves higher accuracy and efficiency compared to LLM-based decomposition approaches. We evaluate the performance of TabSD on two public datasets WTQ and HybQA, and two datasets that we constructed, SLQA and SEQA. The results show that TabSD outperforms the best competitors in terms of accuracy by 23.07%23.07\\%, 2.84%2.84\\%, 23.24%23.24\\% and 9.32%9.32\\%, respectively."
+      ],
+      "subsections": []
+    },
+    "Limitations": {
+      "paragraphs": [
+        "There are two main limitations: (1) Although our rule-based Table Decomposer is more accurate and efficient compared with the existing table decomposition methods, there may still be a few corner cases that our rules cannot fully cover. Strategies to automatically learn and update the rules to adapt to dynamic scenarios would be an interesting future work; (2) Our multi-stage model implies a more complex model design compared with end-to-end models. Further refining the design to achieve an end-to-end pipeline with little sacrifice on accuracy would be another direction to explore."
+      ],
+      "subsections": []
+    },
+    "Ethics Statement": {
+      "paragraphs": [
+        "This work involves generating new question-answer pairs and extended tabular content, adhering to ethical considerations and privacy standards.",
+        "Our work utilizes the following datasets:",
+        "• WikiTableQuestions and HybridQA are used under the Creative Commons Attribution 4.0 International License (CC BY 4.0).",
+        "• SLQA and SEQA datasets originate from the Spider dataset (CC BY-SA 4.0 license) and are shared under the same terms to ensure continuity."
+      ],
+      "subsections": [
+        {
+          "title": "Privacy and Ethical Considerations",
+          "paragraphs": [
+            "The dataset creation process does not involve the collection, processing, or storage of personal or any other sensitive information. Additionally:",
+            "• No human subjects were involved, and no user-generated content requiring consent was utilized.",
+            "• The data sources used are publicly available and licensed for reuse under open-access terms.",
+            "• The use of LLMs to generate new data strictly follows ethical AI principles, ensuring that no copyrighted or proprietary data is incorporated.",
+            "• Any potential biases in the generated content have been considered, and efforts have been made to maintain fairness and representativeness in the dataset.",
+            "No human subjects were involved, and no user-generated content requiring consent was utilized.",
+            "The data sources used are publicly available and licensed for reuse under open-access terms.",
+            "The use of LLMs to generate new data strictly follows ethical AI principles, ensuring that no copyrighted or proprietary data is incorporated.",
+            "Any potential biases in the generated content have been considered, and efforts have been made to maintain fairness and representativeness in the dataset.",
+            "By adhering to these principles, we ensure that our work aligns with ethical research practices and respects data usage policies. Additionally, all code used in our work will be made publicly available."
+          ]
+        }
+      ]
+    }
+  },
+  "appendices": {
+    "Appendix A Prompts for modules inTabSD": {
+      "paragraphs": [
+        "The prompts used by our SQL Generator, SQL Verifier, SQL re-generation, and Answer Generator are shown in Figure 5, 6, 7, 8, respectively.",
+        "[Figure: Figure 5: The prompt used for the SQL Generator.]",
+        "[Figure: Figure 6: The prompt used for the SQL Verifier.]",
+        "[Figure: Figure 7: The prompt used for SQL re-generation.]",
+        "[Figure: Figure 8: The prompt used for the Answer Generator.]",
+        "[Figure: Figure 9: Error analysis for our QA pair generation process with an LLM: (a) Results for the SLQA dataset; (b) Results for the SEQA dataset. “Correct” means that the QA pairs are correct. “Answer Error” means that the generated questions are valid but the answers are incorrect. “Invalid Question” means that the questions themselves are invalid.]"
+      ],
+      "subsections": []
+    },
+    "Appendix B Additional Details of the Table Decomposer": {
+      "paragraphs": [
+        "The regular expressions used by our Table Decomposer to extract the column names, conditions, and values are shown in Table 5. The corresponding relationships between parsed SQL queries and Python DataFrame operations used by the Table Decomposer are shown in Table 6.",
+        "[Figure: Figure 10: The prompt used for table expansion.]",
+        "[Table: Table 5: Regular expressions used to parse SQL queries.]",
+        "[Table: Table 6: The corresponding relationships between Python DataFrame operations and SQL queries.]"
+      ],
+      "subsections": []
+    },
+    "Appendix C Additional Details on Dataset Construction": {
+      "paragraphs": [
+        "We propose both a QA pair generation method and a table expansion method to construct our LLM-augmented large free-form table datasets. For the QA pair generation, the statistics of our LLM-generated QA pairs are explained in Figure 9. Particularly, for the “Answer Error” cases, where the generated questions are valid while the answers are incorrect, we manually correct the answers according to the tables, to obtain more pairs in the final datasets. For the “Invalid Question” cases, we remove the questions and their corresponding answers.",
+        "The prompt used to expand a small table into a larger one is shown in Figure 10, while The prompts used to generate QA pairs are shown in Figure 11.",
+        "[Figure: (a) ]",
+        "[Figure: (a) ]",
+        "[Figure: (b) ]",
+        "[Figure: (c) ]",
+        "[Figure: (d) ]",
+        "[Table: Table 7: Results on the entire WTQ dataset.]"
+      ],
+      "subsections": []
+    },
+    "Appendix D Additional Experiments": {
+      "paragraphs": [
+        "We also conduct an additional experiment on the entire WTQ dataset (including both small and large tables) to showcase our TabSD’s general applicability. The results, presented in Table 7, show that TabSD outperforms all the competitors using NL-to-SQL based, PLM-based, and LLM-based approaches, indicating TabSD’s general applicability over tables of different sizes.",
+        "In Table 4 earlier, we compared the Table Decomposer with an LLM-based table decomposition method. Here, we show the prompt used for the method in Figure 13.",
+        "[Figure: Figure 12: Statistics for the SQL execution errors.]",
+        "[Figure: Figure 13: The prompt for the LLM table decomposer.]"
+      ],
+      "subsections": []
+    },
+    "Appendix E Error Analysis": {
+      "paragraphs": [
+        "Figure 12 presents the statistics of SQL execution errors when directly using the SQL Generator’s outputs to obtain answers. BinderException, which occurs when the query references invalid tables, columns, aliases, or incorrect conditions, is the most common SQL execution error. It is followed by IndexError, which happens at runtime due to out-of-bounds index access. The dominance of BinderException suggests schema or condition errors, while IndexError indicates issues with index-based operations.",
+        "On different datasets, the distributions of errors vary. This is because different datasets have various table size distribution (see Table 1), reflected in the number of rows and columns, and the complexity of the contents in each cell, e.g., the presence of lengthy descriptive texts in HybQA.",
+        "In addition to SQL execution errors, we analyze errors in the full model, particularly in Table Decomposition and Answer Generation stages. Since Table Decomposition quality directly impacts final accuracy, incorrect selection or filtering of rows/columns can lead to missing or misleading information. Even when decomposition is precise, errors may still arise due to LLM reasoning limitations, such as challenges in numerical operations, multi-hop reasoning, or handling ambiguous queries. This highlights the need for both robust decomposition methods and improved LLM reasoning capabilities to enhance overall TableQA performance."
+      ],
+      "subsections": []
+    },
+    "Appendix F Case Study": {
+      "paragraphs": [
+        "We show two examples in Figure 14 where our TabSD successfully finds the question answers, while existing table decomposition-based models (CABINET and DATER) fail. CABINET fails to accurately identify and assign higher weights to the cells containing the answer when handling large tables, while DATER may remove the answer filed during the table decomposition process.",
+        "[Figure: (a) ]",
+        "[Figure: (a) ]",
+        "[Figure: (b) ]"
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "Bao et al. (2018) Junwei Bao, Duyu Tang, Nan Duan, Zhao Yan, Yuanhua Lv, Ming Zhou, and Tiejun Zhao. 2018. Table-to-text: Describing table region with natural language. In AAAI, pages 5020–5027.",
+    "Cafarella et al. (2008) Michael J Cafarella, Alon Halevy, Daisy Zhe Wang, Eugene Wu, and Yang Zhang. 2008. WebTables: Exploring the power of tables on the web. Proceedings of the VLDB Endowment, 1(1):538–549.",
+    "Chen et al. (2020a) Wenhu Chen, Hongmin Wang, Jianshu Chen, Yunkai Zhang, Hong Wang, Shiyang Li, Xiyou Zhou, and William Yang Wang. 2020a. Tabfact: A large-scale dataset for table-based fact verification. In ICLR.",
+    "Chen et al. (2020b) Wenhu Chen, Hanwen Zha, Zhiyu Chen, Wenhan Xiong, Hong Wang, and William Yang Wang. 2020b. Hybridqa: A dataset of multi-hop question answering over tabular and textual data. In EMNLP, pages 1026–1036.",
+    "Cheng et al. (2023) Zhoujun Cheng, Tianbao Xie, Peng Shi, Chengzu Li, Rahul Nadkarni, Yushi Hu, Caiming Xiong, Dragomir Radev, Mari Ostendorf, Luke Zettlemoyer, Noah A. Smith, and Tao Yu. 2023. Binding language models in symbolic languages. In ICLR.",
+    "Devlin et al. (2019) Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova. 2019. BERT: Pre-training of deep bidirectional transformers for language understanding. In NAACL, pages 4171–4186.",
+    "Dong et al. (2024) Qingxiu Dong, Lei Li, Damai Dai, Ce Zheng, Jingyuan Ma, Rui Li, Heming Xia, Jingjing Xu, Zhiyong Wu, Baobao Chang, Xu Sun, and Zhifang Sui. 2024. A survey on in-context learning. In EMNLP, pages 1107–1128.",
+    "Herzig et al. (2020) Jonathan Herzig, Pawel Krzysztof Nowak, Thomas Müller, Francesco Piccinno, and Julian Eisenschlos. 2020. TaPas: Weakly supervised table parsing via pre-training. In ACL, pages 4320–4333.",
+    "Jiang et al. (2022) Zhengbao Jiang, Yi Mao, Pengcheng He, Graham Neubig, and Weizhu Chen. 2022. OmniTab: Pretraining with natural and synthetic data for few-shot table-based question answering. In NAACL, pages 932–942.",
+    "Lee et al. (2024) Younghun Lee, Sungchul Kim, Ryan A Rossi, Tong Yu, and Xiang Chen. 2024. Learning to reduce: Towards improving performance of large language models on structured data. ICML Workshop.",
+    "Lewis et al. (2020) Mike Lewis, Yinhan Liu, Naman Goyal, Marjan Ghazvininejad, Abdelrahman Mohamed, Omer Levy, Veselin Stoyanov, and Luke Zettlemoyer. 2020. BART: Denoising sequence-to-sequence pre-training for natural language generation, translation, and comprehension. In ACL, pages 7871–7880.",
+    "Liu et al. (2022) Qian Liu, Bei Chen, Jiaqi Guo, Morteza Ziyadi, Zeqi Lin, Weizhu Chen, and Jian-Guang Lou. 2022. TAPEX: Table pre-training via learning a neural SQL executor. In ICLR.",
+    "Liu et al. (2024) Tianyang Liu, Fei Wang, and Muhao Chen. 2024. Rethinking tabular data understanding with large language models. In NAACL, pages 450–482.",
+    "Nan et al. (2022) Linyong Nan, Chiachun Hsieh, Ziming Mao, Xi Victoria Lin, Neha Verma, Rui Zhang, Wojciech Kryscinski, Hailey Schoelkopf, Riley Kong, Xiangru Tang, Mutethia Mutuma, Ben Rosand, Isabel Trindade, Renusree Bandaru, Jacob Cunningham, Caiming Xiong, and Dragomir R. Radev. 2022. FeTaQA: Free-form table question answering. Transactions of the Association for Computational Linguistics, 10:35–49.",
+    "Ni et al. (2023) Ansong Ni, Srini Iyer, Dragomir Radev, Veselin Stoyanov, Wen-tau Yih, Sida Wang, and Xi Victoria Lin. 2023. LEVER: Learning to verify language-to-code generation with execution. In ICML, pages 26106–26128.",
+    "OpenAI (2024) OpenAI. 2024. GPT-4o mini. https://platform.openai.com/docs/models/#gpt-4o-mini.",
+    "Pasupat and Liang (2015) Panupong Pasupat and Percy Liang. 2015. Compositional semantic parsing on semi-structured tables. In ACL/IJCNLP, pages 1470–1480.",
+    "Patnaik et al. (2024) Sohan Patnaik, Heril Changwal, Milan Aggarwal, Sumit Bhatia, Yaman Kumar, and Balaji Krishnamurthy. 2024. CABINET: Content relevance-based noise reduction for table question answering. In ICLR.",
+    "Pourreza and Rafiei (2023) Mohammadreza Pourreza and Davood Rafiei. 2023. DIN-SQL: Decomposed in-context learning of text-to-SQL with self-correction. In NeurIPS, pages 359–371.",
+    "Pramanick et al. (2024) Shraman Pramanick, Rama Chellappa, and Subhashini Venugopalan. 2024. SPIQA: A dataset for multimodal question answering on scientific papers. In NeurIPS.",
+    "Shi et al. (2020) Tianze Shi, Chen Zhao, Jordan L. Boyd-Graber, Hal Daumé III, and Lillian Lee. 2020. On the potential of lexico-logical alignments for semantic parsing to SQL queries. In EMNLP, pages 1849–1864.",
+    "Singhal et al. (2025) Karan Singhal, Tao Tu, Juraj Gottweis, Rory Sayres, Ellery Wulczyn, Mohamed Amin, Le Hou, Kevin Clark, Stephen R Pfohl, Heather Cole-Lewis, et al. 2025. Toward expert-level medical question answering with large language models. Nature Medicine.",
+    "Song et al. (2020) Kaitao Song, Xu Tan, Tao Qin, Jianfeng Lu, and Tie-Yan Liu. 2020. MPNet: Masked and permuted pre-training for language understanding. In NeurIPS, pages 16857–16867.",
+    "Vaswani et al. (2017) Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. 2017. Attention is all you need. In NeurIPS, pages 5998–6008.",
+    "Wang et al. (2024a) Yuxiang Wang, Jianzhong Qi, and Junhao Gan. 2024a. Accurate and regret-aware numerical problem solver for tabular question answering. arXiv:2410.12846.",
+    "Wang et al. (2021) Zhiruo Wang, Haoyu Dong, Ran Jia, Jia Li, Zhiyi Fu, Shi Han, and Dongmei Zhang. 2021. TUTA: Tree-based transformers for generally structured table pre-training. In KDD, pages 1780–1790.",
+    "Wang et al. (2024b) Zilong Wang, Hao Zhang, Chun-Liang Li, Julian Martin Eisenschlos, Vincent Perot, Zifeng Wang, Lesly Miculicich, Yasuhisa Fujii, Jingbo Shang, Chen-Yu Lee, and Tomas Pfister. 2024b. Chain-of-table: Evolving tables in the reasoning chain for table understanding. In ICLR.",
+    "Wei et al. (2022) Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Fei Xia, Ed Chi, Quoc V Le, and Denny Zhou. 2022. Chain-of-thought prompting elicits reasoning in large language models. In NeurIPS, pages 24824–24837.",
+    "Ye et al. (2023) Yunhu Ye, Binyuan Hui, Min Yang, Binhua Li, Fei Huang, and Yongbin Li. 2023. Large language models are versatile decomposers: Decomposing evidence and questions for table-based reasoning. In SIGIR, pages 174–184.",
+    "Yin et al. (2020) Pengcheng Yin, Graham Neubig, Wen-tau Yih, and Sebastian Riedel. 2020. TaBERT: Pretraining for joint understanding of textual and tabular data. In ACL, pages 8413–8426.",
+    "Yu et al. (2018) Tao Yu, Rui Zhang, Kai Yang, Michihiro Yasunaga, Dongxu Wang, Zifan Li, James Ma, Irene Li, Qingning Yao, Shanelle Roman, Zilin Zhang, and Dragomir Radev. 2018. Spider: A large-scale human-labeled dataset for complex and cross-domain semantic parsing and text-to-SQL task. In EMNLP, pages 3911–3921.",
+    "Zavitsanos et al. (2024) Elias Zavitsanos, Dimitris Mavroeidis, Eirini Spyropoulou, Manos Fergadiotis, and Georgios Paliouras. 2024. ENTRANT: A large financial dataset for table understanding. Scientific Data, 11(1):876.",
+    "Zhang et al. (2024a) Haowei Zhang, Shengyun Si, Yilun Zhao, Lujing Xie, Zhijian Xu, Lyuhao Chen, Linyong Nan, Pengcheng Wang, Xiangru Tang, and Arman Cohan. 2024a. OpenT2T: An open-source toolkit for table-to-text generation. In EMNLP, pages 259–269.",
+    "Zhang et al. (2024b) Siyue Zhang, Anh Tuan Luu, and Chen Zhao. 2024b. SynTQA: Synergistic table-based question answering via mixture of Text-to-SQL and E2E TQA. In EMNLP, pages 2352–2364.",
+    "Zhong et al. (2017) Victor Zhong, Caiming Xiong, and Richard Socher. 2017. Seq2SQL: Generating structured queries from natural language using reinforcement learning. arXiv:1709.00103."
+  ]
+}

@@ -1,0 +1,383 @@
+{
+  "title": "Peri-LN: Revisiting Layer Normalization in the Transformer Architecture",
+  "authors": "Jeonghoon KimByeongchan LeeCheonbok ParkYeontaek OhBeomjun KimTaehwan YooSeongjin ShinDongyoon HanJinwoo ShinKang Min Yoo",
+  "abstract": "Designing Transformer architectures with the optimal layer normalization (LN) strategy that ensures large-scale training stability and expedite convergence has remained elusive, even in this era of large language models (LLMs). To this end, we present a comprehensive analytical foundation for understanding how different LN strategies influence training dynamics in large-scale Transformer training. Until recently, Pre-LN and Post-LN have long dominated standard practices despite their limitations in large-scale training. However, several open-source large-scale models have recently begun silently adopting a third strategy without much explanation. This strategy places layer normalization (LN) peripherally around sublayers, a design we term Peri-LN. While Peri-LN has demonstrated promising empirical performance, its precise mechanisms and benefits remain almost unexplored. Our in-depth analysis shows that Peri-LN strikes an ideal balance in variance growth—unlike Pre-LN and Post-LN, which are prone to vanishing gradients and “massive activations.” To validate our theoretical insight, we conduct large-scale experiments on Transformers up to 3.23.2B parameters, showing that Peri-LN consistently achieves more balanced variance growth, steadier gradient flow, and convergence stability. Our results suggest that Peri-LN warrants broader consideration for large-scale Transformer architectures, providing renewed insights into the optimal placement and application of LN.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Building on a rapidly expanding lineage of Transformer-based large language models, open-source models have shown remarkable impact (Hoffmann et al., 2022; Dubey et al., 2024; Guo et al., 2025). As the demand for larger and more powerful models grows, various training stabilization techniques have been introduced (Yang et al., 2022; Zhai et al., 2023; Loshchilov et al., 2024). Among these, the choice of where and how to apply layer normalization (LN: LayerNorm or RMSNorm; Ba et al., 2016; Zhang & Sennrich, 2019) critically influences model convergence (Xiong et al., 2020; Kedia et al., 2024; Wortsman et al., 2024; Chung et al., 2024). However, their immense computational requirements have restricted deeper exploration of the underlying Transformer structure. Are we truly employing the optimal LN placement? In practice, fully revealing the results of massive resource investments can be challenging (Rivière et al., 2024). Despite its importance, there is still no consensus on a single best LN placement strategy.",
+        "Two prominent LN placements have been widely explored. Post-LN (Vaswani et al., 2017) normalizes the hidden state after adding the sub-layer output to the residual stream (that is, Norm​(x+Module​(x))\\mathrm{Norm}(x+\\mathrm{Module}(x)) where xx is input hidden state. Norm\\mathrm{Norm} is LN). This helps constrain the variance of hidden states but may inadvertently weaken gradient signals, particularly in deeper models (Kedia et al., 2024). Pre-LN (Dubey et al., 2024), by contrast, normalizes before passing the hidden state to the sub-layer (that is, x+Module​(Norm​(x))x+\\mathrm{Module}(\\mathrm{Norm}(x))). While this can enhance gradient propagation, it also admits so-called “massive activations,” where hidden states grow exponentially across layers (Sun et al., 2024; Wortsman et al., 2024; Zhai et al., 2023).",
+        "Previous studies on deep convolutional neural networks (CNNs) have analyzed the impact of batch normalization on variance changes during the initialization stage of ResNet architectures, demonstrating its relationship to model performance (De & Smith, 2020). They noted that, in models without normalization, hidden activation growth at initialization can be exponential, leading to poor performance and stability. In contrast, in pre-normalized CNNs, the variance of hidden activations was shown to increase linearly as model depth grows. In the same vein, Kedia et al. (2024) reported that, for Transformer architectures as well, the variance in the forward propagation of Transformer-based language models at initialization increases linearly with depth. However, in the context of Transformer architectures, we observed that this variance growth at initialization does not persist as training progresses as shown in Figure 1. Section 3 and 4 provide a more detailed discussion of these hidden-state growth patterns.",
+        "Beyond these two common strategies, Post-LN and Pre-LN, a third LN placement has quietly emerged in large-scale open-source models: applying LN around the sub-layer, i.e., on both its input and output. Although recent open-source models (Rivière et al., 2024; OLMo et al., 2024) have quietly adopted such designs and demonstrated promising performance on a large scale, these efforts often appeared isolated, lacking a conceptual unifying framework or a thorough investigation into their benefits. In this paper, we coin the term Peri-LN111“Peri-” means “around,” reflecting that LN encapsulates the entire sub-layer. to unify these scattered approaches and highlight an underexplored avenue for stabilizing large-scale Transformer training. While prior work offers encouraging empirical results, there is still a lack of in-depth analysis explaining why and how Peri-LN can help mitigate issues that frequently arise with Post-LN and Pre-LN. By probing the forward and backward dynamics of Peri-LN, we provide fresh insights into where and when it may offer advantages over more widely adopted LN placements.",
+        "Accordingly, this paper revisits LN placement in Transformers from both analytical and empirical perspectives. In particular, we:",
+        "1. Present an in-depth empirical analysis of Post-LN and Pre-LN in large-scale Transformers, examining how variance and gradient properties evolve beyond initialization. By studying forward and backward propagation statistics, we clarify why Post-LN may suffer vanishing gradients and why Pre-LN can exhibit exponential growth of hidden state.",
+        "2. Investigate Peri-LN to understand how normalizing both the inputs and outputs of each module moderates hidden-state behavior during forward and backward propagation, providing a systematic perspective on this underexplored alternative. We show that Peri-LN not only improves gradient stability and final loss but also plays a critical role in reducing hidden-state redundancy, as demonstrated by our ablation studies.",
+        "3. Provide quantitative evidence on how large activation influences training stability, benchmark performance, and redundancy in hidden states. Drawing on theoretical bounds for gradient propagation as well as extensive experiments, we demonstrate that Peri-LN can mitigate excessive variance growth and gradient instability more effectively than commonly used alternatives."
+      ],
+      "subsections": []
+    },
+    "2 Background and Motivation": {
+      "paragraphs": [
+        "The analysis of activation variance at model initialization has long been central to understanding normalization layers and enhancing stability in convolutional neural networks (CNNs) (De & Smith, 2020; He et al., 2016; Brock et al., 2021a). De & Smith (2020) showed that batch normalization in residual blocks can bias networks toward the identity function, thereby stabilizing gradients and improving overall training dynamics.",
+        "Similar investigations have emerged for Transformer architectures, examining how variance propagates and how gradients behave in both post-layer normalization (Post-LN) (Vaswani et al., 2017) and pre-layer normalization (Pre-LN) (Dubey et al., 2024) configurations (Xiong et al., 2020; Kedia et al., 2024; Wortsman et al., 2024; Li et al., 2024b). Early work comparing Post- and Pre-LN primarily focused on gradient scales and loss behavior. Xiong et al. (2020) observed that Pre-LN architectures tend to exhibit more stable gradients, but can still encounter issues such as gradient spikes and divergence, especially in deeper models or large-scale pre-training scenarios (Zhai et al., 2023; Wortsman et al., 2024; Fishman et al., 2024; Chung et al., 2024).",
+        "Among these challenges, the phenomenon of “massive activations” has attracted particular attention (Dettmers et al., 2022; Yu et al., 2024; Fishman et al., 2024). Sun et al. (2024) identified that in Pre-LN architectures, large spikes in activation magnitude can persist across layers due to residual connections. These massive activations act as fixed biases, potentially narrowing the model’s focus to certain tokens and may influence generalization. However, the underlying mechanisms behind these large values—and their exact impact on the training process—remain not yet well understood.",
+        "Analytical work has provided theoretical frameworks to explain phenomena like gradient explosion and vanishing in Transformers. For instance, Kedia et al. (2024) introduced a signal propagation theory that details how activation variance and gradient instability can evolve with depth, identifying critical factors that impair stability and performance. Recent studies have discussed how Pre-LN architectures can allow large values from Attention or MLP modules to flow unimpeded through residual connections (Csordás et al., 2024; Fishman et al., 2024; Zhai et al., 2023; Wortsman et al., 2024), but the precise impact of this behavior on large-scale training remains insufficiently explored.",
+        "These observations underscore the ongoing need to clarify how activation dynamics, normalization strategies, and architectural choices interact, especially in large-scale models. In response, this work aims to deepen our understanding of activation evolution during Transformer training under different normalization architectures, focusing on the role of massive activations and their effects on overall stability and performance.",
+        "We defer an extended discussion of the related literature to Appendix A, owing to space limitations."
+      ],
+      "subsections": []
+    },
+    "3 Comparative Analysis": {
+      "paragraphs": [
+        "In this section, we discuss how different placements of layer normalization (LN 222Unless stated otherwise, LN refers to both LayerNorm and RMSNorm.) in Transformer architecture affect both training stability and the statistics of hidden states (activations 333We use “hidden state” and “activation” interchangeably.)."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Post- & Pre-Normalization in Transformers",
+          "paragraphs": [
+            "The Post-Layer Normalization (Post-LN) (Vaswani et al., 2017) scheme, normalization is applied after summing the module’s output and residual input:",
+            "where xlx_{l} is the input hidden state of ll-th layer, yly_{l} is the output hidden state of ll-th layer, and Module\\mathrm{Module} denotes Attention or Multi-Layer Perceptron (MLP) module in the Transformer sub-layer. Norm\\mathrm{Norm} denotes normalization layers such as RMSNorm or LayerNorm. It is known that by stabilizing the activation variance at a constant scale, Post-LN prevents activations from growing. However, several evidence (Xiong et al., 2020; Kedia et al., 2024) suggest that Post-LN can degrade gradient flow in deeper networks, leading to vanishing gradients and slower convergence.",
+            "The Pre-Layer Normalization (Pre-LN) (Dubey et al., 2024) scheme, normalization is applied to the module’s input before processing:",
+            "As for Llama 33 architecture, a final LN is applied to the network output. Pre-LN improves gradient flow during backpropagation, stabilizing early training (Xiong et al., 2020). Nonetheless, in large-scale Transformers, even Pre-LN architectures are not immune to instability during training (Wortsman et al., 2024; Zhai et al., 2023). As shown in Figure 2, unlike Post-LN—which places LN at position CC—Pre-LN, which places LN only at position AA, can lead to a “highway” structure that is continuously maintained throughout the entire model if the module produces an output with a large magnitude. This phenomenon might be related to the “massive activations” observed in trained models (Sun et al., 2024; Fishman et al., 2024)."
+          ]
+        },
+        {
+          "title": "3.2 Variance Behavior from Initialization to Training",
+          "paragraphs": [
+            "As discussed by Xiong et al. (2020) and Kedia et al. (2024), Transformer models at initialization exhibit near-constant hidden-state variance under Post-LN and linearly increasing variance under Pre-LN. Most of the previous studies have concentrated on this early-stage behavior. However, Recent studies have also reported large output magnitudes in both the pre-trained attention and MLP modules (Dehghani et al., 2023; Wortsman et al., 2024; Fishman et al., 2024). To bridge the gap from initialization to the fully trained stage, we extend our empirical observations in Figure 1 beyond initial conditions by tracking how these variance trends evolve at intermediate points in training.",
+            "We find that Post-LN maintains a roughly constant variance, which helps avert exploding activations. Yet as models grow deeper and training proceeds, consistently normalizing xl+Module​(xl)x_{l}+\\mathrm{Module}(x_{l}) can weaken gradient flow, occasionally causing partial vanishing gradients and slower convergence. In contrast, Pre-LN normalizes xlx_{l} before the module but leaves the module output unnormalized, allowing hidden-state variance to accumulate exponentially once parameter updates amplify the input. Although Pre-LN preserves gradients more effectively in earlier stages, this exponential growth in variance can lead to “massive activations” (Sun et al., 2024), risking numeric overflow and destabilizing large-scale training. We reconfirm this in Section 4.",
+            "• Keeping the Highway Clean: Post-LN’s Potential for Gradient Vanishing and Slow Convergence. When layer normalization is placed directly on the main path (Placement CC in Figure 2), it can cause gradient vanishing and introduce fluctuations in the gradient scale, potentially leading to instability.",
+            "• Maintaining a Stable Highway: Pre-LN May Not Suffice for Training Stability. Pre-LN does not normalize the main path of the hidden states, thereby avoiding the issues that Post-LN encounters. Nevertheless, a structural characteristic of Pre-LN is that any large values arising in the attention or MLP modules persist through the residual identity path. In particular, as shown in Figure 1, the exponentially growing magnitude and variance of the hidden states in the forward path may lead to numerical instability and imbalance during training.",
+            "Keeping the Highway Clean: Post-LN’s Potential for Gradient Vanishing and Slow Convergence. When layer normalization is placed directly on the main path (Placement CC in Figure 2), it can cause gradient vanishing and introduce fluctuations in the gradient scale, potentially leading to instability.",
+            "Maintaining a Stable Highway: Pre-LN May Not Suffice for Training Stability. Pre-LN does not normalize the main path of the hidden states, thereby avoiding the issues that Post-LN encounters. Nevertheless, a structural characteristic of Pre-LN is that any large values arising in the attention or MLP modules persist through the residual identity path. In particular, as shown in Figure 1, the exponentially growing magnitude and variance of the hidden states in the forward path may lead to numerical instability and imbalance during training.",
+            "Recent open-sourced Transformer architectures have adopted normalization layers in unconventional placements. Models like Gemma22 and OLMo22 utilize normalization layers at the module output (Output-LN), but the benefits of these techniques remain unclear (Rivière et al., 2024; OLMo et al., 2024). To investigate the impact of adding an Output-LN, we explore the peri-layer normalization architecture."
+          ]
+        },
+        {
+          "title": "3.3 Placing Module Output Normalization",
+          "paragraphs": [
+            "The Peri-Layer Normalization (Peri-LN) applies LN twice within each layer—before and after the module—and further normalizes the input and final output embeddings. Formally, for the hidden state xlx_{l} at layer ll: where xox_{o} denotes the output of the embedding layer, the hidden input state. y0y_{0} represents the normalized input hidden state. xLx_{L} denotes the hidden state output by the final layer LL of the Transformer sub-layer. This design unifies pre- and output-normalization to regulate variance from both ends. For clarity, the locations of normalization layers in the Post-, Pre-, and Peri-LN architectures are illustrated in Figure 2.",
+            "1. Initial Embedding Normalization:",
+            "2. Input- & Output-Normalization per Layer:",
+            "3. Final Embedding Normalization:",
+            "Initial Embedding Normalization:",
+            "Input- & Output-Normalization per Layer:",
+            "Final Embedding Normalization:",
+            "By normalizing both the input and output of each sub-layer, Peri-LN constrains the residual spikes common in Pre-LN, while retaining a stronger gradient pathway than Post-LN. Concretely, if Norm​(Module​(Norm​(xl)))\\mathrm{Norm}(\\mathrm{Module}(\\mathrm{Norm}(x_{l}))) has near-constant variance β0\\beta_{0}, then",
+            "leading to linear or sub-exponential hidden state growth rather than exponential blow-up. We empirically verify this effect in Section 4.4.2.",
+            "Both Gemma22 and OLMo22, which apply output layer normalization, employ the same peri-normalization strategy within each Transformer layer. However, neither model rigorously examines how this placement constrains variance or mitigates large residual activations. Our work extends Gemma22 and OLMo22 by offering both theoretical and empirical perspectives within the Peri-LN scheme. Further discussion of the OLMo22 is provided in Appendix G."
+          ]
+        },
+        {
+          "title": "3.4 Stability Analysis in Normalization Strategies",
+          "paragraphs": [
+            "We analyze training stability in terms of the magnitude of activation. To this end, we examine the gradient norm with respect to the weight of the final layer in the presence of massive activation. For the formal statements and detailed proofs, refer to Appendix D.",
+            "Let ℒ​(⋅)\\mathcal{L}(\\cdot) be the loss function, and let W(2)W^{(2)} denote the weight of the last layer of MLP​(⋅)\\mathrm{MLP}(\\cdot). Let γ\\gamma be the scaling parameter in Norm​(⋅)\\mathrm{Norm}(\\cdot), and let DD be the dimension. Then, the gradient norm for each normalization strategy behaves as follows.",
+            "(1) Pre-LN (exploding gradient). Consider the following sequence of operations:",
+            "then",
+            "where h:=ReLU​(x~​W(1)+b(1))h:=\\mathrm{ReLU}\\left(\\tilde{x}W^{(1)}+b^{(1)}\\right). In this case, when a massive activation ‖h‖\\|h\\| occurs, an exploding gradient ‖∂ℒ/∂W(2)‖\\|\\partial\\mathcal{L}/\\partial W^{(2)}\\| can arise, leading to training instability.",
+            "(2) Peri-LN (self-regularizing gradient). Consider the following sequence of operations:",
+            "then",
+            "where h:=ReLU​(x~​W(1)+b(1))h:=\\mathrm{ReLU}\\left(\\tilde{x}W^{(1)}+b^{(1)}\\right). In this case, even when a massive activation ‖h‖\\|h\\| occurs, Norm​(⋅)\\mathrm{Norm}(\\cdot) introduces a damping factor ‖a‖\\|a\\|, which ensures that the gradient norm ‖∂ℒ/∂W(2)‖\\|\\partial\\mathcal{L}/\\partial W^{(2)}\\| remains bounded.",
+            "(3) Post-LN (vanishing gradient). Consider the following sequence of operations:",
+            "then",
+            "where h:=ReLU​(x​W(1)+b(1))h:=\\mathrm{ReLU}\\left(xW^{(1)}+b^{(1)}\\right). In this case, when a massive activation ‖h‖\\|h\\| occurs, Norm​(⋅)\\mathrm{Norm}(\\cdot) introduces an overly suppressing factor ‖x+a‖\\|x+a\\|, which contains a separate huge residual signal xx, potentially leading to a vanishing gradient ‖∂ℒ/∂W(2)‖\\|\\partial\\mathcal{L}/\\partial W^{(2)}\\|.",
+            "We have compiled a Table 1 that provides a overview of the variance and gradient intuition for each layer normalization strategy."
+          ]
+        }
+      ]
+    },
+    "4 Experiments": {
+      "paragraphs": [
+        "In this section, we provide a comprehensive empirical comparison of Post-, Pre-, and Peri-Layer Normalization (LN) across large-scale Transformer pre-training and subsequent evaluations on the language domain."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Experimental Setting",
+          "paragraphs": [
+            "Excluding the embedding parameters, model sizes were set to 400400M, 1.51.5B, and 3.23.2B parameters, respectively. Each model was trained on 3030 billion tokens. For a fair comparison, we pre-trained each model with five different training seeds. We conducted a systematic exploration of learning rates, ranging from 1×10−41\\times 10^{-4} to 5×10−35\\times 10^{-3}. The global batch size is set to 256256. We use Adam optimizer with cosine learning rate scheduler. The sequence length was set to 81928192, and the weight decay coefficient was fixed at 0.0330.033. We employed Megatron-LM444https://github.com/NVIDIA/Megatron-LM to pre-train the Transformers under each layer normalization strategy. We used the DCLM-baseline dataset (Li et al., 2024a) for our experiments, along with the “cl100100k_base” version of the TikToken tokenizer555https://github.com/openai/tiktoken. Unless otherwise noted, most training and model settings followed those of the DCLM experiments. For layer normalization, we primarily employed RMSNorm. Further details are provided in Appendix B."
+          ]
+        },
+        {
+          "title": "4.2 Pre-Training Large Language Models",
+          "paragraphs": [
+            "Figure 3(a) illustrates the pre-training loss across learning rates for models ranging in size from 400400M to 3.23.2B parameters. Notably, the Peri-LN architecture consistently achieves superior loss curves over this entire model size. Since Pre-LN shows best performance at learning rate 2×10−32\\times 10^{-3} across all model size, we set this to the default learning rate for Pre-LN and Peri-LN. Unlike Pre-LN, Post-LN’s appropriate learning rate lies in a lower range, so we have provided a separate summary in Appendix C.1. In Figures 3(b) and 3(c), we compare the pre-training loss and the gradient norm curve at each LN strategy’s best-performing learning rate of 400400M size models. The same trend was observed across different model sizes. In particular, when sweeping over training seeds, Pre-LN and Post-LN exhibited many spikes in the gradient norm curve, whereas Peri-LN showed relatively few spikes, supporting Proposition 3.1. This reduction is consistent across both large and small learning rates.",
+            "We provide additional results in Appendix F, including experiments using LayerNorm (instead of RMSNorm), analyses of varying sequence lengths, the effect of different training-token counts, and an ablation study on embedding LN. We also investigate pre-training using the OLMo22-style Peri-LN architecture in Appendix G. These findings are likewise consistent with those previously reported."
+          ]
+        },
+        {
+          "title": "4.3 Benchmark Evaluations & Instruction Tuning",
+          "paragraphs": [
+            "To evaluate how well the pre-trained model’s training loss aligns with its benchmark performance, we conducted five separate benchmark evaluations. Furthermore, to examine how supervised fine-tuning (SFT) improves scores and instruction-following capabilities under different layer normalization strategies in Transformer architectures, we performed additional training using the LIMA dataset (Ouyang et al., 2022; Zhou et al., 2023). Diverged checkpoints were excluded when calculating the evaluation score (mostly occurs in Pre-LN). Additional training hyperparameters for SFT are given in Appendix B.2. As shown in Table 2, Peri-LN consistently demonstrates superior performance across all model sizes. Additionally, we note that, beyond the improved scores, the standard deviation of the benchmark results across different training seeds is reduced by more than half with Peri-LN. From this, we observe that Peri-LN helps maintain consistency not only in gradient stability and final loss but also in benchmark performance. For the evaluation loss, we used 1010K random samples from the C44 dataset (Raffel et al., 2020). Detailed configurations and individual scores are provided in Appendix H."
+          ]
+        },
+        {
+          "title": "4.4 Systematic Analysis",
+          "paragraphs": [
+            "Despite emerging empirical evidence that Peri-LN can stabilize training and bolster performance, many open questions remain: Which design factors are crucial for reaping its benefits at scale (§4.4.1)? How does it regulate hidden-state variance and gradient flow more effectively (§4.4.2, §4.4.3)? And why might certain variants outperform standard LN placements in large Transformer architectures (§4.4.4)? Addressing these points, we present a systematic analysis of Peri-LN’s mechanics at following sub-sections.",
+            "To investigate the impact of module output normalization on training stability, as proposed in the Proposition 3.1, we fixed the learnable parameter γ\\gamma of RMSNorm to 11, isolating the effect of normalization. As shown in Figure 4, we observe that simply normalizing the output of each module reduces gradient spikes and provides improvements in the loss comparing to the pre-normalization only transformers. Nonetheless, we also confirmed that allowing γ\\gamma to be learnable yields slightly better performance. We confirm that this trend remains consistent in both the 400400M and 1.51.5B models. In this experiment, we omitted Peri-LN’s embedding layer normalization in order to isolate and evaluate the precise role and benefits of output layer normalization.",
+            "To examine in greater depth how Peri-LN affects the forward propagation, we analyzed the absolute magnitude and variance of the hidden states using 1,0001,000 samples from the Wikitext dataset (Merity et al., 2016). Figure 5 illustrates how normalization strategies influence the forward-path hidden states over the course of training.",
+            "Two particular aspects of hidden-state behavior were noted: First, with respect to model depth, Post-LN maintains stable hidden-state magnitude and variance owing to the presence of a normalization layer in the main path (“Highway”). By contrast, because Pre-LN does not normalize the outputs of each Attention and MLP module, the magnitude and variance of the hidden states exhibit exponential growth following the addition operation in the residual path. For the Peri-LN architecture, which leverages Output-LN, we observed that hidden states remain comparatively well-managed. Next, regarding changes over training iterations, Post-LN continues to normalize each block’s output, which prevents any substantial increase or decrease in the trend as training progresses. Meanwhile, Pre-LN exhibits a relatively linear variance distribution at initialization, but escalates exponentially to extremely large values over successive iterations. In contrast, Peri-LN fluctuates more moderately, owing to the role of Output-LN in controlling hidden-state magnitude and variance throughout training.",
+            "Ensuring a uniform gradient flow in large-scale model training is crucial for balanced learning across the entire network (Yang & Hu, 2021; Yang et al., 2024). As shown in Figure 6, in Post-LN, gradients decrease as they propagate backward through the layers in the final stage of training, which can lead to vanishing gradients in lower-index layers. In Pre-LN, gradients increase as they propagate backward through the layers at initialization, potentially causing explosive gradients in the early phase of training. Both strategies display non-uniform gradient distributions—either vanishing or exploding—at different stages of training. On the other hand, Peri-LN demonstrates a consistent, layer-wise gradient distribution at both initialization and the end of training. By maintaining comparatively uniform gradients with lower variance across layers, Peri-LN avoids the extremes of vanishing or exploding behaviors. This stability is particularly beneficial in deeper architectures, where balanced gradient flow is essential for effective backpropagation.",
+            "We utilize angular distance (Li et al., 2024b) as a metric to assess redundancy between hidden states at initialization and after training. This approach allows us to quantify how similar or distinct the representations were across layers. As shown in Figure 7(a), Post-LN exhibits smaller angular distances due to the LN being located on the main path, whereas Pre-LN and Peri-LN begin with very similar states. As shown in Figure 7(c), at the end of training, Pre-LN tends to produce more redundant hidden state representations compared to the others. This phenomenon may stem from Pre-LN’s repeated residual additions, which amplify certain representations over others.",
+            "To investigate this further, we focus on module output normalization, which is the main distinguishing factor between Pre-LN and Peri-LN. As shown in Figure 7(b), the learnable scale starts around 11 in the early stages of training and gradually changes with increasing depth. Because Peri-LN preserves the identity path, it appears to adjust the scale of the module output accordingly. This suggests that the exponential growth of the main path’s magnitude in Pre-LN diminishes the relative contribution of individual modules, resulting in more redundant hidden representations. To support this, Figure 7(d) shows that fixing the learnable scale of Peri-LN’s module output LN at 11 causes the main path contribution to decrease in deeper layers. This finding confirms the role of module output normalization in controlling hidden state redundancy."
+          ]
+        }
+      ]
+    },
+    "5 Conclusion": {
+      "paragraphs": [
+        "We explore the placement of layer normalization within the Transformer architecture to better understand its role during training. By systematically comparing Post-LN, Pre-LN, and Peri-LN, we highlight their distinct impacts on stability, gradient propagation, and optimization dynamics. Our findings suggest that placing LN on module outputs in addition to the Pre-LN can help manage large activations while preserving beneficial gradient flow, thereby offering a promising balance for stable optimization. By unifying these approaches under the term Peri-LN, we seek to consolidate existing variants and encourage deeper investigation into this underexplored alternative."
+      ],
+      "subsections": []
+    },
+    "Acknowledgements": {
+      "paragraphs": [
+        "We thank our colleague Jeongin Bae for inspiring the underlying motivation for this research. We are also grateful to Jung Hyun Lee, Seonghyeon Kim, and Seunghyun Seo for their valuable assistance during the early stages of our research discussions. Finally, we extend our gratitude to Gichang Lee, Lead of the Backbone Mission at NAVER Cloud, for his unwavering support in connecting us with key resources throughout this research."
+      ],
+      "subsections": []
+    },
+    "Impact Statement": {
+      "paragraphs": [
+        "The rapid advancement of Transformer-based large language models (LLMs) has enabled remarkable breakthroughs in natural language understanding and generation. However, these models also pose significant challenges, including concerns around safety, bias, and the computational cost associated with large-scale training. As LLMs become increasingly integral to various AI applications, ensuring their stability, efficiency, and accessibility remains a critical research focus.",
+        "Our work addresses these challenges by proposing a more stable and cost-effective large-scale training methodology. By improving training efficiency and reducing the associated computational overhead, we lower the barrier to entry for organizations seeking to develop or fine-tune foundation models. This democratization of LLM technology fosters broader participation in AI research and development, accelerating innovation while mitigating concerns over resource concentration in a few major players. Given the growing industry focus on optimizing LLM deployment costs, our contributions are particularly relevant in the current AI research landscape.",
+        "Another positive externality of improving the cost-effectiveness of large-scale training is the reduction in the environmental impact of AI research. Training state-of-the-art LLMs requires vast computational resources, leading to significant energy consumption and carbon emissions. By enhancing the efficiency of large-scale training, our approach helps mitigate these environmental costs, making AI research more sustainable. Lowering the energy footprint of training not only aligns with global efforts toward greener computing but also enables a wider range of institutions, including smaller research labs and academic groups, to participate in cutting-edge AI development without excessive resource constraints. This shift promotes a more inclusive and responsible AI ecosystem, ensuring that advancements in foundation models are both accessible and environmentally conscious."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Related Work": {
+      "paragraphs": [],
+      "subsections": []
+    },
+    "Appendix B Detailed Experimental Setting": {
+      "paragraphs": [
+        "In this section, we provide detailed configurations of both the pretraining and supervised fine-tuning to reproduce our results.",
+        "[Table: Table 3: Common configurations. LR Schedule denotes learning rate schedule. ]",
+        "[Table: Table 4: Embedding configurations.]",
+        "[Table: Table 5: Model configurations.]"
+      ],
+      "subsections": [
+        {
+          "title": "B.1 Configurations on Pre-Training",
+          "paragraphs": [
+            "The common training settings are provided in Table 3. Embedding settings for the language models are listed in Table 4. For the model architecture, we primarily follow the Llama 33 architecture (Dubey et al., 2024). In the MLP module, we use SwiGLU activations. Additional details regarding the model configurations are shown in Table 5. Note that embedding parameters are excluded from the model size. Unless otherwise noted, most training and model settings follow those of the DCLM experiments (Li et al., 2024a). During the pretraining stage, each model was trained under a controlled random seed."
+          ]
+        },
+        {
+          "title": "B.2 Configurations on Supervised Fine-Tuning",
+          "paragraphs": [
+            "To examine downstream task performance after instruction tuning, we employed a high-quality LIMA alignment training set consisting of 1,0001,000 samples (Zhou et al., 2023). Our supervised fine-tuning configuration was slightly modified from the original setup of LIMA: we fine-tuned the model for 1515 epochs with a batch size of 128128. The optimizer was Adam with an initial learning rate of 11e-55 and a cosine learning rate schedule. We selected the best checkpoints for each model by evaluating on OpenBookQA (Mihaylov et al., 2018), CommonSenseQA (Talmor et al., 2019), and the NLI dataset in GLUE (Wang et al., 2018)."
+          ]
+        }
+      ]
+    },
+    "Appendix C Additional Results on Pre-Training Study": {
+      "paragraphs": [
+        "[Figure: Figure 8: Learning rate explorations for Post-LN architectures.]",
+        "[Figure: (a) Training loss for 3.23.2B]",
+        "[Figure: (a) Training loss for 3.23.2B]",
+        "[Figure: (b) Gradient-norm for 3.23.2B]",
+        "[Figure: (c) Training loss for 1.51.5B]",
+        "[Figure: (d) Gradient-norm for 1.51.5B]"
+      ],
+      "subsections": [
+        {
+          "title": "C.1 Post-Layer Normalization Architecture & Learning Rate Exploration",
+          "paragraphs": [
+            "In order to identify the optimal performance configuration for Post-LN within the experimental setup, we conducted a learning rate exploration as shown in Figure 8. Because the appropriate learning rate for Post-LN fell into a much lower range than those for Pre-LN and Peri-LN, we treated it separately. For each Post-LN setting, the best learning rate was determined as the one yielding the lowest final training loss, with the random seed held constant during this selection process.",
+            "[Figure: Figure 8: Learning rate explorations for Post-LN architectures.]"
+          ]
+        },
+        {
+          "title": "C.2 Best Performing Checkpoints Comparisons of Other Model Sizes",
+          "paragraphs": [
+            "As an extension of Section 4.2, we present below the results for additional model sizes that were omitted previously due to space constraints. In Figures 9, we compare the pre-training loss and the gradient norm curve at each LN strategy’s best-performing learning rate of 3.23.2B and 1.51.5B size models.",
+            "[Figure: (a) Training loss for 3.23.2B]",
+            "[Figure: (a) Training loss for 3.23.2B]",
+            "[Figure: (b) Gradient-norm for 3.23.2B]",
+            "[Figure: (c) Training loss for 1.51.5B]",
+            "[Figure: (d) Gradient-norm for 1.51.5B]"
+          ]
+        },
+        {
+          "title": "C.3 Gradient Spikes during Pre-Training",
+          "paragraphs": [
+            "Although this observation is empirical, it remains sufficiently noteworthy to discuss. During extensive pre-training ablation experiments, we frequently observed gradient-norm spikes. Specifically, when examining how these spikes vary with different learning rates, we found that Pre-LN exhibited irregular spikes regardless of the learning rate setting, with a particularly high occurrence in the early stages of training. In contrast, such spikes were rarely observed under Peri-LN."
+          ]
+        }
+      ]
+    },
+    "Appendix D Proof of Theoretical Insight": {
+      "paragraphs": [
+        "To support the claim that Peri-LN enhances the stability of training in such cases, we analyze the gradient norm in the final layer. For simplicity, we use RMSNorm and ReLU here."
+      ],
+      "subsections": []
+    },
+    "Appendix E Additional Results on Growth of Hidden State": {
+      "paragraphs": [
+        "In this section, we examine the 400400M- and 3.23.2B-parameter models, which were omitted in Section 4.4.2 due to space constraints. As illustrated in Figures 10 and 11, these models exhibit the same overall trend.",
+        "[Figure: (a) Absolute magnitude growth]",
+        "[Figure: (a) Absolute magnitude growth]",
+        "[Figure: (b) Variance growth]",
+        "[Figure: (a) Absolute magnitude growth]",
+        "[Figure: (a) Absolute magnitude growth]",
+        "[Figure: (b) Variance growth]"
+      ],
+      "subsections": []
+    },
+    "Appendix F Additional Experimental Results on Ablation Study": {
+      "paragraphs": [
+        "[Figure: Figure 12: Learning rate explorations of Pre-& Peri-LN architecture with sequence length 20482048 configuration.]",
+        "[Figure: Figure 13: Learning rate explorations of Pre-& Peri-LN architecture with sequence length 20482048 configuration.]",
+        "[Figure: Figure 14: Learning rate explorations of Pre-& Peri-LN architecture with warmup 3030% configuration.]",
+        "[Figure: (a) Pre-training loss curve]",
+        "[Figure: (a) Pre-training loss curve]",
+        "[Figure: (b) Gradient-norm curve]",
+        "[Figure: (a) Pre-training loss curve]",
+        "[Figure: (a) Pre-training loss curve]",
+        "[Figure: (b) Gradient-norm curve]",
+        "[Figure: (a) Pre-training loss curve]",
+        "[Figure: (a) Pre-training loss curve]",
+        "[Figure: (b) Gradient-norm curve]",
+        "[Figure: (a) Pre-training loss curve]",
+        "[Figure: (a) Pre-training loss curve]",
+        "[Figure: (b) Gradient-norm curve]"
+      ],
+      "subsections": [
+        {
+          "title": "F.1 Amount of Training Tokens",
+          "paragraphs": [
+            "In order to investigate whether the learning behavior of each LN strategy varies with the number of training tokens, we conducted an additional round of learning-rate exploration for both the Pre-LN and Peri-LN architectures. As shown in Figure 12, even as the number of training tokens increases, there is no observable shift in the optimal learning-rate range. Based on these findings, we conclude that our overall results remain consistent, even when the training token count is further increased. Furthermore, although a learning rate of 5×10−35\\times 10^{-3} leads to divergence in the smaller-scale experiments with 88B or 1616B training tokens, it does not do so in the 3030B-token setting. We attribute this discrepancy to the 1010% warmup rate, suggesting that the warmup phase may be insufficient for the smaller-scale experiments.",
+            "[Figure: Figure 12: Learning rate explorations of Pre-& Peri-LN architecture with sequence length 20482048 configuration.]"
+          ]
+        },
+        {
+          "title": "F.2 Sequence Length",
+          "paragraphs": [
+            "In language models, the number of iterations per token is influenced by the sequence length, which in turn, along with the batch size, affects training statistics. We conducted an experiment to determine whether the performance trend changes when the sequence length is reduced from 8192, as set in the main text, to 2048. As shown in Figure 13, Peri-LN still surpasses Pre-LN in the learning rate exploration.",
+            "[Figure: Figure 13: Learning rate explorations of Pre-& Peri-LN architecture with sequence length 20482048 configuration.]"
+          ]
+        },
+        {
+          "title": "F.3 Warm-up",
+          "paragraphs": [
+            "Warmup is widely recognized to influence training stability. To investigate whether a 1010% warmup rate might unfairly disadvantage Pre-LN, we conducted an additional learning-rate exploration using a 3030% warmup rate. As illustrated in Figure 14, the overall trend remained unchanged, and Peri-LN continued to exhibit better performance than Pre-LN in terms of loss. Furthermore, we observed that increasing the warmup rate from 1010% to 3030% did not reduce the frequency of gradient norm spikes in Pre-LN.",
+            "[Figure: Figure 14: Learning rate explorations of Pre-& Peri-LN architecture with warmup 3030% configuration.]"
+          ]
+        },
+        {
+          "title": "F.4 RMSNorm & LayerNorm",
+          "paragraphs": [
+            "As illustrated in Figure 15, we conducted experiments in which RMSNorm and LayerNorm were interchanged. Consistent with the findings reported in (OLMo et al., 2024), we did not observe any notable performance differences in our RMSNorm and LayerNorm replacement experiments. Learning rate was set to 22e-33 (best performance learning rate).",
+            "[Figure: (a) Pre-training loss curve]",
+            "[Figure: (a) Pre-training loss curve]",
+            "[Figure: (b) Gradient-norm curve]"
+          ]
+        },
+        {
+          "title": "F.5 Embedding Layer Normalization of Peri-Layer Normalization Transformers",
+          "paragraphs": [
+            "Motivated by Takase et al. (2023), we empirically explore the addition of embedding layer normalization to improve training stability and overall model performance in Transformer architectures. As illustrated in Figures 16, 17, and 18, incorporating Embedding LN in the Peri-LN architecture yields a slight improvement in pre-training loss. Furthermore, our empirical observations suggest that this effect becomes more pronounced in smaller models.",
+            "[Figure: (a) Pre-training loss curve]",
+            "[Figure: (a) Pre-training loss curve]",
+            "[Figure: (b) Gradient-norm curve]",
+            "[Figure: (a) Pre-training loss curve]",
+            "[Figure: (a) Pre-training loss curve]",
+            "[Figure: (b) Gradient-norm curve]",
+            "[Figure: (a) Pre-training loss curve]",
+            "[Figure: (a) Pre-training loss curve]",
+            "[Figure: (b) Gradient-norm curve]"
+          ]
+        }
+      ]
+    },
+    "Appendix G Output-Layer Normalization with QK-Norm Architecture": {
+      "paragraphs": [
+        "Query and Key layer-normalization (QK-Norm) has been widely studied in modern Transformer architectures (Wortsman et al., 2024; Zhai et al., 2023; OLMo et al., 2024). In particular, OLMo et al. (2024) reported that QK-Norm combined with module output layer-normalization (output-LN, BB in Figure 19 referred to as “reordered norm” in the OLMo22 paper) improves both training loss and stability. As shown in Figure 19, QK-Norm is applied after the Query and Key projections, similar to output-LN. From another perspective, QK-Norm is also applied immediately before the attention calculation, akin to a Pre-LN approach. In our view, QK-Norm and Pre-LN (placed at A2A^{2} and AA respectively in Figure 19) serve the same role but differ in certain details. As shown in Figures 20, 21, and 22, the two architectures exhibit comparable performance overall in terms of both training loss and stability.. However, Peri-LN provides a slight performance advantage over the OLMo22-style Peri-LN in the 400400M- and 11B-parameter models.",
+        "[Figure: Figure 19: QK-layer normalization in the Attention module.]",
+        "[Figure: (a) Pre-training loss curve]",
+        "[Figure: (a) Pre-training loss curve]",
+        "[Figure: (b) Gradient-norm curve]",
+        "[Figure: (a) Pre-training loss curve]",
+        "[Figure: (a) Pre-training loss curve]",
+        "[Figure: (b) Gradient-norm curve]",
+        "[Figure: (a) Pre-training loss curve]",
+        "[Figure: (a) Pre-training loss curve]",
+        "[Figure: (b) Gradient-norm curve]"
+      ],
+      "subsections": []
+    },
+    "Appendix H Additional Details on Evaluation": {
+      "paragraphs": [
+        "[Table: Table 6: Detailed results on pre-training the Peri-LN architecture. These results are averaged to produce the values reported in Table 2. SEED denotes pre-training seed.]",
+        "[Table: Table 7: Detailed results on pre-training the Pre-LN architecture. These results are averaged to produce the values reported in Table 2. SEED denotes pre-training seed.]",
+        "[Table: Table 8: Detailed results on pre-training the Post-LN architecture. These results are averaged to produce the values reported in Table 2. SEED denotes pre-training seed.]",
+        "[Table: Table 9: Detailed results on SFT with Peri-LN architecture. These results are averaged to produce the values reported in Table 2. SEED denotes pre-training seed.]",
+        "[Table: Table 10: Detailed results on SFT with Pre-LN architecture. These results are averaged to produce the values reported in Table 2. SEED denotes pre-training seed.]",
+        "[Table: Table 11: Detailed results on SFT with Post-LN architecture. These results are averaged to produce the values reported in Table 2. SEED denotes pre-training seed.]"
+      ],
+      "subsections": [
+        {
+          "title": "H.1 Detailed Configurations",
+          "paragraphs": [
+            "We utilized the Language Model Evaluation Harness666https://github.com/EleutherAI/lm-evaluation-harnesswith the HuggingFace Transformers library (Gao et al., 2024; Wolf et al., 2020) to assess overall performance. We employ five different evaluation benchmarks: ARC (Clark et al., 2018), HellaSwag (Zellers et al., 2019), PIQA (Bisk et al., 2020), SIQA (Sap et al., 2019), Winogrande (Sakaguchi et al., 2021). During the pretraining stage, each model was trained under a controlled random seed. We used the training loss at iteration 14,00014,000—corresponding to the completion of 3030B tokens—as our main reference point. When calculating the evaluation score, diverged checkpoints were excluded."
+          ]
+        },
+        {
+          "title": "H.2 Detailed Results on Benchmark Evaluations",
+          "paragraphs": [
+            "In this section, we present the evaluation results for each model trained with five different training seeds. We exclude any diverged scores and average the remaining values, which are then reported in Table 2 in the main text."
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "Ba et al. (2016) Ba, L. J., Kiros, J. R., and Hinton, G. E. Layer normalization. CoRR, abs/1607.06450, 2016. URL http://arxiv.org/abs/1607.06450.",
+    "Bisk et al. (2020) Bisk, Y., Zellers, R., Gao, J., Choi, Y., et al. Piqa: Reasoning about physical commonsense in natural language. In Proceedings of the AAAI conference on artificial intelligence, volume 34, pp. 7432–7439, 2020.",
+    "Brock et al. (2021a) Brock, A., De, S., Smith, S. L., and Simonyan, K. High-performance large-scale image recognition without normalization. In Meila, M. and Zhang, T. (eds.), Proceedings of the 38th International Conference on Machine Learning, ICML 2021, 18-24 July 2021, Virtual Event, volume 139 of Proceedings of Machine Learning Research, pp. 1059–1071. PMLR, 2021a. URL http://proceedings.mlr.press/v139/brock21a.html.",
+    "Brock et al. (2021b) Brock, A., De, S., Smith, S. L., and Simonyan, K. High-performance large-scale image recognition without normalization. In Meila, M. and Zhang, T. (eds.), Proceedings of the 38th International Conference on Machine Learning, ICML 2021, 18-24 July 2021, Virtual Event, volume 139 of Proceedings of Machine Learning Research, pp. 1059–1071. PMLR, 2021b. URL http://proceedings.mlr.press/v139/brock21a.html.",
+    "Chung et al. (2024) Chung, W., Hong, J., An, N. M., Thorne, J., and Yun, S. Stable language model pre-training by reducing embedding variability. In Al-Onaizan, Y., Bansal, M., and Chen, Y. (eds.), Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing, EMNLP 2024, Miami, FL, USA, November 12-16, 2024, pp. 10852–10863. Association for Computational Linguistics, 2024. URL https://aclanthology.org/2024.emnlp-main.606.",
+    "Clark et al. (2018) Clark, P., Cowhey, I., Etzioni, O., Khot, T., Sabharwal, A., Schoenick, C., and Tafjord, O. Think you have solved question answering? try arc, the ai2 reasoning challenge, 2018. URL https://arxiv.org/abs/1803.05457.",
+    "Csordás et al. (2024) Csordás, R., Irie, K., Schmidhuber, J., Potts, C., and Manning, C. D. Moeut: Mixture-of-experts universal transformers. CoRR, abs/2405.16039, 2024. doi: 10.48550/ARXIV.2405.16039. URL https://doi.org/10.48550/arXiv.2405.16039.",
+    "De & Smith (2020) De, S. and Smith, S. L. Batch normalization biases residual blocks towards the identity function in deep networks. In Larochelle, H., Ranzato, M., Hadsell, R., Balcan, M., and Lin, H. (eds.), Advances in Neural Information Processing Systems 33: Annual Conference on Neural Information Processing Systems 2020, NeurIPS 2020, December 6-12, 2020, virtual, 2020. URL https://proceedings.neurips.cc/paper/2020/hash/e6b738eca0e6792ba8a9cbcba6c1881d-Abstract.html.",
+    "Dehghani et al. (2023) Dehghani, M., Djolonga, J., Mustafa, B., Padlewski, P., Heek, J., Gilmer, J., Steiner, A. P., Caron, M., Geirhos, R., Alabdulmohsin, I., Jenatton, R., Beyer, L., Tschannen, M., Arnab, A., Wang, X., Ruiz, C. R., Minderer, M., Puigcerver, J., Evci, U., Kumar, M., van Steenkiste, S., Elsayed, G. F., Mahendran, A., Yu, F., Oliver, A., Huot, F., Bastings, J., Collier, M., Gritsenko, A. A., Birodkar, V., Vasconcelos, C. N., Tay, Y., Mensink, T., Kolesnikov, A., Pavetic, F., Tran, D., Kipf, T., Lucic, M., Zhai, X., Keysers, D., Harmsen, J. J., and Houlsby, N. Scaling vision transformers to 22 billion parameters. In Krause, A., Brunskill, E., Cho, K., Engelhardt, B., Sabato, S., and Scarlett, J. (eds.), International Conference on Machine Learning, ICML 2023, 23-29 July 2023, Honolulu, Hawaii, USA, volume 202 of Proceedings of Machine Learning Research, pp. 7480–7512. PMLR, 2023. URL https://proceedings.mlr.press/v202/dehghani23a.html.",
+    "Dettmers et al. (2022) Dettmers, T., Lewis, M., Belkada, Y., and Zettlemoyer, L. Gpt3.int8(): 8-bit matrix multiplication for transformers at scale. In Koyejo, S., Mohamed, S., Agarwal, A., Belgrave, D., Cho, K., and Oh, A. (eds.), Advances in Neural Information Processing Systems 35: Annual Conference on Neural Information Processing Systems 2022, NeurIPS 2022, New Orleans, LA, USA, November 28 - December 9, 2022, 2022. URL http://papers.nips.cc/paper_files/paper/2022/hash/c3ba4962c05c49636d4c6206a97e9c8a-Abstract-Conference.html.",
+    "Dubey et al. (2024) Dubey, A., Jauhri, A., Pandey, A., Kadian, A., Al-Dahle, A., Letman, A., Mathur, A., Schelten, A., Yang, A., Fan, A., et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783, 2024.",
+    "Fishman et al. (2024) Fishman, M., Chmiel, B., Banner, R., and Soudry, D. Scaling FP8 training to trillion-token llms. CoRR, abs/2409.12517, 2024. doi: 10.48550/ARXIV.2409.12517. URL https://doi.org/10.48550/arXiv.2409.12517.",
+    "Gao et al. (2024) Gao, L., Tow, J., Abbasi, B., Biderman, S., Black, S., DiPofi, A., Foster, C., Golding, L., Hsu, J., Le Noac’h, A., Li, H., McDonell, K., Muennighoff, N., Ociepa, C., Phang, J., Reynolds, L., Schoelkopf, H., Skowron, A., Sutawika, L., Tang, E., Thite, A., Wang, B., Wang, K., and Zou, A. A framework for few-shot language model evaluation, 07 2024. URL https://zenodo.org/records/12608602.",
+    "Guo et al. (2025) Guo, D., Yang, D., Zhang, H., Song, J., Zhang, R., Xu, R., Zhu, Q., Ma, S., Wang, P., Bi, X., et al. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning. arXiv preprint arXiv:2501.12948, 2025.",
+    "He et al. (2016) He, K., Zhang, X., Ren, S., and Sun, J. Identity mappings in deep residual networks. In Leibe, B., Matas, J., Sebe, N., and Welling, M. (eds.), Computer Vision - ECCV 2016 - 14th European Conference, Amsterdam, The Netherlands, October 11-14, 2016, Proceedings, Part IV, volume 9908 of Lecture Notes in Computer Science, pp. 630–645. Springer, 2016. doi: 10.1007/978-3-319-46493-0“˙38. URL https://doi.org/10.1007/978-3-319-46493-0_38.",
+    "Hoffmann et al. (2022) Hoffmann, J., Borgeaud, S., Mensch, A., Buchatskaya, E., Cai, T., Rutherford, E., de Las Casas, D., Hendricks, L. A., Welbl, J., Clark, A., Hennigan, T., Noland, E., Millican, K., van den Driessche, G., Damoc, B., Guy, A., Osindero, S., Simonyan, K., Elsen, E., Rae, J. W., Vinyals, O., and Sifre, L. Training compute-optimal large language models. CoRR, abs/2203.15556, 2022. doi: 10.48550/ARXIV.2203.15556. URL https://doi.org/10.48550/arXiv.2203.15556.",
+    "Kedia et al. (2024) Kedia, A., Zaidi, M. A., Khyalia, S., Jung, J., Goka, H., and Lee, H. Transformers get stable: An end-to-end signal propagation theory for language models. In Forty-first International Conference on Machine Learning, ICML 2024, Vienna, Austria, July 21-27, 2024. OpenReview.net, 2024. URL https://openreview.net/forum?id=30waYPIZUA.",
+    "Li et al. (2024a) Li, J., Fang, A., Smyrnis, G., Ivgi, M., Jordan, M., Gadre, S. Y., Bansal, H., Guha, E. K., Keh, S., Arora, K., Garg, S., Xin, R., Muennighoff, N., Heckel, R., Mercat, J., Chen, M., Gururangan, S., Wortsman, M., Albalak, A., Bitton, Y., Nezhurina, M., Abbas, A., Hsieh, C., Ghosh, D., Gardner, J., Kilian, M., Zhang, H., Shao, R., Pratt, S. M., Sanyal, S., Ilharco, G., Daras, G., Marathe, K., Gokaslan, A., Zhang, J., Chandu, K. R., Nguyen, T., Vasiljevic, I., Kakade, S. M., Song, S., Sanghavi, S., Faghri, F., Oh, S., Zettlemoyer, L., Lo, K., El-Nouby, A., Pouransari, H., Toshev, A., Wang, S., Groeneveld, D., Soldaini, L., Koh, P. W., Jitsev, J., Kollar, T., Dimakis, A. G., Carmon, Y., Dave, A., Schmidt, L., and Shankar, V. Datacomp-lm: In search of the next generation of training sets for language models. CoRR, abs/2406.11794, 2024a. doi: 10.48550/ARXIV.2406.11794. URL https://doi.org/10.48550/arXiv.2406.11794.",
+    "Li et al. (2024b) Li, P., Yin, L., and Liu, S. Mix-ln: Unleashing the power of deeper layers by combining pre-ln and post-ln. arXiv preprint arXiv:2412.13795, 2024b.",
+    "Loshchilov et al. (2024) Loshchilov, I., Hsieh, C., Sun, S., and Ginsburg, B. ngpt: Normalized transformer with representation learning on the hypersphere. CoRR, abs/2410.01131, 2024. doi: 10.48550/ARXIV.2410.01131. URL https://doi.org/10.48550/arXiv.2410.01131.",
+    "Merity et al. (2016) Merity, S., Xiong, C., Bradbury, J., and Socher, R. Pointer sentinel mixture models, 2016.",
+    "Mihaylov et al. (2018) Mihaylov, T., Clark, P., Khot, T., and Sabharwal, A. Can a suit of armor conduct electricity? a new dataset for open book question answering. In EMNLP, 2018.",
+    "OLMo et al. (2024) OLMo, T., Walsh, P., Soldaini, L., Groeneveld, D., Lo, K., Arora, S., Bhagia, A., Gu, Y., Huang, S., Jordan, M., et al. 2 olmo 2 furious. arXiv preprint arXiv:2501.00656, 2024.",
+    "Ouyang et al. (2022) Ouyang, L., Wu, J., Jiang, X., Almeida, D., Wainwright, C. L., Mishkin, P., Zhang, C., Agarwal, S., Slama, K., Ray, A., Schulman, J., Hilton, J., Kelton, F., Miller, L., Simens, M., Askell, A., Welinder, P., Christiano, P. F., Leike, J., and Lowe, R. Training language models to follow instructions with human feedback. In Koyejo, S., Mohamed, S., Agarwal, A., Belgrave, D., Cho, K., and Oh, A. (eds.), Advances in Neural Information Processing Systems 35: Annual Conference on Neural Information Processing Systems 2022, NeurIPS 2022, New Orleans, LA, USA, November 28 - December 9, 2022, 2022. URL http://papers.nips.cc/paper_files/paper/2022/hash/b1efde53be364a73914f58805a001731-Abstract-Conference.html.",
+    "Raffel et al. (2020) Raffel, C., Shazeer, N., Roberts, A., Lee, K., Narang, S., Matena, M., Zhou, Y., Li, W., and Liu, P. J. Exploring the limits of transfer learning with a unified text-to-text transformer. The Journal of Machine Learning Research, 21(1):5485–5551, 2020.",
+    "Rivière et al. (2024) Rivière, M., Pathak, S., Sessa, P. G., Hardin, C., Bhupatiraju, S., Hussenot, L., Mesnard, T., Shahriari, B., Ramé, A., Ferret, J., Liu, P., Tafti, P., Friesen, A., Casbon, M., Ramos, S., Kumar, R., Lan, C. L., Jerome, S., Tsitsulin, A., Vieillard, N., Stanczyk, P., Girgin, S., Momchev, N., Hoffman, M., Thakoor, S., Grill, J., Neyshabur, B., Bachem, O., Walton, A., Severyn, A., Parrish, A., Ahmad, A., Hutchison, A., Abdagic, A., Carl, A., Shen, A., Brock, A., Coenen, A., Laforge, A., Paterson, A., Bastian, B., Piot, B., Wu, B., Royal, B., Chen, C., Kumar, C., Perry, C., Welty, C., Choquette-Choo, C. A., Sinopalnikov, D., Weinberger, D., Vijaykumar, D., Rogozinska, D., Herbison, D., Bandy, E., Wang, E., Noland, E., Moreira, E., Senter, E., Eltyshev, E., Visin, F., Rasskin, G., Wei, G., Cameron, G., Martins, G., Hashemi, H., Klimczak-Plucinska, H., Batra, H., Dhand, H., Nardini, I., Mein, J., Zhou, J., Svensson, J., Stanway, J., Chan, J., Zhou, J. P., Carrasqueira, J., Iljazi, J., Becker, J., Fernandez, J., van Amersfoort, J., Gordon, J., Lipschultz, J., Newlan, J., Ji, J., Mohamed, K., Badola, K., Black, K., Millican, K., McDonell, K., Nguyen, K., Sodhia, K., Greene, K., Sjösund, L. L., Usui, L., Sifre, L., Heuermann, L., Lago, L., and McNealus, L. Gemma 2: Improving open language models at a practical size. CoRR, abs/2408.00118, 2024. doi: 10.48550/ARXIV.2408.00118. URL https://doi.org/10.48550/arXiv.2408.00118.",
+    "Sakaguchi et al. (2021) Sakaguchi, K., Bras, R. L., Bhagavatula, C., and Choi, Y. Winogrande: an adversarial winograd schema challenge at scale. Commun. ACM, 64(9):99–106, August 2021. ISSN 0001-0782. doi: 10.1145/3474381. URL https://doi.org/10.1145/3474381.",
+    "Sap et al. (2019) Sap, M., Rashkin, H., Chen, D., Bras, R. L., and Choi, Y. Social iqa: Commonsense reasoning about social interactions. In Inui, K., Jiang, J., Ng, V., and Wan, X. (eds.), Proceedings of the 2019 Conference on Empirical Methods in Natural Language Processing and the 9th International Joint Conference on Natural Language Processing, EMNLP-IJCNLP 2019, Hong Kong, China, November 3-7, 2019, pp. 4462–4472. Association for Computational Linguistics, 2019. doi: 10.18653/V1/D19-1454. URL https://doi.org/10.18653/v1/D19-1454.",
+    "Sun et al. (2024) Sun, M., Chen, X., Kolter, J. Z., and Liu, Z. Massive activations in large language models. CoRR, abs/2402.17762, 2024. doi: 10.48550/ARXIV.2402.17762. URL https://doi.org/10.48550/arXiv.2402.17762.",
+    "Takase et al. (2023) Takase, S., Kiyono, S., Kobayashi, S., and Suzuki, J. Spike no more: Stabilizing the pre-training of large language models. CoRR, abs/2312.16903, 2023. doi: 10.48550/ARXIV.2312.16903. URL https://doi.org/10.48550/arXiv.2312.16903.",
+    "Talmor et al. (2019) Talmor, A., Herzig, J., Lourie, N., and Berant, J. CommonsenseQA: A question answering challenge targeting commonsense knowledge. In Proceedings of the 2019 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, Volume 1 (Long and Short Papers), pp. 4149–4158, Minneapolis, Minnesota, June 2019. Association for Computational Linguistics. doi: 10.18653/v1/N19-1421. URL https://aclanthology.org/N19-1421.",
+    "Vaswani et al. (2017) Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A. N., Kaiser, L., and Polosukhin, I. Attention is all you need. In Guyon, I., von Luxburg, U., Bengio, S., Wallach, H. M., Fergus, R., Vishwanathan, S. V. N., and Garnett, R. (eds.), Advances in Neural Information Processing Systems 30: Annual Conference on Neural Information Processing Systems 2017, December 4-9, 2017, Long Beach, CA, USA, pp. 5998–6008, 2017. URL https://proceedings.neurips.cc/paper/2017/hash/3f5ee243547dee91fbd053c1c4a845aa-Abstract.html.",
+    "Wang et al. (2018) Wang, A., Singh, A., Michael, J., Hill, F., Levy, O., and Bowman, S. GLUE: A multi-task benchmark and analysis platform for natural language understanding. In Proceedings of the 2018 EMNLP Workshop BlackboxNLP: Analyzing and Interpreting Neural Networks for NLP, pp. 353–355, Brussels, Belgium, November 2018. Association for Computational Linguistics. doi: 10.18653/v1/W18-5446. URL https://aclanthology.org/W18-5446.",
+    "Wolf et al. (2020) Wolf, T., Debut, L., Sanh, V., Chaumond, J., Delangue, C., Moi, A., Cistac, P., Rault, T., Louf, R., Funtowicz, M., Davison, J., Shleifer, S., von Platen, P., Ma, C., Jernite, Y., Plu, J., Xu, C., Scao, T. L., Gugger, S., Drame, M., Lhoest, Q., and Rush, A. M. Transformers: State-of-the-art natural language processing. In Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing: System Demonstrations, pp. 38–45, Online, October 2020. Association for Computational Linguistics. URL https://www.aclweb.org/anthology/2020.emnlp-demos.6.",
+    "Wortsman et al. (2024) Wortsman, M., Liu, P. J., Xiao, L., Everett, K. E., Alemi, A. A., Adlam, B., Co-Reyes, J. D., Gur, I., Kumar, A., Novak, R., Pennington, J., Sohl-Dickstein, J., Xu, K., Lee, J., Gilmer, J., and Kornblith, S. Small-scale proxies for large-scale transformer training instabilities. In The Twelfth International Conference on Learning Representations, ICLR 2024, Vienna, Austria, May 7-11, 2024. OpenReview.net, 2024. URL https://openreview.net/forum?id=d8w0pmvXbZ.",
+    "Xiong et al. (2020) Xiong, R., Yang, Y., He, D., Zheng, K., Zheng, S., Xing, C., Zhang, H., Lan, Y., Wang, L., and Liu, T. On layer normalization in the transformer architecture. In Proceedings of the 37th International Conference on Machine Learning, ICML 2020, 13-18 July 2020, Virtual Event, volume 119 of Proceedings of Machine Learning Research, pp. 10524–10533. PMLR, 2020. URL http://proceedings.mlr.press/v119/xiong20b.html.",
+    "Yang & Hu (2021) Yang, G. and Hu, E. J. Tensor programs IV: feature learning in infinite-width neural networks. In Meila, M. and Zhang, T. (eds.), Proceedings of the 38th International Conference on Machine Learning, ICML 2021, 18-24 July 2021, Virtual Event, volume 139 of Proceedings of Machine Learning Research, pp. 11727–11737. PMLR, 2021. URL http://proceedings.mlr.press/v139/yang21c.html.",
+    "Yang et al. (2022) Yang, G., Hu, E. J., Babuschkin, I., Sidor, S., Liu, X., Farhi, D., Ryder, N., Pachocki, J., Chen, W., and Gao, J. Tensor programs V: tuning large neural networks via zero-shot hyperparameter transfer. CoRR, abs/2203.03466, 2022. doi: 10.48550/ARXIV.2203.03466. URL https://doi.org/10.48550/arXiv.2203.03466.",
+    "Yang et al. (2024) Yang, G., Yu, D., Zhu, C., and Hayou, S. Tensor programs VI: feature learning in infinite depth neural networks. In The Twelfth International Conference on Learning Representations, ICLR 2024, Vienna, Austria, May 7-11, 2024. OpenReview.net, 2024. URL https://openreview.net/forum?id=17pVDnpwwl.",
+    "Yu et al. (2024) Yu, M., Wang, D., Shan, Q., and Wan, A. The super weight in large language models. arXiv preprint arXiv:2411.07191, 2024.",
+    "Zellers et al. (2019) Zellers, R., Holtzman, A., Bisk, Y., Farhadi, A., and Choi, Y. HellaSwag: Can a machine really finish your sentence? In Korhonen, A., Traum, D., and Màrquez, L. (eds.), Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics, pp. 4791–4800, Florence, Italy, July 2019. Association for Computational Linguistics. doi: 10.18653/v1/P19-1472. URL https://aclanthology.org/P19-1472/.",
+    "Zhai et al. (2023) Zhai, S., Likhomanenko, T., Littwin, E., Busbridge, D., Ramapuram, J., Zhang, Y., Gu, J., and Susskind, J. M. Stabilizing transformer training by preventing attention entropy collapse. In Krause, A., Brunskill, E., Cho, K., Engelhardt, B., Sabato, S., and Scarlett, J. (eds.), International Conference on Machine Learning, ICML 2023, 23-29 July 2023, Honolulu, Hawaii, USA, volume 202 of Proceedings of Machine Learning Research, pp. 40770–40803. PMLR, 2023. URL https://proceedings.mlr.press/v202/zhai23a.html.",
+    "Zhang & Sennrich (2019) Zhang, B. and Sennrich, R. Root mean square layer normalization. In Wallach, H. M., Larochelle, H., Beygelzimer, A., d’Alché-Buc, F., Fox, E. B., and Garnett, R. (eds.), Advances in Neural Information Processing Systems 32: Annual Conference on Neural Information Processing Systems 2019, NeurIPS 2019, December 8-14, 2019, Vancouver, BC, Canada, pp. 12360–12371, 2019. URL https://proceedings.neurips.cc/paper/2019/hash/1e8a19426224ca89e83cef47f1e7f53b-Abstract.html.",
+    "Zhou et al. (2023) Zhou, C., Liu, P., Xu, P., Iyer, S., Sun, J., Mao, Y., Ma, X., Efrat, A., Yu, P., Yu, L., Zhang, S., Ghosh, G., Lewis, M., Zettlemoyer, L., and Levy, O. LIMA: less is more for alignment. In Oh, A., Naumann, T., Globerson, A., Saenko, K., Hardt, M., and Levine, S. (eds.), Advances in Neural Information Processing Systems 36: Annual Conference on Neural Information Processing Systems 2023, NeurIPS 2023, New Orleans, LA, USA, December 10 - 16, 2023, 2023. URL http://papers.nips.cc/paper_files/paper/2023/hash/ac662d74829e4407ce1d126477f4a03a-Abstract-Conference.html."
+  ]
+}

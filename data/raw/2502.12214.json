@@ -1,0 +1,337 @@
+{
+  "title": "Zero Token-Driven Deep Thinking in LLMs:Unlocking the Full Potential of Existing Parameters via Cyclic Refinement",
+  "authors": "Guanghao LiWenhao JiangLi ShenMing TangChun Yuan",
+  "abstract": "Resource limitations often constrain the parameter counts of Large Language Models (LLMs), hindering their performance. While existing methods employ parameter sharing to reuse the same parameter set under fixed budgets, such approaches typically force each layer to assume multiple roles with a predetermined number of iterations, restricting efficiency and adaptability. In this work, we propose the Zero Token Transformer (ZTT), which features a head-tail decoupled parameter cycling method. We disentangle the first (head) and last (tail) layers from parameter cycling and iteratively refine only the intermediate layers. Furthermore, we introduce a Zero-Token Mechanism, an internal architectural component rather than an input token, to guide layer-specific computation. At each cycle, the model retrieves a zero token (with trainable key values) from a Zero-Token Pool, integrating it alongside regular tokens in the attention mechanism. The corresponding attention scores not only reflect each layer’s computational importance but also enable dynamic early exits without sacrificing overall model accuracy. Our approach achieves superior performance under tight parameter budgets, effectively reduces computational overhead via early exits, and can be readily applied to fine-tune existing pre-trained models for enhanced efficiency and adaptability.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "n recent years, it has been widely acknowledged that the performance of Large Language Models (LLMs) improves with an increasing number of parameters (Rae et al., 2021; Rosenfeld et al., 2019). Consequently, scaling up parameter counts has become a common strategy for enhancing model performance (Leviathan et al., 2023; Xu et al., 2024; Pope et al., 2023). However, this approach is often infeasible for users with limited computational resources. A critical challenge, therefore, is to achieve better performance under a fixed parameter budget (Zhou et al., 2024).",
+        "A variety of model compression techniques, including quantization (Lin et al., 2024; Liu et al., 2023), pruning (Ma et al., 2023; Sun et al., 2023), and distillation (Latif et al., 2023; Shum et al., 2024), have been proposed to shrink large models to smaller ones. In parallel, another line of research has investigated ways to leverage additional computation within a fixed number of parameters, thereby unlocking deeper or more iterative reasoning (Dehghani et al., 2018; Lan, 2019). A common strategy here is parameter sharing, where model layers reuse the same parameters across multiple computational cycles, sometimes referred to as “parameter cycling.” Rather than maintaining a separate set of parameters for each layer, models recurrently apply a compact parameter set, reducing memory requirements and potentially increasing depth of reasoning.",
+        "Despite its potential, parameter cycling raises three core challenges: (1) Which parameters should be reused across iterative cycles? (2) How can these shared parameters be managed to avoid functional conflicts and performance degradation? (3) When should the model decide that no further reasoning is necessary, thus saving computational cost without truncating essential inference steps prematurely?",
+        "Existing works partially address one or two of these questions. For example, Solar (Kim et al., 2023) reuses parameters from intermediate layers (which parameters), while the Relaxed Recursive Transformer (Bae et al., 2024) focuses on how to manage the recurring layer through LoRA (Hu et al., 2021). Palbert (Balagansky & Gavrilov, 2022), combining PonderNet (Banino et al., 2021) with ALBERT, explores when to stop via a dynamic pondering mechanism. However, none of these approaches provide a comprehensive solution that systematically addresses all three dimensions—which parameters to cycle, how to apply them, and when to terminate reasoning.",
+        "In this paper, we propose a Zero Token Transformer (ZTT) that systematically tackles these three challenges. Our approach is applicable to both training from scratch and fine-tuning existing pretrained models. Specifically:",
+        "• Head-Tail Decoupled Cyclic Architecture. To handle the question of which parameters to share, we decouple the first (head) and last (tail) layers from the parameter-sharing mechanism, because their specialized functions (encoding raw inputs and mapping representations to outputs) differ significantly from those of intermediate layers. Only the intermediate layers are recurrently used in a cyclic manner, improving efficiency while preserving essential input and output transformations.",
+        "• Zero-Token Mechanism. To address how to manage shared parameters effectively, we introduce a novel Zero-Token Mechanism. Each intermediate layer retrieves a Zero-Token (with a trainable key and zero-valued representation) from a Zero-Token Pool and processes it alongside regular tokens. The attention scores toward the Zero-Token act as a guide for layer-specific computations, helping the model determine the extent of “reuse vs. new reasoning” at each cyclic iteration. This design mitigates potential conflicts that arise when reusing the same parameters multiple times.",
+        "• A Dynamic Mechanism for Determining the Number of Cyclic Iterations. Finally, to address when to stop, we employ an early-exit style mechanism driven by the Zero-Token’s attention scores. When the attention to the Zero-Token surpasses a threshold, the model infers that further computation in subsequent cycles is unlikely to yield additional benefits and exits accordingly—striking a balance between computational efficiency and preserving accuracy.",
+        "The key contributions of this work can be summarized as follows:",
+        "1. We propose a structured parameter cycling approach that holistically tackles the “what, how, when” challenges of layer reuse under tight parameter budgets.",
+        "2. We demonstrate that decoupling head and tail layers (while cycling among intermediate layers) yields both better reasoning depth and computational efficiency.",
+        "3. We introduce the Zero-Token Mechanism, allowing for dynamic control of layer-specific computation and enabling an effective early-exit strategy.",
+        "4. We demonstrate that our approach enhances performance in both training from scratch and fine-tuning existing large language models, highlighting its practical applicability to real-world deployments."
+      ],
+      "subsections": []
+    },
+    "2 Related Work": {
+      "paragraphs": [
+        "Parameter sharing has long been explored in early deep learning architectures, such as Convolutional Neural Networks (CNNs) (Eigen et al., 2013; Savarese & Maire, 2019) and Recurrent Neural Networks (RNNs) (Graves, 2016; Sherstinsky, 2020), effectively reducing model complexity while preserving performance. The Universal Transformer (Dehghani et al., 2018) later extended this idea to the Transformer architecture, demonstrating that reusing parameters in a cyclical manner across layers can substantially enhance efficiency. Subsequently, various studies have investigated which Transformer components should be shared. Some focus on parameter reuse within individual layers (Dabre & Fujita, 2019), tying encoder and decoder components (Milbauer et al., 2023; Xia et al., 2019), or adopting partial expert networks (Liu et al., 2024). Others optimize how parameter sharing is organized, for instance by stacking parameters in specific orders (Takase & Kiyono, 2021) or applying factorized embeddings (Lan, 2019) to improve performance. A critical aspect of parameter cycling is determining when to repeat computations. Methods such as ACT (Chowdhury & Caragea, 2024; Graves, 2016; Csordás et al., 2024; Tan et al., 2023) and PonderNet (Banino et al., 2021; Balagansky & Gavrilov, 2022) introduce adaptive recursion, allowing the model to decide how many cycles of computation are needed for deeper reasoning. However, most of these studies focus on training from scratch rather than fine-tuning large pre-trained models, limiting their practicality in real-world scenarios.",
+        "Recent work has begun to address parameter cycling within pre-trained Large Language Models. For instance, Solar (Kim et al., 2023) improves performance by reusing parameters from the middle layers of the Llama model (Touvron et al., 2023), illustrating which layers to cycle. Relaxed Recursive Transformers (Bae et al., 2024) integrate LoRA (Hu et al., 2021) modules to alleviate performance degradation caused by repetitive parameter usage. Despite these advances, the question of when to stop recurrent processing remains underexplored. Although Relaxed Recursive Transformers consider varying numbers of cycles, they rely on fixed computation paths rather than a genuinely dynamic mechanism. Meanwhile, research on early exiting (Chen et al., 2023; Pan et al., 2024) focuses primarily on non-recurrent models, leaving open the question of how many cycles a recurrent model should undergo. In contrast, our approach comprehensively addresses the three central questions of what to cycle, how to manage recurrent parameters, and when to terminate reasoning. We propose a method applicable both to training from scratch and to fine-tuning pre-trained LLMs, offering a practical and efficient solution for enhancing model performance under tight parameter budgets."
+      ],
+      "subsections": []
+    },
+    "3 Zero Token Transformer": {
+      "paragraphs": [
+        "In this section, we introduce our Zero-Token Transformer (ZTT), a novel approach that combines Head-Tail Decoupled Cyclic Architecture and a Zero-Token Mechanism with a gating strategy. We begin by examining preliminary observations from a Basic Cyclic Transformer (BCT) and highlight the challenges that arise when scaling up. We then describe how our head-tail decoupling addresses these issues, and how the Zero Token and gating mechanism further enhance performance and enable dynamic early exiting."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Basic Cyclic Transformer (BCT) and Motivation",
+          "paragraphs": [
+            "We first consider a simple form of cyclic Transformer, following (Bae et al., 2024; Takase & Kiyono, 2021), where a single Transformer layer (or a small stack of layers) is repeatedly applied for NN cycles. Formally, let HFl,nH_{F}^{l,n} be the output of layer ll at cycle nn:",
+            "where Φ\\Phi and θl\\theta^{l} are trainable parameters, and the same parameters are reused at each cycle. For simplicity, HF0,1H_{F}^{0,1} is the embedding of the input tokens. When N=1N=1, this reduces to a standard (vanilla) LL-layer Transformer.",
+            "Figure 2(a) shows perplexities on WikiText-2 under the same total computational cost (number of layers ×\\times number of cycles). For instance, a 1-layer BCT run for 12 cycles achieves a lower perplexity than a 1-layer vanilla Transformer (i.e., N=1N=1), but it is still worse than a standard 12-layer Transformer with the same total computational budget. Similarly, adding classification heads after each cycle for early exiting (“Early exit” in Figure 2(a)) further degrades performance, indicating that requiring intermediate outputs imposes extra burdens on the cyclic layers.",
+            "These findings highlight a fundamental issue with basic cyclic Transformers: each cyclic block assumes significantly greater responsibilities than a vanilla Transformer layer. First, cyclic layers must fulfill the roles of multiple layers by providing enhanced intermediate representations for subsequent computations, while also producing high-quality outputs for the classification head. Moreover, there is no explicit guidance on the specific role a given layer should perform at each iteration. This lack of role distinction may lead to confusion and computational conflicts, ultimately affecting overall performance. Consequently, even when the current representation is well-optimized, it is recalculated in subsequent cycles, potentially overwriting previously learned representations.",
+            "Reusing the same layer(s) for multiple cycles indeed improves performance compared to a single-layer Transformer. However, as we increase the total layer count or require early-exit outputs at each cycle, the performance gap between Basic Cyclic Transformers and an equivalently sized vanilla Transformer widens. We hypothesize that this occurs because each cyclic block in BCT must simultaneously compute refined internal representations and produce final outputs for classification at each cycle, without any guidance on how to specialize. As cycles accumulate, these conflicting objectives can lead to overwriting or “conflicting” representations.",
+            "Based on the observations above, we identify three key issues that motivate our design:",
+            "Issue 1: No separation of specialized layers. The first and last layers in a Transformer typically have distinct roles (e.g., mapping raw inputs or producing logits). Forcing them to share parameters can degrade performance (§3.2).",
+            "Issue 2: Lack of role distinction among cycles. In BCT, the same layer repeatedly processes the representation, even if the current representation is sufficiently refined. There is no mechanism to skip certain cycles or to mark a cycle as “for further refinement” (§3.3).",
+            "Issue 3: When to stop further computation? Simply running NN cycles can waste computation once the network is “confident.” Likewise, forcing a classification output at every cycle can degrade performance. A more dynamic approach is needed (§3.4).",
+            "No separation of specialized layers. The first and last layers in a Transformer typically have distinct roles (e.g., mapping raw inputs or producing logits). Forcing them to share parameters can degrade performance (§3.2).",
+            "Lack of role distinction among cycles. In BCT, the same layer repeatedly processes the representation, even if the current representation is sufficiently refined. There is no mechanism to skip certain cycles or to mark a cycle as “for further refinement” (§3.3).",
+            "When to stop further computation? Simply running NN cycles can waste computation once the network is “confident.” Likewise, forcing a classification output at every cycle can degrade performance. A more dynamic approach is needed (§3.4).",
+            "To address these issues, we propose the Zero-Token Transformer, which comprises:",
+            "- Head-Tail Decoupled Cyclic Architecture (§3.2): We do not cycle the first and last layers, preserving their specialized roles while only reusing intermediate layers. - Zero-Token Mechanism (§3.3): We insert a learnable “Zero Token” into each attention layer to guide or skip computations dynamically, enabling distinct cycle-specific roles. - A Dynamic Mechanism for Determining the Number of Cyclic Iterations (§3.4): We add a lightweight gating network in the feed-forward layer to help decide when to terminate further computation based on the Zero Token’s attention.",
+            "In the following subsections, we detail each component and explain how they address the issues above."
+          ]
+        },
+        {
+          "title": "3.2 Head-Tail Decoupled Cyclic Architecture",
+          "paragraphs": [
+            "Recent analyses (Sun et al., 2024) suggest that intermediate Transformer layers often exhibit functionally similar representations, whereas the head (first) and tail (last) layers specialize in tasks such as raw feature encoding and output mapping. Pruning or drastically altering these boundary layers tends to have an outsized impact on overall performance.",
+            "Hence, we preserve the original first and last layers as fixed (non-cyclic) and let only the middle layers reuse parameters across NN cycles, as shown in Figure 1(right). Concretely, if the Transformer has LL layers, we exclude layers 11 and LL from parameter cycling:",
+            "By doing so, the distinct responsibilities of the head and tail layers remain intact, mitigating conflicts. Figure 2(a) shows that under the same total computational budget, our Head-Tail Decoupled Cyclic Transformer (HDT) achieves better perplexity than a straightforward “all-layer cycling” design, confirming that preserving specialized boundary layers helps alleviate the performance gap (Issue 1)."
+          ]
+        },
+        {
+          "title": "3.3 Zero-Token Mechanism",
+          "paragraphs": [
+            "Even with head-tail decoupling, intermediate layers in a cyclic setup can still redundantly process representations. If the current representation is already high-quality, repeatedly refining it may overwrite earlier features or create conflicts. We address this by introducing a small, trainable “Zero Token” into each attention layer—acting like a prompt that “signals” whether the model should refine or skip a cycle.",
+            "For the ll-th layer in cycle nn, we insert a Zero Token (ZToken) at the start of the sequence. It has: Placing the Zero Token at the front ensures all other tokens can attend to it. Formally, the multi-head attention in Eq. 1 becomes:",
+            "• A key vector Kz,il,nK_{z,i}^{l,n} (split by head ii) that is trainable,",
+            "• A value vector V0,il,nV_{0,i}^{l,n} that is all zeros, and",
+            "• No query component.",
+            "A key vector Kz,il,nK_{z,i}^{l,n} (split by head ii) that is trainable,",
+            "A value vector V0,il,nV_{0,i}^{l,n} that is all zeros, and",
+            "No query component.",
+            "Each cycle “fetches” its own Zero Token, whose trainable key can induce high or low attention from the queries QlQ^{l}. If the model “pays a lot of attention” to this zero-valued token, the output effectively becomes the same as the previous representation (since multiplying by zero yields no further update). This lets each layer decide whether to refine or skip, addressing Issue 2 (lack of role distinction across cycles).",
+            "In Figure 2(b) (right y-axis), we plot the average attention score to the Zero Token over different cycles. Higher attention corresponds to the model “opting out” of deeper recalculation."
+          ]
+        },
+        {
+          "title": "3.4 A Dynamic Mechanism for Determining the Number of Cyclic Iterations",
+          "paragraphs": [
+            "While the Zero Token’s attention score is the main indicator for deciding whether to halt additional cycles, we introduce a lightweight gating mechanism around the feed-forward network (FFN) to provide finer-grained computational control. Even if the model has not yet triggered an early exit, some cycles may only require partial FFN computation.",
+            "We modify the FFN in Eq. 1 by adding:",
+            "When gate​(⋅)\\text{gate}(\\cdot) is close to 1, the full FFN transform is applied; when near 0, the FFN is mostly bypassed, saving computation. We observe that the gating value often correlates with the Zero Token’s attention: if the model pays high attention to the Zero Token, it implies less refinement is needed, and the gate decreases accordingly.",
+            "The Zero Token’s attention score (§3.3) remains the primary criterion for early exit. Once it exceeds a threshold (e.g., 0.9), we terminate further cycles and output the final representation. The gating function simply provides a smoother transition for intermediate cycles, reducing unnecessary FFN computation before the final exit trigger.",
+            "We do not gate the attention module itself because attention integrates token representations, including the Zero Token. By gating the FFN, we allow partial skipping of the more expensive transformations without interfering with the Zero Token’s signaling. Hence, the Zero Token attention decides when to stop entirely, while the gate refines how much computation to apply until that point.",
+            "Overall, by combining head-tail decoupling (to preserve specialized boundary layers), a Zero Token (to guide cycle-level computation), and a gating-based mechanism (to smooth partial skips and enable early exit), our Zero-Token Transformer effectively addresses the three major issues outlined in §3.1."
+          ]
+        }
+      ]
+    },
+    "4 Experiments": {
+      "paragraphs": [
+        "In this section, we present our experimental setup and results to demonstrate the effectiveness of our proposed Zero-Token Transformer approach under a fixed parameter budget. We evaluate both training from scratch and fine-tuning scenarios, using a decoder-only Transformer architecture."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Experimental Setup",
+          "paragraphs": [
+            "Models. We consider two main training settings:",
+            "• Training from Scratch: We base our architecture on GPT-2 (Radford et al., 2019) but restrict each layer to around 10M parameters. The total number of layers is L=6L=6. To maintain a fixed computational budget, we define a total of 6 “network computation cycles”, where each layer in a standard setting (i.e., without parameter sharing) is counted as one cycle. All models in this setting are pre-trained on the C4 English subset (Raffel et al., 2020) using a causal next-token prediction objective for 10B tokens.",
+            "• Fine-Tuning Pre-Trained Models: We also fine-tune widely used checkpoints such as GPT-2 and OPT (Zhang et al., 2023) to show that our approach can be applied to large pre-trained models with minimal modification.",
+            "Training from Scratch: We base our architecture on GPT-2 (Radford et al., 2019) but restrict each layer to around 10M parameters. The total number of layers is L=6L=6. To maintain a fixed computational budget, we define a total of 6 “network computation cycles”, where each layer in a standard setting (i.e., without parameter sharing) is counted as one cycle. All models in this setting are pre-trained on the C4 English subset (Raffel et al., 2020) using a causal next-token prediction objective for 10B tokens.",
+            "Fine-Tuning Pre-Trained Models: We also fine-tune widely used checkpoints such as GPT-2 and OPT (Zhang et al., 2023) to show that our approach can be applied to large pre-trained models with minimal modification.",
+            "Baselines. We compare several approaches, all based on decoder-only Transformers. One variant, referred to as early exit, adds classification heads at each cycle, facilitating intermediate predictions. These intermediate exits are represented as E.",
+            "• Vanilla (V): A standard Transformer with LL distinct layers. The total computation cost is effectively LL cycles.",
+            "• Basic Cycling (BC): The model has LL layers but shares parameters across layers by cycling them NN times. This results in a total computation cost of L×NL\\times N.",
+            "• Head-Tail Cycling (HTC): Instead of cycling all LL layers, only the intermediate layers are reused NN times, while the first and last layers remain distinct. This structure aims to preserve the special functions of the input and output layers. We also consider an early exit variant of this scheme.",
+            "• Zero-Token Transformer (ZTT): Our proposed method, which only cycles the intermediate layers and introduces a Zero Token in each attention layer. This token provides a learnable key (prompt-like) while carrying zero-value vectors, enabling the model to distinguish between different cycles and facilitate adaptive computation. We also include an early exit variant that uses the learned Zero Attention signals to decide when to stop.",
+            "Vanilla (V): A standard Transformer with LL distinct layers. The total computation cost is effectively LL cycles.",
+            "Basic Cycling (BC): The model has LL layers but shares parameters across layers by cycling them NN times. This results in a total computation cost of L×NL\\times N.",
+            "Head-Tail Cycling (HTC): Instead of cycling all LL layers, only the intermediate layers are reused NN times, while the first and last layers remain distinct. This structure aims to preserve the special functions of the input and output layers. We also consider an early exit variant of this scheme.",
+            "Zero-Token Transformer (ZTT): Our proposed method, which only cycles the intermediate layers and introduces a Zero Token in each attention layer. This token provides a learnable key (prompt-like) while carrying zero-value vectors, enabling the model to distinguish between different cycles and facilitate adaptive computation. We also include an early exit variant that uses the learned Zero Attention signals to decide when to stop.",
+            "Evaluation Datasets and Metrics. We considered nine different types of datasets: (a) Reasoning: PIQA (Bisk et al., 2020); (b) Multiple Choice: ARC Challenge (Clark et al., 2018), ARC Easy (Clark et al., 2018); (c) Long-Term Context Recall: LAMBADA (Paperno et al., 2016) and (d) Natural Language Inference: HellaSwag (Zellers et al., 2019).",
+            "For multiple-choice tasks, we report accuracy, and for LAMBADA we report exact match accuracy on the held-out set. We employ the Language Model Evaluation Harness (Gao et al., 2024) for consistent evaluations. All models pre-trained from scratch are fine-tuned on each downstream task before testing. Similarly, the large pre-trained checkpoints (GPT-2, OPT) are directly fine-tuned on these tasks using the same hyperparameter settings (details in Appendix A)."
+          ]
+        },
+        {
+          "title": "4.2 Results of Training from Scratch",
+          "paragraphs": [
+            "Table 1summarizes the performance of models trained from scratch under a fixed parameter budget. We highlight the following observations:",
+            "Effect of Fewer Layers (Vanilla vs. Vanilla-Small). When we reduce both the parameter count and computational budget from L=6L=6 to L=3L=3 (“Vanilla-small”), the accuracy drops significantly (e.g., from 33.97% to 31.51%). This indicates that simply using fewer layers cannot maintain adequate performance without cycling.",
+            "Basic Cycling (BC). To mitigate the performance gap, BC reuses a 3-layer stack twice (for a total of 6 cycles), partially recovering performance to 32.79%. This confirms that increased “computational depth” via cycling can help, though it still lags behind the original 6-layer Transformer. Introducing early exit (BCE) in BC leads to a slight accuracy drop (32.17%), suggesting that training additional intermediate heads can sometimes introduce optimization trade-offs.",
+            "Head-Tail Cycling (HTC). By fixing the first and last layers while only cycling the intermediate ones, we achieve 33.15% (no early exit) and 32.62% (early exit), surpassing Basic Cycling. This underscores the importance of preserving specialized head and tail layers.",
+            "Zero-Token Transformer (ZTT). Building on head-tail separation, our proposed Zero Token mechanism further boosts accuracy to 33.52% without early exit, and 32.79% with early exit. Notably, ZTT consistently outperforms both BC and HT across tasks, demonstrating that the Zero-Token mechanism effectively guides each cycle’s computation and alleviates functional conflicts in shared parameters.",
+            "Overall, these results confirm the benefit of our ZTT approach in balancing parameter efficiency and modeling capacity. Even when the total parameter budget and computation cycles are constrained, introducing Zero Tokens with a head-tail separation strategy yields superior accuracy."
+          ]
+        },
+        {
+          "title": "4.3 Adaptive Inference with Zero Attention",
+          "paragraphs": [
+            "We next investigate whether Zero Attention—the average attention placed on the Zero Token—can serve as a stopping criterion for adaptive inference. Specifically, once the Zero Attention score surpasses a predefined threshold PP, we consider the representation sufficiently refined and terminate further cycles.",
+            "In Table 2, we track perplexity (PPL), Zero Attention, and Gate Value across different cycle counts. As the loop depth increases, Zero Attention gradually rises, while the Gate Value in the feed-forward network decreases, suggesting diminishing returns from additional computation.",
+            "Table 3 further examines how different thresholds PP affect both model accuracy and the average number of computation cycles. A lower threshold (P=0.2P=0.2) forces early termination, significantly reducing compute but at the cost of some performance loss. In contrast, a moderate threshold (P=0.5P=0.5) provides a strong balance, achieving 33.00% accuracy with an average of just 3.31 cycles—matching or even surpassing the full 4-cycle baseline. Increasing the threshold further (P=0.7P=0.7) results in more reasoning steps, leading to slight accuracy improvements but at the expense of higher computational costs.",
+            "These findings illustrate that Zero Attention can effectively guide dynamic computation, allowing models to adaptively allocate reasoning cycles while maintaining strong performance. This presents a promising strategy for efficient inference in resource-constrained settings."
+          ]
+        },
+        {
+          "title": "4.4 Fine-Tuning Results on Pre-Trained Models",
+          "paragraphs": [
+            "We further validate our method on large, pre-trained checkpoints: GPT-2 (Radford et al., 2019) and OPT (Zhang et al., 2023). Table 4 reports the performance of various cycling strategies after fine-tuning on the same downstream tasks.",
+            "Across all model scales, cycling-based methods consistently outperform the Vanilla baseline. Basic Cycling provides noticeable accuracy gains over Vanilla, demonstrating the effectiveness of reusing parameters through repeated computation. However, when early exit is applied (BCE), performance occasionally drops slightly due to the additional overhead introduced by optimizing intermediate outputs.",
+            "Among all approaches, Zero-Token Tansformer (ZTT) achieves the highest accuracy, surpassing both BC and V. The improvements indicate that incorporating a Zero Token during fine-tuning enables the model to effectively leverage repeated reasoning under a fixed parameter budget. Furthermore, the early-exit variant, Zero-Token Transformer with Early Exit (ZTTE), maintains comparable accuracy to full ZT while significantly reducing computational costs. This confirms that adaptive inference can successfully scale to large pre-trained models.",
+            "Notably, as model sizes increase—such as GPT-2 Large with 811M parameters—both ZT and ZTE continue to provide strong accuracy gains while maintaining parameter efficiency. These results demonstrate the broad applicability and scalability of our proposed Zero-Token approach, making it a robust fine-tuning strategy for large-scale language models."
+          ]
+        },
+        {
+          "title": "4.5 Ablation Study",
+          "paragraphs": [
+            "To pinpoint the contribution of each component, we conduct an ablation study by selectively removing the Zero Token (ZT) or the Gate in the FNN layer. The results, summarized in Table 5 (placeholder), highlight the individual and combined effects of these components.",
+            "The full model (ZT + Gate) achieves the highest average accuracy of 32.79%, demonstrating the complementary benefits of these two mechanisms. When the Gate is removed, the model experiences a slight performance drop, indicating that the gating mechanism refines the computation flow within the feed-forward network. Similarly, removing only the Zero Token leads to a comparable decrease in accuracy, suggesting that the Zero Token mechanism is crucial for dynamic cycle awareness. Furthermore, when both components are disabled, the model reaches its lowest performance, confirming that these mechanisms play an essential role in optimizing reasoning efficiency and predictive accuracy. These findings reinforce that the combination of Zero Token and Gate provides the best trade-off between computational efficiency and performance."
+          ]
+        }
+      ]
+    },
+    "5 Conclusion": {
+      "paragraphs": [
+        "We have presented Zero-Token Transformer, a parameter-sharing strategy for Transformers that comprehensively addresses the core questions of which layers to reuse, how to manage shared parameters, and when to stop iterating. By decoupling head and tail layers from the cyclic process and introducing a learnable Zero Token in each attention block, our approach enables adaptive computation, dynamically adjusting the number of reasoning steps based on the model’s confidence. Our experiments show that this method is effective for both training from scratch and fine-tuning pre-trained models, consistently improving performance without increasing the overall parameter budget. The Zero Token mechanism not only facilitates parameter-efficient reasoning but also provides a straightforward criterion for early exiting, thereby reducing redundant computation while preserving accuracy.",
+        "These findings highlight the potential of dynamic parameter-sharing strategies in large-scale language models, particularly in resource-constrained scenarios. We believe that further exploration of zero-token prompts, gating mechanisms, and cyclic architectures will lead to increasingly efficient and adaptive Transformer-based designs in the future."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Experimental Setup": {
+      "paragraphs": [
+        "[Table: Table 6: Fine-tuning settings for each dataset, including the number of training epochs and dataset sizes.]"
+      ],
+      "subsections": [
+        {
+          "title": "A.1 Evaluation Details",
+          "paragraphs": [
+            "To assess the effectiveness of our proposed method, we evaluate models on a diverse set of well-established NLP benchmarks. These benchmarks span four key reasoning tasks: commonsense physical reasoning, multiple-choice question answering, long-term context recall, and natural language inference. For all datasets, we report accuracy (ACC) as the primary evaluation metric.",
+            "Dataset: The Physical Interaction Question Answering (PIQA) dataset (Bisk et al., 2020) evaluates a model’s ability to reason about everyday physical interactions. It consists of multiple-choice questions that require an understanding of how objects and tools function in real-world scenarios.",
+            "Task Objective: Given a short natural language query, the model must select the most plausible solution from two candidate answers. This task assesses the model’s ability to infer practical physical knowledge beyond simple memorization.",
+            "Evaluation Metric: Accuracy (ACC), measuring the proportion of correctly predicted answers.",
+            "Dataset: The AI2 Reasoning Challenge (ARC) (Clark et al., 2018) is a standardized multiple-choice QA benchmark designed to evaluate a model’s ability to answer science-related questions. It consists of two subsets:",
+            "• ARC Challenge: A more difficult subset requiring complex reasoning and deeper knowledge retrieval.",
+            "• ARC Easy: A simpler subset containing factual questions that can often be answered with surface-level understanding.",
+            "ARC Challenge: A more difficult subset requiring complex reasoning and deeper knowledge retrieval.",
+            "ARC Easy: A simpler subset containing factual questions that can often be answered with surface-level understanding.",
+            "Task Objective: The model is provided with a science-related question and four answer choices, from which it must select the correct one. The dataset requires a combination of commonsense reasoning, logical inference, and scientific knowledge to achieve high performance.",
+            "Evaluation Metric: Accuracy (ACC), computed as the percentage of correctly answered questions.",
+            "Dataset: The LAMBADA dataset (Paperno et al., 2016) is specifically designed to assess a model’s capability for long-range context comprehension. Unlike standard language modeling tasks, LAMBADA requires a model to retain and process information over an extended passage to predict a crucial missing word.",
+            "Task Objective: Given a long contextual passage, the model must predict the final missing word of the last sentence. The difficulty arises from the fact that the target word is nearly impossible to guess without understanding the full passage.",
+            "Evaluation Metric: Accuracy (ACC), where a prediction is considered correct if the entire target word matches the ground truth exactly.",
+            "Dataset: The HellaSwag dataset (Zellers et al., 2019) is an advanced benchmark designed to evaluate commonsense inference and story continuation. It builds on the SWAG dataset by incorporating adversarial filtering, making it more challenging for models to rely on surface-level heuristics.",
+            "Task Objective: Given an incomplete story or event description , the model must select the most logical next step from four possible continuations. This requires strong contextual understanding and the ability to anticipate real-world event progressions .",
+            "Evaluation Metric: Accuracy (ACC), measuring how often the model correctly predicts the most plausible continuation."
+          ]
+        },
+        {
+          "title": "A.2 Training and Fine-Tuning Settings",
+          "paragraphs": [
+            "In this section, we describe the training settings for both pre-training from scratch and fine-tuning of pre-trained models. The fine-tuning stage is required for all models before final evaluation, while models trained from scratch undergo both pre-training and fine-tuning. The fine-tuning hyperparameters are kept consistent across both settings.",
+            "For models trained from scratch, we first conduct pre-training on the C4 English dataset (Raffel et al., 2020). The pre-training process follows these configurations:",
+            "• Dataset: The C4 (Colossal Clean Crawled Corpus) English subset.",
+            "• Computing Resources: We utilize an A800 GPU cluster for training.",
+            "• Batch Size per GPU: 80, with gradient accumulation to maintain a global batch size of 256.",
+            "• Training Steps: The model is trained for a total of 10B tokens.",
+            "• Optimizer: AdamW (loshchilov2018decoupled) with a weight decay of 0.01.",
+            "• Learning Rate: A linear warmup is applied for the first 1% of total steps, followed by a cosine decay schedule.",
+            "• Precision: Training is performed in half-precision (FP16) to optimize memory efficiency.",
+            "Dataset: The C4 (Colossal Clean Crawled Corpus) English subset.",
+            "Computing Resources: We utilize an A800 GPU cluster for training.",
+            "Batch Size per GPU: 80, with gradient accumulation to maintain a global batch size of 256.",
+            "Training Steps: The model is trained for a total of 10B tokens.",
+            "Optimizer: AdamW (loshchilov2018decoupled) with a weight decay of 0.01.",
+            "Learning Rate: A linear warmup is applied for the first 1% of total steps, followed by a cosine decay schedule.",
+            "Precision: Training is performed in half-precision (FP16) to optimize memory efficiency.",
+            "After pre-training, the models proceed to the fine-tuning stage before being evaluated on downstream tasks.",
+            "Before evaluating on the test datasets, we fine-tune our models using the corresponding training sets. For pre-trained models, only fine-tuning is performed, while models trained from scratch undergo both pre-training and fine-tuning. The fine-tuning process is conducted under the same computational settings as pre-training.",
+            "• Fine-Tuning Epochs: Each dataset is fine-tuned for 3 epochs.",
+            "• Batch Size per GPU: 20, with gradient accumulation ensuring an effective batch size of 80.",
+            "• Optimizer: AdamW with a 0.01 weight decay.",
+            "• Learning Rate: The default Hugging Face Trainer API learning rate is used.",
+            "• Prompt Engineering: We utilize prompt templates from promptsource to better adapt models to the task format.",
+            "• Computing Resources: The same A800 GPU cluster is used as in pre-training.",
+            "• Training Framework: Fine-tuning is implemented with Hugging Face’s Trainer API.",
+            "Fine-Tuning Epochs: Each dataset is fine-tuned for 3 epochs.",
+            "Batch Size per GPU: 20, with gradient accumulation ensuring an effective batch size of 80.",
+            "Optimizer: AdamW with a 0.01 weight decay.",
+            "Learning Rate: The default Hugging Face Trainer API learning rate is used.",
+            "Prompt Engineering: We utilize prompt templates from promptsource to better adapt models to the task format.",
+            "Computing Resources: The same A800 GPU cluster is used as in pre-training.",
+            "Training Framework: Fine-tuning is implemented with Hugging Face’s Trainer API.",
+            "Fine-tuning is performed on the following datasets before model evaluation. The details of each dataset, including the number of training examples, are presented in Table 6."
+          ]
+        },
+        {
+          "title": "A.3 Early-Exit Training Settings",
+          "paragraphs": [
+            "To ensure effective intermediate predictions when early-exit mechanisms are applied, we implement additional training for intermediate classifier heads. This helps maintain meaningful intermediate outputs, preventing degradation in performance due to premature exits.",
+            "• Simple Cycling: The classification head is placed only at the final output layer.",
+            "• Head-Tail Separation: The classification head is placed at both the final layer and the last shared layer before cycling begins.",
+            "Simple Cycling: The classification head is placed only at the final output layer.",
+            "Head-Tail Separation: The classification head is placed at both the final layer and the last shared layer before cycling begins.",
+            "To optimize models for early exits, we introduce additional supervision at intermediate layers. Instead of relying solely on the final output, we ensure that multiple exit points are trained effectively.",
+            "• Intermediate Supervision: The model is trained to produce meaningful predictions at designated early-exit points.",
+            "• Exit Point Optimization: Models with multiple cycling blocks undergo training to align their intermediate outputs with final predictions, improving robustness across different exit depths.",
+            "• Gradual Refinement: The early-exit heads are optimized using the same fine-tuning data, ensuring consistency across all prediction layers.",
+            "Intermediate Supervision: The model is trained to produce meaningful predictions at designated early-exit points.",
+            "Exit Point Optimization: Models with multiple cycling blocks undergo training to align their intermediate outputs with final predictions, improving robustness across different exit depths.",
+            "Gradual Refinement: The early-exit heads are optimized using the same fine-tuning data, ensuring consistency across all prediction layers.",
+            "By integrating these early-exit classifiers and fine-tuning them separately, we ensure that models can gracefully exit at earlier layers without sacrificing predictive accuracy. This design allows our method to maintain efficiency while preserving strong performance across different computational budgets."
+          ]
+        }
+      ]
+    },
+    "Appendix B More Experimental Results": {
+      "paragraphs": [
+        "To further analyze the effectiveness of our method, we present additional adaptive reasoning loop and ablation experiments in Table 8 and Table 7.",
+        "[Table: Table 7: More detailed results on adaptive reasoning loop counts. ]",
+        "[Table: Table 8: More detailed ablation study results, including the detailed outcomes of each early exit. ]"
+      ],
+      "subsections": [
+        {
+          "title": "B.1 Analysis of Adaptive Reasoning Loops",
+          "paragraphs": [
+            "Table 7 presents results on our adaptive reasoning loop mechanism, where the model dynamically determines the number of iterations based on the Zero Attention threshold (PP).",
+            "Key observations:",
+            "• Low threshold (P=0.2P=0.2) results in early exits (1.58 cycles) but slightly lower accuracy (32.42%).",
+            "• Balanced performance at P=0.5P=0.5: The model averages 3.31 cycles and reaches 33.00% accuracy, achieving strong efficiency gains.",
+            "• Higher thresholds (P=0.7P=0.7) lead to more computation (3.74 cycles) and slight accuracy gains (33.08%), but with diminishing returns.",
+            "• Full computation (P=1P=1) does not significantly outperform adaptive strategies, confirming that early exit can maintain performance.",
+            "Low threshold (P=0.2P=0.2) results in early exits (1.58 cycles) but slightly lower accuracy (32.42%).",
+            "Balanced performance at P=0.5P=0.5: The model averages 3.31 cycles and reaches 33.00% accuracy, achieving strong efficiency gains.",
+            "Higher thresholds (P=0.7P=0.7) lead to more computation (3.74 cycles) and slight accuracy gains (33.08%), but with diminishing returns.",
+            "Full computation (P=1P=1) does not significantly outperform adaptive strategies, confirming that early exit can maintain performance.",
+            "These results demonstrate that adaptive early exit strategies reduce computation while maintaining accuracy, with P=0.5P=0.5 being the most efficient trade-off."
+          ]
+        },
+        {
+          "title": "B.2 Ablation Study on Zero Token and Gating Mechanism",
+          "paragraphs": [
+            "Table 8 provides a detailed breakdown of our ablation study, evaluating the impact of the Zero Token (ZT) mechanism and the gating unit (Gate) in the feed-forward network (FNN). The results highlight the individual and combined contributions of these components.",
+            "Key findings:",
+            "• The full model (ZT + Gate) achieves the highest accuracy (32.79%), demonstrating that both components are essential.",
+            "• Removing the Gate leads to a slight performance drop (32.68%), suggesting that gating helps refine reasoning.",
+            "• Removing the Zero Token reduces accuracy further (32.63%), indicating its role in guiding iterative reasoning.",
+            "• The baseline model (without ZT and Gate) achieves the lowest accuracy (32.62%), confirming that both components contribute positively.",
+            "The full model (ZT + Gate) achieves the highest accuracy (32.79%), demonstrating that both components are essential.",
+            "Removing the Gate leads to a slight performance drop (32.68%), suggesting that gating helps refine reasoning.",
+            "Removing the Zero Token reduces accuracy further (32.63%), indicating its role in guiding iterative reasoning.",
+            "The baseline model (without ZT and Gate) achieves the lowest accuracy (32.62%), confirming that both components contribute positively.",
+            "These results validate that both Zero Token and Gate are essential for maximizing model efficiency and reasoning quality."
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "Bae et al. (2024) Bae, S., Fisch, A., Harutyunyan, H., Ji, Z., Kim, S., and Schuster, T. Relaxed recursive transformers: Effective parameter sharing with layer-wise lora. arXiv preprint arXiv:2410.20672, 2024.",
+    "Balagansky & Gavrilov (2022) Balagansky, N. and Gavrilov, D. Palbert: Teaching albert to ponder. Advances in Neural Information Processing Systems, 35:14002–14012, 2022.",
+    "Banino et al. (2021) Banino, A., Balaguer, J., and Blundell, C. Pondernet: Learning to ponder. arXiv preprint arXiv:2107.05407, 2021.",
+    "Bisk et al. (2020) Bisk, Y., Zellers, R., Gao, J., Choi, Y., et al. Piqa: Reasoning about physical commonsense in natural language. In Proceedings of the AAAI conference on artificial intelligence, volume 34, pp. 7432–7439, 2020.",
+    "Chen et al. (2023) Chen, Y., Pan, X., Li, Y., Ding, B., and Zhou, J. Ee-llm: Large-scale training and inference of early-exit large language models with 3d parallelism. arXiv preprint arXiv:2312.04916, 2023.",
+    "Chowdhury & Caragea (2024) Chowdhury, J. R. and Caragea, C. Recurrent transformers with dynamic halt. arXiv preprint arXiv:2402.00976, 2024.",
+    "Clark et al. (2018) Clark, P., Cowhey, I., Etzioni, O., Khot, T., Sabharwal, A., Schoenick, C., and Tafjord, O. Think you have solved question answering? try arc, the ai2 reasoning challenge. arXiv preprint arXiv:1803.05457, 2018.",
+    "Csordás et al. (2024) Csordás, R., Irie, K., Schmidhuber, J., Potts, C., and Manning, C. D. Moeut: Mixture-of-experts universal transformers. arXiv preprint arXiv:2405.16039, 2024.",
+    "Dabre & Fujita (2019) Dabre, R. and Fujita, A. Recurrent stacking of layers for compact neural machine translation models. In Proceedings of the AAAI Conference on Artificial Intelligence, volume 33, pp. 6292–6299, 2019.",
+    "Dehghani et al. (2018) Dehghani, M., Gouws, S., Vinyals, O., Uszkoreit, J., and Kaiser, Ł. Universal transformers. arXiv preprint arXiv:1807.03819, 2018.",
+    "Eigen et al. (2013) Eigen, D., Rolfe, J., Fergus, R., and LeCun, Y. Understanding deep architectures using a recursive convolutional network. arXiv preprint arXiv:1312.1847, 2013.",
+    "Gao et al. (2024) Gao, L., Tow, J., Abbasi, B., Biderman, S., Black, S., DiPofi, A., Foster, C., Golding, L., Hsu, J., Le Noac’h, A., Li, H., McDonell, K., Muennighoff, N., Ociepa, C., Phang, J., Reynolds, L., Schoelkopf, H., Skowron, A., Sutawika, L., Tang, E., Thite, A., Wang, B., Wang, K., and Zou, A. A framework for few-shot language model evaluation, 07 2024. URL https://zenodo.org/records/12608602.",
+    "Graves (2016) Graves, A. Adaptive computation time for recurrent neural networks. arXiv preprint arXiv:1603.08983, 2016.",
+    "Hu et al. (2021) Hu, E. J., Shen, Y., Wallis, P., Allen-Zhu, Z., Li, Y., Wang, S., Wang, L., and Chen, W. Lora: Low-rank adaptation of large language models. arXiv preprint arXiv:2106.09685, 2021.",
+    "Kim et al. (2023) Kim, D., Park, C., Kim, S., Lee, W., Song, W., Kim, Y., Kim, H., Kim, Y., Lee, H., Kim, J., et al. Solar 10.7 b: Scaling large language models with simple yet effective depth up-scaling. arXiv preprint arXiv:2312.15166, 2023.",
+    "Lan (2019) Lan, Z. Albert: A lite bert for self-supervised learning of language representations. arXiv preprint arXiv:1909.11942, 2019.",
+    "Latif et al. (2023) Latif, E., Fang, L., Ma, P., and Zhai, X. Knowledge distillation of llm for education. arXiv preprint arXiv:2312.15842, 2023.",
+    "Leviathan et al. (2023) Leviathan, Y., Kalman, M., and Matias, Y. Fast inference from transformers via speculative decoding. In International Conference on Machine Learning, pp. 19274–19286. PMLR, 2023.",
+    "Lin et al. (2024) Lin, J., Tang, J., Tang, H., Yang, S., Chen, W.-M., Wang, W.-C., Xiao, G., Dang, X., Gan, C., and Han, S. Awq: Activation-aware weight quantization for on-device llm compression and acceleration. Proceedings of Machine Learning and Systems, 6:87–100, 2024.",
+    "Liu et al. (2024) Liu, A., Feng, B., Xue, B., Wang, B., Wu, B., Lu, C., Zhao, C., Deng, C., Zhang, C., Ruan, C., et al. Deepseek-v3 technical report. arXiv preprint arXiv:2412.19437, 2024.",
+    "Liu et al. (2023) Liu, Z., Oguz, B., Zhao, C., Chang, E., Stock, P., Mehdad, Y., Shi, Y., Krishnamoorthi, R., and Chandra, V. Llm-qat: Data-free quantization aware training for large language models. arXiv preprint arXiv:2305.17888, 2023.",
+    "Ma et al. (2023) Ma, X., Fang, G., and Wang, X. Llm-pruner: On the structural pruning of large language models. Advances in neural information processing systems, 36:21702–21720, 2023.",
+    "Milbauer et al. (2023) Milbauer, J., Louis, A., Hosseini, M. J., Fabrikant, A., Metzler, D., and Schuster, T. Lait: Efficient multi-segment encoding in transformers with layer-adjustable interaction. arXiv preprint arXiv:2305.19585, 2023.",
+    "Pan et al. (2024) Pan, X., Chen, Y., Li, Y., Ding, B., and Zhou, J. Ee-tuning: An economical yet scalable solution for tuning early-exit large language models. arXiv preprint arXiv:2402.00518, 2024.",
+    "Paperno et al. (2016) Paperno, D., Kruszewski, G., Lazaridou, A., Pham, Q. N., Bernardi, R., Pezzelle, S., Baroni, M., Boleda, G., and Fernández, R. The lambada dataset: Word prediction requiring a broad discourse context. arXiv preprint arXiv:1606.06031, 2016.",
+    "Pope et al. (2023) Pope, R., Douglas, S., Chowdhery, A., Devlin, J., Bradbury, J., Heek, J., Xiao, K., Agrawal, S., and Dean, J. Efficiently scaling transformer inference. Proceedings of Machine Learning and Systems, 5:606–624, 2023.",
+    "Radford et al. (2019) Radford, A., Wu, J., Child, R., Luan, D., Amodei, D., Sutskever, I., et al. Language models are unsupervised multitask learners. OpenAI blog, 1(8):9, 2019.",
+    "Rae et al. (2021) Rae, J. W., Borgeaud, S., Cai, T., Millican, K., Hoffmann, J., Song, F., Aslanides, J., Henderson, S., Ring, R., Young, S., et al. Scaling language models: Methods, analysis & insights from training gopher. arXiv preprint arXiv:2112.11446, 2021.",
+    "Raffel et al. (2020) Raffel, C., Shazeer, N., Roberts, A., Lee, K., Narang, S., Matena, M., Zhou, Y., Li, W., and Liu, P. J. Exploring the limits of transfer learning with a unified text-to-text transformer. Journal of machine learning research, 21(140):1–67, 2020.",
+    "Rosenfeld et al. (2019) Rosenfeld, J. S., Rosenfeld, A., Belinkov, Y., and Shavit, N. A constructive prediction of the generalization error across scales. arXiv preprint arXiv:1909.12673, 2019.",
+    "Savarese & Maire (2019) Savarese, P. and Maire, M. Learning implicitly recurrent cnns through parameter sharing. arXiv preprint arXiv:1902.09701, 2019.",
+    "Sherstinsky (2020) Sherstinsky, A. Fundamentals of recurrent neural network (rnn) and long short-term memory (lstm) network. Physica D: Nonlinear Phenomena, 404:132306, 2020.",
+    "Shum et al. (2024) Shum, K., Xu, M., Zhang, J., Chen, Z., Diao, S., Dong, H., Zhang, J., and Raza, M. O. First: Teach a reliable large language model through efficient trustworthy distillation. arXiv preprint arXiv:2408.12168, 2024.",
+    "Sun et al. (2023) Sun, M., Liu, Z., Bair, A., and Kolter, J. Z. A simple and effective pruning approach for large language models. arXiv preprint arXiv:2306.11695, 2023.",
+    "Sun et al. (2024) Sun, Q., Pickett, M., Nain, A. K., and Jones, L. Transformer layers as painters. arXiv preprint arXiv:2407.09298, 2024.",
+    "Takase & Kiyono (2021) Takase, S. and Kiyono, S. Lessons on parameter sharing across layers in transformers. arXiv preprint arXiv:2104.06022, 2021.",
+    "Tan et al. (2023) Tan, S., Shen, Y., Chen, Z., Courville, A., and Gan, C. Sparse universal transformer. arXiv preprint arXiv:2310.07096, 2023.",
+    "Touvron et al. (2023) Touvron, H., Lavril, T., Izacard, G., Martinet, X., Lachaux, M.-A., Lacroix, T., Rozière, B., Goyal, N., Hambro, E., Azhar, F., et al. Llama: Open and efficient foundation language models. arXiv preprint arXiv:2302.13971, 2023.",
+    "Xia et al. (2019) Xia, Y., He, T., Tan, X., Tian, F., He, D., and Qin, T. Tied transformers: Neural machine translation with shared encoder and decoder. In Proceedings of the AAAI conference on artificial intelligence, volume 33, pp. 5466–5473, 2019.",
+    "Xu et al. (2024) Xu, M., Cai, D., Wu, Y., Li, X., and Wang, S. {\\{FwdLLM}\\}: Efficient federated finetuning of large language models with perturbed inferences. In 2024 USENIX Annual Technical Conference (USENIX ATC 24), pp. 579–596, 2024.",
+    "Zellers et al. (2019) Zellers, R., Holtzman, A., Bisk, Y., Farhadi, A., and Choi, Y. Hellaswag: Can a machine really finish your sentence? arXiv preprint arXiv:1905.07830, 2019.",
+    "Zhang et al. (2023) Zhang, S., Roller, S., Goyal, N., Artetxe, M., Chen, M., Chen, S., Dewan, C., Diab, M., Li, X., Lin, X. V., et al. Opt: Open pre-trained transformer language models, 2022. URL https://arxiv. org/abs/2205.01068, 3:19–0, 2023.",
+    "Zhou et al. (2024) Zhou, Z., Ning, X., Hong, K., Fu, T., Xu, J., Li, S., Lou, Y., Wang, L., Yuan, Z., Li, X., et al. A survey on efficient inference for large language models. arXiv preprint arXiv:2404.14294, 2024."
+  ]
+}

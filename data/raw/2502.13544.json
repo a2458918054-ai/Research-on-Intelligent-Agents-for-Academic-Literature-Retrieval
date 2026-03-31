@@ -1,0 +1,435 @@
+{
+  "title": "From Sub-Ability Diagnosis to Human-Aligned Generation: Bridging the Gap for Text Length Control viaMarkerGen",
+  "authors": "Peiwen Yuan1111Equal contribution., Chuyi Tan1111Equal contribution., Shaoxiong Feng2, Yiwei Li1, Xinglin Wang1Yueqi Zhang1, Jiayi Shi1, Boyuan Pan2, Yao Hu2, Kan Li1222Corresponding author.1School of Computer Science and Technology, Beijing Institute of Technology2Xiaohongshu Inc{peiwenyuan,tanchuyi,liyiwei,wangxinglin,zhangyq,shijiayi,likan}@bit.edu.cn{shaoxiongfeng2023,whd.thu}@gmail.com{panboyuan,xiahou}@xiaohongshu.com",
+  "abstract": "Despite the rapid progress of large language models (LLMs), their length-controllable text generation (LCTG) ability remains below expectations, posing a major limitation for practical applications. Existing methods mainly focus on end-to-end training to reinforce adherence to length constraints. However, the lack of decomposition and targeted enhancement of LCTG sub-abilities restricts further progress. To bridge this gap, we conduct a bottom-up decomposition of LCTG sub-abilities with human patterns as reference and perform a detailed error analysis. On this basis, we propose MarkerGen, a simple-yet-effective plug-and-play approach that: (1) mitigates LLM fundamental deficiencies via external tool integration; (2) conducts explicit length modeling with dynamically inserted markers; (3) employs a three-stage generation scheme to better align length constraints while maintaining content quality. Comprehensive experiments demonstrate that MarkerGen significantly improves LCTG across various settings, exhibiting outstanding effectiveness and generalizability.111Our code have been released on https://github.com/chuyi369/MarkerGen..",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "As a fundamental attribute of text generation, ensuring controllability over text length is of great importance (Liang et al., 2024). Different text types (e.g., summary, story), user needs (e.g., preference for detailed or concise writing), and external requirements (e.g., social media character limits) shape varied length constraints, which are widely present in real-world scenarios (Zhang et al., 2023a). With the rapid development of LLMs, their expanding range of applications has made length-controllable text generation (LCTG) even more crucial in current era (Foster et al., 2024; Gu et al., 2024b).",
+        "However, the ongoing enhancements in LLM capabilities have yet to deliver the expected performance in LCTG while ensuring semantic integrity Foster et al. (2024); Wang et al. (2024); Song et al. (2024). Yuan et al. (2024) reports that even advanced LLMs (e.g., GPT-4 Turbo (OpenAI, 2023)) violate the given length constraints almost 50% of the time. To address this, training-based methods (Park et al., 2024; Yuan et al., 2024; Jie et al., 2023; Li et al., 2024b) have been studied to reinforce LLMs’ adherence to length constraints, yet they face two key challenges: (1) Limited generalization: Since text types are diverse and length constraints vary widely (e.g., ranging from an exact 500 words to coarse intervals like 500–600 words or below 500 words), training-based methods often fail to generalize effectively across different settings, as demonstrated in Appendix E.1. (2) Inferior controllability: These methods strengthen LCTG by enforcing implicit length modeling during generation in a top-down manner via training, lacking the decomposition and targeted enhancement of LCTG sub-capabilities, thereby limiting their progress (Retkowski and Waibel, 2024).",
+        "To fill this gap, we take humans as a reference and conduct a bottom-up decomposition of sub-capabilities for LCTG. When writing a 500-word story, humans typically begin by planning the content and word allocation for each section. During writing, they continuously track the word count and compose the text in alignment with the plan. This process progressively tests four key abilities: (1) Identifying and splitting the words correctly. (2) Counting the words precisely. (3) Planning the word counts of each part to meet the length constraints. (4) Aligning the generated text with length constraints while ensuring semantic integrity.",
+        "On this basis, we conduct a decoupled error analysis of LCTG. The experimental results indicate that counting error>perception error>aligning error≫planning error\\text{counting error}>\\text{perception error}>\\text{aligning error}\\gg\\text{planning error}. This suggests that deficiencies in fundamental capabilities are the primary cause of LCTG’s inferior performance. Meanwhile, it further explains why training-based approaches struggle to enhance LCTG effectively, as they are unable to provide fine-grained supervision signals for these fundamental capabilities.",
+        "Building upon this, we propose MarkerGen, a simple-yet-effective, plug-and-play method for achieving high-quality LCTG. Specifically, to address LLMs’ weaknesses in identifying and counting, we integrate external tokenizer and counter to track exact length information. To effectively convey these information to LLMs, we design an decaying interval insertion strategy that dynamically injects length markers during the generation process, enabling explicit length modeling while minimizing disruptions to semantic modeling. Furthermore, to mitigate alignment issues, we propose a three-stage decoupled generation paradigm that decouples semantic constraints from length constraints, ensuring that length constraints are better met without compromising content quality.",
+        "We conduct experiments with five LLMs on five benchmarks to validate the generalizability of MarkerGen, covering cross-task (summarization, story generation, QA, heuristic generation), cross-scale (from 10+ to 1000+ words), cross-lingual (English and Chinese) and cross-granularity (precise and rough constraints) settings. Experimental results demonstrate that under precise length constraints, MarkerGen reduces length errors by 12.57% compared to baselines (with an average absolute error of 5.57%), while achieving higher quality scores and incurring only 67.6% of the cost. In range-based length constraints, MarkerGen achieves a 99% acceptance rate, further validating its effectiveness. Finally, we probe into the working mechanism of MarkerGen through attention analysis: shallow layers primarily handle length modeling through markers, whereas deeper layers concentrate more on semantic modeling."
+      ],
+      "subsections": []
+    },
+    "2 Preliminaries": {
+      "paragraphs": [
+        "We model the LCTG process of LLMs by drawing an analogy to human patterns in this task. Specifically, the model first performs content and length planning based on task requirements and length constraints. Under this plan, the semantic space expands progressively at the word level during generation, accompanied by an implicit counting process. Meanwhile, length estimation acts as a real-time constraint, dynamically regulating further extension. Ultimately, the model strives to align the length constraints while preserving semantic integrity. From this perspective, the overall LCTG ability of LLMs can be systematically decomposed in a bottom-up manner into Identifying, Counting, Planning, and Aligning sub-capabilities (Figure 1). Below we explore LLMs’ mastery of these abilities through detailed error analysis on TruthfulQA dataset (Lin et al., 2021)."
+      ],
+      "subsections": [
+        {
+          "title": "2.1 Identifying Error",
+          "paragraphs": [
+            "Identifying error refers to the misidentification of fundamental length units (e.g., words), leading to discrepancies between the model’s estimated and actual text length. To systematically analyze this error, we instruct the model to recognize the length units of given text one by one. If we define a word as the length unit, the model should output like: “The [1 word] quick [2 words] fox [3 words] ...”. On this basis, we calculate the identifying error rate eIe_{\\text{I}} as follows:",
+            "where Npred1N_{\\mathrm{pred}}^{\\mathrm{1}} is the model’s predicted final count with 1 as count interval, and NtrueN_{\\mathrm{true}} is the actual count. We subtract the error rate obtained when replacing each word with the letter “A” (which barely assess the identifying ability) from eIe_{\\text{I}} to further eliminate the influence of other potential factors. We explore the word and token as length unit respectively, as shown in Figure 2.",
+            "LLMs exhibit notable eIe_{\\text{I}} with both word and token as unit, showcasing their deficiencies in fundamental identifying ability.",
+            "Word yields lower eIe_{\\text{I}} than token, indicating that LLMs conduct length modeling primarily based on semantic perception rather than decoding mechanics."
+          ]
+        },
+        {
+          "title": "2.2 Counting Error",
+          "paragraphs": [
+            "Counting error refers to the inaccurate enumeration of length units in a given sequence, leading to deviations from the intended length. We analyze this error by prompting LLMs to count sequences with varied interval nn. The case of n=1n=1 corresponds to identifying error (see §2.1). A larger nn poses a greater challenge for counting accuracy. To decompose counting error from identifying error, we calculate eCne_{\\text{C}}^{n} as follows:",
+            "Since LLMs exhibit negligible identifying error at the letter level (Figure 2), error of counting letter serves as a direct measure of pure counting ability. We also include a commonly used baseline where the LLMs conduct implicit counting (directly output the length of the entire given text). The results are shown in Figure 2.",
+            "Naive implicit counting can lead to significant errors.",
+            "Explicit counting combined with fine-grained intervals leads to better length modeling. At smaller nn, the error of explicit counting is significantly lower than that of implicit counting."
+          ]
+        },
+        {
+          "title": "2.3 Planning Error",
+          "paragraphs": [
+            "Planning error refers to the misallocation of word counts across different sections, leading to a discrepancy from target length. For given query and precise length constraint NtargetN_{\\mathrm{target}}, we prompt LLMs to explicitly plan both content and length for each part of the response. We assess the quality 222We use Qwen-Plus (Yang et al., 2024) as the judge with a scoring range of [1, 5]. See corresponding prompts in Appendix B.3 of the plan sPs_{\\text{P}}, and calculate the planning error rate ePe_{\\text{P}} as:",
+            "where NplanN_{\\mathrm{plan}} denotes the total word count allocated by the model. Meanwhile, we calculate the reduction in final length error (Δ​E\\Delta E) and the improvement in content quality (Δ​S\\Delta S) achieved by planning followed by generation compared to direct generation. The results are shown in Table 1.",
+            "LLMs exhibit strong planning ability. The generated plan effectively meets the length constraints while achieving a quality score of around 4, demonstrating well-structured content allocation.",
+            "Planning before generation brings better results. Compared to direct generation, executing planning and generating sequentially for decomposition reduces length deviations while enhancing semantic quality."
+          ]
+        },
+        {
+          "title": "2.4 Aligning Error",
+          "paragraphs": [
+            "Aligning error refers to the discrepancy between the model’s perceived length and the target length, arising from the challenge of maintaining semantic integrity while adhering to length constraints. We calculate aligning error as follows:",
+            "where NprednN^{n}_{\\mathrm{pred}} represents the model’s perceived length with counting interval nn, i.e., the length the model assumes it has generated. We calculate and show the eAne_{A}^{n} in Figure 4.",
+            "Smaller counting intervals introduce greater aligning error. By closely analyzing cases, we find that frequent explicit counting interferes with semantic modeling, causing early termination of generation and poor alignment. In contrast, larger length intervals approximate implicit counting, preserving a more natural generation process."
+          ]
+        },
+        {
+          "title": "2.5 LCTG Error",
+          "paragraphs": [
+            "LCTG error refers to the discrepancy between the actual length of generated text and the target length:",
+            "As established above, this error is systematically composed of four components: Identifying Error (§2.1), Counting Error (§2.2), Planning Error (§2.3), and Aligning Error (§2.4). To investigate the key factors influencing LLMs’ LCTG error, we calculate their absolute contributions e˙in\\dot{e}_{i}^{n} under different length interval nn as follows:",
+            "The results are shown in Figure 3. Further details can be found in B.",
+            "LCTG error is primarily attributed to fundamental deficiencies in length modeling, following the order of Counting Error >> Perception Error >> Aligning Error ≫\\gg Planning Error. Thus, as counting interval increases, the accumulation of counting errors leads to a corresponding rise in LCTG error."
+          ]
+        }
+      ]
+    },
+    "3 Methodology": {
+      "paragraphs": [
+        "Based on the analyses and findings above, we propose MarkerGen, a simple-yet-effective plug-and-play method to help LLMs attain better LCTG performance, as shown in Figure 5. This method consists of two key modules: (1) Auxiliary Marker Insertion Decoding mechanism, which explicitly enhances length modeling during generation; (2) Three-Stage Decoupled Generation scheme, which decouples length constraints from semantic content generation to further improve LCTG performance."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Auxiliary Marker Insertion Decoding",
+          "paragraphs": [
+            "Our analysis in §2 reveals that LLMs exhibit significant identifying and counting errors, which directly contribute to inaccuracies in length modeling. To mitigate these fundamental deficiencies, we introduce external tokenizer and counter for unit recognition and counting, respectively. As Finding 1 indicates that LLMs perceive words better than tokens, we select words as the length unit.",
+            "With precise length information, we consider feeding it into the model for length modeling. Since Finding 3 indicates that LLMs’ inherent implicit length modeling leads to significant errors and is inconvenient for incorporating external length information, we actively insert precise length markers during generation to enable explicit length modeling:",
+            "where P​(xt+1|x≤t)P(x_{t+1}|x_{\\leq t}) is the LLM’s probability distribution for next token, Marker defines the marker format (e.g., [20 words], we discuss the effects of varied marker formats in Appendix C.1), 𝒮\\mathcal{S} is the strategy that determines whether to insert a marker based on current length Len​(x)\\text{Len}(x) and target length NN. By treating the inserted markers as anchors, LLMs can continuously adjust the expected length of content to be generated during the generation process, thereby reducing the final LCTG error.",
+            "The most naive insertion strategy involves placing markers at uniform intervals, which we denote as 𝒮u​n​i\\mathcal{S}_{uni}. However, according to Findings 4 and 7, a smaller insertion interval nn improves length modeling but compromises semantic modeling, whereas a larger nn exhibits the opposite effect. Considering this, we propose a strategy 𝒮d​e​c\\mathcal{S}_{dec}, where nn decays exponentially during the generation process:",
+            "Taking N=200N=200 as an example, the maker will be inserted behind the 100th, 150th, 175th, … words. At the early stage of generation, the model primarily focuses on semantic modeling. As the generation progresses, it increasingly emphasizes length control, ultimately leading to a smaller LCTG error. Consequently, 𝒮d​e​c\\mathcal{S}_{dec} effectively balances semantic modeling and length modeling."
+          ]
+        },
+        {
+          "title": "External Tool Invocation.",
+          "paragraphs": [
+            "Our analysis in §2 reveals that LLMs exhibit significant identifying and counting errors, which directly contribute to inaccuracies in length modeling. To mitigate these fundamental deficiencies, we introduce external tokenizer and counter for unit recognition and counting, respectively. As Finding 1 indicates that LLMs perceive words better than tokens, we select words as the length unit."
+          ]
+        },
+        {
+          "title": "Length Information Injection.",
+          "paragraphs": [
+            "With precise length information, we consider feeding it into the model for length modeling. Since Finding 3 indicates that LLMs’ inherent implicit length modeling leads to significant errors and is inconvenient for incorporating external length information, we actively insert precise length markers during generation to enable explicit length modeling:",
+            "where P​(xt+1|x≤t)P(x_{t+1}|x_{\\leq t}) is the LLM’s probability distribution for next token, Marker defines the marker format (e.g., [20 words], we discuss the effects of varied marker formats in Appendix C.1), 𝒮\\mathcal{S} is the strategy that determines whether to insert a marker based on current length Len​(x)\\text{Len}(x) and target length NN. By treating the inserted markers as anchors, LLMs can continuously adjust the expected length of content to be generated during the generation process, thereby reducing the final LCTG error."
+          ]
+        },
+        {
+          "title": "Decaying Interval Marker Insertion Strategy.",
+          "paragraphs": [
+            "The most naive insertion strategy involves placing markers at uniform intervals, which we denote as 𝒮u​n​i\\mathcal{S}_{uni}. However, according to Findings 4 and 7, a smaller insertion interval nn improves length modeling but compromises semantic modeling, whereas a larger nn exhibits the opposite effect. Considering this, we propose a strategy 𝒮d​e​c\\mathcal{S}_{dec}, where nn decays exponentially during the generation process:",
+            "Taking N=200N=200 as an example, the maker will be inserted behind the 100th, 150th, 175th, … words. At the early stage of generation, the model primarily focuses on semantic modeling. As the generation progresses, it increasingly emphasizes length control, ultimately leading to a smaller LCTG error. Consequently, 𝒮d​e​c\\mathcal{S}_{dec} effectively balances semantic modeling and length modeling."
+          ]
+        },
+        {
+          "title": "3.2 Three-Stage Decoupled Generation",
+          "paragraphs": [
+            "Finding 7 validates that aligning error primarily arises from the inferior semantic modeling, which causes premature termination of the generation process. While the planning before generation scheme alleviates interference in semantic modeling by decoupling the planning process (Finding 6), it still entangles length modeling with semantic modeling. To mitigate this, we introduce a three-stage decoupled generation scheme to further reduce the alignment error and improve the text quality, as illustrated in Figure 5.",
+            "The model generates a reasonable plan based on the input query and length constraints, including the content of each section and the word allocation.",
+            "The model focuses on semantic modeling to generate a high-quality response per the plan without being strictly required to adhere to length constraints.",
+            "Responses generated in stage two are usually of high quality but may not meet length restrictions. To refine them, we use these non-compliant responses as input and apply the Auxiliary Marker Insertion Decoding mechanism for rewriting. The rewriting requirements include: (1) Retaining the high-quality semantic modeling of the input content. (2) Strictly adhering to the specified length constraints. In terms of workflow, the model is required to: (1) Firstly analyze the previous stage’s response for potential improvements; (2) If its output does not meet the length constraints, it will be regenerated up to TT times or until the constraints are met.",
+            "See Appendix 2 for prompts of each stage. "
+          ]
+        },
+        {
+          "title": "Stage One: Planning.",
+          "paragraphs": [
+            "The model generates a reasonable plan based on the input query and length constraints, including the content of each section and the word allocation."
+          ]
+        },
+        {
+          "title": "Stage Two: Ensuring Semantic Integrity.",
+          "paragraphs": [
+            "The model focuses on semantic modeling to generate a high-quality response per the plan without being strictly required to adhere to length constraints."
+          ]
+        },
+        {
+          "title": "Stage Three: Aligning Length Constraints.",
+          "paragraphs": [
+            "Responses generated in stage two are usually of high quality but may not meet length restrictions. To refine them, we use these non-compliant responses as input and apply the Auxiliary Marker Insertion Decoding mechanism for rewriting. The rewriting requirements include: (1) Retaining the high-quality semantic modeling of the input content. (2) Strictly adhering to the specified length constraints. In terms of workflow, the model is required to: (1) Firstly analyze the previous stage’s response for potential improvements; (2) If its output does not meet the length constraints, it will be regenerated up to TT times or until the constraints are met.",
+            "See Appendix 2 for prompts of each stage. "
+          ]
+        }
+      ]
+    },
+    "4 Experiments": {
+      "paragraphs": [
+        "We conduct comprehensive experiments to examine MarkerGen. Specifically, we validate its effectiveness in §4.2, analyze its generalizability in §4.3, explore the impact of its key components in §4.4, and provide further insights into its mechanism in §4.5. Hyperparameter choices and additional analyses are provided in Appendix E."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Experimental Settings",
+          "paragraphs": [
+            "We choose five benchmarks for experiments, where HelloBench includes two subsets, as shown in Table 2. See details in Appendix D.",
+            "• Ruler (Li et al., 2024b): A training-based333Ruler is the only training-based baseline for which we can find that releases the code and training set. method that defines length control templates to regulate generation at the range level.",
+            "• Implicit (Bai et al., 2024): Conduct a plan-and-generate process without explicit counting. To ensure a fair comparison, the model generates multiple responses until token count outperforms MarkerGen and the candidate with the smallest LCTG error is selected.",
+            "Ruler (Li et al., 2024b): A training-based333Ruler is the only training-based baseline for which we can find that releases the code and training set. method that defines length control templates to regulate generation at the range level.",
+            "Implicit (Bai et al., 2024): Conduct a plan-and-generate process without explicit counting. To ensure a fair comparison, the model generates multiple responses until token count outperforms MarkerGen and the candidate with the smallest LCTG error is selected.",
+            "We conduct extensive experiments using Qwen2.5 series (Qwen2.5-7B/14B/32B-Instruct) (Yang et al., 2024) and the Llama3.1 series (Llama-3.1-8B/70B-Instruct) (Dubey et al., 2024), with sampling temperature as 0.5. We experiment under coarse-grained length constraints on the Open-ended QA subset of HelloBench and assess the LCTG error rate under precise length constraints on other benchmarks, following Eq. (6). To evaluate the text quality, we use GPT-4o mini (Hurst et al., 2024) as the judge, with a calibration algorithm to mitigate the length bias (Zheng et al., 2023) (See details in Appendix E). For precise constraints, we set the length of ground truth response as desired target length. We run each setting for three times and report the average results."
+          ]
+        },
+        {
+          "title": "Benchmarks",
+          "paragraphs": [
+            "We choose five benchmarks for experiments, where HelloBench includes two subsets, as shown in Table 2. See details in Appendix D."
+          ]
+        },
+        {
+          "title": "Baselines",
+          "paragraphs": [
+            "• Ruler (Li et al., 2024b): A training-based333Ruler is the only training-based baseline for which we can find that releases the code and training set. method that defines length control templates to regulate generation at the range level.",
+            "• Implicit (Bai et al., 2024): Conduct a plan-and-generate process without explicit counting. To ensure a fair comparison, the model generates multiple responses until token count outperforms MarkerGen and the candidate with the smallest LCTG error is selected.",
+            "Ruler (Li et al., 2024b): A training-based333Ruler is the only training-based baseline for which we can find that releases the code and training set. method that defines length control templates to regulate generation at the range level.",
+            "Implicit (Bai et al., 2024): Conduct a plan-and-generate process without explicit counting. To ensure a fair comparison, the model generates multiple responses until token count outperforms MarkerGen and the candidate with the smallest LCTG error is selected."
+          ]
+        },
+        {
+          "title": "Details",
+          "paragraphs": [
+            "We conduct extensive experiments using Qwen2.5 series (Qwen2.5-7B/14B/32B-Instruct) (Yang et al., 2024) and the Llama3.1 series (Llama-3.1-8B/70B-Instruct) (Dubey et al., 2024), with sampling temperature as 0.5. We experiment under coarse-grained length constraints on the Open-ended QA subset of HelloBench and assess the LCTG error rate under precise length constraints on other benchmarks, following Eq. (6). To evaluate the text quality, we use GPT-4o mini (Hurst et al., 2024) as the judge, with a calibration algorithm to mitigate the length bias (Zheng et al., 2023) (See details in Appendix E). For precise constraints, we set the length of ground truth response as desired target length. We run each setting for three times and report the average results."
+          ]
+        },
+        {
+          "title": "4.2 Main Results",
+          "paragraphs": [
+            "As shown in Table 3, the commonly used two-stage implicit counting baseline results in a substantial LCTG error rate EE of 18.32% on average, even if the best response is chosen across multiple attempts. This intuitively demonstrates the impact of the inherent limitations of LLM’s LCTG sub-capability. The training-based baseline Ruler, as observed in our preliminary experiments (Appendix E.1), benefits from training on test sets that matches the training domain, while performs poorly on our evaluated benchmarks, highlighting its limited generalizability. In comparison, under strict length constraints, MarkerGen achieves an absolute reduction of 12.57% in EE relative to the implicit baseline, bringing the final error down to just 5.57%. In terms of text quality, by decoupling length modeling and semantic modeling during the generation process and employing the decaying insertion strategy to minimize the damage caused by length constraints to semantic integrity, MarkerGen achieves a higher SS in average. Meanwhile, this performance is achieved with only 64% of the tokens used by the baseline."
+          ]
+        },
+        {
+          "title": "4.3 Generalizability",
+          "paragraphs": [
+            "Table 3 demonstrates the strong generalizability of MarkerGen to LLMs and generation tasks. ",
+            "Table 3 also shows MarkerGen’s strong performance across benchmarks with varying length scale (18–1450). To further investigate, we analyze progressively increasing the target length from 100 to 400. The results in Table 4 show a declining trend in MarkerGen’s error rate, which can be attributed to the auxiliary marker insertion decoding mechanism that prevents error accumulation from implicit modeling.",
+            "In addition to exact length constraints, users may impose range-based limits. We evaluate ErE_{r}, the proportion of responses violating these constraints. Table 4 shows that MarkerGen maintains an ErE_{r} below 3% in all cases, significantly lower than the baseline.",
+            "We further validate the effectiveness of MarkerGen in Chinese setting on GAOKAO benchmark, as shown in Table 8."
+          ]
+        },
+        {
+          "title": "Across LLMs and Tasks.",
+          "paragraphs": [
+            "Table 3 demonstrates the strong generalizability of MarkerGen to LLMs and generation tasks. "
+          ]
+        },
+        {
+          "title": "Across Length Scale.",
+          "paragraphs": [
+            "Table 3 also shows MarkerGen’s strong performance across benchmarks with varying length scale (18–1450). To further investigate, we analyze progressively increasing the target length from 100 to 400. The results in Table 4 show a declining trend in MarkerGen’s error rate, which can be attributed to the auxiliary marker insertion decoding mechanism that prevents error accumulation from implicit modeling."
+          ]
+        },
+        {
+          "title": "Across Constraint Types.",
+          "paragraphs": [
+            "In addition to exact length constraints, users may impose range-based limits. We evaluate ErE_{r}, the proportion of responses violating these constraints. Table 4 shows that MarkerGen maintains an ErE_{r} below 3% in all cases, significantly lower than the baseline."
+          ]
+        },
+        {
+          "title": "Across Lingual.",
+          "paragraphs": [
+            "We further validate the effectiveness of MarkerGen in Chinese setting on GAOKAO benchmark, as shown in Table 8."
+          ]
+        },
+        {
+          "title": "4.4 Ablation Studies",
+          "paragraphs": [
+            "In this section, we validate the effectiveness of each module in MarkerGen with Qwen2.5-32B-Instruct on TruthfulQA, as shown in Table 5.",
+            "When the model is required to insert markers independently without relying on an external tokenizer and counter, its fundamental limitations lead to a significant increase in the error rate, exceeding 15%.",
+            "When using a fixed marker insertion interval nn, since length control is inversely proportional to nn, while semantic modeling is directly proportional to nn (which induces alignment errors), we observe unstable LCTG error rate. In contrast, by adopting a sparse-to-dense insertion approach, the Decaying Interval Marker Insertion strategy ensures explicit length modeling while maximizing semantic integrity, leading to lower EE and superior SS.",
+            "The introduction of explicit length markers in the two-stage scheme leads to a substantial reduction in LCTG error relative to the implicit baseline (8.7 → 2.66). However, this scheme places greater emphasis on length modeling, which consequently diminishes text quality (4.45 → 4.28). In comparison, the three-stage scheme achieves a better balance by decoupling semantic and length modeling, thereby improving both length control and text quality."
+          ]
+        },
+        {
+          "title": "Tool Invocation.",
+          "paragraphs": [
+            "When the model is required to insert markers independently without relying on an external tokenizer and counter, its fundamental limitations lead to a significant increase in the error rate, exceeding 15%."
+          ]
+        },
+        {
+          "title": "Decaying Interval Marker Insertion.",
+          "paragraphs": [
+            "When using a fixed marker insertion interval nn, since length control is inversely proportional to nn, while semantic modeling is directly proportional to nn (which induces alignment errors), we observe unstable LCTG error rate. In contrast, by adopting a sparse-to-dense insertion approach, the Decaying Interval Marker Insertion strategy ensures explicit length modeling while maximizing semantic integrity, leading to lower EE and superior SS."
+          ]
+        },
+        {
+          "title": "Three-Stage Decoupled Generation.",
+          "paragraphs": [
+            "The introduction of explicit length markers in the two-stage scheme leads to a substantial reduction in LCTG error relative to the implicit baseline (8.7 → 2.66). However, this scheme places greater emphasis on length modeling, which consequently diminishes text quality (4.45 → 4.28). In comparison, the three-stage scheme achieves a better balance by decoupling semantic and length modeling, thereby improving both length control and text quality."
+          ]
+        },
+        {
+          "title": "4.5 Working Mechanism ofMarkerGen",
+          "paragraphs": [
+            "To better understand how LLMs leverage the inserted length markers in MarkerGen, we visualize the attention matrices of the first and last layers of Llama-3.1-8b-Instruct (Figure 6). In the shallow layers, the attention distribution reveals a clear focus on the length information represented by the length markers (in the red box). As the model progresses to the deeper layers, attention shifts from the length information to the adjacent semantic content (in the orange box). This pattern demonstrates that at shallow layers, the model uses markers to establish length modeling and encode precise length information. At deeper layers, it relies on this length information for semantic modeling, producing tokens that align with the length constraints while maintaining semantic integrity."
+          ]
+        }
+      ]
+    },
+    "Conclusions": {
+      "paragraphs": [
+        "To improve the performance of LLMs in length-controllable text generation, we conduct a bottom-up error analysis of relevant sub-abilities. The results reveal that deficiencies in identifying, counting, and aligning are key limitations. To fill this gap, we propose MarkerGen, which leverages external tools to compensate for fundamental deficiencies. Additionally, it introduces Decaying Interval Marker Insertion Strategy to facilitate explicit length modeling and employs Three-Stage Decoupled Generation mechanism to balance semantic coherence and length control. Comprehensive experiments demonstrate the strong generalizability and effectiveness of MarkerGen in enhancing length control and preserving semantic integrity."
+      ],
+      "subsections": []
+    },
+    "Limitations": {
+      "paragraphs": [
+        "In this work, we conduct a bottom-up sub-capability analysis in the LCTG ability and propose the MarkerGen method, achieving strong LCTG performance. One major limitation of MarkerGen is that it is currently only applicable to open-source models and cannot yet be used with closed-source models. To address this, we will release our code, allowing closed-source model providers interested in adapting MarkerGen to benefit from our method in enhancing LCTG performance."
+      ],
+      "subsections": []
+    },
+    "Ethics Statement": {
+      "paragraphs": [
+        "All of the datasets used in this study were publicly available, and no annotators were employed for our data collection. We confirm that the datasets we used did not contain any harmful content and was consistent with their intended use (research). We have cited the datasets and relevant works used in this study."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Related Work": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "LCTG Methods",
+          "paragraphs": [
+            "Text length is a fundamental aspect of natural language that carries semantic information, making LCTG a task of balancing length and semantic constraints. Achieving precise length control remains a challenge for LLMs due to limitations in their architecture, such as position encoding (Butcher et al., 2024; Kazemnejad et al., 2024; Chang and Bisk, 2024) and decoding mechanisms(Huang et al., 2025). Consequently, existing methods focus on injecting length information to help LLMs model length accurately, which can be categorized into training-based and inference-based approaches.",
+            "Training-based methods inject varying levels of length signals during fine-tuning or reinforcement learning. For instance, Jie et al. (2023); Li et al. (2024b) use prompt templates to teach LLMs the mapping between length and textual content, while Song et al. (2024); Wang et al. (2024) design fine-grained datasets to guide correct length modeling. Other methods, like Yuan et al. (2024); Jie et al. (2023), utilize reward functions to align length preferences during training. While effective in certain scenarios, these methods suffer from limited generalization across diverse LCTG tasks, including varying length constraints and instructions.Inference-based methods adjust inputs multiple times during generation to inject, such as through prompt-based Automated Revisions and Sample Filtering (Retkowski and Waibel, 2024; Juseon-Do et al., 2024), or length-controlled importance sampling during decoding (Gu et al., 2024b). Although these approaches can better generalize length alignment, they still struggle with achieving precise control.",
+            "While both approaches enhance LCTG, they often apply a top-down strategy that lacks deep understanding and targeted enhancement of LCTG sub-capabilities. This limits progress in meeting length constraints accurately. Furthermore, many methods neglect semantic constraints, and injecting length information may degrade text quality. Therefore, we propose MarkerGen to bridge this gap for precise length control and preserving semantic integrity."
+          ]
+        }
+      ]
+    },
+    "Appendix B Detailed Sub-ability Error analyses in LCTG": {
+      "paragraphs": [
+        "[Figure: Figure 7: Schematic diagram of counting experiment under the condition of n=1n=1]",
+        "[Figure: Figure 8: Error analyses of fundamental abilities in LCTG on CNN/DailyMail.]",
+        "[Figure: Figure 9: Absolute contribution of LCTG sub-capability deficiency of GPT 4o-mini.]"
+      ],
+      "subsections": [
+        {
+          "title": "B.1 Identifying Error",
+          "paragraphs": [
+            "Identifying error refers to the misidentification of fundamental length units. To systematically analyze this error, we design a counting experiment in which the model is prompted to sequentially recognize and accumulate length units, then compare its predicted count with the ground truth. Experimental results confirm that in the one-by-one accumulation setting, counting errors do not occur, meaning that the final length error entirely arises from identifying error (as shown in Figure 7)."
+          ]
+        },
+        {
+          "title": "B.2 Counting Error",
+          "paragraphs": [
+            "Counting error refers to the inaccurate enumeration of units in a given sequence, leading to deviations from the intended length. Therefore, in the setting where n>1n>1 in the counting experiment, the final counting result error is caused by both identifying error and counting error. In this case, counting error can be decoupled by resolving identifying errors in the accumulation process, where errors result from the accumulation step.We also conducted the same counting experiment as in Section 2.2 on the CNN/DailyMail summarization dataset, as shown in Figures 8.",
+            "From the figure, we can further validate the same conclusions as in Findings 1, 2, 3, and 4 in Section 2, revealing that the length errors in the generated results of the LCTG task stem from significant errors in the LLM’s perception and modeling of length."
+          ]
+        },
+        {
+          "title": "B.3 Planning Error",
+          "paragraphs": [
+            "Planning error refers to the misallocation of word counts across different sections, leading to a discrepancy from target length.The planning ability of LLMs encompasses not only length planning but also semantic planning. To effectively assess the quality of LLM’s semantic planning, we use Qwen-Plus (Yang et al., 2024) as the judge, with a scoring range of [1, 5]. The specific evaluation prompt is as follows:",
+            "• 5: Outstanding - The plan is highly truthful, logically coherent, and perfectly adheres to the prompt and instructions.",
+            "• 4: Very Good - The plan is mostly truthful and coherent, with only minor issues in details or adherence to instructions.",
+            "• 3: Good - The plan is acceptable but has noticeable shortcomings in truthfulness or coherence.",
+            "• 2: Poor - The plan has significant issues in truthfulness or logical coherence and does not adequately follow the instructions.",
+            "• 1: Unacceptable - The plan is largely untruthful, incoherent, or fails to follow the prompt instructions entirely.",
+            "5: Outstanding - The plan is highly truthful, logically coherent, and perfectly adheres to the prompt and instructions.",
+            "4: Very Good - The plan is mostly truthful and coherent, with only minor issues in details or adherence to instructions.",
+            "3: Good - The plan is acceptable but has noticeable shortcomings in truthfulness or coherence.",
+            "2: Poor - The plan has significant issues in truthfulness or logical coherence and does not adequately follow the instructions.",
+            "1: Unacceptable - The plan is largely untruthful, incoherent, or fails to follow the prompt instructions entirely.",
+            "Since the LCTG task requires meeting both length and semantic constraints, utilizing the LLM’s superior planning ability for explicit planning before generation, as opposed to direct generation, helps to clearly define the modeling space for length and the semantic extension range. This not only contributes to improved text generation quality but also reduces length errors.",
+            "[Figure: Figure 8: Error analyses of fundamental abilities in LCTG on CNN/DailyMail.]",
+            "[Figure: Figure 9: Absolute contribution of LCTG sub-capability deficiency of GPT 4o-mini.]"
+          ]
+        },
+        {
+          "title": "B.4 Aligning Error",
+          "paragraphs": [
+            "Aligning error refers to the discrepancy between the model’s perceived length and the target length, arising from the challenge of maintaining semantic integrity while adhering to length constraints.As shown in Figure 4, aside from Finding 7, we observe significant differences in aligning error across models. Qwen2.5-32B-Instruct and GPT-4o mini exhibit larger alignment errors under fine-grained length modeling. As discussed in Section 2, “length estimation acts as a real-time constraint, dynamically regulating further extension. Ultimately, the model strives to align the length constraints while preserving semantic integrity.” High-frequency length perception updates pose greater challenges for the natural expansion of the semantic space, which explains why some models with weaker robustness in semantic expansion show significant alignment errors. These errors become a primary source of LCTG inaccuracies (as shown in Figure 9). This further emphasizes that LCTG is a task of balancing length and semantic constraints."
+          ]
+        },
+        {
+          "title": "B.5 LCTG Error",
+          "paragraphs": [
+            "Based on the above decomposition of sub-abilities in LCTG and the corresponding error analysis, we can clearly quantify the contribution of each decoupled error to the final LCTG error. As shown in Figure 1, the quantification results in the right figure represent the average values of four models under various n conditions. The conclusion we can draw is that the primary cause of significant length errors in current mainstream LLMs on LCTG tasks is the lack of bottom-up identification and counting capabilities required for accurate length modeling."
+          ]
+        }
+      ]
+    },
+    "Appendix C Exploration of Interval Marker Insertion Strategy Variants": {
+      "paragraphs": [
+        "[Table: Table 6: Comparison of Length Marker Forms and Their Performance]"
+      ],
+      "subsections": [
+        {
+          "title": "C.1 Length Marker Forms",
+          "paragraphs": [
+            "We explored the impact of different forms of length marker insertion on performance, such as the number of words generated \"[k]\", the semantic marker \"[k words]\", and the remaining words to be generated \"[ NtargetN_{\\mathrm{target}} - k]\" (remaining words). As shown in Table 6, we used Llama-3.1-8B-Instruct on the CNN/DailyMail dataset to investigate the effects of various marker forms under multiple nn conditions on generation error and text quality. The results show that using a semantic length marker representing the number of words generated achieved the best performance in both length error and text quality."
+          ]
+        }
+      ]
+    },
+    "Appendix D Detailed Benchmarks Introduction": {
+      "paragraphs": [
+        "The benchmarks used in our experiments are as follows:",
+        "• CNN/DailyMail(Nallapati et al., 2016): A summarization dataset of news articles, with 500 randomly sampled items. (18–165 words)",
+        "• HANNA(Chhun et al., 2022): A long-form story generation dataset with 200 selected items. (139–995 words)",
+        "• TruthfulQA(Lin et al., 2021): A benchmark for factual accuracy in open-domain QA. (101–294 words)",
+        "• HelloBench(Que et al., 2024): A long-text generation benchmark. We selected subsets from heuristic text generation (e.g., argumentative and roleplaying writing, covering five types) and open-ended QA (spanning ten domains). (489–1450 words)",
+        "• GAOKAO-Bench(Zhang et al., 2023b): A benchmark collected from the Chinese college entrance examination (GAOKAO). We selected the 2010-2022 History Open-ended Questions subset. (71–901 words)"
+      ],
+      "subsections": []
+    },
+    "Appendix E Detailed Experimental Results": {
+      "paragraphs": [
+        "[Figure: Figure 10: Attention Entropy across layers.]",
+        "[Figure: Figure 11: Attention Matrices of the first layers with Insertion Interval n=4n=4]",
+        "[Figure: Figure 12: Attention Matrices of the first layers with Insertion Interval n=8n=8]",
+        "[Figure: Figure 13: Attention Matrices of the first layers with Insertion Interval is Decaying]",
+        "[Table: Table 7: Combined Benchmark Evaluation Table]",
+        "[Table: Table 8: GAOKAO-History Chinese Dataset Results]"
+      ],
+      "subsections": [
+        {
+          "title": "E.1 Performance and Generalization Study of Training-based Methods",
+          "paragraphs": [
+            "To investigate the performance and generalization of training-based methods in diverse, real-world LCTG task scenarios, we selected Ruler, a training-based method that defines length control templates to regulate generation at the range level. This choice is based on the fact that Ruler is the only training-based baseline for which the code and training set are publicly available. We followed the exact setup provided in the repository and verified the correctness of our replication by achieving significant performance improvements on the given test set, as shown in Table 7.",
+            "Next, we tested the trained model, referred to as Llama-3.1-8B-Instruct-ruler, across four selected benchmarks with varying tasks, length scales, and instructions, under cost-alignment conditions. The experimental results revealed substantial errors and a decline in text quality, even when compared to the implicit method’s results without training (as shown in Table 3). This finding demonstrates the limited generalization capability of the method, highlighting its struggle to cope with the complexity and diversity of real-world LCTG scenarios."
+          ]
+        },
+        {
+          "title": "E.2 Length Bias Correction in LLMs-as-a-Judge",
+          "paragraphs": [
+            "It has been demonstrated that LLMs-as-a-judge exhibit a noticeable length bias (Li et al., 2024a; Gu et al., 2024a). To evaluate the quality of generated text objectively and accurately for LCTG tasks, it is essential to correct for this length bias. We adopt the length-controlled AlpacaEval (Dubois et al., 2024) and Yuan et al. (2025).",
+            "To derive unbiased judge scores, we use a Multiple Regression model. Specifically, we set the judge score as the dependent variable, with the generator categories as dummy variables, and the length of the generated text as a covariate. The model is formulated as follows:",
+            "Where f​(i)f(i) denotes the judge score for the generated text 𝒢i\\mathcal{G}_{i}, C​(Method)C(\\text{Method}) and C​(model)C(\\text{model}) are categorical variables representing the method and the model used, respectively, and Length is the actual length of the generated text. The coefficients βM\\beta_{\\text{M}}, βm\\beta_{\\text{m}}, and βl\\beta_{\\text{l}} are used to adjust the raw judge score f​(i)f(i), effectively removing length bias by setting it to zero. These adjusted scores, free from length bias, serve as the metrics for faithfulness and alignment.",
+            "[Figure: Figure 10: Attention Entropy across layers.]"
+          ]
+        },
+        {
+          "title": "E.3 Residual Length Error Analysis inMarkerGen",
+          "paragraphs": [
+            "This subsection focuses on analyzing the residual length errors in the MarkerGen framework. Building upon the sub-decomposition of LCTG errors presented in Section 2, we eliminate identifying and counting errors through Auxiliary Length Marker Insertion Decoding 3.1. Moreover, by employing the Three-Stage Decoupled Generation strategy 3.2, we effectively reduce aligning errors, thus improving the robustness of all models in semantic expansion under precise length modeling with explicit length markers. This approach ensures semantic integrity while enhancing text generation quality through a clearer, more in-depth analysis of LLM’s LCTG sub-capabilities. Ultimately, residual LCTG errors are primarily driven by minimal aligning errors."
+          ]
+        },
+        {
+          "title": "E.4 Cross-layer Attention Analysis from theMarkerGenPerspective",
+          "paragraphs": [
+            "In this section, we perform a cross-layer attention analysis from the MarkerGen perspective. By examining attention patterns across different layers of the model, we aim to gain a better understanding of how length and semantic information are processed at various stages of generation, providing insights into improving the accuracy of LCTG tasks.",
+            "Combining the analyses from Figures 6 and 10, we infer that in the shallow layers, attention is primarily focused on the length information represented by the length markers. This suggests that the model’s early stages prioritize processing and understanding the input length. The higher entropy in these layers indicates that the model needs to integrate various details and information to effectively comprehend the input. As the model progresses to deeper layers, attention shifts from the length information to the adjacent semantic content. The lower entropy in these layers indicates that the model refines its focus, extracting key features and generating more relevant output.",
+            "This pattern of attention distribution aligns with the findings from (Moon et al., ), which emphasize that length modeling in the early layers serves as a foundation for semantic processing in the later layers. Our analysis further supports the notion that LCTG tasks depend on a dynamic interaction between length control and semantic generation, where early layers focus on length constraints and deeper layers prioritize semantic coherence.",
+            "[Figure: Figure 11: Attention Matrices of the first layers with Insertion Interval n=4n=4]",
+            "[Figure: Figure 12: Attention Matrices of the first layers with Insertion Interval n=8n=8]",
+            "[Figure: Figure 13: Attention Matrices of the first layers with Insertion Interval is Decaying]"
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "Bai et al. (2024) Yushi Bai, Jiajie Zhang, Xin Lv, Linzhi Zheng, Siqi Zhu, Lei Hou, Yuxiao Dong, Jie Tang, and Juanzi Li. 2024. Longwriter: Unleashing 10,000+ word generation from long context llms. arXiv preprint arXiv:2408.07055.",
+    "Butcher et al. (2024) Bradley Butcher, Michael O’Keefe, and James Titchener. 2024. Precise length control in large language models. arXiv preprint arXiv:2412.11937.",
+    "Chang and Bisk (2024) Yingshan Chang and Yonatan Bisk. 2024. Language models need inductive biases to count inductively. arXiv preprint arXiv:2405.20131.",
+    "Chhun et al. (2022) Cyril Chhun, Pierre Colombo, Chloé Clavel, and Fabian M Suchanek. 2022. Of human criteria and automatic metrics: A benchmark of the evaluation of story generation. arXiv preprint arXiv:2208.11646.",
+    "Dubey et al. (2024) Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Amy Yang, Angela Fan, et al. 2024. The llama 3 herd of models. arXiv preprint arXiv:2407.21783.",
+    "Dubois et al. (2024) Yann Dubois, Balázs Galambosi, Percy Liang, and Tatsunori B Hashimoto. 2024. Length-controlled alpacaeval: A simple way to debias automatic evaluators. arXiv preprint arXiv:2404.04475.",
+    "Foster et al. (2024) Kiannah Foster, Andrew Johansson, Elizabeth Williams, Daniel Petrovic, and Nicholas Kovalenko. 2024. A token-agnostic approach to controlling generated text length in large language models.",
+    "Gu et al. (2024a) Jiawei Gu, Xuhui Jiang, Zhichao Shi, Hexiang Tan, Xuehao Zhai, Chengjin Xu, Wei Li, Yinghan Shen, Shengjie Ma, Honghao Liu, et al. 2024a. A survey on llm-as-a-judge. arXiv preprint arXiv:2411.15594.",
+    "Gu et al. (2024b) Yuxuan Gu, Wenjie Wang, Xiaocheng Feng, Weihong Zhong, Kun Zhu, Lei Huang, Tat-Seng Chua, and Bing Qin. 2024b. Length controlled generation for black-box llms. arXiv preprint arXiv:2412.14656.",
+    "Huang et al. (2025) Chenyang Huang, Hao Zhou, Cameron Jen, Kangjie Zheng, Osmar R ZaÃŊane, and Lili Mou. 2025. A decoding algorithm for length-control summarization based on directed acyclic transformers. arXiv preprint arXiv:2502.04535.",
+    "Hurst et al. (2024) Aaron Hurst, Adam Lerer, Adam P Goucher, Adam Perelman, Aditya Ramesh, Aidan Clark, AJ Ostrow, Akila Welihinda, Alan Hayes, Alec Radford, et al. 2024. Gpt-4o system card. arXiv preprint arXiv:2410.21276.",
+    "Jie et al. (2023) Renlong Jie, Xiaojun Meng, Lifeng Shang, Xin Jiang, and Qun Liu. 2023. Prompt-based length controlled generation with reinforcement learning. CoRR, abs/2308.12030.",
+    "Juseon-Do et al. (2024) Juseon-Do Juseon-Do, Hidetaka Kamigaito, Manabu Okumura, and Jingun Kwon. 2024. Instructcmp: Length control in sentence compression through instruction-based large language models. In Findings of the Association for Computational Linguistics ACL 2024, pages 8980–8996.",
+    "Kazemnejad et al. (2024) Amirhossein Kazemnejad, Inkit Padhi, Karthikeyan Natesan Ramamurthy, Payel Das, and Siva Reddy. 2024. The impact of positional encoding on length generalization in transformers. Advances in Neural Information Processing Systems, 36.",
+    "Li et al. (2024a) Dawei Li, Bohan Jiang, Liangjie Huang, Alimohammad Beigi, Chengshuai Zhao, Zhen Tan, Amrita Bhattacharjee, Yuxuan Jiang, Canyu Chen, Tianhao Wu, et al. 2024a. From generation to judgment: Opportunities and challenges of llm-as-a-judge. arXiv preprint arXiv:2411.16594.",
+    "Li et al. (2024b) Jiaming Li, Lei Zhang, Yunshui Li, Ziqiang Liu, Yuelin Bai, Run Luo, Longze Chen, and Min Yang. 2024b. Ruler: A model-agnostic method to control generated length for large language models. In Findings of the Association for Computational Linguistics: EMNLP 2024, Miami, Florida, USA, November 12-16, 2024, pages 3042–3059. Association for Computational Linguistics.",
+    "Liang et al. (2024) Xun Liang, Hanyu Wang, Yezhaohui Wang, Shichao Song, Jiawei Yang, Simin Niu, Jie Hu, Dan Liu, Shunyu Yao, Feiyu Xiong, and Zhiyu Li. 2024. Controllable text generation for large language models: A survey. CoRR, abs/2408.12599.",
+    "Lin et al. (2021) Stephanie Lin, Jacob Hilton, and Owain Evans. 2021. Truthfulqa: Measuring how models mimic human falsehoods. CoRR, abs/2109.07958.",
+    "(19) Sangjun Moon, Jingun Kwon, Hidetaka Kamigaito, Manabu Okumura, et al. Length representations in large language models.",
+    "Nallapati et al. (2016) Ramesh Nallapati, Bing Xiang, and Bowen Zhou. 2016. Sequence-to-sequence rnns for text summarization. CoRR, abs/1602.06023.",
+    "OpenAI (2023) OpenAI. 2023. GPT-4 technical report. CoRR, abs/2303.08774.",
+    "Park et al. (2024) Ryan Park, Rafael Rafailov, Stefano Ermon, and Chelsea Finn. 2024. Disentangling length from quality in direct preference optimization. In Findings of the Association for Computational Linguistics, ACL 2024, Bangkok, Thailand and virtual meeting, August 11-16, 2024, pages 4998–5017. Association for Computational Linguistics.",
+    "Que et al. (2024) Haoran Que, Feiyu Duan, Liqun He, Yutao Mou, Wangchunshu Zhou, Jiaheng Liu, Wenge Rong, Zekun Moore Wang, Jian Yang, Ge Zhang, et al. 2024. Hellobench: Evaluating long text generation capabilities of large language models. arXiv preprint arXiv:2409.16191.",
+    "Retkowski and Waibel (2024) Fabian Retkowski and Alexander Waibel. 2024. Zero-shot strategies for length-controllable summarization. arXiv preprint arXiv:2501.00233.",
+    "Song et al. (2024) Seoha Song, Junhyun Lee, and Hyeonmok Ko. 2024. Hansel: Output length controlling framework for large language models. arXiv preprint arXiv:2412.14033.",
+    "Wang et al. (2024) Zekun Wang, Feiyu Duan, Yibo Zhang, Wangchunshu Zhou, Ke Xu, Wenhao Huang, and Jie Fu. 2024. Positionid: Llms can control lengths, copy and paste with explicit positional awareness. arXiv preprint arXiv:2410.07035.",
+    "Yang et al. (2024) An Yang, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chengyuan Li, Dayiheng Liu, Fei Huang, Haoran Wei, et al. 2024. Qwen2. 5 technical report. arXiv preprint arXiv:2412.15115.",
+    "Yuan et al. (2025) Peiwen Yuan, Shaoxiong Feng, Yiwei Li, Xinglin Wang, Yueqi Zhang, Jiayi Shi, Chuyi Tan, Boyuan Pan, Yao Hu, and Kan Li. 2025. Llm-powered benchmark factory: Reliable, generic, and efficient. arXiv preprint arXiv:2502.01683.",
+    "Yuan et al. (2024) Weizhe Yuan, Ilia Kulikov, Ping Yu, Kyunghyun Cho, Sainbayar Sukhbaatar, Jason Weston, and Jing Xu. 2024. Following length constraints in instructions. CoRR, abs/2406.17744.",
+    "Zhang et al. (2023a) Hanqing Zhang, Haolin Song, Shaoyu Li, Ming Zhou, and Dawei Song. 2023a. A survey of controllable text generation using transformer-based pre-trained language models. ACM Computing Surveys, 56(3):1–37.",
+    "Zhang et al. (2023b) Xiaotian Zhang, Chunyang Li, Yi Zong, Zhengyu Ying, Liang He, and Xipeng Qiu. 2023b. Evaluating the performance of large language models on gaokao benchmark. arXiv preprint arXiv:2305.12474.",
+    "Zheng et al. (2023) Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan Zhuang, Zhanghao Wu, Yonghao Zhuang, Zi Lin, Zhuohan Li, Dacheng Li, Eric P. Xing, Hao Zhang, Joseph E. Gonzalez, and Ion Stoica. 2023. Judging llm-as-a-judge with mt-bench and chatbot arena. In Advances in Neural Information Processing Systems 36: Annual Conference on Neural Information Processing Systems 2023, NeurIPS 2023, New Orleans, LA, USA, December 10 - 16, 2023."
+  ]
+}

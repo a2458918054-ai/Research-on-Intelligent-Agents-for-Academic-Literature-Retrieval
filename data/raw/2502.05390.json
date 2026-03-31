@@ -1,0 +1,525 @@
+{
+  "title": "Learning Task Representations from In-Context Learning",
+  "authors": "Baturay Saglam  Zhuoran Yang  Dionysis Kalogerias  Amin KarbasiYale University{baturay.saglam,zhuoran.yang,dionysis.kalogerias,amin.karbasi}@yale.eduCorresponding author.",
+  "abstract": "Large language models (LLMs) have demonstrated remarkable proficiency in in-context learning (ICL), where models adapt to new tasks through example-based prompts without requiring parameter updates. However, understanding how tasks are internally encoded and generalized remains a challenge. To address some of the empirical and technical gaps in the literature, we introduce an automated formulation for encoding task information in ICL prompts as a function of attention heads within the transformer architecture. This approach computes a single task vector as a weighted sum of attention heads, with the weights optimized causally via gradient descent. Our findings show that existing methods fail to generalize effectively to modalities beyond text. In response, we also design a benchmark to evaluate whether a task vector can preserve task fidelity in functional regression tasks. The proposed method successfully extracts task-specific information from in-context demonstrations and excels in both text and regression tasks, demonstrating its generalizability across modalities. Moreover, ablation studies show that our method’s effectiveness stems from aligning the distribution of the last hidden state with that of an optimally performing in-context-learned model.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Large language models (LLMs) based on the transformer architecture [50] have seen dramatic improvements in recent years. A notable feature of these models, such as GPT-3 [3], is their capability for in-context learning (ICL). This process involves the model receiving a prompt that includes demonstrations of a task in the form of input-output pairs. When presented with a new query input, the model can generate the appropriate output by extrapolating from the provided examples. For instance, after being prompted with a few examples, these models are capable of producing the antonyms of given input words. A concrete example is",
+        "where the blue text is the prompt and the red text is the completion provided by the model. Not limited to linguistic tasks, transformers can also in-context learn a general class of functions ℱ\\mathcal{F} [8]. Specifically, for any function f∈ℱf\\in\\mathcal{F}, the model is capable of approximating f​(xquery)f(x_{\\text{query}}) for a new query input xqueryx_{\\text{query}}. This class may include linear or nonlinear relationships, which can be represented by various machine learning models such as linear regression, multi-layer ReLU networks, and decision trees.",
+        "The ICL capability is particularly intriguing as it allows models to adapt to a wide range of downstream tasks on-the-fly—i.e., without requiring any parameter updates post-training [3]. This indicates that models can extract abstract task information (the relationship between input-output pairs) from the prompt and use it to generate accurate responses for query inputs. However, due to the complex nature of the transformer architecture, the computational mechanisms that facilitate how models internally extract and encode task information are not well understood.",
+        "Task vectors have been identified as key mechanisms for encoding task information during ICL [48, 25, 11, 29]. These vectors capture how models process prompts and embed the abstract in-context task as a numerical representation. While the effectiveness of these vectors is empirically well-supported, the precise computation of a task vector within the transformer architecture remains debated. Early findings suggest that layer or attention activations significantly influence ICL performance [11, 29, 48]. However, no consensus exists on the optimal way to conceptualize or compute these vectors, resulting in varied methodologies often restricted to a single modality (e.g., only text, not numeric functions). Notably, existing approaches often fail to generalize to functional regression tasks, consisting of a range of linear and nonlinear functions. Furthermore, they require adaptation to individual transformer architectures. For instance, the layers over which the task vector is computed must be explicitly identified for each model [25, 48, 11].",
+        "These limitations raise concerns about the generalizability and practical utility of existing task vector formulations. Consequently, in the pursuit of a more standardized and automated pipeline for task encodings, we hypothesize that:",
+        "In-context learning tasks can be effectively represented as a weighted sum of all attention heads in a transformer, with the weights learned causally through gradient descent."
+      ],
+      "subsections": [
+        {
+          "title": "1.1 Contributions and Findings",
+          "paragraphs": [
+            "The key contributions and findings of our study are outlined as follows.",
+            "We propose a framework that approximates the internal weights transformers implicitly use to represent ICL tasks. By optimizing these weights through causal gradient descent, the framework effectively captures the model’s inherent task representations, supporting our hypothesis. Unlike existing methods that require prior model analysis—such as manually selecting hidden layers to perturb—our approach is fully automated. Given any dataset and autoregressive model, it seamlessly computes the task formulation without model-specific adjustments.",
+            "While prior work has explored where in-context tasks are represented, most studies focus solely on language, with limited attention to functional regression. To evaluate task encodings in regression tasks, we introduce a new benchmark motivated by recent findings on the role of positional information in reasoning tasks [61]. This setup offers an intuitive framework for analyzing task encodings and ICL capabilities in regression.",
+            "Our method performs effectively on the proposed regression benchmark and demonstrates significant advantages in language. Ablation studies indicate that this performance results from aligning the distribution of the last hidden state with that of an optimally in-context-learned model, providing insights into how task steering is achieved."
+          ]
+        }
+      ]
+    },
+    "2 Related Work": {
+      "paragraphs": [
+        "Here, we discuss studies that specifically focus on learning task representations in ICL. A more comprehensive review of related works is available in Appendix A.",
+        "Initial studies on developing task representations for transformers are documented in [23, 41, 33, 36, 17]. These works proposed methods to create compositional task encodings through model perturbations in the parameter space: “soft” prompts, codebooks, and meta-mappings. Notably, the term task vectors was first introduced in [17]. In contrast, through the application of causal mediation analysis [37, 51, 30, 57, 9], function vectors were discovered to exist inherently within the transformer architecture and to exhibit strong causal effects [48]. This finding aligns with research on RNNs, where it was demonstrated that RNN hidden states can be grouped based on task similarities [22, 13].",
+        "Efforts to represent ICL tasks often derive a task vector from the layer activations associated with the dummy token following the input query [11]. This approach was later refined by averaging the layer activations of dummy tokens across a few-shot prompt and optimizing them [25]. However, these methods were primarily designed for language tasks, where input-output pairs are explicitly separated by specific tokens (e.g., “→\\rightarrow”). This limitation restricts their applicability to broader domains, such as regression tasks. Another approach leverages the first principal component of the difference in layer activations to guide the ICL task, resulting in In-Context Vectors (ICVs) [29]. Notably, attention heads have been argued to play a critical role in transferring information between token positions [50, 7]. Building on this insight, the Function Vector (FV) [48] is computed as the sum of activations from a specific subset of attention heads, selected based on an indirect metric derived from causal inference literature [37]. In this study, we aim to develop a structured and automated method for extracting function vectors from transformer architectures, expanding on the approach of Todd et al. [48]."
+      ],
+      "subsections": []
+    },
+    "3 Technical Preliminaries": {
+      "paragraphs": [
+        "The transformer architecture uses self-attention mechanisms to process sequences of data. Initially, input data is tokenized into a sequence, where each token represents data units such as segments of words. In this work, we consider autoregressive transformers denoted by MθM_{\\theta} and parameterized by θ\\theta. The model predicts the next element in a sequence based on previous outputs. It consists of LL layers, each transforming encoded token vectors of dimension dd through linear and nonlinear operations. Our focus is on the computation at the last token position within these layers, where each layer ℓ≤L\\ell\\leq L generates a vector representation 𝐡ℓ∈ℝd\\mathbf{h}_{\\ell}\\in\\mathbb{R}^{d} from its preceding layer’s output.",
+        "Self-attention in the transformer architecture employs multi-head attention at each layer:",
+        "Here WℓO∈ℝJ​q×dW_{\\ell}^{O}\\in\\mathbb{R}^{Jq\\times d} is the output projection matrix, and Qℓ,jQ_{\\ell,j}, Kℓ,jK_{\\ell,j}, and Vℓ,jV_{\\ell,j} are the query, key, and value matrices for each attention head j≤Jj\\leq J at layer ℓ\\ell. The term dk\\sqrt{d_{k}} normalizes the softmax operation for stability, where dkd_{k} is the dimension of the key matrix. This multi-head approach allows the model to dynamically adjust its focus across different parts of the input based on the context.",
+        "Note that each head at layer ℓ\\ell operates in a low-dimensional space q<dq<d, distinct from the main hidden state residual stream of the transformer. As observed in [6], the original transformer formulation [50] can be seen as dividing the matrix into a block form [Wℓ,1,…,Wℓ,J][W_{\\ell,1},\\ldots,W_{\\ell,J}], followed by directly projecting each head⁡ℓ,j\\operatorname{head}{\\ell,j} into the residual space. Consequently, the attention head output a​ℓ,ja{\\ell,j} can be defined using the notations from [50] and [6] as:"
+      ],
+      "subsections": [
+        {
+          "title": "3.1 In-Context Learning",
+          "paragraphs": [
+            "A prompt ptp^{t}, corresponding to task tt, comprises a sequence of tokens including TT input-output exemplar pairs {(xi,yi)}i=0T\\{(x_{i},y_{i})\\}_{i=0}^{T}. We may refer to the length of prompts by the number of demonstrations they contain. Each pair demonstrates the execution of the same underlying task tt. This set defines a functional mapping between each input xix_{i} and its corresponding output yiy_{i}. In addition to these exemplar pairs, each prompt includes a specific query input xqueryx_{\\text{query}} that follows the demonstrations. The LM predicts the target response yqueryy_{\\text{query}} by extrapolating from the demonstrations. In our study, we investigate the in-context learning of two distinct modalities: functional regression and language tasks.",
+            "Regression tasks refer to a function class ℱ\\mathcal{F} that is learned through ICL. We closely follow the formulation proposed in [8] for training and testing models on regression data. For each prompt, a random function ff from ℱ\\mathcal{F} is sampled according to a distribution 𝒟ℱ\\mathcal{D}_{\\mathcal{F}}, and a set of random inputs xi∈ℝmx_{i}\\in\\mathbb{R}^{m} for i=1,…,Ti=1,\\ldots,T is drawn from 𝒟𝒳\\mathcal{D}_{\\mathcal{X}}. These inputs are then evaluated by ff to produce the prompt pf={x1,f​(x1),…,xT,f​(xT),xquery}p^{f}=\\{x_{1},f(x_{1}),\\ldots,x_{T},f(x_{T}),x_{\\text{query}}\\}. We denote the model’s output as Mθ​(pf)M_{\\theta}(p^{f}).",
+            "A function class ℱ\\mathcal{F} can be either linear or nonlinear. For linear functions, inputs are drawn from an isotropic Gaussian distribution 𝒩​(0,Im)\\mathcal{N}(0,I_{m}), and a random function is defined by sampling a weight vector ww from 𝒩​(0,Im)\\mathcal{N}(0,I_{m}), setting f​(x)=w⊤​xf(x)=w^{\\top}x. Here, the task is characterized by the weight vector w∈ℝmw\\in\\mathbb{R}^{m}. For nonlinear functions, possible forms of ff include multi-layer ReLU networks or decision trees. We employ the models pre-trained by Garg et al. [8], with the training procedure and additional details provided in Appendix C.2.2.",
+            "In language tasks, we focus on straightforward natural language processing (NLP) applications such as antonym generation, where an example is shown in (1). The model MθM_{\\theta} processes each prompts ptp^{t} and produces a next-token distribution Mθ(⋅∣pt)M_{\\theta}(\\cdot\\mid p^{t}) over the words in vocabulary 𝒱\\mathcal{V}. During inference, we evaluate pre-trained LMs rather than training or fine-tuning them. Following [48], we generate corrupted prompts p~it\\tilde{p}_{i}^{t}, where the labels within each prompt are shuffled. This shuffling breaks the direct link between the inputs xi,kx_{i,k} and the outputs y~i,k\\tilde{y}_{i,k}, leaving the provided examples uninformative about the task and effectively “blocking” ICL."
+          ]
+        }
+      ]
+    },
+    "4 Learning Task Representations": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "4.1 Motivational Observations",
+          "paragraphs": [
+            "Our study begins by observing that existing ICL task formulations are either inapplicable [25, 11] (see Appendix C.2.6 for details) or fail to generalize to regression data [29, 48]. To demonstrate the latter, we deliberately prevent the LLM from extracting task understanding from in-context examples. If similar ICL performance is observed when the task vector is integrated into the model, it indicates that the task vector encodes the task information. In the language domain, this approach involves shuffling the labels of in-context example pairs [48], as described in Section 3.1. However, this method is unsuitable for regression tasks due to fundamental differences in how input-output relationships are represented and learned. We discuss this in detail in Appendix B.",
+            "We draw on a recent finding that highlights the critical role of positional information in reasoning tasks within ICL [61]. Since regression tasks require the model to infer and apply implicit mathematical relationships from the given examples, they can be considered instances of numeric reasoning. “Blocking” ICL in regression tasks can thus be achieved by manipulating (absolute) positional encodings through controlled sequence lengths during training and evaluation. The model is initialized and pre-trained to accommodate sequences up to a maximum length TmaxT_{\\text{max}}, ensuring it can process longer sequences. However, during pre-training, the model is exposed only to sequences with a maximum length Ttrain<TmaxT_{\\text{train}}<T_{\\text{max}}, leaving positional encodings for positions beyond TtrainT_{\\text{train}} untrained.",
+            "At test time, we evaluate the model on sequences longer than TtrainT_{\\text{train}} but within TmaxT_{\\text{max}}. This approach isolates the effects of untrained positional encodings, disrupting the model’s reasoning ability and effectively blocking ICL [61, Theorem 3]. Consequently, we expect that if a task representation effectively encodes the task, it should maintain task fidelity beyond TtrainT_{\\text{train}}. The results, shown in Figure 1, reveal that the tested approaches fail to generalize across the evaluated class of functions. While these methods perform well in the language domain, their shortcomings on regression tasks raise concerns about the effectiveness and generalizability of their approach.",
+            "As our investigation deepens, we articulate the central research questions:",
+            "(i) How can we develop a task representation in a principled manner that is generalizable across different modalities, such as language or mathematical functions?",
+            "(ii) How can this new representation be leveraged to improve performance on downstream tasks?",
+            "How can we develop a task representation in a principled manner that is generalizable across different modalities, such as language or mathematical functions?",
+            "How can this new representation be leveraged to improve performance on downstream tasks?"
+          ]
+        },
+        {
+          "title": "4.2 Learnable Task Vector",
+          "paragraphs": [
+            "We introduce a causal framework for learning task-specific representations from in-context data, independent of modality and model architecture. Our approach addresses key limitations of previous methods, such as Function Vectors, by automatically computing task formulations without the need for prior model analysis or manual adjustments.",
+            "The FV formulation assumes equal contributions from all attention heads to task representation by summing their activations. However, we argue that the influence of each head varies—some may contribute significantly to task encoding, while others have a lesser impact. Constraining weights to unity is therefore impractical, and focusing exclusively on a subset of attention heads risks overlooking subtle contributions from others. To address this, attention heads should be weighted in the summation to accurately capture their varying contributions.",
+            "Previous work typically integrates task encodings into models by adding vectors to the outputs of specific hidden layers through simple vector summation [48, 11, 25]. However, this approach assumes uniform applicability across layers, ignoring that transformers’ hidden states represent progressively refined representations of the input. To overcome this limitation, we compute task vectors uniquely for each hidden layer, aligning them with the evolving representations. While initializing a unique set of attention head weights for each of the LL layers is an option, it would be computationally expensive. Instead, we compute layer-specific task vectors as a weighted sum of the attention heads within each layer:",
+            "where ωℓ,j∈ℝ\\omega_{\\ell,j}\\in\\mathbb{R} represents the weight parameters assigned to attention heads, organized in the parameter vector Φ∈ℝL​J\\Phi\\in\\mathbb{R}^{LJ}, and a¯\\bar{a} is the attention activations averaged on a separate sample set of prompts demonstrating task tt. This method ensures that each layer-wise FV is composed solely of the JJ heads within that specific layer, avoiding the aggregation of attention across all L×JL\\times J heads.",
+            "Although excluding attention heads from layers ℓ′≠ℓ\\ell^{\\prime}\\neq\\ell in the latter modification might seem contradictory, this is counterbalanced by the transformer’s feedforward design. Including attention from earlier layers could introduce redundancy and complicate learning, as the hidden state at layer ℓ\\ell already encapsulates all transformed information in layers ℓ′<ℓ\\ell^{\\prime}<\\ell. Furthermore, integrating attention heads from future layers would conflict with the transformer’s sequential processing that avoids forward-looking capabilities.",
+            "We refer to the resulting formulation as Learnable Task Vector (LTV) and illustrate its operation during inference in Figure 2. Next, we describe the methodology for learning the weights Φ\\Phi of LTV."
+          ]
+        },
+        {
+          "title": "4.3 How to Learn Task Representations",
+          "paragraphs": [
+            "We optimize LTV weights through gradient steps to approximate the “true” weights the model uses to represent ICL tasks, aiming to validate this formulation as a proof of concept. Consequently, this approach is not primarily intended to address issues like length generalization shown in Figure 1. An effective strategy for learning the parameters Φ\\Phi involves optimizing the LTV in scenarios where the model (with frozen parameters) fails to perform ICL, isolating the causal contribution of Φ\\Phi to the task performance. This approach ensures our method is both data-driven and causal, as it directly attributes improvements to |Φ|=L×J|\\Phi|=L\\times J parameters, facilitating application to downstream tasks. The overall pipeline for training an LTV is summarized in Algorithm 1.",
+            "The LTV is computed over prompts longer than the maximum length encountered during pre-training (T𝐯>TtrainT_{\\mathbf{v}}>T_{\\text{train}}). Its integration into the model modifies the transformer’s output. Subsequently, backpropagation is performed over Φ\\Phi through the transformer to minimize the loss on the query input xqueryx_{\\text{query}}:",
+            "where 𝐯Φf={vℓf}ℓ=1L\\mathbf{v}_{\\Phi}^{f}=\\{v_{\\ell}^{f}\\}_{\\ell=1}^{L} represents the set of layer-wise LTVs computed for function ff, and M~θ(⋅∣𝐯Φf)\\tilde{M}_{\\theta}(\\cdot\\mid\\mathbf{v}_{\\Phi}^{f}) denotes the transformer output modified by integrating 𝐯Φf\\mathbf{v}_{\\Phi}^{f} into the corresponding hidden layers.",
+            "Given the true query output yqueryy_{\\text{query}}, the LTV is trained in a supervised manner to minimize the cross-entropy loss on shuffled prompts:",
+            "where M~θ​(yquery∣p~t;𝐯Φt)\\tilde{M}_{\\theta}(y_{\\text{query}}\\mid\\tilde{p}^{t};\\mathbf{v}_{\\Phi}^{t}) denotes the probability predicted by the model for the true class yqueryy_{\\text{query}} given the shuffled prompt p~t\\tilde{p}^{t}."
+          ]
+        }
+      ]
+    },
+    "5 Experiments": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "5.1 Evaluation on Regression Tasks",
+          "paragraphs": [
+            "The loss curves for ICL inference are shown in Figure 3, with additional evaluations under two types of distribution shifts provided in Appendix D.2. While FV offers some benefits in linear regression, ICV negatively impacts the vanilla model’s performance. Despite extensive optimizations, these results indicate that task encoding formulations, originally crafted for language, do not generalize well to other modalities.",
+            "LTV shows minimal performance difference when trained with prompt lengths near TtrainT_{\\text{train}}. As T𝐯T_{\\mathbf{v}} increases, LTV’s impact grows, achieving optimal performance comparable to the vanilla model at T=TtrainT=T_{\\text{train}}. While this might raise concerns about the validity of the results, as LTV is specifically designed to handle out-of-distribution (OOD) cases (T>TtrainT>T_{\\text{train}}), training LTV with prompt lengths slightly exceeding TtrainT_{\\text{train}}—specifically, T𝐯=1.37×TtrainT_{\\mathbf{v}}=1.37\\times T_{\\text{train}} for linear functions and T𝐯=1.25×TtrainT_{\\mathbf{v}}=1.25\\times T_{\\text{train}} for 2-layer ReLU networks—proves sufficient to maintain performance. Extending T𝐯T_{\\mathbf{v}} further offers no significant improvements, indicating that only a small portion of the OOD case is needed for LTV to generalize. This suggests that the attention head weights naturally converge to their optimal values with sufficient training data.",
+            "The effects of LTV in regression tasks may resemble those of parameter-efficient fine-tuning (PEFT) methods, as only a small number of parameters (|Φ|=L×J|\\Phi|=L\\times J) are trained to adapt the model to previously unlearned scenarios. To evaluate this, we compare LTV with LoRA (rank 8) [16]. While LoRA fine-tunes approximately 196K of the 9.5M GPT-2 parameters, LTV optimizes only 96. Despite LoRA fine-tuning a significantly larger number of parameters on sequences with a maximum length TmaxT_{\\text{max}}, no notable performance improvement is observed. Since LoRA depends on the pre-trained model’s existing positional representations, it cannot address untrained positional encodings. This observation indicates that the task fidelity achieved by LTV is not a result of sole fine-tuning but rather of effective task encoding that can steer the behavior of the model.",
+            "No regularization, optimization techniques, dropout, or specific weight initialization were applied to learn the LTV weights. The weights are unbounded and sampled from the standard Gaussian distribution. Visualizing the learned weights as heatmaps revealed they consistently lie within the interval [-3, 3] across tasks. However, no meaningful patterns were observed, suggesting that any underlying structure may be subtle and challenging to detect visually."
+          ]
+        },
+        {
+          "title": "5.2 Evaluation on Language Tasks",
+          "paragraphs": [
+            "The accuracy scores are reported in Table 1. While “filtered” accuracies was primarily considered in [48], which take into account only the test queries where at least one model responds correctly, we present unfiltered accuracies as a fairer metric, counting all samples regardless of model performance.",
+            "In 29 out of 30 evaluations (15 tasks, zero- and few-shot prompts), LTV achieves the highest accuracy and is among the statistically best-performing methods. Furthermore, in 19 out of 30 evaluations, LTV’s performance is statistically superior to all other techniques. We also observe a notable performance by ICV, particularly when the vanilla transformer performs poorly in the zero-shot setting. This effectiveness is attributed to ICV’s approach of crafting unique task vectors for each layer, similar to our method. Overall, these findings confirm that LTV excels in both regression and challenging linguistic tasks, supporting our hypothesis about how ICL tasks are formulated within the transformer architecture."
+          ]
+        },
+        {
+          "title": "5.3 Ablation Studies",
+          "paragraphs": [
+            "We aim to understand how LTVs sustain task behavior when ICL is not performed. To investigate this, we use the regression data benchmark and analyze the last hidden states of an LTV-integrated model and a vanilla model at T=TtrainT=T_{\\text{train}} (the optimal-performing model). We measure the distributional similarities of the last hidden states using KL divergence to assess how closely the LTV-integrated model aligns with the vanilla model.",
+            "The results are reported in Table 2. We also include the results for FV, as it is the only baseline method that does not degrade the vanilla transformer. A detailed description of our experimental methods, along with a figure illustrating the pipeline, is provided in Appendix C.6. Additionally, probability densities of the last hidden state distributions, visualized through histograms, are included in Appendix D.3.",
+            "We observe that the divergence between the last hidden state distributions of the LTV-integrated model and the optimal-performing model is generally low and significantly decreases when the LTV training length matches or exceeds the middle length (56 for linear models and 126 for 2-layer NN functions). This suggests that LTV’s effectiveness primarily stems from its ability to dominate the last hidden state and align it with that of the optimal-performing model, thereby facilitating task steering. This observation further implies that task steering may generally be achieved through this mechanism, not exclusively by our method. However, a deeper analysis is required to fully understand this process, which is beyond the scope of this study."
+          ]
+        }
+      ]
+    },
+    "6 Conclusion": {
+      "paragraphs": [
+        "In this study, we examined how tasks in in-context learning (ICL) are internally represented by large language models (LLMs). Motivated by the limitations of existing representations on modalities beyond text, we critically evaluated their generalizability and validity. We explored the possibility of an automated approach to encode ICL tasks that generalizes across modalities, including functional regression tasks. To address this, we propose a principled framework, Learnable Task Vector (LTV), which applies seamlessly to both text and regression tasks, regardless of the underlying model architecture. Our approach represents ICL tasks as a weighted sum of attention head activations, optimized causally through gradient descent to enhance LLM performance. Building on recent theoretical insights into the role of positional information in reasoning tasks, we also introduce a new benchmark to evaluate task fidelity in a controlled setting.",
+        "Our findings demonstrate that LTV effectively preserves task fidelity when the model is prevented from extracting task information from the demonstrations. Ablation studies reveal that this is achieved by maintaining the distribution of the last hidden state similar to that of an optimally in-context-learned model. While we did not identify significant limitations, we acknowledge that optimizing LTV can be time- and resource-intensive due to data requirements. We believe this study provides a robust framework for analyzing task encodings and ICL capabilities, particularly for functional numeric tasks."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Extended Related Work": {
+      "paragraphs": [
+        "A substantial body of research on ICL has been ongoing since its discovery. We review previous studies through different facets of ICL. While our study shares similarities with others, it most closely aligns with the studies described in Section 2, where complementary details are provided in the final paragraph of this section."
+      ],
+      "subsections": []
+    },
+    "Appendix B Discussion: Why Shuffling Labels is not a Valid Approach for Functional Regression": {
+      "paragraphs": [
+        "We analyze the effect of label shuffling on in-context learning performance for two example tasks: linguistic antonym generation and linear regression. While label shuffling disrupts the model’s ability to infer relationships in the linguistic task, its impact on the numeric task differs fundamentally due to the task’s nature and the model’s pre-training, particularly if the model was pre-trained on similar functional regression tasks [8]."
+      ],
+      "subsections": [
+        {
+          "title": "B.1 Linguistic Antonym Generation",
+          "paragraphs": [
+            "In the linguistic task, the model is provided with prompts such as:",
+            "The model’s goal is to generate the antonym of “increase” based on in-context examples. Since LMs are pre-trained on vast text corpora without specific emphasis on antonym pairs, they rely heavily on these examples to infer the relationship. Shuffling the labels in the examples disrupts the pattern, preventing the model from identifying the intended relationship (antonymy) and generating the correct output. Any potential performance degradation in this case is directly linked to the blockage of ICL caused by label shuffling."
+          ]
+        },
+        {
+          "title": "B.2 Numeric Linear Regression",
+          "paragraphs": [
+            "In numeric tasks, the model processes sequences where each scalar output yiy_{i} is generated from a vector input xix_{i} through a linear relationship yi=w⊤​xiy_{i}=w^{\\top}x_{i}:",
+            "where the mm-dimensional input vector is flattened before being fed into the model, following our setup. The model’s goal is to infer the coefficient vector ww from the examples to predict the missing output. Pre-training embeds a strong bias toward linear mappings in the model’s parameters, giving it a default assumption of linearity. In-context examples refine the exact coefficients but are not the sole source of understanding this relationship. Consequently, shuffling the labels conflicts with the model’s pre-trained understanding of input-output relationships (i.e., its inherent linear bias), leading to confusion rather than simply blocking ICL. In such cases, the shuffled prompt would still need to define a linear relationship, which is non-trivial. In contrast, for language tasks, the model retains an understanding of individual word semantics even when labels are shuffled, aligning with its pre-trained understanding of language."
+          ]
+        }
+      ]
+    },
+    "Appendix C Experimental Details": {
+      "paragraphs": [
+        "[Figure: Figure 4: The diagram illustrates our pipeline for ablation studies. We start by collecting M=25,600M=25,600 prompts corresponding to a selected task ff. Subsequently, the first principal component of the column space of these datasets is extracted using SVD. Finally, we report the KL divergence between the KDE-estimated distributions of these components.]"
+      ],
+      "subsections": [
+        {
+          "title": "C.1 Implementation",
+          "paragraphs": [
+            "For all models, we use the huggingface implementations [64]. For regression tasks and GPT-2 pre-training, we rely on the code provided by the authors on GitHub111https://github.com/dtsip/in-context-learning. Additionally, we use the authors’ code222https://github.com/ericwtodd/function_vectors to include FV into our experiments. The remaining baseline methods—ICV, TV, and SV—were implemented by us."
+          ]
+        },
+        {
+          "title": "C.2 Experiments on Regression Tasks",
+          "paragraphs": [
+            "We closely follow the experimental setup established by [8]. For completeness, we provide the relevant details here, with additional information available in the cited reference.",
+            "The GPT-2 model processes sequences of vectors in the embedding space and outputs a sequence in the same space. However, the tasks we examine involve functions mapping a lower-dimensional vector space (e.g., 20 dimensions) to a scalar value. To construct a prompt such as p={x1,f​(x1),x2,f​(x2),…,xquery}p=\\{x_{1},f(x_{1}),x_{2},f(x_{2}),\\ldots,x_{\\text{query}}\\}, we must map xix_{i} and f​(xi)f(x_{i}) into the embedding space. This mapping involves first converting the scalar values f​(xi)f(x_{i}) into vectors of the same dimension as xix_{i} by appending zeros, followed by applying a learnable linear transformation to all these vectors into the embedding space. The model’s output vector is then transformed into a scalar value through a dot product with a learnable vector.",
+            "We consider the model’s prediction at the position corresponding to xix_{i} (i.e., the absolute position 2​i−12i-1) as the prediction of f​(xi)f(x_{i}). Due to the model’s structure, this prediction relies solely on the pairs {xj,f​(xj)}\\{x_{j},f(x_{j})\\} for j<ij<i and xix_{i} itself. We disregard the model predictions at positions corresponding to f​(xi)f(x_{i}).",
+            "The GPT-2 models use absolute, learnable positional encodings and were trained to accommodate up to 101 examples for linear and sparse linear functions, and up to 201 examples for 2-layer ReLU neural networks in a prompt. While it is possible to feed the model prompts with more examples by adjusting the initialization, this would exceed our computational resources. We also did not want to alter the nature of their experimental process.",
+            "We train a model from scratch (i.e., no pre-trained weights are loaded) to predict f​(xi)f(x_{i}) for a given xix_{i}, using the set of examples as reference. Each training prompt is generated by randomly sampling a function ff from the function class of interest, followed by sampling inputs xix_{i} from an isotropic Gaussian distribution N​(0,Im)N(0,I_{m}). The prompt is constructed as p={x1,f​(x1),…,xk,f​(xk)}p=\\{x_{1},f(x_{1}),\\ldots,x_{k},f(x_{k})\\}. For each input i≤ki\\leq k within a prompt, the model predictions y^i=Mθ​(xi∣pf={x1,f​(x1),…,xi−1,f​(xi−1)})\\hat{y}_{i}=M_{\\theta}(x_{i}\\mid p^{f}=\\{x_{1},f(x_{1}),\\ldots,x_{i-1},f(x_{i-1})\\}) are obtained, and the loss is computed across all prompt prefixes::",
+            "where ℒ\\mathcal{L} is the loss function, typically chosen to be mean squared error, and we have xT+1=xqueryx_{T+1}=x_{\\text{query}}.",
+            "During training, we average the loss across a batch of randomly generated prompts, each with different functions and inputs, and update the model parameters. The Adam optimizer [19] is employed and trained for a total of 500,000 steps with a batch size of 64, using a learning rate of 10−410^{-4} for all function classes and models.",
+            "The training procedure is accelerated through curriculum learning. The model starts by observing prompt inputs xix_{i} within a smaller dimensional subspace and with fewer inputs per prompt. Both the subspace dimension and the number of examples are increased gradually. Specifically, all of the coordinates except the first Tmax, curT_{\\text{max, cur}} of xix_{i} are zeroed out by sampling prompts of size TcurT_{\\text{cur}}. For the function classes of linear and sparse linear functions, Tmax, cur=5T_{\\text{max, cur}}=5 and Tcur=11T_{\\text{cur}}=11 are used initially, and Tmax, curT_{\\text{max, cur}} and TcurT_{\\text{cur}} are increased by 1 and 2, respectively, every 2000 steps until reaching Tmax, cur=TmaxT_{\\text{max, cur}}=T_{\\text{max}} and Tcur=2​m+1T_{\\text{cur}}=2m+1. A different schedule is applied for 2-layer neural networks to accommodate the need for more inputs; starting from Tmax, cur=5T_{\\text{max, cur}}=5 and Tcur=26T_{\\text{cur}}=26, Tmax, curT_{\\text{max, cur}} and TcurT_{\\text{cur}} are incremented by 1 and 5 respectively, every 2000 steps until Tmax, cur=TmaxT_{\\text{max, cur}}=T_{\\text{max}} and Tcur=5​m+1T_{\\text{cur}}=5m+1.",
+            "Consequently, in the curriculum-based training approach, a training prompt",
+            "is generated by sampling a random function ff from the function class and drawing inputs xix_{i} by sampling i.i.d. from 𝒩​(0,Im)\\mathcal{N}(0,I_{m}), with all but the first Tmax, curT_{\\text{max, cur}} coordinates zeroed out. Given the model predictions y^i\\hat{y}_{i}, the loss is computed as",
+            "For the class of linear functions, we sample the random function f​(x)=w⊤​xf(x)=w^{\\top}x by drawing w∼𝒩​(0,Im)w\\sim\\mathcal{N}(0,I_{m}). In the case of sparse linear functions, ww is also sampled from 𝒩​(0,Im)\\mathcal{N}(0,I_{m}), but we then randomly zero out the first TcurT_{\\text{cur}} coordinates within the first Tmax, curT_{\\text{max, cur}} coordinates. For these linear functions, we set m=20m=20 for all experiments, with a sparsity level of 3. For 2-layer neural networks, we sample W1W_{1} from 𝒩​(0,Im)\\mathcal{N}(0,I_{m}) and W2W_{2} from 𝒩​(0,2/r)\\mathcal{N}(0,2/r), where f​(x)=W2​ReLU⁡(W1​x)f(x)=W_{2}\\operatorname{ReLU}(W_{1}x). Here, we set the dimensions m=20m=20 and the ratio r=100r=100.",
+            "To assess performance, we sample a prompt with a maximum length of TmaxT_{\\text{max}}, which is equal to 101 for linear and sparse linear functions and 201 for 2-layer networks. We then trim the prompt to Ti≤TmaxT_{i}\\leq T_{\\text{max}} demonstrations and track the prediction errors for each i≤Tmaxi\\leq T_{\\text{max}}. Consequently, each point in our error curves corresponds to the error at a specific prompt length ii. This analysis is conducted over batches of 256 prompts, with the average error reported. We have determined that batches larger than 256 prompts do not significantly alter the results, confirming that 256 prompts are sufficient to produce generalized results.",
+            "Function Vector (FV) and In-Context Vector (ICV) were originally designed for language data. Preliminary results showed that FV had a notable impact on regression data, with potential for further improvement through fine-tuning. In contrast, ICV slightly underperformed the vanilla model on regression tasks when using the default scaling parameter λ=0.1\\lambda=0.1 from language experiments. This parameter, dominated by activation magnitudes, required tuning for regression data.",
+            "Our approach extends the original by integrating FV across multiple GPT-2 layers, leading to improved performance. To minimize output disruption and reinforce tasks, we added dummy examples (e.g., {0, 0} pairs) at specific prompt positions. Increasing the number of attention heads for FV computation from 10 to 35 further enhanced performance. In contrast, ICV already integrates the task vector at every token position and computes a distinct task vector for each layer, similar to our method. Thus, the only optimization for ICV was tuning the scaling parameter. We found that FV required no scaling (i.e., 1.0). However, ICV often degraded the vanilla model’s performance, with a scale of 1.5 being the best option to mitigate this issue. Key baseline optimizations are summarized below:",
+            "1. Function Vector added to multiple layers: Distributing FV across multiple layers normalized its impact on activations. Layers 6, 7, and 8 of GPT-2 were the most effective.",
+            "2. Dummy tokens: Placing dummy tokens at 0.1, 0.25, 0.5, 0.75, and 0.9 fractions of the prompt length optimized performance for FV.",
+            "3. Number of attention heads for FV computation: Increasing to 35 attention heads maximized GPT-2 performance, with diminishing returns beyond this point.",
+            "4. Scaling: FV performed best with a scaling factor of 1.0, aligning with [48] for language tasks. ICV required scaling (e.g., 1.5) to counterbalance the dominance of hidden state activations and prevent degradation of the vanilla model’s performance.",
+            "Function Vector added to multiple layers: Distributing FV across multiple layers normalized its impact on activations. Layers 6, 7, and 8 of GPT-2 were the most effective.",
+            "Dummy tokens: Placing dummy tokens at 0.1, 0.25, 0.5, 0.75, and 0.9 fractions of the prompt length optimized performance for FV.",
+            "Number of attention heads for FV computation: Increasing to 35 attention heads maximized GPT-2 performance, with diminishing returns beyond this point.",
+            "Scaling: FV performed best with a scaling factor of 1.0, aligning with [48] for language tasks. ICV required scaling (e.g., 1.5) to counterbalance the dominance of hidden state activations and prevent degradation of the vanilla model’s performance.",
+            "As explained in Appendix A, the methods proposed in [11] and [25] cannot be included in our experiments because they require in-context prompts to include a separator token (e.g., “→\\rightarrow”) in each example. This requirement makes them incompatible with our functional regression dataset, as these tasks explicitly avoid tokenization and operate directly on raw floating-point numbers (see Appendix C.2 for details). Introducing separator tokens fundamentally changes the task by imposing a symbolic or tokenized representation of input-output relationships, contradicting the original setup proposed in [8]. Moreover, such methods rely on the tokenized format, bypassing the challenge of inferring functional relationships from raw numeric data, which renders the comparison invalid."
+          ]
+        },
+        {
+          "title": "C.3 Experiments on Language Tasks",
+          "paragraphs": [
+            "We closely adhere to the experimental methods described in [48], providing all relevant details to ensure our report is self-sufficient.",
+            "We provide a detailed overview of the natural language tasks used to evaluate the task formulations. References to the original data sources for each task are included, along with details on how they were refined and transformed into word pairs by [48]. The final datasets used in our evaluations are provided in the authors’ GitHub repository2.",
+            "This text classification dataset consists of news headlines and the first few sentences of articles as inputs, with labels indicating the article’s category. Categories include Business, Science/Technology, Sports, and World [67].",
+            "The dataset is from [34] and was further refined by [48]. Initially, all adjective, noun, and verb pairs from the dataset splits were combined, with duplicate entries removed. The dataset was then modified to include only word pairs where both words are tokenized as single tokens. This process resulted in 2,398 antonym pairs and 2,881 synonym pairs, with a vocabulary size of |𝒱|=50,400|\\mathcal{V}|=50,400.",
+            "These datasets originally included multiple outputs for single inputs, e.g., “increase” →\\rightarrow “decrease” and “increase” →\\rightarrow “reduce.” However, handling such cases would require a more powerful model [48]. Therefore, the dataset has been simplified to ensure a one-to-one mapping between terms.",
+            "This question-answering dataset requires a model to select the correct answer from five options, each labeled with a letter. The model generates the letter corresponding to the correct answer. For instance, given the question “Where is a business restaurant likely to be located?” and the options “A) town, B) hotel, C) mall, D) business sector, E) yellow pages,” the model should generate “D” [46].",
+            "The Landmark-Country dataset contains entries pairing the name of a landmark with its corresponding country. The data pairs are sourced from [12].",
+            "The Person-Instrument dataset contains entries pairing the name of a professional musician with the instrument they play. The data pairs are sourced from [12].",
+            "The Person-Occupation dataset, sourced from [12], contains entries pairing the names of well-known individuals with their respective occupations.",
+            "The Person-Sport dataset, sourced from [12], contains entries pairing the names of professional athletes with the sports they play.",
+            "The Product-Company dataset, curated from [12], contains entries pairing the names of commercial products with the companies that sell them.",
+            "The sentiment analysis task is based on the Stanford Sentiment Treebank (SST-2) dataset [44], which consists of movie review sentences labeled as either “positive” or “negative.” For example, an entry from this dataset might be: “An extremely unpleasant film. →\\rightarrow negative.” We use the subset of SST-2 curated by [14], which excludes incomplete sentences and those with more than 10 words, resulting in 1,167 entries. For further details, see [14].",
+            "The language translation dataset was constructed using data from [24], which pairs English words with their translations in French and Spanish. The train and test splits were merged into a single dataset and the cognates were filtered out. This process results in 4,705 pairs for English-French and 5,200 pairs for English-Spanish. The original datasets included multiple translations for some input words. These duplicates were filtered using GPT-4, following the method used for Antonym and Synonym.",
+            "The tasks described so far are Abstractive NLP tasks, where the information to be generated is not present in the prompt. We also evaluate the opposite case: Extractive tasks, where the answer exists within the prompt, and the goal is to retrieve it.",
+            "Our extractive tasks are based on a subset of the CoNLL-2003 English named entity recognition (NER) dataset [47], a widely used NLP benchmark for evaluating NER models. The NER task involves extracting the correct entity from a given sentence based on a specific property. For our study, we use three tasks derived by [48] from CoNLL-2003: NER-person, NER-location, and NER-organization, where the labels correspond to the name of a person, location, or organization, respectively. Each dataset is constructed by merging the CoNLL-2003 “train” and “validation” splits into a single dataset and filtering sentences to include only those with a single instance of the specified class. This reduces task ambiguity, as sentences with multiple instances of the same class could have more than one correct answer.",
+            "The default template for prompting the GPT-J model with TT demonstrations is structured as follows:",
+            "In our experiments with shuffled prompts, we randomly shuffle the labels {yi}i=1T\\{y_{i}\\}_{i=1}^{T} among each other. For zero-shot prompts, which contain no demonstrations, prompts consists solely of the query: “Q:​{xquery}​\\nA:\\texttt{Q:}\\{x_{\\text{query}}\\}\\texttt{\\textbackslash nA:}”. When testing Task Vector [11] and State Vector [25], which require a separator token between inputs and outputs, we treat “\\n” as the separator token.",
+            "We uniformly sample in-context examples (for few-shot) and a query input N=256N=256 times, assessing performance as the accuracy if the first token generated by the model matches the first token of the query label (if the label consists of more than one token). To compute the margin of error (denoted after ±\\pm in Table 1), we first calculate the standard error of the mean (SEM) as follows:",
+            "Next, the t-critical value is determined using the t-distribution with a 95% confidence level and degrees of freedom (N−1N-1). The margin of error is then calculated as:",
+            "For example, if the mean accuracy is 39.1 and the margin of error is 5.2, the true mean lies between 33.9 and 44.3 with a 95% confidence. Thus, if the confidence intervals of different methods overlap with the maximum mean accuracy, it indicates that the differences in performance are not statistically significant despite the highest accuracy."
+          ]
+        },
+        {
+          "title": "C.4 Training Learnable Task Vector",
+          "paragraphs": [
+            "The LTV parameters are initialized by sampling from the standard Gaussian distribution, totaling L×JL\\times J learnable parameters. We did not employ additional techniques such as dropout, activation functions, or gradient clipping in learning the weights, which are neither clipped nor bounded. The Adam optimizer, with a learning rate of 5×10−55\\times 10^{-5}, was used in all experiments. Training is terminated if the validation loss does not decrease for 50 consecutive gradient steps. The transformer parameters always remain frozen.",
+            "We optimize the LTV weights using mini-batch gradient descent on a dataset we compiled, consisting of 100×256=25,600100\\times 256=25,600 function samples (100 times the batch size). Prompts of length T𝐯>TtrainT_{\\mathbf{v}}>T_{\\text{train}} are constructed for these functions. We reserve the 20% of the dataset as a validation set for monitoring loss. For each mini-batch of prompts {pifi}i=1N\\{p_{i}^{f_{i}}\\}_{i=1}^{N} sampled from the dataset, the gradient descent step is defined as",
+            "where pifip_{i}^{f_{i}} represents a prompt corresponding to a unique function fif_{i} and η\\eta is the learning rate. This method and dataset compilation are applied uniformly across all three function classes.",
+            "We recognize that generating distinct functions and prompts at each gradient step could potentially provide an infinite variety of data and functions. This raises concerns about whether LTV overfits to the function classes. Although it was argued that the likelihood of the model encountering a training-similar prompt is extremely low [8], we opted for a static dataset approach. Our experiments were conducted using this dataset, with evaluations performed on the prompts constructed from different weight vectors during inference.",
+            "Given the dataset PtP^{t} for task tt, each gradient step involves sampling 100 prompts with replacement, each containing 5 demonstrations. These prompts are processed by the transformer to collect attention activations, and the mean of these activations across the sampled prompts is computed. This mean is then passed through the LTV layer to compute the corresponding LTV, as illustrated in (2).",
+            "For training, we sample a batch of 32 prompts, each with 5 demonstrations, but with all labels shuffled, rendering the input-output pairs non-informative. The LTV weights are updated to maximize the probability of the correct label for the query input:"
+          ]
+        },
+        {
+          "title": "C.5 Training LoRA",
+          "paragraphs": [
+            "We use LoRA (Low-Rank Adaptation) with a rank of 8, applied to the key (KK), query (QQ), value (VV), and output projection matrices in the self-attention mechanism of the GPT-2 model (12 layers, 8 attention heads per layer, and 256 hidden dimensions). The GPT-2 model is fine-tuned with LoRA on the same static dataset and over the same number of iterations (2000) used for training LTV.",
+            "Each of these matrices originally has dimensions 256×256256\\times 256. LoRA introduces two low-rank matrices, A∈ℝ256×8A\\in\\mathbb{R}^{256\\times 8} and B∈ℝ8×256B\\in\\mathbb{R}^{8\\times 256}, replacing the trainable weight matrix with their product. This setup results in 4096 trainable parameters per matrix, calculated as 2×256×82\\times 256\\times 8.",
+            "Since our task is relatively simple and the model is extremely lightweight, we apply LoRA to all layers for comprehensive coverage. This adds 16,384 trainable parameters per layer (4×40964\\times 4096), as LoRA operates on four matrices (KK, QQ, VV, and output) in each transformer layer. With 12 transformer layers in total, the model fine-tunes 196,608 parameters (12×1638412\\times 16384). This parameter-efficient approach significantly reduces the training cost compared to updating all model parameters."
+          ]
+        },
+        {
+          "title": "C.6 Detailed Ablation Studies",
+          "paragraphs": [
+            "Our argument is based on the premise that while earlier layers build foundational representations, the most refined and actionable insights for predictions are concentrated in the outputs of the last layer. The motivation for these studies is to examine the model’s resilience to variations in prompt length.",
+            "To this end, we freeze all transformer and LTV parameters to analyze the stability of last hidden state distributions across varying prompt lengths, rendering stationary distribution. We generate a dataset of 25,600 prompts (100 times the batch size) with a maximum length TmaxT_{\\text{max}}. Prompts were trimmed to TtrainT_{\\text{train}} for the vanilla transformer and extended beyond TtrainT_{\\text{train}} for the FV- and LTV-integrated transformers. The last hidden states from these configurations were compiled into two datasets, X1X_{1} and X2X_{2}, corresponding to the vanilla transformer and the FV- and LTV-integrated transformers, respectively. The samples within each dataset are independent and identically distributed, allowing us to estimate their probability distributions.",
+            "We estimate the probability distributions using Kernel Density Estimation (KDE), employing the standard KDE implementation from scipy [52] with default settings. However, directly estimating a probability distribution in a high-dimensional space often leads to the curse of dimensionality, where the volume of data required to effectively estimate the distribution grows exponentially with the number of dimensions. A practical solution to this challenge is to employ SVD for dimensionality reduction. This involves decomposing the data matrices Xi∈ℝM×dX_{i}\\in\\mathbb{R}^{M\\times d} as:",
+            "where MM is the number of collected samples and UiU_{i} contains the principal components ui,1,ui,2,…,ui,nu_{i,1},u_{i,2},\\ldots,u_{i,n} as column vectors. These principal components (PCs) form the column space of XiX_{i}:",
+            "where each ui,ku_{i,k} is orthogonal to ui,k′≠ku_{i,k^{\\prime}\\neq k} and ordered by decreasing variance that they explain. Specifically, the first nn principal components represent the directions along which the data varies the most, capturing the most significant patterns in the data. These components are likely more informative and relevant for distinguishing different behaviors or properties of the data.",
+            "Rather than estimating the distribution underlying the entire datasets XiX_{i} as multivariate distributions, we employ Gaussian KDE333https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.gaussian_kde.html to estimate each PC as a unimodal distribution. This approach is advantageous since KDE performs better with univariate data. However, transitioning from multivariate to univariate requires the assumption that the PCs are uncorrelated. We validate this assumption by observing that the nondiagonal entries of the correlation matrices of UiU_{i} are on the order of 10−210^{-2}, with diagonal entries being approximately 1, effectively an identity function, confirming that the PCs are indeed uncorrelated.",
+            "We use KL divergence between the KDE-estimated distributions of the column pairs to quantitatively assess distributional similarities. However, we find that these divergence values are negligibly small, except for the first one, which accounts for the most variance within the dataset. The negligible divergence scores for higher-order components suggest that these vectors contribute minimally to differentiating the datasets. Thus, focusing on the first component, which shows substantial divergence, is statistically justified and highlights the critical variations relevant to model generalization.",
+            "This experimentation process is depicted in Figure 4. Additionally, histograms illustrating the KDE-estimated distributions of the first principal components are provided in Appendix D.3 to offer a clear view of their similarity.",
+            "[Figure: Figure 4: The diagram illustrates our pipeline for ablation studies. We start by collecting M=25,600M=25,600 prompts corresponding to a selected task ff. Subsequently, the first principal component of the column space of these datasets is extracted using SVD. Finally, we report the KL divergence between the KDE-estimated distributions of these components.]"
+          ]
+        },
+        {
+          "title": "C.7 Computational Resources",
+          "paragraphs": [
+            "The computational experiments were conducted on a high-performance system with an AMD Ryzen Threadripper PRO 3995WX processor and 515 GB of RAM. For GPU acceleration, two NVIDIA RTX A6000 GPUs were used, each with 49 GB of memory. This setup efficiently supported the transformer models used in our research."
+          ]
+        }
+      ]
+    },
+    "Appendix D Complementary Results": {
+      "paragraphs": [
+        "In this section, we present the complete set of results that could not be accommodated in the main body due to space constraints. Specifically, we include comprehensive evaluations of the regression data, results under distributional shifts, and histograms for the ablation studies.",
+        "[Figure: (a) T𝐯=41T_{\\mathbf{v}}=41]",
+        "[Figure: (a) T𝐯=41T_{\\mathbf{v}}=41]",
+        "[Figure: (a) T𝐯=42T_{\\mathbf{v}}=42]",
+        "[Figure: (a) T𝐯=56T_{\\mathbf{v}}=56]",
+        "[Figure: (a) T𝐯=71T_{\\mathbf{v}}=71]",
+        "[Figure: (a) T𝐯=86T_{\\mathbf{v}}=86]",
+        "[Figure: (a) T𝐯=101T_{\\mathbf{v}}=101]",
+        "[Figure: (a) T𝐯=41T_{\\mathbf{v}}=41]",
+        "[Figure: (a) T𝐯=41T_{\\mathbf{v}}=41]",
+        "[Figure: (a) T𝐯=42T_{\\mathbf{v}}=42]",
+        "[Figure: (a) T𝐯=56T_{\\mathbf{v}}=56]",
+        "[Figure: (a) T𝐯=71T_{\\mathbf{v}}=71]",
+        "[Figure: (a) T𝐯=86T_{\\mathbf{v}}=86]",
+        "[Figure: (a) T𝐯=101T_{\\mathbf{v}}=101]",
+        "[Figure: (a) T𝐯=101T_{\\mathbf{v}}=101]",
+        "[Figure: (a) T𝐯=101T_{\\mathbf{v}}=101]",
+        "[Figure: (a) T𝐯=102T_{\\mathbf{v}}=102]",
+        "[Figure: (a) T𝐯=126T_{\\mathbf{v}}=126]",
+        "[Figure: (a) T𝐯=151T_{\\mathbf{v}}=151]",
+        "[Figure: (a) T𝐯=176T_{\\mathbf{v}}=176]",
+        "[Figure: (a) T𝐯=201T_{\\mathbf{v}}=201]",
+        "[Figure: (a) T𝐯=41T_{\\mathbf{v}}=41]",
+        "[Figure: (a) T𝐯=41T_{\\mathbf{v}}=41]",
+        "[Figure: (a) T𝐯=42T_{\\mathbf{v}}=42]",
+        "[Figure: (a) T𝐯=56T_{\\mathbf{v}}=56]",
+        "[Figure: (a) T𝐯=71T_{\\mathbf{v}}=71]",
+        "[Figure: (a) T𝐯=86T_{\\mathbf{v}}=86]",
+        "[Figure: (a) T𝐯=101T_{\\mathbf{v}}=101]",
+        "[Figure: (a) T𝐯=41T_{\\mathbf{v}}=41]",
+        "[Figure: (a) T𝐯=41T_{\\mathbf{v}}=41]",
+        "[Figure: (a) T𝐯=42T_{\\mathbf{v}}=42]",
+        "[Figure: (a) T𝐯=56T_{\\mathbf{v}}=56]",
+        "[Figure: (a) T𝐯=71T_{\\mathbf{v}}=71]",
+        "[Figure: (a) T𝐯=86T_{\\mathbf{v}}=86]",
+        "[Figure: (a) T𝐯=101T_{\\mathbf{v}}=101]",
+        "[Figure: (a) T𝐯=41T_{\\mathbf{v}}=41]",
+        "[Figure: (a) T𝐯=41T_{\\mathbf{v}}=41]",
+        "[Figure: (a) T𝐯=42T_{\\mathbf{v}}=42]",
+        "[Figure: (a) T𝐯=56T_{\\mathbf{v}}=56]",
+        "[Figure: (a) T𝐯=71T_{\\mathbf{v}}=71]",
+        "[Figure: (a) T𝐯=86T_{\\mathbf{v}}=86]",
+        "[Figure: (a) T𝐯=101T_{\\mathbf{v}}=101]",
+        "[Figure: (a) T𝐯=101T_{\\mathbf{v}}=101]",
+        "[Figure: (a) T𝐯=101T_{\\mathbf{v}}=101]",
+        "[Figure: (a) T𝐯=102T_{\\mathbf{v}}=102]",
+        "[Figure: (a) T𝐯=126T_{\\mathbf{v}}=126]",
+        "[Figure: (a) T𝐯=151T_{\\mathbf{v}}=151]",
+        "[Figure: (a) T𝐯=176T_{\\mathbf{v}}=176]",
+        "[Figure: (a) T𝐯=201T_{\\mathbf{v}}=201]",
+        "[Figure:  (a) Transformer (a) DKL=1.098D_{\\text{KL}}=1.098 ]",
+        "[Figure:  (a) Transformer (a) DKL=1.098D_{\\text{KL}}=1.098 ]",
+        "[Figure:  (a) Transformer (a) DKL=1.098D_{\\text{KL}}=1.098 ]",
+        "[Figure:  (a) Function Vector (a) DKL=0.646D_{\\text{KL}}=0.646 ]",
+        "[Figure:  (a) LTV (T𝐯=41T_{\\mathbf{v}}=41) (a) DKL=1.000D_{\\text{KL}}=1.000 ]",
+        "[Figure:  (a) LTV (T𝐯=42T_{\\mathbf{v}}=42) (a) DKL=0.952D_{\\text{KL}}=0.952 ]",
+        "[Figure:  (a) LTV (T𝐯=56T_{\\mathbf{v}}=56) (a) DKL=0.532D_{\\text{KL}}=0.532 ]",
+        "[Figure:  (a) LTV (T𝐯=56T_{\\mathbf{v}}=56) (a) DKL=0.532D_{\\text{KL}}=0.532 ]",
+        "[Figure:  (a) LTV (T𝐯=71T_{\\mathbf{v}}=71) (a) DKL=0.460D_{\\text{KL}}=0.460 ]",
+        "[Figure:  (a) LTV (T𝐯=86T_{\\mathbf{v}}=86) (a) DKL=0.344D_{\\text{KL}}=0.344 ]",
+        "[Figure:  (a) LTV (T𝐯=101T_{\\mathbf{v}}=101) (a) DKL=0.300D_{\\text{KL}}=0.300 ]",
+        "[Figure:  (a) Transformer (a) DKL=1.110D_{\\text{KL}}=1.110 ]",
+        "[Figure:  (a) Transformer (a) DKL=1.110D_{\\text{KL}}=1.110 ]",
+        "[Figure:  (a) Transformer (a) DKL=1.110D_{\\text{KL}}=1.110 ]",
+        "[Figure:  (a) Function Vector (a) DKL=0.572D_{\\text{KL}}=0.572 ]",
+        "[Figure:  (a) LTV (T𝐯=41T_{\\mathbf{v}}=41) (a) DKL=1.056D_{\\text{KL}}=1.056 ]",
+        "[Figure:  (a) LTV (T𝐯=42T_{\\mathbf{v}}=42) (a) DKL=0.984D_{\\text{KL}}=0.984 ]",
+        "[Figure:  (a) LTV (T𝐯=56T_{\\mathbf{v}}=56) (a) DKL=0.260D_{\\text{KL}}=0.260 ]",
+        "[Figure:  (a) LTV (T𝐯=56T_{\\mathbf{v}}=56) (a) DKL=0.260D_{\\text{KL}}=0.260 ]",
+        "[Figure:  (a) LTV (T𝐯=71T_{\\mathbf{v}}=71) (a) DKL=0.203D_{\\text{KL}}=0.203 ]",
+        "[Figure:  (a) LTV (T𝐯=86T_{\\mathbf{v}}=86) (a) DKL=0.199D_{\\text{KL}}=0.199 ]",
+        "[Figure:  (a) LTV (T𝐯=101T_{\\mathbf{v}}=101) (a) DKL=0.096D_{\\text{KL}}=0.096 ]",
+        "[Figure:  (a) Transformer (a) DKL=0.103D_{\\text{KL}}=0.103 ]",
+        "[Figure:  (a) Transformer (a) DKL=0.103D_{\\text{KL}}=0.103 ]",
+        "[Figure:  (a) Transformer (a) DKL=0.103D_{\\text{KL}}=0.103 ]",
+        "[Figure:  (a) Function Vector (a) DKL=0.223D_{\\text{KL}}=0.223 ]",
+        "[Figure:  (a) LTV (T𝐯=101T_{\\mathbf{v}}=101) (a) DKL=0.095D_{\\text{KL}}=0.095 ]",
+        "[Figure:  (a) LTV (T𝐯=102T_{\\mathbf{v}}=102) (a) DKL=0.037D_{\\text{KL}}=0.037 ]",
+        "[Figure:  (a) LTV (T𝐯=126T_{\\mathbf{v}}=126) (a) DKL=0.016D_{\\text{KL}}=0.016 ]",
+        "[Figure:  (a) LTV (T𝐯=126T_{\\mathbf{v}}=126) (a) DKL=0.016D_{\\text{KL}}=0.016 ]",
+        "[Figure:  (a) LTV (T𝐯=151T_{\\mathbf{v}}=151) (a) DKL=0.017D_{\\text{KL}}=0.017 ]",
+        "[Figure:  (a) LTV (T𝐯=176T_{\\mathbf{v}}=176) (a) DKL=0.013D_{\\text{KL}}=0.013 ]",
+        "[Figure:  (a) LTV (T𝐯=201T_{\\mathbf{v}}=201) (a) DKL=0.038D_{\\text{KL}}=0.038 ]"
+      ],
+      "subsections": [
+        {
+          "title": "D.1 Complete Set of Evaluations on Regression Tasks",
+          "paragraphs": [
+            "In addition to the main text, we present results where the LTV is trained with T𝐯=TtrainT_{\\mathbf{v}}=T_{\\text{train}} and T𝐯=TmaxT_{\\mathbf{v}}=T_{\\text{max}}. As expected, we do not observe improved performance for T𝐯=TtrainT_{\\mathbf{v}}=T_{\\text{train}} since the transformer itself already performs optimally. The LTV trained with the maximum number of examples is included for comparison purposes, although it does not provide insights into generalizability, as it is exposed to all TmaxT_{\\text{max}} examples.",
+            "[Figure: (a) T𝐯=41T_{\\mathbf{v}}=41]",
+            "[Figure: (a) T𝐯=41T_{\\mathbf{v}}=41]",
+            "[Figure: (a) T𝐯=42T_{\\mathbf{v}}=42]",
+            "[Figure: (a) T𝐯=56T_{\\mathbf{v}}=56]",
+            "[Figure: (a) T𝐯=71T_{\\mathbf{v}}=71]",
+            "[Figure: (a) T𝐯=86T_{\\mathbf{v}}=86]",
+            "[Figure: (a) T𝐯=101T_{\\mathbf{v}}=101]",
+            "[Figure: (a) T𝐯=41T_{\\mathbf{v}}=41]",
+            "[Figure: (a) T𝐯=41T_{\\mathbf{v}}=41]",
+            "[Figure: (a) T𝐯=42T_{\\mathbf{v}}=42]",
+            "[Figure: (a) T𝐯=56T_{\\mathbf{v}}=56]",
+            "[Figure: (a) T𝐯=71T_{\\mathbf{v}}=71]",
+            "[Figure: (a) T𝐯=86T_{\\mathbf{v}}=86]",
+            "[Figure: (a) T𝐯=101T_{\\mathbf{v}}=101]",
+            "[Figure: (a) T𝐯=101T_{\\mathbf{v}}=101]",
+            "[Figure: (a) T𝐯=101T_{\\mathbf{v}}=101]",
+            "[Figure: (a) T𝐯=102T_{\\mathbf{v}}=102]",
+            "[Figure: (a) T𝐯=126T_{\\mathbf{v}}=126]",
+            "[Figure: (a) T𝐯=151T_{\\mathbf{v}}=151]",
+            "[Figure: (a) T𝐯=176T_{\\mathbf{v}}=176]",
+            "[Figure: (a) T𝐯=201T_{\\mathbf{v}}=201]"
+          ]
+        },
+        {
+          "title": "D.2 Distributional Shift",
+          "paragraphs": [
+            "We identify two scenarios from [8] where the transformer model’s performance notably degrades during ICL inference: noisy linear regression and skewed covariance matrix.",
+            "Noise is added to the output of each example in the form of a standard Gaussian distribution. Specifically, the ii-th output is defined as w⊤​xi+ϵiw^{\\top}x_{i}+\\epsilon_{i}, where ϵi∼𝒩​(0,1)\\epsilon_{i}\\sim\\mathcal{N}(0,1). While the transformer and LTV are trained on standard linear regression, the data during the ICL inference phase is modified by this additive noise. We observe that while the performance of FV considerably degrades, LTV is only slightly perturbed. Specifically, LTV requires training on more examples to maintain the same performance compared to the noise-free setting. For instance, the performance of LTV at T𝐯=71T_{\\mathbf{v}}=71 matches what is achieved in a noise-free environment at around T𝐯=56T_{\\mathbf{v}}=56.",
+            "The inputs for the prompts are sampled from a zero-mean skewed Gaussian distribution: x∼𝒩​(0,Σ~)x\\sim\\mathcal{N}(0,\\tilde{\\Sigma}), where the eigenbasis of the skewed covariance matrix Σ~\\tilde{\\Sigma} is chosen uniformly at random. Each ii-th eigenvalue of this matrix is proportional to 1/i21/i^{2}. The results we obtain align with the expectations based on [8], with the error curves are more unstable and oscillate more than in the isotropic Gaussian case. While LTV also shows some vulnerability to this instability, it still maintains a low mean error and delivers substantial performance enhancement.",
+            "[Figure: (a) T𝐯=41T_{\\mathbf{v}}=41]",
+            "[Figure: (a) T𝐯=41T_{\\mathbf{v}}=41]",
+            "[Figure: (a) T𝐯=42T_{\\mathbf{v}}=42]",
+            "[Figure: (a) T𝐯=56T_{\\mathbf{v}}=56]",
+            "[Figure: (a) T𝐯=71T_{\\mathbf{v}}=71]",
+            "[Figure: (a) T𝐯=86T_{\\mathbf{v}}=86]",
+            "[Figure: (a) T𝐯=101T_{\\mathbf{v}}=101]",
+            "[Figure: (a) T𝐯=41T_{\\mathbf{v}}=41]",
+            "[Figure: (a) T𝐯=41T_{\\mathbf{v}}=41]",
+            "[Figure: (a) T𝐯=42T_{\\mathbf{v}}=42]",
+            "[Figure: (a) T𝐯=56T_{\\mathbf{v}}=56]",
+            "[Figure: (a) T𝐯=71T_{\\mathbf{v}}=71]",
+            "[Figure: (a) T𝐯=86T_{\\mathbf{v}}=86]",
+            "[Figure: (a) T𝐯=101T_{\\mathbf{v}}=101]",
+            "[Figure: (a) T𝐯=41T_{\\mathbf{v}}=41]",
+            "[Figure: (a) T𝐯=41T_{\\mathbf{v}}=41]",
+            "[Figure: (a) T𝐯=42T_{\\mathbf{v}}=42]",
+            "[Figure: (a) T𝐯=56T_{\\mathbf{v}}=56]",
+            "[Figure: (a) T𝐯=71T_{\\mathbf{v}}=71]",
+            "[Figure: (a) T𝐯=86T_{\\mathbf{v}}=86]",
+            "[Figure: (a) T𝐯=101T_{\\mathbf{v}}=101]",
+            "[Figure: (a) T𝐯=101T_{\\mathbf{v}}=101]",
+            "[Figure: (a) T𝐯=101T_{\\mathbf{v}}=101]",
+            "[Figure: (a) T𝐯=102T_{\\mathbf{v}}=102]",
+            "[Figure: (a) T𝐯=126T_{\\mathbf{v}}=126]",
+            "[Figure: (a) T𝐯=151T_{\\mathbf{v}}=151]",
+            "[Figure: (a) T𝐯=176T_{\\mathbf{v}}=176]",
+            "[Figure: (a) T𝐯=201T_{\\mathbf{v}}=201]"
+          ]
+        },
+        {
+          "title": "D.3 Histograms for Ablation Studies",
+          "paragraphs": [
+            "The histograms effectively illustrate the (unnormalized) probability density functions of the last hidden states. The plots correspond well with the computed KL divergence scores reported in Table 2. As the KL divergence values decrease, the histograms show greater alignment. Specifically, as the training prompt length for the LTV configurations increases, their density profiles become narrower, more closely resembling the shape of the vanilla transformer’s distribution at TtrainT_{\\text{train}}. From a different perspective, this visual alignment supports our hypothesis once again: An optimized LTV with sufficiently long prompts performs near-optimally, as it effectively maintains the last hidden state distribution close to that of the model performing under T=TtrainT=T_{\\text{train}}.",
+            "[Figure:  (a) Transformer (a) DKL=1.098D_{\\text{KL}}=1.098 ]",
+            "[Figure:  (a) Transformer (a) DKL=1.098D_{\\text{KL}}=1.098 ]",
+            "[Figure:  (a) Transformer (a) DKL=1.098D_{\\text{KL}}=1.098 ]",
+            "[Figure:  (a) Function Vector (a) DKL=0.646D_{\\text{KL}}=0.646 ]",
+            "[Figure:  (a) LTV (T𝐯=41T_{\\mathbf{v}}=41) (a) DKL=1.000D_{\\text{KL}}=1.000 ]",
+            "[Figure:  (a) LTV (T𝐯=42T_{\\mathbf{v}}=42) (a) DKL=0.952D_{\\text{KL}}=0.952 ]",
+            "[Figure:  (a) LTV (T𝐯=56T_{\\mathbf{v}}=56) (a) DKL=0.532D_{\\text{KL}}=0.532 ]",
+            "[Figure:  (a) LTV (T𝐯=56T_{\\mathbf{v}}=56) (a) DKL=0.532D_{\\text{KL}}=0.532 ]",
+            "[Figure:  (a) LTV (T𝐯=71T_{\\mathbf{v}}=71) (a) DKL=0.460D_{\\text{KL}}=0.460 ]",
+            "[Figure:  (a) LTV (T𝐯=86T_{\\mathbf{v}}=86) (a) DKL=0.344D_{\\text{KL}}=0.344 ]",
+            "[Figure:  (a) LTV (T𝐯=101T_{\\mathbf{v}}=101) (a) DKL=0.300D_{\\text{KL}}=0.300 ]",
+            "[Figure:  (a) Transformer (a) DKL=1.110D_{\\text{KL}}=1.110 ]",
+            "[Figure:  (a) Transformer (a) DKL=1.110D_{\\text{KL}}=1.110 ]",
+            "[Figure:  (a) Transformer (a) DKL=1.110D_{\\text{KL}}=1.110 ]",
+            "[Figure:  (a) Function Vector (a) DKL=0.572D_{\\text{KL}}=0.572 ]",
+            "[Figure:  (a) LTV (T𝐯=41T_{\\mathbf{v}}=41) (a) DKL=1.056D_{\\text{KL}}=1.056 ]",
+            "[Figure:  (a) LTV (T𝐯=42T_{\\mathbf{v}}=42) (a) DKL=0.984D_{\\text{KL}}=0.984 ]",
+            "[Figure:  (a) LTV (T𝐯=56T_{\\mathbf{v}}=56) (a) DKL=0.260D_{\\text{KL}}=0.260 ]",
+            "[Figure:  (a) LTV (T𝐯=56T_{\\mathbf{v}}=56) (a) DKL=0.260D_{\\text{KL}}=0.260 ]",
+            "[Figure:  (a) LTV (T𝐯=71T_{\\mathbf{v}}=71) (a) DKL=0.203D_{\\text{KL}}=0.203 ]",
+            "[Figure:  (a) LTV (T𝐯=86T_{\\mathbf{v}}=86) (a) DKL=0.199D_{\\text{KL}}=0.199 ]",
+            "[Figure:  (a) LTV (T𝐯=101T_{\\mathbf{v}}=101) (a) DKL=0.096D_{\\text{KL}}=0.096 ]",
+            "[Figure:  (a) Transformer (a) DKL=0.103D_{\\text{KL}}=0.103 ]",
+            "[Figure:  (a) Transformer (a) DKL=0.103D_{\\text{KL}}=0.103 ]",
+            "[Figure:  (a) Transformer (a) DKL=0.103D_{\\text{KL}}=0.103 ]",
+            "[Figure:  (a) Function Vector (a) DKL=0.223D_{\\text{KL}}=0.223 ]",
+            "[Figure:  (a) LTV (T𝐯=101T_{\\mathbf{v}}=101) (a) DKL=0.095D_{\\text{KL}}=0.095 ]",
+            "[Figure:  (a) LTV (T𝐯=102T_{\\mathbf{v}}=102) (a) DKL=0.037D_{\\text{KL}}=0.037 ]",
+            "[Figure:  (a) LTV (T𝐯=126T_{\\mathbf{v}}=126) (a) DKL=0.016D_{\\text{KL}}=0.016 ]",
+            "[Figure:  (a) LTV (T𝐯=126T_{\\mathbf{v}}=126) (a) DKL=0.016D_{\\text{KL}}=0.016 ]",
+            "[Figure:  (a) LTV (T𝐯=151T_{\\mathbf{v}}=151) (a) DKL=0.017D_{\\text{KL}}=0.017 ]",
+            "[Figure:  (a) LTV (T𝐯=176T_{\\mathbf{v}}=176) (a) DKL=0.013D_{\\text{KL}}=0.013 ]",
+            "[Figure:  (a) LTV (T𝐯=201T_{\\mathbf{v}}=201) (a) DKL=0.038D_{\\text{KL}}=0.038 ]"
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "[1] Ekin Akyürek, Dale Schuurmans, Jacob Andreas, Tengyu Ma, and Denny Zhou. What learning algorithm is in-context learning? investigations with linear models. In The Eleventh International Conference on Learning Representations, 2023.",
+    "[2] Adrien Bibal, Rémi Cardon, David Alfter, Rodrigo Wilkens, Xiaoou Wang, Thomas François, and Patrick Watrin. Is attention explanation? an introduction to the debate. In Smaranda Muresan, Preslav Nakov, and Aline Villavicencio, editors, Proceedings of the 60th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 3889–3900, Dublin, Ireland, May 2022. Association for Computational Linguistics.",
+    "[3] Tom B. Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared Kaplan, Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, Sandhini Agarwal, Ariel Herbert-Voss, Gretchen Krueger, Tom Henighan, Rewon Child, Aditya Ramesh, Daniel M. Ziegler, Jeffrey Wu, Clemens Winter, Christopher Hesse, Mark Chen, Eric Sigler, Mateusz Litwin, Scott Gray, Benjamin Chess, Jack Clark, Christopher Berner, Sam McCandlish, Alec Radford, Ilya Sutskever, and Dario Amodei. Language models are few-shot learners, 2020.",
+    "[4] Kevin Clark, Urvashi Khandelwal, Omer Levy, and Christopher D. Manning. What does BERT look at? an analysis of BERT’s attention. In Tal Linzen, Grzegorz Chrupała, Yonatan Belinkov, and Dieuwke Hupkes, editors, Proceedings of the 2019 ACL Workshop BlackboxNLP: Analyzing and Interpreting Neural Networks for NLP, pages 276–286, Florence, Italy, August 2019. Association for Computational Linguistics.",
+    "[5] Damai Dai, Yutao Sun, Li Dong, Yaru Hao, Shuming Ma, Zhifang Sui, and Furu Wei. Why can GPT learn in-context? language models secretly perform gradient descent as meta-optimizers. In Anna Rogers, Jordan Boyd-Graber, and Naoaki Okazaki, editors, Findings of the Association for Computational Linguistics: ACL 2023, pages 4005–4019, Toronto, Canada, July 2023. Association for Computational Linguistics.",
+    "[6] N. Elhage, N. Nanda, C. Olsson, T. Henighan, N. Joseph, B. Mann, A. Askell, Y. Bai, A. Chen, T. Conerly, et al. A mathematical framework for transformer circuits. https://transformer-circuits.pub/2021/framework/index.html, 2021. Transformer Circuits Thread.",
+    "[7] Nelson Elhage, Neel Nanda, Catherine Olsson, Tom Henighan, Nicholas Joseph, Ben Mann, Amanda Askell, Yuntao Bai, Anna Chen, Tom Conerly, Nova DasSarma, Dawn Drain, Deep Ganguli, Zac Hatfield-Dodds, Danny Hernandez, Andy Jones, Jackson Kernion, Liane Lovitt, Kamal Ndousse, Dario Amodei, Tom Brown, Jack Clark, Jared Kaplan, Sam McCandlish, and Chris Olah. A mathematical framework for transformer circuits. Transformer Circuits Thread, 2021. https://transformer-circuits.pub/2021/framework/index.html.",
+    "[8] Shivam Garg, Dimitris Tsipras, Percy Liang, and Gregory Valiant. What can transformers learn in-context? a case study of simple function classes, 2023.",
+    "[9] Mor Geva, Jasmijn Bastings, Katja Filippova, and Amir Globerson. Dissecting recall of factual associations in auto-regressive language models. In Houda Bouamor, Juan Pino, and Kalika Bali, editors, Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, pages 12216–12235, Singapore, December 2023. Association for Computational Linguistics.",
+    "[10] Danny Halawi, Jean-Stanislas Denain, and Jacob Steinhardt. Overthinking the truth: Understanding how language models process false demonstrations. In The Twelfth International Conference on Learning Representations, 2024.",
+    "[11] Roee Hendel, Mor Geva, and Amir Globerson. In-context learning creates task vectors. In Houda Bouamor, Juan Pino, and Kalika Bali, editors, Findings of the Association for Computational Linguistics: EMNLP 2023, pages 9318–9333, Singapore, December 2023. Association for Computational Linguistics.",
+    "[12] Evan Hernandez, Arnab Sen Sharma, Tal Haklay, Kevin Meng, Martin Wattenberg, Jacob Andreas, Yonatan Belinkov, and David Bau. Linearity of relation decoding in transformer language models. In The Twelfth International Conference on Learning Representations, 2024.",
+    "[13] Felix Hill, Adam Santoro, David Barrett, Ari Morcos, and Timothy Lillicrap. Learning to make analogies by contrasting abstract relational structure. In International Conference on Learning Representations, 2019.",
+    "[14] Or Honovich, Uri Shaham, Samuel R. Bowman, and Omer Levy. Instruction induction: From few examples to natural language task descriptions. In Anna Rogers, Jordan Boyd-Graber, and Naoaki Okazaki, editors, Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 1935–1952, Toronto, Canada, July 2023. Association for Computational Linguistics.",
+    "[15] Phu Mon Htut, Jason Phang, Shikha Bordia, and Samuel R. Bowman. Do attention heads in bert track syntactic dependencies?, 2019.",
+    "[16] Edward J Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and Weizhu Chen. LoRA: Low-rank adaptation of large language models. In International Conference on Learning Representations, 2022.",
+    "[17] Gabriel Ilharco, Marco Tulio Ribeiro, Mitchell Wortsman, Ludwig Schmidt, Hannaneh Hajishirzi, and Ali Farhadi. Editing models with task arithmetic. In The Eleventh International Conference on Learning Representations, 2023.",
+    "[18] Sarthak Jain and Byron C. Wallace. Attention is not Explanation. In Jill Burstein, Christy Doran, and Thamar Solorio, editors, Proceedings of the 2019 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, Volume 1 (Long and Short Papers), pages 3543–3556, Minneapolis, Minnesota, June 2019. Association for Computational Linguistics.",
+    "[19] Diederik P. Kingma and Jimmy Ba. Adam: A method for stochastic optimization. In Yoshua Bengio and Yann LeCun, editors, 3rd International Conference on Learning Representations, ICLR 2015, San Diego, CA, USA, May 7-9, 2015, Conference Track Proceedings, 2015.",
+    "[20] Goro Kobayashi, Tatsuki Kuribayashi, Sho Yokoi, and Kentaro Inui. Attention is not only a weight: Analyzing transformers with vector norms. In Bonnie Webber, Trevor Cohn, Yulan He, and Yang Liu, editors, Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing (EMNLP), pages 7057–7075, Online, November 2020. Association for Computational Linguistics.",
+    "[21] Olga Kovaleva, Alexey Romanov, Anna Rogers, and Anna Rumshisky. Revealing the dark secrets of BERT. In Kentaro Inui, Jing Jiang, Vincent Ng, and Xiaojun Wan, editors, Proceedings of the 2019 Conference on Empirical Methods in Natural Language Processing and the 9th International Joint Conference on Natural Language Processing (EMNLP-IJCNLP), pages 4365–4374, Hong Kong, China, November 2019. Association for Computational Linguistics.",
+    "[22] Brenden Lake and Marco Baroni. Generalization without systematicity: On the compositional skills of sequence-to-sequence recurrent networks. In Jennifer Dy and Andreas Krause, editors, Proceedings of the 35th International Conference on Machine Learning, volume 80 of Proceedings of Machine Learning Research, pages 2873–2882. PMLR, 10–15 Jul 2018.",
+    "[23] Andrew K. Lampinen and James L. McClelland. Transforming task representations to perform novel tasks. Proceedings of the National Academy of Sciences, 117(52):32970–32981, 2020.",
+    "[24] Guillaume Lample, Alexis Conneau, Marc’Aurelio Ranzato, Ludovic Denoyer, and Hervé Jégou. Word translation without parallel data. In International Conference on Learning Representations, 2018.",
+    "[25] Dongfang Li, zhenyu liu, Xinshuo Hu, Zetian Sun, Baotian Hu, and Min Zhang. In-context learning state vector with inner and momentum optimization. In The Thirty-eighth Annual Conference on Neural Information Processing Systems, 2024.",
+    "[26] Kenneth Li, Oam Patel, Fernanda Viégas, Hanspeter Pfister, and Martin Wattenberg. Inference-time intervention: Eliciting truthful answers from a language model. In Thirty-seventh Conference on Neural Information Processing Systems, 2023.",
+    "[27] Yingcong Li, Muhammed Emrullah Ildiz, Dimitris Papailiopoulos, and Samet Oymak. Transformers as algorithms: Generalization and stability in in-context learning. In Andreas Krause, Emma Brunskill, Kyunghyun Cho, Barbara Engelhardt, Sivan Sabato, and Jonathan Scarlett, editors, Proceedings of the 40th International Conference on Machine Learning, volume 202 of Proceedings of Machine Learning Research, pages 19565–19594. PMLR, 23–29 Jul 2023.",
+    "[28] Yongjie Lin, Yi Chern Tan, and Robert Frank. Open sesame: Getting inside BERT’s linguistic knowledge. In Tal Linzen, Grzegorz Chrupała, Yonatan Belinkov, and Dieuwke Hupkes, editors, Proceedings of the 2019 ACL Workshop BlackboxNLP: Analyzing and Interpreting Neural Networks for NLP, pages 241–253, Florence, Italy, August 2019. Association for Computational Linguistics.",
+    "[29] Sheng Liu, Haotian Ye, Lei Xing, and James Zou. In-context vectors: Making in context learning more effective and controllable through latent space steering, 2024.",
+    "[30] Kevin Meng, David Bau, Alex Andonian, and Yonatan Belinkov. Locating and editing factual associations in gpt. In S. Koyejo, S. Mohamed, A. Agarwal, D. Belgrave, K. Cho, and A. Oh, editors, Advances in Neural Information Processing Systems, volume 35, pages 17359–17372. Curran Associates, Inc., 2022.",
+    "[31] Jack Merullo, Carsten Eickhoff, and Ellie Pavlick. Language models implement simple word2vec-style vector arithmetic, 2024.",
+    "[32] Sewon Min, Xinxi Lyu, Ari Holtzman, Mikel Artetxe, Mike Lewis, Hannaneh Hajishirzi, and Luke Zettlemoyer. Rethinking the role of demonstrations: What makes in-context learning work? pages 11048–11064, 01 2022.",
+    "[33] Jesse Mu, Xiang Lisa Li, and Noah Goodman. Learning to compress prompts with gist tokens. In Thirty-seventh Conference on Neural Information Processing Systems, 2023.",
+    "[34] Kim Anh Nguyen, Sabine Schulte im Walde, and Ngoc Thang Vu. Distinguishing antonyms and synonyms in a pattern-based neural network. In Mirella Lapata, Phil Blunsom, and Alexander Koller, editors, Proceedings of the 15th Conference of the European Chapter of the Association for Computational Linguistics: Volume 1, Long Papers, pages 76–85, Valencia, Spain, April 2017. Association for Computational Linguistics.",
+    "[35] Jane Pan, Tianyu Gao, Howard Chen, and Danqi Chen. What in-context learning “learns” in-context: Disentangling task recognition and task learning. In Anna Rogers, Jordan Boyd-Graber, and Naoaki Okazaki, editors, Findings of the Association for Computational Linguistics: ACL 2023, pages 8298–8319, Toronto, Canada, July 2023. Association for Computational Linguistics.",
+    "[36] Abhishek Panigrahi, Nikunj Saunshi, Haoyu Zhao, and Sanjeev Arora. Task-specific skill localization in fine-tuned language models. In Proceedings of the 40th International Conference on Machine Learning, ICML’23. JMLR.org, 2023.",
+    "[37] Judea Pearl. Direct and indirect effects. In Proceedings of the Seventeenth Conference on Uncertainty in Artificial Intelligence, UAI’01, page 411–420, San Francisco, CA, USA, 2001. Morgan Kaufmann Publishers Inc.",
+    "[38] Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario Amodei, Ilya Sutskever, et al. Language models are unsupervised multitask learners. OpenAI Blog, 2019.",
+    "[39] Emily Reif, Ann Yuan, Martin Wattenberg, Fernanda B Viegas, Andy Coenen, Adam Pearce, and Been Kim. Visualizing and measuring the geometry of bert. In H. Wallach, H. Larochelle, A. Beygelzimer, F. d'Alché-Buc, E. Fox, and R. Garnett, editors, Advances in Neural Information Processing Systems, volume 32. Curran Associates, Inc., 2019.",
+    "[40] Nina Rimsky, Nick Gabrieli, Julian Schulz, Meg Tong, Evan Hubinger, and Alexander Matt Turner. Steering llama 2 via contrastive activation addition, 2024.",
+    "[41] Nan Shao, Zefan Cai, Hanwei xu, Chonghua Liao, Yanan Zheng, and Zhilin Yang. Compositional task representations for large language models. In The Eleventh International Conference on Learning Representations, 2023.",
+    "[42] Suzanna Sia, David Mueller, and Kevin Duh. Where does in-context learning \\\\ happen in large language models? In The Thirty-eighth Annual Conference on Neural Information Processing Systems, 2024.",
+    "[43] Richard Socher, Alex Perelygin, Jean Wu, Jason Chuang, Christopher D. Manning, Andrew Ng, and Christopher Potts. Recursive deep models for semantic compositionality over a sentiment treebank. In David Yarowsky, Timothy Baldwin, Anna Korhonen, Karen Livescu, and Steven Bethard, editors, Proceedings of the 2013 Conference on Empirical Methods in Natural Language Processing, pages 1631–1642, Seattle, Washington, USA, October 2013. Association for Computational Linguistics.",
+    "[44] Richard Socher, Alex Perelygin, Jean Wu, Jason Chuang, Christopher D. Manning, Andrew Ng, and Christopher Potts. Recursive deep models for semantic compositionality over a sentiment treebank. In David Yarowsky, Timothy Baldwin, Anna Korhonen, Karen Livescu, and Steven Bethard, editors, Proceedings of the 2013 Conference on Empirical Methods in Natural Language Processing, pages 1631–1642, Seattle, Washington, USA, October 2013. Association for Computational Linguistics.",
+    "[45] Nishant Subramani, Nivedita Suresh, and Matthew Peters. Extracting latent steering vectors from pretrained language models. In Smaranda Muresan, Preslav Nakov, and Aline Villavicencio, editors, Findings of the Association for Computational Linguistics: ACL 2022, pages 566–581, Dublin, Ireland, May 2022. Association for Computational Linguistics.",
+    "[46] Alon Talmor, Jonathan Herzig, Nicholas Lourie, and Jonathan Berant. CommonsenseQA: A question answering challenge targeting commonsense knowledge. In Jill Burstein, Christy Doran, and Thamar Solorio, editors, Proceedings of the 2019 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, Volume 1 (Long and Short Papers), pages 4149–4158, Minneapolis, Minnesota, June 2019. Association for Computational Linguistics.",
+    "[47] Erik F. Tjong Kim Sang and Fien De Meulder. Introduction to the CoNLL-2003 shared task: Language-independent named entity recognition. In Proceedings of the Seventh Conference on Natural Language Learning at HLT-NAACL 2003, pages 142–147, 2003.",
+    "[48] Eric Todd, Millicent Li, Arnab Sen Sharma, Aaron Mueller, Byron C Wallace, and David Bau. LLMs represent contextual tasks as compact function vectors. In The Twelfth International Conference on Learning Representations, 2024.",
+    "[49] Alexander Matt Turner, Lisa Thiergart, David Udell, Gavin Leech, Ulisse Mini, and Monte MacDiarmid. Activation addition: Steering language models without optimization, 2023.",
+    "[50] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Ł ukasz Kaiser, and Illia Polosukhin. Attention is all you need. In I. Guyon, U. Von Luxburg, S. Bengio, H. Wallach, R. Fergus, S. Vishwanathan, and R. Garnett, editors, Advances in Neural Information Processing Systems, volume 30. Curran Associates, Inc., 2017.",
+    "[51] Jesse Vig, Sebastian Gehrmann, Yonatan Belinkov, Sharon Qian, Daniel Nevo, Yaron Singer, and Stuart Shieber. Investigating gender bias in language models using causal mediation analysis. In H. Larochelle, M. Ranzato, R. Hadsell, M.F. Balcan, and H. Lin, editors, Advances in Neural Information Processing Systems, volume 33, pages 12388–12401. Curran Associates, Inc., 2020.",
+    "[52] Pauli Virtanen, Ralf Gommers, Travis E. Oliphant, Matt Haberland, Tyler Reddy, David Cournapeau, Evgeni Burovski, Pearu Peterson, Warren Weckesser, Jonathan Bright, Stéfan J. van der Walt, Matthew Brett, Joshua Wilson, K. Jarrod Millman, Nikolay Mayorov, Andrew R. J. Nelson, Eric Jones, Robert Kern, Eric Larson, C J Carey, İlhan Polat, Yu Feng, Eric W. Moore, Jake VanderPlas, Denis Laxalde, Josef Perktold, Robert Cimrman, Ian Henriksen, E. A. Quintero, Charles R. Harris, Anne M. Archibald, Antônio H. Ribeiro, Fabian Pedregosa, Paul van Mulbregt, and SciPy 1.0 Contributors. SciPy 1.0: Fundamental Algorithms for Scientific Computing in Python. Nature Methods, 17:261–272, 2020.",
+    "[53] Elena Voita, Pavel Serdyukov, Rico Sennrich, and Ivan Titov. Context-aware neural machine translation learns anaphora resolution. In Iryna Gurevych and Yusuke Miyao, editors, Proceedings of the 56th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 1264–1274, Melbourne, Australia, July 2018. Association for Computational Linguistics.",
+    "[54] Elena Voita, David Talbot, Fedor Moiseev, Rico Sennrich, and Ivan Titov. Analyzing multi-head self-attention: Specialized heads do the heavy lifting, the rest can be pruned. In Anna Korhonen, David Traum, and Lluís Màrquez, editors, Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics, pages 5797–5808, Florence, Italy, July 2019. Association for Computational Linguistics.",
+    "[55] Johannes Von Oswald, Eyvind Niklasson, Ettore Randazzo, Joao Sacramento, Alexander Mordvintsev, Andrey Zhmoginov, and Max Vladymyrov. Transformers learn in-context by gradient descent. In Andreas Krause, Emma Brunskill, Kyunghyun Cho, Barbara Engelhardt, Sivan Sabato, and Jonathan Scarlett, editors, Proceedings of the 40th International Conference on Machine Learning, volume 202 of Proceedings of Machine Learning Research, pages 35151–35174. PMLR, 23–29 Jul 2023.",
+    "[56] Ben Wang and Aran Komatsuzaki. Gpt-j-6b: A 6 billion parameter autoregressive language model. https://github.com/kingoflolz/mesh-transformer-jax, May 2021.",
+    "[57] Lean Wang, Lei Li, Damai Dai, Deli Chen, Hao Zhou, Fandong Meng, Jie Zhou, and Xu Sun. Label words are anchors: An information flow perspective for understanding in-context learning. In Houda Bouamor, Juan Pino, and Kalika Bali, editors, Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, pages 9840–9855, Singapore, December 2023. Association for Computational Linguistics.",
+    "[58] Xiaozhi Wang, Kaiyue Wen, Zhengyan Zhang, Lei Hou, Zhiyuan Liu, and Juanzi Li. Finding skill neurons in pre-trained transformer-based language models. In Yoav Goldberg, Zornitsa Kozareva, and Yue Zhang, editors, Proceedings of the 2022 Conference on Empirical Methods in Natural Language Processing, pages 11132–11152, Abu Dhabi, United Arab Emirates, December 2022. Association for Computational Linguistics.",
+    "[59] Xinyi Wang, Wanrong Zhu, Michael Saxon, Mark Steyvers, and William Yang Wang. Large language models are implicitly topic models: Explaining and finding good demonstrations for in-context learning. In Workshop on Efficient Systems for Foundation Models @ ICML2023, 2023.",
+    "[60] Jerry Wei, Jason Wei, Yi Tay, Dustin Tran, Albert Webson, Yifeng Lu, Xinyun Chen, Hanxiao Liu, Da Huang, Denny Zhou, and Tengyu Ma. Larger language models do in-context learning differently, 2023.",
+    "[61] Kevin Christian Wibisono and Yixin Wang. From unstructured data to in-context learning: Exploring what tasks can be learned and when. In The Thirty-eighth Annual Conference on Neural Information Processing Systems, 2024.",
+    "[62] Sarah Wiegreffe and Yuval Pinter. Attention is not not explanation. In Kentaro Inui, Jing Jiang, Vincent Ng, and Xiaojun Wan, editors, Proceedings of the 2019 Conference on Empirical Methods in Natural Language Processing and the 9th International Joint Conference on Natural Language Processing (EMNLP-IJCNLP), pages 11–20, Hong Kong, China, November 2019. Association for Computational Linguistics.",
+    "[63] Noam Wies, Yoav Levine, and Amnon Shashua. The learnability of in-context learning. In Thirty-seventh Conference on Neural Information Processing Systems, 2023.",
+    "[64] Thomas Wolf, Lysandre Debut, Victor Sanh, Julien Chaumond, Clement Delangue, Anthony Moi, Pierric Cistac, Tim Rault, Remi Louf, Morgan Funtowicz, Joe Davison, Sam Shleifer, Patrick von Platen, Clara Ma, Yacine Jernite, Julien Plu, Canwen Xu, Teven Le Scao, Sylvain Gugger, Mariama Drame, Quentin Lhoest, and Alexander Rush. Transformers: State-of-the-art natural language processing. In Qun Liu and David Schlangen, editors, Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing: System Demonstrations, pages 38–45, Online, October 2020. Association for Computational Linguistics.",
+    "[65] Sang Michael Xie, Aditi Raghunathan, Percy Liang, and Tengyu Ma. An explanation of in-context learning as implicit bayesian inference. In International Conference on Learning Representations, 2022.",
+    "[66] Kang Min Yoo, Junyeob Kim, Hyuhng Joon Kim, Hyunsoo Cho, Hwiyeol Jo, Sang-Woo Lee, Sang-goo Lee, and Taeuk Kim. Ground-truth labels matter: A deeper look into input-label demonstrations. In Yoav Goldberg, Zornitsa Kozareva, and Yue Zhang, editors, Proceedings of the 2022 Conference on Empirical Methods in Natural Language Processing, pages 2422–2437, Abu Dhabi, United Arab Emirates, December 2022. Association for Computational Linguistics.",
+    "[67] Xiang Zhang, Junbo Zhao, and Yann LeCun. Character-level convolutional networks for text classification. In C. Cortes, N. Lawrence, D. Lee, M. Sugiyama, and R. Garnett, editors, Advances in Neural Information Processing Systems, volume 28. Curran Associates, Inc., 2015.",
+    "[68] Yufeng Zhang, Fengzhuo Zhang, Zhuoran Yang, and Zhaoran Wang. What and how does in-context learning learn? bayesian model averaging, parameterization, and generalization, 2023."
+  ]
+}

@@ -1,0 +1,389 @@
+{
+  "title": "PGB: One-Shot Pruning for BERT via Weight Grouping and Permutation",
+  "authors": "Hyemin Limhyemin8670@naver.comJaeyeon Leedlwodus159@naver.comDong-Wan Choidchoi@inha.ac.kr",
+  "abstract": "Large pretrained language models such as BERT suffer from slow inference and high memory usage, due to their huge size. Recent approaches to compressing BERT rely on iterative pruning and knowledge distillation, which, however, are often too complicated and computationally intensive. This paper proposes a novel semi-structured one-shot pruning method for BERT, called Permutation and Grouping for BERT (PGB), which achieves high compression efficiency and sparsity while preserving accuracy. To this end, PGB identifies important groups of individual weights by permutation and prunes all other weights as a structure in both multi-head attention and feed-forward layers. Furthermore, if no important group is formed in a particular layer, PGB drops the entire layer to produce an even more compact model. Our experimental results on BERTBASE{}_{\\text{BASE}} demonstrate that PGB outperforms the state-of-the-art structured pruning methods in terms of computational cost and accuracy preservation.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Transformer-based models [1] including BERT [2], RoBERTa [3] and GPT-3 [4] have achieved great performance on natural language processing (NLP) tasks. However, all these models suffer from a large number of parameters, which often limits their applications due to high computational cost and memory usage. To overcome this limitation, extensive research has been conducted to reduce the model size of transformer architectures.",
+        "Recent works on compressing BERT adopt two primary strategies, pruning [5] and knowledge distillation (KD) [6]. Pruning can further be classified into two categories based on how many times pruning and recovery processes are performed: one-shot pruning [7] and iterative pruning [8, 9]. Even though one-shot pruning is simple and computationally efficient as it conducts only one pruning phase, it tends to be less effective to maintain high accuracy. Therefore, the dominant approach for BERT is taking iterative steps of pruning and recovery while training with original dataset.",
+        "Furthermore, recent pruning methods [10, 11, 12] attempt to overcome the low pruning performance with the help of KD, which has been successful in maintaining high performance in BERT [13, 14]. However, the distillation process can be even more time-consuming than iterative pruning, and it is often too complicated to identify what aspects of the teacher model should be matched to the student model, particularly in the BERT architecture.",
+        "In this paper, we design a novel one-shot pruning method for a task-specific BERT, aiming to achieve both high compression efficiency and high accuracy. Due to the lack of recovery chances, it is quite challenging for one-shot pruning to maintain high performance. Our proposal is to devise a semi-structured pruning method, called Permutation and Grouping for BERT (PGB), which combines the benefits of both unstructured and structured pruning. Thus, PGB effectively reduces the model size without sacrificing so much of the accuracy as in unstructured pruning, while ensuring computational efficiency as in structured pruning.",
+        "Our PGB method is illustrated in Figure 1. Basically, we apply a group-based pruning scheme [15, 16] to each structure of BERT, including multi-head attention (MHA) and feed-forward network (FFN). More specifically, PGB constructs important groups of individual weights for each layer to be preserved and prune all other weights that are not in such a group. Although training with group-based architectures from scratch has been studied with a different purpose [17, 18], pruning by weight grouping has never been tackled in the context of transformer-based models. A major challenge is how to preserve the original performance of a given task-specific BERT after pruning unimportant weights. To this end, PGB performs an optimal permutation procedure so that more important weights are clustered as a structure, and adaptively determines the number of important groups for each layer of either MHA or FFN, occasionally dropping the entire layer. Finally, its re-permutation process safely rearranges each weight to its original position.",
+        "A thorough experimental study is conducted by applying our PGB method to BERTBASE\\text{BERT}_{\\text{BASE}} [2] on the GLUE [19] and SQuAD [20] benchmarks. Our experimental results show that PGB outperforms the state-of-the-art (SOTA) pruning methods in terms of both efficiency and accuracy."
+      ],
+      "subsections": []
+    },
+    "2 Background and Related Works": {
+      "paragraphs": [
+        "Pretrained language models [2, 3, 4] are mostly based on the transformer architecture [1] due to their effectiveness in various NLP tasks. This section first formally describes the typical transformer architecture and then discusses representative techniques for compressing large language models, namely distillation and pruning."
+      ],
+      "subsections": [
+        {
+          "title": "2.1 Transformer Architecture",
+          "paragraphs": [
+            "The typical transformer architecture consists of encoder and decoder layers, each of which commonly contains two main components: multi-head attention (MHA) and feed-forward network (FFN). In an MHA layer, there are NHN_{H} self-attention heads, and each head h∈[1,NH]h\\in[1,N_{H}] involves the following weight matrices, WhQ,WhK,WhV,WhO∈ℝd×dNHW_{h}^{Q},W_{h}^{K},W_{h}^{V},W_{h}^{O}\\in\\mathbb{R}^{{d}\\times\\frac{d}{N_{H}}}. Then, the final output of the MHA layer is computed as follows:",
+            "where A​t​t​nh​(X)Attn_{h}(X) is the output of the standard self-attention unit.",
+            "The output of MHA is then fed into the corresponding FFN layer, which consists of weight matrices W(1)∈ℝd×df​f​nW^{(1)}\\in\\mathbb{R}^{d\\times d_{ffn}}, W(2)∈ℝdf​f​n×dW^{(2)}\\in\\mathbb{R}^{d_{ffn}\\times d}, b(1)∈ℝdf​f​nb^{(1)}\\in\\mathbb{R}^{d_{ffn}} and b(2)∈ℝdb^{(2)}\\in\\mathbb{R}^{d}, where df​f​nd_{ffn} (usually 4×d4\\times d) represents the dimension of the intermediate hidden features. The output of the FFN layer can be computed as follows:",
+            "where A=M​H​A​(X)A=MHA(X).",
+            "In transformer-based models, this same structure is repeatedly defined across multiples layers (e.g., 12 layers in BERTBASE\\text{BERT}_{\\text{BASE}} [2]) and each layer has another multiple heads (e.g., 12 heads in BERTBASE{}_{\\text{BASE}} [2]). Consequently, they have numerous trainable parameters, which motivates the NLP community to develop various compression methods for these models."
+          ]
+        },
+        {
+          "title": "2.2 Distillation",
+          "paragraphs": [
+            "Knowledge distillation (KD) [6] is a compression technique that trains a lightweight student model to mimic the soft output of a large teacher model, leading to competitive performance on downstream tasks. There are some studies where KD methods have been applied to transformer-based models. For example, DistilBERT [13] transfers knowledge to a student model of a fixed-size through a pre-training phase and an optional fine-tuning process. MiniLM [21] deeply describes the self-attention information of a task-agnostic teacher model by providing a detailed analysis of the self-attention matrices. Both TinyBERT [14] and MobileBERT [22] transfer knowledge during pretraining using a layer-by-layer strategy. TinyBERT [14] additionally performs distillation during fine-tuning.",
+            "Although KD-based methods are shown to be effective at preserving high accuracy, training a student model can be time-consuming; as reported by CoFi [12], TinyBERT [14] requires 350 hours and CoFi [12] requires 20 hours for compression. Furthermore, it is not trivial to effectively distill the knowledge from a multi-layer teacher model with self-attention information to a student model with fewer layers, which involves the problem of layer selection and different loss functions."
+          ]
+        },
+        {
+          "title": "2.3 Pruning",
+          "paragraphs": [
+            "Pruning [5] is another popular compression scheme that removes unimportant weights or structures from the target neural network. Following a massive volume of pruning techniques on convolutional neural networks (CNNs), pruning for transformer family has also been studied, falling into either unstructured or structured pruning.",
+            "In unstructured pruning, we remove individual weights that are not important, often aiming to reduce the memory storage itself for the target model while maintaining performance, such as the methods based on lottery ticket hypothesis [9] and movement pruning [23]. However, in these unstructured pruning methods, it is difficult and complicated to make satisfactory speedup at inference time, often requiring a special hardware.",
+            "Structured pruning is a simpler and more efficient way to reduce the model size, where we eliminate some structures of parameters that are considered less significant. In the case of transformer architectures, we can remove redundant attention heads [24, 25, 26], entire layers of either MHA or FFN [27, 28], or neurons along with all their connecting weights of FFNs [29]. However, such a coarse-grained pruning scheme inevitably suffers from severe drop in accuracy. Consequently, recent studies [10, 11, 12] have explored the combination of pruning with KD to further enhance the performance of compressed networks. Despite higher performance of these combined approaches, they sacrifice efficiency and simplicity in the compression process itself, as KD typically takes lengthy training times and involves complicated matching procedures.",
+            "This paper proposes a semi-structured pruning method for BERT in order to achieve a good balance between efficiency and accuracy. To our best knowledge, block movement pruning (BMP) [11] is the only one that can be categorized into semi-structured pruning for transformer family, which proposes a block-based pruning approach for each weight matrix of MHA and FFN layers.",
+            "Our method is inspired by a grouping strategy, which has been frequently employed to reduce the computational complexity of CNNs. In this approach, a set of filters or channels are grouped together, and the objective is to minimize connectivity and computation between these groups [15, 16, 30, 31, 40]. These grouped architectures are also incorporated into transformer-based models by a few recent works [17, 18]. However, they focus on designing more efficient architectures to be trained from scratch, not for compressing a trained task-specific model. This work is the first study on group-based pruning on BERT, aiming to compress the task-specific BERT while maintaining its original accuracy."
+          ]
+        },
+        {
+          "title": "Unstructured pruning",
+          "paragraphs": [
+            "In unstructured pruning, we remove individual weights that are not important, often aiming to reduce the memory storage itself for the target model while maintaining performance, such as the methods based on lottery ticket hypothesis [9] and movement pruning [23]. However, in these unstructured pruning methods, it is difficult and complicated to make satisfactory speedup at inference time, often requiring a special hardware."
+          ]
+        },
+        {
+          "title": "Structured pruning",
+          "paragraphs": [
+            "Structured pruning is a simpler and more efficient way to reduce the model size, where we eliminate some structures of parameters that are considered less significant. In the case of transformer architectures, we can remove redundant attention heads [24, 25, 26], entire layers of either MHA or FFN [27, 28], or neurons along with all their connecting weights of FFNs [29]. However, such a coarse-grained pruning scheme inevitably suffers from severe drop in accuracy. Consequently, recent studies [10, 11, 12] have explored the combination of pruning with KD to further enhance the performance of compressed networks. Despite higher performance of these combined approaches, they sacrifice efficiency and simplicity in the compression process itself, as KD typically takes lengthy training times and involves complicated matching procedures."
+          ]
+        },
+        {
+          "title": "Semi-structured pruning",
+          "paragraphs": [
+            "This paper proposes a semi-structured pruning method for BERT in order to achieve a good balance between efficiency and accuracy. To our best knowledge, block movement pruning (BMP) [11] is the only one that can be categorized into semi-structured pruning for transformer family, which proposes a block-based pruning approach for each weight matrix of MHA and FFN layers."
+          ]
+        },
+        {
+          "title": "Group-based pruning",
+          "paragraphs": [
+            "Our method is inspired by a grouping strategy, which has been frequently employed to reduce the computational complexity of CNNs. In this approach, a set of filters or channels are grouped together, and the objective is to minimize connectivity and computation between these groups [15, 16, 30, 31, 40]. These grouped architectures are also incorporated into transformer-based models by a few recent works [17, 18]. However, they focus on designing more efficient architectures to be trained from scratch, not for compressing a trained task-specific model. This work is the first study on group-based pruning on BERT, aiming to compress the task-specific BERT while maintaining its original accuracy."
+          ]
+        }
+      ]
+    },
+    "3 Method": {
+      "paragraphs": [
+        "This section presents our one-shot semi-structured pruning method, called Permutation and Grouping for BERT (PGB), which applies a grouping procedure to weight matrices of each structure of a given task-specific BERT, as illustrated in Figure 2."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Overall Process",
+          "paragraphs": [
+            "Unlike existing grouped transformer architectures [17, 18] that are designed to be trained from scratch, our goal is to find the adaptive grouping for minimizing information loss in the original task-specific BERT. Therefore, as shown in Figure 2, our PGB method performs the grouped pruning process for each individual weight matrix, rather than partitioning every part of the model into the fixed number of groups as in grouped transformers. In our pruned BERT architectures, the resulting number of groups for each layer can be different, and even a particular layer can be dropped as a whole when no important group is formed in the layer. After the pruning process, we apply the re-permutation step to every pruned weight matrix W^\\hat{W} to restore the original positions of the weights.",
+            "We first formulate our problem of grouped pruning on BERT. Consider a task-specific BERT [Θ1,…,ΘL][\\Theta_{1},...,\\Theta_{L}] with LL layers, where Θi\\Theta_{i} consists of weight matrices WQ,WK,WV,WOW^{Q},W^{K},W^{V},W^{O} in its MHA sub-layers, and W(1),W(2)W^{(1)},W^{(2)} in its FFN sub-layers. Given a target compression rate γ\\gamma and the task-specific dataset 𝒟\\mathcal{D}, our goal is to find the pruned architecture [Θ^1,…,Θ^L][\\widehat{\\Theta}_{1},...,\\widehat{\\Theta}_{L}] such that:",
+            "where ℱ​(𝒟;Θ)\\mathcal{F}(\\mathcal{D};\\Theta) denotes the output of the model parameterized by Θ\\Theta for the input data 𝒟\\mathcal{D} and 𝒞​(⋅)\\mathcal{C}(\\cdot) is the number of parameters (or FLOPs). As mentioned above, each Θ^i\\widehat{\\Theta}_{i} can have different number of groups unlike the equally grouped transformer architectures [17, 18].",
+            "Algorithm 1 presents how our PGB method finds the group-based pruned architecture for a given task-specific BERT. The algorithm consists of two main phases, namely MHA pruning and FFN pruning. In accordance with previous studies [11, 12], our approach focuses on pruning less weights in the MHA sub-layers, compared to those of the FFN sub-layers. Furthermore, since it is crucial for one-shot pruning to deal with a more challenging scenario of pruning a larger number of weights in either MHA or FFN sub-layers, we attempt to minimize the information loss in MHA sub-layers than in FFN sub-layers. To this end, we first take a more conservative approach for pruning weights in MHA sub-layers (Lines 2–5) by trying to find an optimal grouped architecture for each weight matrix WW based on its importance, which is performed by the Group-Weight-Pruning subroutine (refer to Algorithm 2). Then, we proceed a similar yet more aggressive pruning procedure for the FFN sub-layers (Lines 8–12), where multiple FFN layers that are least important can entirely be dropped in order to meet the remaining budget CC. Therefore, instead of taking a sequential process across layers, we prioritize the more important layers over the less important ones within the remaining budget CC."
+          ]
+        },
+        {
+          "title": "Problem formulation",
+          "paragraphs": [
+            "We first formulate our problem of grouped pruning on BERT. Consider a task-specific BERT [Θ1,…,ΘL][\\Theta_{1},...,\\Theta_{L}] with LL layers, where Θi\\Theta_{i} consists of weight matrices WQ,WK,WV,WOW^{Q},W^{K},W^{V},W^{O} in its MHA sub-layers, and W(1),W(2)W^{(1)},W^{(2)} in its FFN sub-layers. Given a target compression rate γ\\gamma and the task-specific dataset 𝒟\\mathcal{D}, our goal is to find the pruned architecture [Θ^1,…,Θ^L][\\widehat{\\Theta}_{1},...,\\widehat{\\Theta}_{L}] such that:",
+            "where ℱ​(𝒟;Θ)\\mathcal{F}(\\mathcal{D};\\Theta) denotes the output of the model parameterized by Θ\\Theta for the input data 𝒟\\mathcal{D} and 𝒞​(⋅)\\mathcal{C}(\\cdot) is the number of parameters (or FLOPs). As mentioned above, each Θ^i\\widehat{\\Theta}_{i} can have different number of groups unlike the equally grouped transformer architectures [17, 18]."
+          ]
+        },
+        {
+          "title": "PGB outline",
+          "paragraphs": [
+            "Algorithm 1 presents how our PGB method finds the group-based pruned architecture for a given task-specific BERT. The algorithm consists of two main phases, namely MHA pruning and FFN pruning. In accordance with previous studies [11, 12], our approach focuses on pruning less weights in the MHA sub-layers, compared to those of the FFN sub-layers. Furthermore, since it is crucial for one-shot pruning to deal with a more challenging scenario of pruning a larger number of weights in either MHA or FFN sub-layers, we attempt to minimize the information loss in MHA sub-layers than in FFN sub-layers. To this end, we first take a more conservative approach for pruning weights in MHA sub-layers (Lines 2–5) by trying to find an optimal grouped architecture for each weight matrix WW based on its importance, which is performed by the Group-Weight-Pruning subroutine (refer to Algorithm 2). Then, we proceed a similar yet more aggressive pruning procedure for the FFN sub-layers (Lines 8–12), where multiple FFN layers that are least important can entirely be dropped in order to meet the remaining budget CC. Therefore, instead of taking a sequential process across layers, we prioritize the more important layers over the less important ones within the remaining budget CC."
+          ]
+        },
+        {
+          "title": "3.2 Grouped Weight Pruning",
+          "paragraphs": [
+            "In order to find the optimal grouping for each weight matrix of BERT, we adapt the technique of group convolution pruning [15, 16], which is originally intended to prune filters in CNNs, not individual weights as in our problem setting.",
+            "The process of our grouped weight pruning is presented in Algorithm 2. For each weight matrix W∈ℝM×NW\\in\\mathbb{R}^{M\\times N} in BERT, our method first adaptively determines the number GG of groups by measuring the degree of importance of WW, and drop the entire matrix if the corresponding importance measure is not sufficiently high (Lines 1–3). Then, we permute the matrix to form groups of important weights into block diagonal matrices g(i)g^{(i)}’s (Line 6). Once the permuted matrix W~\\widetilde{W} is obtained, we extract only the top-left corner block of W~\\widetilde{W} (i.e., W~[1:MG,1:NG]\\widetilde{W}[1:\\frac{M}{G},1:\\frac{N}{G}]) to form a group matrix g(i)g^{(i)} (Line 7), and discard all the weights in the region W~[1:MG,]\\widetilde{W}[1:\\frac{M}{G},~] and W~[,1:NG]\\widetilde{W}[~,1:\\frac{N}{G}] from W~\\widetilde{W} (Line 8). The final W^\\widehat{W} would be represented as follows:",
+            "The permutation procedure (Line 6 in Algorithm 2) returns the optimal arrangement W~\\widetilde{W} of individual weights within the given matrix W∈ℝM×NW\\in\\mathbb{R}^{M\\times N}. The objective is to cluster more important weights together, forming a group located at the top-left corner block of W~\\widetilde{W}. To this end, we determine the optimal pair of permutation vectors πr\\pi_{r} and πc\\pi_{c} for the rows and columns of WW, respectively, that are used to rearrange the weights of WW, resulting in the formation of W~\\widetilde{W} as follows:",
+            "where ℐ​(⋅)\\mathcal{I}(\\cdot) is the total importance score of a given weight matrix and Wπr,πcW_{\\pi_{r},\\pi_{c}} is the resulting matrix when permuting the rows and columns of WW using πr\\pi_{r} and πc\\pi_{c}, respectively. We calculate the importance scores of weights using the second-order information [32, 33, 34], which allows us to quantify relative significance of the weights. The following example shows such optimal permutations for a matrix W∈ℝ4×4W\\in\\mathbb{R}^{4\\times 4} and G=2G=2, assuming that each number in the matrix indicates the importance score of the corresponding weight:",
+            "Since weight matrices in BERT are typically high-dimensional, we employ an efficient heuristic algorithm [16] that finds sub-optimal permutation vectors. This algorithm alternatively sorts rows or columns based on the summation of importance scores corresponding to the weights of either row vectors within the region W~[1:MG,]\\widetilde{W}[1:\\frac{M}{G},~] or column vectors within the region W~[,1:NG]\\widetilde{W}[~,1:\\frac{N}{G}]. Since each sorting process for the rows or the columns changes the arrangement of the corresponding columns or rows, respectively, we repeat this pairwise sorting process a few times (e.g., 6 times in our experiments using BERTBASE{}_{\\text{BASE}}).",
+            "The key property of our method is the adaptive determination of the number GG of groups (Line 1 in Algorithm 2), based on the importance of weights within W∈ℝM×NW\\in\\mathbb{R}^{M\\times N}. Basically, as the number of important weights in WW increases, we decrease GG and prune a smaller number of weights, whereas if WW contains fewer important weights, we increase GG to prune a greater number of weights. To this end, we devise the following strategy to adjust GG based on the count of weights whose important scores exceed a specified threshold τ\\tau: The term M×Nnτ\\frac{M\\times N}{n_{\\tau}} is derived from the fact that the number of parameters of a GG-grouped matrix W^\\widehat{W} is equal to that of WW divided by GG, i.e., M×NG\\frac{M\\times N}{G}. Therefore, to ideally cover all nτn_{\\tau} weights, W^\\widehat{W} should have at most M×Nnτ\\frac{M\\times N}{n_{\\tau}} groups. Also, we introduce the hyperparameter Gm​a​xG_{max} to prevent the formation of excessive groups for non-critical weight matrices (e.g., Gm​a​x=6G_{max}=6 in our experiments).",
+            "1. Determine the count nτn_{\\tau} of weights in WW with importance scores higher than τ\\tau.",
+            "2. If M×Nnτ>Gm​a​x\\frac{M\\times N}{n_{\\tau}}>G_{max}, then prune the entire WW.",
+            "3. Otherwise, set GG to a value less than M×Nnτ\\frac{M\\times N}{n_{\\tau}}.",
+            "Determine the count nτn_{\\tau} of weights in WW with importance scores higher than τ\\tau.",
+            "If M×Nnτ>Gm​a​x\\frac{M\\times N}{n_{\\tau}}>G_{max}, then prune the entire WW.",
+            "Otherwise, set GG to a value less than M×Nnτ\\frac{M\\times N}{n_{\\tau}}."
+          ]
+        },
+        {
+          "title": "Finding the optimal permutation",
+          "paragraphs": [
+            "The permutation procedure (Line 6 in Algorithm 2) returns the optimal arrangement W~\\widetilde{W} of individual weights within the given matrix W∈ℝM×NW\\in\\mathbb{R}^{M\\times N}. The objective is to cluster more important weights together, forming a group located at the top-left corner block of W~\\widetilde{W}. To this end, we determine the optimal pair of permutation vectors πr\\pi_{r} and πc\\pi_{c} for the rows and columns of WW, respectively, that are used to rearrange the weights of WW, resulting in the formation of W~\\widetilde{W} as follows:",
+            "where ℐ​(⋅)\\mathcal{I}(\\cdot) is the total importance score of a given weight matrix and Wπr,πcW_{\\pi_{r},\\pi_{c}} is the resulting matrix when permuting the rows and columns of WW using πr\\pi_{r} and πc\\pi_{c}, respectively. We calculate the importance scores of weights using the second-order information [32, 33, 34], which allows us to quantify relative significance of the weights. The following example shows such optimal permutations for a matrix W∈ℝ4×4W\\in\\mathbb{R}^{4\\times 4} and G=2G=2, assuming that each number in the matrix indicates the importance score of the corresponding weight:"
+          ]
+        },
+        {
+          "title": "Heuristic solution for permutation",
+          "paragraphs": [
+            "Since weight matrices in BERT are typically high-dimensional, we employ an efficient heuristic algorithm [16] that finds sub-optimal permutation vectors. This algorithm alternatively sorts rows or columns based on the summation of importance scores corresponding to the weights of either row vectors within the region W~[1:MG,]\\widetilde{W}[1:\\frac{M}{G},~] or column vectors within the region W~[,1:NG]\\widetilde{W}[~,1:\\frac{N}{G}]. Since each sorting process for the rows or the columns changes the arrangement of the corresponding columns or rows, respectively, we repeat this pairwise sorting process a few times (e.g., 6 times in our experiments using BERTBASE{}_{\\text{BASE}})."
+          ]
+        },
+        {
+          "title": "Adaptive group numbers",
+          "paragraphs": [
+            "The key property of our method is the adaptive determination of the number GG of groups (Line 1 in Algorithm 2), based on the importance of weights within W∈ℝM×NW\\in\\mathbb{R}^{M\\times N}. Basically, as the number of important weights in WW increases, we decrease GG and prune a smaller number of weights, whereas if WW contains fewer important weights, we increase GG to prune a greater number of weights. To this end, we devise the following strategy to adjust GG based on the count of weights whose important scores exceed a specified threshold τ\\tau: The term M×Nnτ\\frac{M\\times N}{n_{\\tau}} is derived from the fact that the number of parameters of a GG-grouped matrix W^\\widehat{W} is equal to that of WW divided by GG, i.e., M×NG\\frac{M\\times N}{G}. Therefore, to ideally cover all nτn_{\\tau} weights, W^\\widehat{W} should have at most M×Nnτ\\frac{M\\times N}{n_{\\tau}} groups. Also, we introduce the hyperparameter Gm​a​xG_{max} to prevent the formation of excessive groups for non-critical weight matrices (e.g., Gm​a​x=6G_{max}=6 in our experiments).",
+            "1. Determine the count nτn_{\\tau} of weights in WW with importance scores higher than τ\\tau.",
+            "2. If M×Nnτ>Gm​a​x\\frac{M\\times N}{n_{\\tau}}>G_{max}, then prune the entire WW.",
+            "3. Otherwise, set GG to a value less than M×Nnτ\\frac{M\\times N}{n_{\\tau}}.",
+            "Determine the count nτn_{\\tau} of weights in WW with importance scores higher than τ\\tau.",
+            "If M×Nnτ>Gm​a​x\\frac{M\\times N}{n_{\\tau}}>G_{max}, then prune the entire WW.",
+            "Otherwise, set GG to a value less than M×Nnτ\\frac{M\\times N}{n_{\\tau}}."
+          ]
+        },
+        {
+          "title": "3.3 Re-Permutation",
+          "paragraphs": [
+            "PGB finally performs the re-permutation procedure on every pruned weight matrix W^\\widehat{W} in all the layers of the model to identify the positions of the weights that correspond to the original model. This yields a re-permuted weight matrix W^∗\\widehat{W}^{*}, wherein each weight is returned to its original positions. In this process, we utilize the permutation vectors πr\\pi_{r} and πc\\pi_{c} that have been stored, and proceed the following operation:",
+            "where a​r​g​s​o​r​t​(π)argsort(\\pi) returns the corresponding re-permutation vectors that rearrange the shuffled weights back to their original positions. Note that the final W^∗\\widehat{W}^{*} after re-permutation is in the same form resulting from fine-grained unstructured pruning, but actual computation at inference time is efficiently performed only with each g(i)⊆W^g^{(i)}\\subseteq\\widehat{W} as in grouped transformer architectures [17, 18].",
+            "To further restore the performance of the original task-specific BERT model, we update each unpruned weight in every W^∗\\widehat{W}^{*} by minimizing the following reconstruction error:",
+            "where ℱ​(X;W)\\mathcal{F}(X;W) denotes the outputs for a sample dataset XX.",
+            "After all these steps, we perform re-finetuning in the same way as in the original BERT [2] to recover the performance that is lost due to the pruning process."
+          ]
+        },
+        {
+          "title": "Weight compensation",
+          "paragraphs": [
+            "To further restore the performance of the original task-specific BERT model, we update each unpruned weight in every W^∗\\widehat{W}^{*} by minimizing the following reconstruction error:",
+            "where ℱ​(X;W)\\mathcal{F}(X;W) denotes the outputs for a sample dataset XX."
+          ]
+        },
+        {
+          "title": "Re-Finetuning",
+          "paragraphs": [
+            "After all these steps, we perform re-finetuning in the same way as in the original BERT [2] to recover the performance that is lost due to the pruning process."
+          ]
+        }
+      ]
+    },
+    "4 Cost Analysis for Inference with PGB": {
+      "paragraphs": [
+        "As mentioned above, we make inference using only GG groups of each pruned weight matrix W^∈ℝM×N\\widehat{W}\\in\\mathbb{R}^{M\\times N} for each linear operation X​W^∗X\\widehat{W}^{*}, where XX is the SS-length input sequence. By using this inference module, we ensure GG times faster efficiency by reducing the previous time cost S⋅M⋅NS\\cdot M\\cdot N to S⋅G⋅MG⋅NGS\\cdot G\\cdot\\frac{M}{G}\\cdot\\frac{N}{G}.",
+        "Algorithm 3 provides a detailed outline of the linear operation process used at inference time with a pruned model resulting from the Group-Weight-Pruning procedure in Algorithm 2. It takes the input sequence X∈ℝS×MX\\in\\mathbb{R}^{S\\times M}, the grouped weight matrix W^\\widehat{W} obtained after PGB pruning, and the row and column permutation vectors πr\\pi_{r} and πc\\pi_{c} that have been determined during the pruning process. At this point, we take only the groups of remaining weights, g(1),…,g(G)g^{(1)},...,g^{(G)} where each g(i)∈ℝMG×NGg^{(i)}\\in\\mathbb{R}^{\\frac{M}{G}\\times\\frac{N}{G}}. Our inference process first starts with permuting the input XX using πc\\pi_{c} at each linear operation (Line 2). Subsequently, for the pruned weight matrix W^\\widehat{W} and the permuted matrix X~\\widetilde{X}, we obtain the output o(j)o^{(j)} for each group with its corresponding weight matrix g(j)g^{(j)} and permuted input matrix X~(j)\\widetilde{X}^{(j)} (Lines 3–6). Once the outputs o(1),…,o(G)o^{(1)},...,o^{(G)} for all groups are obtained, we concatenate them to form the output OO, and permute the output OO with respect to a​r​g​s​o​r​t​(πr)argsort(\\pi_{r}) to obtain the final desired output O∗∈ℝS×NO^{*}\\in\\mathbb{R}^{S\\times N} (Lines 7–8), where a​r​g​s​o​r​t​(πr)argsort(\\pi_{r}) returns the permutation vector of indices that rearrange the output values back to their original positions. As mentioned in Section 4, PGB-Linear incurs 1/G1/G times the cost of the original linear operation, i.e., X​W^∗X\\widehat{W}^{*}."
+      ],
+      "subsections": []
+    },
+    "5 Experiments": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "5.1 Environment",
+          "paragraphs": [
+            "We conduct our experiments using two benchmark datasets, SQuAD [20, 35] and seven tasks (QNLI, QQP, SST-2, CoLA, STS-B, MRPC, and RTE) in GLUE [19] on BERTBASE\\text{BERT}_{\\text{BASE}} [2]. In our experiments, we use 2K samples from the training data for each benchmark dataset. Also, we perform re-finetuning on the pruned model using the training data of each NLP downstream task and evaluate on the corresponding dev dataset for each task. For detailed information on the benchmarks, please refer to A.3.",
+            "In order to evaluate the performance of PGB, we conduct comparative experiments with the state-of-the-art structured pruning methods for BERT, including EBERT [38], DynaBERT [10], and CoFi [12]. In order to examine their pruning performance, we train each method without using distillation and data augmentation, both of which can commonly be applied to each pruning method.",
+            "Our PGB method is implemented using Python 3.7.15, PyTorch [36] and CUDA 11.6, along with the Huggingface library [37], which incorporates the latest NLP techniques. We set the hyperparmeter Np​e​r​mN_{perm} that controls the number of sorting operations in the permutation step, and Gm​a​xG_{max} that indicates the maximum number of groups, ensuring that the size of the grouped model is within the given budget capacity. All the experiments are conducted on a PC with NVIDIA GeForce RTX A6000. We report that all experimental results are the average of 5 random seeds within a range between 0 and 10.",
+            "As our target model, we use fine-tuned BERT [2] for specific tasks. Even though we mainly compare the performance using BERTBASE\\text{BERT}_{\\text{BASE}}, we also conduct experiments using RoBERTaBASE\\text{RoBERTa}_{\\text{BASE}} and DistilBERTBASE\\text{DistilBERT}_{\\text{BASE}} [13] (refer to 5.3 and 5.3). Full experimental details can be found at A."
+          ]
+        },
+        {
+          "title": "Datasets",
+          "paragraphs": [
+            "We conduct our experiments using two benchmark datasets, SQuAD [20, 35] and seven tasks (QNLI, QQP, SST-2, CoLA, STS-B, MRPC, and RTE) in GLUE [19] on BERTBASE\\text{BERT}_{\\text{BASE}} [2]. In our experiments, we use 2K samples from the training data for each benchmark dataset. Also, we perform re-finetuning on the pruned model using the training data of each NLP downstream task and evaluate on the corresponding dev dataset for each task. For detailed information on the benchmarks, please refer to A.3."
+          ]
+        },
+        {
+          "title": "Compared methods",
+          "paragraphs": [
+            "In order to evaluate the performance of PGB, we conduct comparative experiments with the state-of-the-art structured pruning methods for BERT, including EBERT [38], DynaBERT [10], and CoFi [12]. In order to examine their pruning performance, we train each method without using distillation and data augmentation, both of which can commonly be applied to each pruning method."
+          ]
+        },
+        {
+          "title": "Implementation details",
+          "paragraphs": [
+            "Our PGB method is implemented using Python 3.7.15, PyTorch [36] and CUDA 11.6, along with the Huggingface library [37], which incorporates the latest NLP techniques. We set the hyperparmeter Np​e​r​mN_{perm} that controls the number of sorting operations in the permutation step, and Gm​a​xG_{max} that indicates the maximum number of groups, ensuring that the size of the grouped model is within the given budget capacity. All the experiments are conducted on a PC with NVIDIA GeForce RTX A6000. We report that all experimental results are the average of 5 random seeds within a range between 0 and 10.",
+            "As our target model, we use fine-tuned BERT [2] for specific tasks. Even though we mainly compare the performance using BERTBASE\\text{BERT}_{\\text{BASE}}, we also conduct experiments using RoBERTaBASE\\text{RoBERTa}_{\\text{BASE}} and DistilBERTBASE\\text{DistilBERT}_{\\text{BASE}} [13] (refer to 5.3 and 5.3). Full experimental details can be found at A."
+          ]
+        },
+        {
+          "title": "5.2 Main Experimental Results",
+          "paragraphs": [
+            "Table 1 and Figure 3 show the performance comparison results of PGB with prior structured methods, using the seven tasks of GLUE and SQuAD. To equalize the resulting size of pruned models, we re-implement the released code of the compared methods by ourselves. For CoFi and DynaBERT, since there is no publicly available code for SQuAD, comparative experiments for these two methods were conducted exclusively on the GLUE benchmarks. Table 1 demonstrates the corresponding results with pruning rates 50% and 88%, where 88% is the maximum pruning rate that can be achieved by all the compared methods. It is clearly observed that the proposed PGB method outperforms the previous structured pruning methods in all task-specific BERT models, which indicates that PGB is not only the fastest pruning method as observed in Table 4, but also highly effective to preserve the information of the original model. This empirically implies that we can properly compress transformer architectures with one-shot pruning, without relying on complicated and time-consuming methods.",
+            "Figure 3 shows how the compression performance changes when varying the target model size in terms of the number of FLOPs. We can observe that PGB generally achieves the best performance among the compared methods. More importantly, PGB tends to work better at higher compression rates, as the performance degradation of PGB gets smaller than those of the other methods as the size of compressed model decreases. These results imply that PGB is capable of maintaining high performance even at extreme compression cases. Considering the compression speed of PGB, we can claim that PGB is a computationally efficient yet accurate compression method for transformer architectures.",
+            "Table 2 presents additional comparisons between PGB and other state-of-the-art (SOTA) pruning methods, using the reported results from their respective experiments. The compared methods include: hybrid-based block movement pruning (BMP) [11], LayerDrop that drops certain layers of the model [28], and SNIP that prunes redundant mappings in residual modules [39]. Similar to the findings in Table 1, PGB shows minimum performance degradation. Of particular interest is the comparison with BMP [11], as it is introduced as another semi-structured pruning method in Section 2. PGB turns out to outperform BMP even though the reported results of BMP are not from its fully semi-structured pruning scheme, but rather its improved hybrid version yet without distillation.",
+            "We compare additional pruning methods with PGB for SQuADv​1.1\\text{SQuAD}_{v1.1} [20] and SQuADv​2.0\\text{SQuAD}_{v2.0} [35]. The compared methods exclude knowledge distillation (KD) and data augmentation. Specifically, our approach is compared with PLATON [41], representing the state-of-the-art in unstructured pruning, and EBERT [38]. In this context, PLATON utilized the extended PLATONstructure\\text{PLATON}_{\\text{structure}} based on structured pruning. Our PGB method shows minimal performance degradation compared to other methods, as shown in Figure 4.",
+            "To evaluate the efficiency of each pruning method, we measure how long each method takes to prune the original model and re-finetune the pruned model, as shown in Table 4. In particular, we report the case of pruning with 88% on QQP, where the time cost was maximized. Thanks to its one-shot pruning scheme, our PGB method is clearly the fastest pruning method among all the compared methods, while maintaining the best accuracy after pruning and re-finetuning. PGB takes at most 2.1 hours to obtain the final compressed model, whereas most of the other methods takes more than a day to get the same-sized model. Table 4 also reports the computational cost of each compressed model in terms of the number of FLOPs. Although PGB is a semi-structured pruning method, it manages to achieve a comparable model efficiency, without any specific hardware support, to those of the fully structured pruning methods, EBERT [38], DynaBERT [10] and CoFi [12]."
+          ]
+        },
+        {
+          "title": "Performance comparison",
+          "paragraphs": [
+            "Table 1 and Figure 3 show the performance comparison results of PGB with prior structured methods, using the seven tasks of GLUE and SQuAD. To equalize the resulting size of pruned models, we re-implement the released code of the compared methods by ourselves. For CoFi and DynaBERT, since there is no publicly available code for SQuAD, comparative experiments for these two methods were conducted exclusively on the GLUE benchmarks. Table 1 demonstrates the corresponding results with pruning rates 50% and 88%, where 88% is the maximum pruning rate that can be achieved by all the compared methods. It is clearly observed that the proposed PGB method outperforms the previous structured pruning methods in all task-specific BERT models, which indicates that PGB is not only the fastest pruning method as observed in Table 4, but also highly effective to preserve the information of the original model. This empirically implies that we can properly compress transformer architectures with one-shot pruning, without relying on complicated and time-consuming methods.",
+            "Figure 3 shows how the compression performance changes when varying the target model size in terms of the number of FLOPs. We can observe that PGB generally achieves the best performance among the compared methods. More importantly, PGB tends to work better at higher compression rates, as the performance degradation of PGB gets smaller than those of the other methods as the size of compressed model decreases. These results imply that PGB is capable of maintaining high performance even at extreme compression cases. Considering the compression speed of PGB, we can claim that PGB is a computationally efficient yet accurate compression method for transformer architectures."
+          ]
+        },
+        {
+          "title": "Comparison with other SOTA methods",
+          "paragraphs": [
+            "Table 2 presents additional comparisons between PGB and other state-of-the-art (SOTA) pruning methods, using the reported results from their respective experiments. The compared methods include: hybrid-based block movement pruning (BMP) [11], LayerDrop that drops certain layers of the model [28], and SNIP that prunes redundant mappings in residual modules [39]. Similar to the findings in Table 1, PGB shows minimum performance degradation. Of particular interest is the comparison with BMP [11], as it is introduced as another semi-structured pruning method in Section 2. PGB turns out to outperform BMP even though the reported results of BMP are not from its fully semi-structured pruning scheme, but rather its improved hybrid version yet without distillation."
+          ]
+        },
+        {
+          "title": "Experiments on SQuAD Benchmarks",
+          "paragraphs": [
+            "We compare additional pruning methods with PGB for SQuADv​1.1\\text{SQuAD}_{v1.1} [20] and SQuADv​2.0\\text{SQuAD}_{v2.0} [35]. The compared methods exclude knowledge distillation (KD) and data augmentation. Specifically, our approach is compared with PLATON [41], representing the state-of-the-art in unstructured pruning, and EBERT [38]. In this context, PLATON utilized the extended PLATONstructure\\text{PLATON}_{\\text{structure}} based on structured pruning. Our PGB method shows minimal performance degradation compared to other methods, as shown in Figure 4."
+          ]
+        },
+        {
+          "title": "Efficiency of pruning procedures",
+          "paragraphs": [
+            "To evaluate the efficiency of each pruning method, we measure how long each method takes to prune the original model and re-finetune the pruned model, as shown in Table 4. In particular, we report the case of pruning with 88% on QQP, where the time cost was maximized. Thanks to its one-shot pruning scheme, our PGB method is clearly the fastest pruning method among all the compared methods, while maintaining the best accuracy after pruning and re-finetuning. PGB takes at most 2.1 hours to obtain the final compressed model, whereas most of the other methods takes more than a day to get the same-sized model. Table 4 also reports the computational cost of each compressed model in terms of the number of FLOPs. Although PGB is a semi-structured pruning method, it manages to achieve a comparable model efficiency, without any specific hardware support, to those of the fully structured pruning methods, EBERT [38], DynaBERT [10] and CoFi [12]."
+          ]
+        },
+        {
+          "title": "5.3 More Experimental Results",
+          "paragraphs": [
+            "We conduct additional experiments on PGB with pruning rates of 40% and 60% for DistilBERTBASE\\text{DistilBERT}_{\\text{BASE}}, and the results are presented in Table 5. While DistilBERTBASE\\text{DistilBERT}_{\\text{BASE}} is half the size of BERTBASE\\text{BERT}_{\\text{BASE}}, as indicated in Table 1, the model configuration remains the same, excluding the number of layers. Consequently, the values of permutation (Np​e​r​mN_{perm}) and the maximum group number (Gm​a​xG_{max}) are identical. The experimental results in Table 5 demonstrate that even for a smaller model, our grouping-based pruning scheme does not result in substantial information degradation.",
+            "Figure 5 shows the proposed PGB results with RoBERTaBASE\\text{RoBERTa}_{\\text{BASE}}. Similar to BERT, PGB with pruning rates of 60% on RoBERTa is able to maintain over 98% of the performance of the original model. When the Pruning rate surpasses 60%, RoBERTa demonstrates better performance compared to BERT. However, as the sparsity ratio increases, the performance of BERT surpasses RoBERTa."
+          ]
+        },
+        {
+          "title": "Pruning on DistilBERT",
+          "paragraphs": [
+            "We conduct additional experiments on PGB with pruning rates of 40% and 60% for DistilBERTBASE\\text{DistilBERT}_{\\text{BASE}}, and the results are presented in Table 5. While DistilBERTBASE\\text{DistilBERT}_{\\text{BASE}} is half the size of BERTBASE\\text{BERT}_{\\text{BASE}}, as indicated in Table 1, the model configuration remains the same, excluding the number of layers. Consequently, the values of permutation (Np​e​r​mN_{perm}) and the maximum group number (Gm​a​xG_{max}) are identical. The experimental results in Table 5 demonstrate that even for a smaller model, our grouping-based pruning scheme does not result in substantial information degradation."
+          ]
+        },
+        {
+          "title": "Pruning on RoBERTa",
+          "paragraphs": [
+            "Figure 5 shows the proposed PGB results with RoBERTaBASE\\text{RoBERTa}_{\\text{BASE}}. Similar to BERT, PGB with pruning rates of 60% on RoBERTa is able to maintain over 98% of the performance of the original model. When the Pruning rate surpasses 60%, RoBERTa demonstrates better performance compared to BERT. However, as the sparsity ratio increases, the performance of BERT surpasses RoBERTa."
+          ]
+        },
+        {
+          "title": "5.4 Ablation Studies",
+          "paragraphs": [
+            "Table 3 presents the performance comparison between vanilla PGB, which does not perform re-finetuning, and PGB with re-finetuning. We measure the accuracy of the compressed model with 40% and 60% of reduced FLOPs before and after re-finetuning on task-specific BERT models. We can observe that vanilla PGB itself is already effective to maintain high performance after pruning. For the SST-2 and QNLI tasks, the performance of vanilla PGB is either matches or surpasses that of other pruning methods shown in Figure 3. This demonstrates the capability of our grouped pruning operation to maintain the original performance of large transformer-based models with just a single round of pruning.",
+            "We conduct ablation studies to investigate the sensitivity to the hyperparameter utilized in the proposed PGB method. In Figures 6 and 7, we present visualization of the accuracy of the compressed model as we vary hyperparameter values, Gm​a​xG_{max} and τ\\tau. Figure 6 indicates that when the number of groups is limited to a small number (i.e., Gm​a​x=3{G}_{max}=3), there is a significant decrease in performance, which is probably because some important weights can be pruned in order to reach each target compressed size, just like in typical structured pruning. At the same time, however, it does not always mean that the larger the Gm​a​xG_{max} value, the better the final performance, as the performance also drops in the case of Gm​a​x=8{G}_{max}=8. In terms of the threshold τ\\tau, Figure 7 demonstrates that there is a certain optimal point of τ\\tau to maximize the final performance. In our experiments, we found that Gm​a​x=6G_{max}=6 and τ=1​e−5\\tau=1e-5 produce the most promising results for compressed models."
+          ]
+        },
+        {
+          "title": "Performance of PGB without re-finetuning",
+          "paragraphs": [
+            "Table 3 presents the performance comparison between vanilla PGB, which does not perform re-finetuning, and PGB with re-finetuning. We measure the accuracy of the compressed model with 40% and 60% of reduced FLOPs before and after re-finetuning on task-specific BERT models. We can observe that vanilla PGB itself is already effective to maintain high performance after pruning. For the SST-2 and QNLI tasks, the performance of vanilla PGB is either matches or surpasses that of other pruning methods shown in Figure 3. This demonstrates the capability of our grouped pruning operation to maintain the original performance of large transformer-based models with just a single round of pruning."
+          ]
+        },
+        {
+          "title": "Hyperparameter Sensitivity",
+          "paragraphs": [
+            "We conduct ablation studies to investigate the sensitivity to the hyperparameter utilized in the proposed PGB method. In Figures 6 and 7, we present visualization of the accuracy of the compressed model as we vary hyperparameter values, Gm​a​xG_{max} and τ\\tau. Figure 6 indicates that when the number of groups is limited to a small number (i.e., Gm​a​x=3{G}_{max}=3), there is a significant decrease in performance, which is probably because some important weights can be pruned in order to reach each target compressed size, just like in typical structured pruning. At the same time, however, it does not always mean that the larger the Gm​a​xG_{max} value, the better the final performance, as the performance also drops in the case of Gm​a​x=8{G}_{max}=8. In terms of the threshold τ\\tau, Figure 7 demonstrates that there is a certain optimal point of τ\\tau to maximize the final performance. In our experiments, we found that Gm​a​x=6G_{max}=6 and τ=1​e−5\\tau=1e-5 produce the most promising results for compressed models."
+          ]
+        }
+      ]
+    },
+    "6 Conclusion": {
+      "paragraphs": [
+        "This paper introduced PGB, one-shot semi-structured pruning with a grouping strategy, as a fast and simple compression approach for transformer-based models. PGB efficiently compresses task-specific BERT models into lightweight and accurate versions within a few hours, contrasting with other SOTA methods that take more than a day to achieve comparable results. By finding an adaptively grouped architecture, PGB combines the advantages of structured pruning and unstructured pruning, offering both computational efficiency and high accuracy. Through extensive experiments, we validated that PGB is a practical solution for quickly compressing complex transformer architectures without significant performance degradation."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Experimental Details": {
+      "paragraphs": [
+        "[Table: Table 1: Specifications of BERTBASE\\text{BERT}_{\\text{BASE}}, DistilBERTBASE\\text{DistilBERT}_{\\text{BASE}} and RoBERTaBASE\\text{RoBERTa}_{\\text{BASE}} models]",
+        "[Table: Table 2: Hyperparameter settings of PGB in experiments]",
+        "[Table: Table 3: Dataset summary of GLUE and SQuADv1.1\\text{SQuAD}_{\\text{v1.1}}.]"
+      ],
+      "subsections": [
+        {
+          "title": "A.1 Details for Comparison Methods",
+          "paragraphs": [
+            "We conduct comparative experiments on structured pruning for BERT: CoFi [12], BMP (based Hybrid Filled) [11], DynaBERT [10] and EBERT [38]. All these methods belong to the iterative pruning approach, which involves performing pruning during training to improve performance. CoFi [12] consists of 2 stages: pruning and final finetuning. Each stage involves 20 epochs of training with layer-wise distillation. BMP [11] selects appropriate components to prune at the block level over 20 epochs training stages. Subsequently, prediction layer distillation is performed on the pruned model. DynaBERT [10] utilizes a 2-stage training process with knowledge distillation to dynamically prune the width and depth size, followed by a final finetuning stage. The number of training epochs varies depending on the data size. For large datasets, the width-adaptive and width- and depth-adaptive stages are performed for 1 epoch of training each, while for small datasets, each stage is performed for 3 epochs of training. Additionally, in all cases, 3 additional epochs of finetuning are conducted. EBERT [38] involves 3 epochs of joint training during the pruning stage, followed by 3 epochs of final finetuning on the pruned model."
+          ]
+        },
+        {
+          "title": "A.2 Hyperparameters",
+          "paragraphs": [
+            "The detailed experimental setup for PGB is provided in Table 2. During the PGB pruning process, we utilize two hyperparameters, namely Np​e​r​mN_{perm} and Gm​a​xG_{max}. Also, we use the hyperparameters of the original BERT model and those of prior pruning methods for BERT."
+          ]
+        },
+        {
+          "title": "A.3 Details About Benchmark Datasets",
+          "paragraphs": [
+            "We perform experiments using the GLUE [19] and SQuAD [20, 35] benchmark datasets. Each task of GLUE and SQuAD datasets can fall into the following categories: The detailed information regarding the dataset size and metric for each task is provided in Table 3.",
+            "• Question Answering: SQuADv​1.1\\text{SQuAD}_{v1.1}, SQuADv​2.0\\text{SQuAD}_{v2.0}",
+            "• Sentence Pair Similarity: QQP, MRPC [45], STS-B [44]",
+            "• Natural Language Inference: RTE, QNLI",
+            "• Single Sentence Task: SST-2 [42], CoLA [43]",
+            "Question Answering: SQuADv​1.1\\text{SQuAD}_{v1.1}, SQuADv​2.0\\text{SQuAD}_{v2.0}",
+            "Sentence Pair Similarity: QQP, MRPC [45], STS-B [44]",
+            "Natural Language Inference: RTE, QNLI",
+            "Single Sentence Task: SST-2 [42], CoLA [43]"
+          ]
+        },
+        {
+          "title": "A.4 Model Configurations",
+          "paragraphs": [
+            "The experimental models used in this paper include BERTBASE\\text{BERT}_{\\text{BASE}}, DistilBERTBASE\\text{DistilBERT}_{\\text{BASE}} and RoBERTaBASE\\text{RoBERTa}_{\\text{BASE}} architectures, each of which has its respective parameter configuration, as described in Table 1. The notations dd and df​f​nd_{ffn} represent the dimensionality of matrices in MHA layers and FFN layers, respectively."
+          ]
+        },
+        {
+          "title": "A.5 Rows and Columns for each Weight Matrix inBERT",
+          "paragraphs": [
+            "Our PGB method performs pruning on individual parameters of WQW^{Q}, WKW^{K}, WVW^{V}, WOW^{O} in the MHA sub-layers, as well as W(1)W^{(1)} and W(2)W^{(2)} in the FFN sub-layers. The number of rows and columns for each weight matrix is as follows:",
+            "• (dd, NH×dNHN_{H}\\times\\frac{d}{N_{H}}) : WQW^{Q}, WKW^{K}, WVW^{V}, WOW^{O} in MHA",
+            "• (dd, df​f​nd_{ffn}), (df​f​nd_{ffn}, dd) : W(1)W^{(1)}, W(2)W^{(2)} in FFN",
+            "(dd, NH×dNHN_{H}\\times\\frac{d}{N_{H}}) : WQW^{Q}, WKW^{K}, WVW^{V}, WOW^{O} in MHA",
+            "(dd, df​f​nd_{ffn}), (df​f​nd_{ffn}, dd) : W(1)W^{(1)}, W(2)W^{(2)} in FFN"
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "[1] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N. Gomez, Lukasz Kaiser, and Illia Polosukhin, Attention is All you Need, Advances in Neural Information Processing Systems, 2017, pp. 5998–6008.",
+    "[2] Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova, BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding, Proceedings of the 2019 Conference of the North American Chapter of the Association for Computational Linguistics, 2019, pp. 4171-–4186.",
+    "[3] Yinhan Liu, Myle Ott, Naman Goyal, Jingfei Du, Mandar Joshi, Danqi Chen, Omer Levy, Mike Lewis, Luke Zettlemoyer, and Veselin Stoyanov, RoBERTa: A Robustly Optimized BERT Pretraining Approach, CoRR, abs/1907.11692, 2019.",
+    "[4] Tom B. Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared Kaplan, Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, Sandhini Agarwal, Ariel Herbert-Voss, Gretchen Krueger, Tom Henighan, Rewon Child, Aditya Ramesh, Daniel M. Ziegler, Jeffrey Wu, Clemens Winter, Christopher Hesse, Mark Chen, Eric Sigler, Mateusz Litwin, Scott Gray, Benjamin Chess, Jack Clark, Christopher Berner, Sam McCandlish, Alec Radford, Ilya Sutskever and Dario Amodei, Language Models are Few-Shot Learners, Advances in Neural Information Processing Systems, 2020, pp. 1877–1901.",
+    "[5] Song Han, Jeff Pool, Jeff Pool, John Tran, and William J. Dally, Learning both Weights and Connections for Efficient Neural Network, Advances in Neural Information Processing Systems, 2015, pp. 1135–1143.",
+    "[6] Geoffrey E. Hinton, Oriol Vinyals, and Jeffrey Dean. Learning both Weights and Connections for Efficient Neural Network, Advances in Neural Information Processing Systems , CoRR, abs/1503.02531, 2015.",
+    "[7] Lee, Namhoon, Thalaiyasingam Ajanthan, and Philip HS Torr, Snip: Single-shot network pruning based on connection sensitivity, arXiv preprint arXiv:1810.02340, 2018.",
+    "[8] Jian-Hao Luo, Jianxin Wu, and Weiyao Lin, Thinet: A filter level pruning method for deep neural network compression, In Proceedings of the IEEE international conference on computer vision, 2017, pp. 5058–5066.",
+    "[9] Tianlong Chen, Jonathan Frankle, Shiyu Chang, Sijia Liu, Yang Zhang, Zhangyang Wang, and Michael Carbin, The lottery ticket hypothesis for pretrained bert networks, Advances in neural information processing systems, 2020, 33:pp. 15834-15846.",
+    "[10] Lu Hou, Zhiqi Huang, Lifeng Shang, Xin Jiang, Xiao Chen, and Qun Li, Dynabert: Dynamic BERT with adaptive width and depth, In Advances in neural information processing systems, 2020, 33.",
+    "[11] François Lagunas, Ella Charlaix, Victor Sanh, and Alexander M. Rush, Block Pruning For Faster Transformers, In Empirical Methods in Natural Language Processing (EMNLP), 2021, pp. 10619–10629.",
+    "[12] Mengzhou Xia, Zexuan Zhong, and Danqi Chen, Structured Pruning Learns Compact and Accurate Models, In Proceedings of the 60th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), 2022, pp. 1513–1528.",
+    "[13] Victor Sanh, Lysandre Debut, Julien Chaumond, and Thomas Wolf, Structured Pruning Learns Compact and Accurate Models, CoRR, abs/1910.01108, 2019.",
+    "[14] Xiaoqi Jiao , Yichun Yin, Lifeng Shang, Xin Jiang, Xiao Chen, Linlin Li, Fang Wang and Qun Liu, Structured Pruning Learns Compact and Accurate Models, CoRR, abs/1910.01108, 2019.",
+    "[15] Zhuo Su, Linpu Fang, Wenxiong Kang, Dewen Hu Matti Pietikäinen, and Li Liu, Dynamic group convolution for accelerating convolutional neural networks, In Computer Vision–ECCV 2020: 16th European Conference, 2020, pp. 138–155.",
+    "[16] Ruizhe Zhao and Wayne Luk, Efficient structured pruning and architecture searching for group convolution, In Proceedings of the IEEE/CVF International Conference on Computer Vision Workshops, 2019, pp. 1961–1970.",
+    "[17] Sungrae Park, Geewook Kim, Junyeop Lee, Junbum Cha, Ji-Hoon Kim, and Hwalsuk Lee, Scale down Transformer by Grouping Features for a Lightweight Character-level Language Model, Proceedings of the 28th International Conference on Computational Linguistics, 2020, pp. 6883–-6893.",
+    "[18] Ivan Chelombiev, Daniel Justus, Douglas Orr, Anastasia Dietrich, Frithjof Gressmann, Alexandros Koliousis, and Carlo Luschi, Groupbert: Enhanced transformer architecture with efficient grouped structured, arXiv preprint arXiv:2106.05822, 2021.",
+    "[19] Alex Wang, Amanpreet Singh, Julian Michael, Felix Hill, Omer Levy, and Samuel R. Bowman, GLUE: A Multi-Task Benchmark and Analysis Platform for Natural Language Understanding, In International Conference on Learning Representations (ICLR), 2019.",
+    "[20] Pranav Rajpurkar, Jian Zhang, Konstantin Lopyrev, and Percy Liang, SQuAD: 100, 000+ Questions for Machine Comprehension of Text, In Empirical Methods in Natural Language Processing (EMNLP), 2016.",
+    "[21] Wenhui Wang, Furu Wei, Li Dong, Hangbo Bao, Nan Yang, and Ming Zhou, MiniLM: Deep Self-Attention Distillation for Task-Agnostic Compression of Pre-Trained Transformers, In Advances in Neural Information Processing Systems, 2020, pp. 5776–5788.",
+    "[22] Zhiqing Sun, Hongkun Yu, Xiaodan Song, Renjie Liu, Yiming Yang, and Denny Zhou, MobileBERT: a Compact Task-Agnostic BERT for Resource-Limited Devices, In Proceedings of the 58th Annual Meeting of the Association for Computational Linguistics (ACL), 2020, pp. 2158–2170.",
+    "[23] Victor Sanh, Thomas Wolf, and Alexander Rush, Movement pruning: Adaptive sparsity by fine-tuning, Advances in Neural Information Processing Systems, 2020, 33: pp.20378–20389.",
+    "[24] Paul Michel, Omer Levy, and Graham Neubig, Are sixteen heads really better than one?, Advances in Neural Information Processing Systems (Volume 32), 2019.",
+    "[25] Elena Voita, David Talbot, Fedor Moiseev, Rico Sennrich, and Ivan Titov, Analyzing multi-head self-attention: Specialized heads do the heavy lifting, the rest can be pruned, arXiv preprint arXiv:1905.09418, 2019.",
+    "[26] Zhengyan Zhang, Fanchao Qi, Zhiyuan Liu, Qun Liu, and Maosong Sun, Know what you don’t need: Single-Shot Meta-Pruning for attention heads, AI Open, 2021, 2: pp. 36–42.",
+    "[27] Angela Fan, Edouard Grave, and Armand Joulin, Reducing Transformer Depth on Demand with Structured Dropout, CoRR, abs/1909.11556, 2019.",
+    "[28] Hassan Sajjad, Fahim Dalvi, Nadir Durrani, and Preslav Nakov, Poor Man’s BERT: Smaller and Faster Transformer Models, CoRR, abs/2004.03844, 2020.",
+    "[29] Xiaohan Chen, Yu Cheng, Shuohang Wang, Zhe Gan, Zhangyang Wang, and Jingjing Liu, Earlybert: Efficient bert training via early-bird lottery tickets, arXiv preprint arXiv:2101.00063, 2020.",
+    "[30] Yani Ioannou, Duncan Robertson, Roberto Cipolla, and Antonio Criminisi, Deep roots: Improving cnn efficiency with hierarchical filter groups, Proceedings of the IEEE conference on computer vision and pattern recognition, 2017, pp. 1231–1240.",
+    "[31] Guotian Xie, Jingdong Wang, Ting Zhang, Jianhuang, Lai, Richang Hong, and Guo-Jun Qi, Interleaved structured sparse convolutional neural networks, In Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition, 2018, pp. 8847–8856.",
+    "[32] Babak Hassibi, David G. Stork, and Gregory J. Wolff, Interleaved structured sparse convolutional neural networks, In Proceedings of International Conference on Neural Networks (ICNN’88), San Francisco, CA, USA, March 28 - April 1, 1993, pp. 293–299.",
+    "[33] Pavlo Molchanov, Arun Mallya, Stephen Tyree, Iuri Frosio, and Jan Kautz , Importance Estimation for Neural Network Pruning, In IEEE Conference on Computer Vision and Pattern Recognition, CVPR 2019, Long Beach, CA, USA, June 16-20,2019, pp. 11264–11272.",
+    "[34] Sidak Pal Singh and Dan Alistarh, WoodFisher: Efficient Second-Order Approximation for Neural Network Compression, In Advances in Neural Information Processing Systems 33: Annual Conference on Neural Information Processing Systems 2020, NeurIPS 2020, December 6-12, 2020.",
+    "[35] Rajpurkar, Pranav and Jia, Robin and Liang, Percy, Know what you don’t know: Unanswerable questions for SQuAD, arXiv preprint arXiv:1806.03822, 2018.",
+    "[36] Adam Paszke, Sam Gross, Francisco Massa, Adam Lerer, James Bradbury, Gregory Chanan, Trevor Killeen, Zeming Lin, Natalia Gimelshein, Luca Antiga, Alban Desmaison, Andreas Köpf, Edward Z. Yang, Zach DeVito, Martin Raison, Alykhan Tejani, Sasank Chilamkurthy, Benoit Steiner, Lu Fang, Junjie Bai, and Soumith Chintala, PyTorch: An Imperative Style, High-Performance Deep Learning Library, CoRR, abs/1912.01703, 2019.",
+    "[37] Thomas Wolf, Lysandre Debut, Victor Sanh, Julien, Chaumond, Clement Delangue, Anthony Moi, Pierric Cistac, Tim Rault, Rémi Louf, Morgan Funtowicz, Transformers: State-of-the-art natural language processing, In Proceedings of the 2020 conference on empirical methods in natural language processing: system demonstrations, 2020, pp. 38–45.",
+    "[38] Liu, Zejian and Li, Fanrong and Li, Gang and Cheng, Jian, EBERT: Efficient BERT inference with dynamic structured pruning, Findings of the Association for Computational Linguistics: ACL-IJCNLP, 2021, pp. 4814–4823.",
+    "[39] Zi Lin, Jeremiah Z. Liu, Zi Yang, Nan Hua, and Dan Roth, Pruning Redundant Mappings in Transformer Models via Spectral-Normalized Identity Prior, Findings of the Association for Computational Linguistics: EMNLP 2020, Online Event, 16-20 November, 2020, pp. 719–730.",
+    "[40] Zhang, Xiangyu and Zhou, Xinyu and Lin, Mengxiao and Sun, Jian, Shufflenet: An extremely efficient convolutional neural network for mobile devices, In Proceedings of the IEEE conference on computer vision and pattern recognition, 2018, pp. 6848–6856.",
+    "[41] Qingru Zhang, Simiao Zuo, Chen Liang, Alexander Bukharin, Pengcheng He, Weizhu Chen, and Tuo Zhao, Platon: Pruning large transformer models with upper confidence bound of weight importance, In Proceedings of the IEEE conference International Conference on Machine Learning, 2022, pp. 26809–26823.",
+    "[42] Richard Socher, Alex Perelygin, Jean Wu, Jason Chuang, Christopher D. Manning, Andrew Y. Ng, and Christopher Potts, Recursive Deep Models for Semantic Compositionality Over a Sentiment Treebank, In Proceedings of the 2013 Conference on Empirical Methods in Natural Language Processing (EMNLP), 2013, pp. 1631–1642.",
+    "[43] Alex Warstadt, Amanpreet Singh, and Samuel R. Bowman, Neural Network Acceptability Judgments, Transactions of the Association of Computational Linguistics (TACL), 2019, 7: pp. 625–641.",
+    "[44] Daniel M. Cer, Mona T. Diab, Eneko Agirre, Iñigo Lopez-Gazpio, and Lucia Specia, SemEval-2017 Task 1: Semantic Textual Similarity Multilingual and Crosslingual Focused Evaluation, In Proceedings of the 11th International Workshop on Semantic Evaluation (SemEval-2017), 2017, 7: pp.1–14.",
+    "[45] William B. Dolan and Chris Brockett, Iñigo Lopez-Gazpio, and Lucia Specia, Automatically Constructing a Corpus of Sentential Paraphrases, In Proceedings of the Third International Workshop on Paraphrasing, IWP@IJCNLP 2005, 2005."
+  ]
+}

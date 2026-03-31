@@ -1,0 +1,495 @@
+{
+  "title": "LLM Alignment as Retriever Optimization: An Information Retrieval Perspective",
+  "authors": "Bowen JinJinsung YoonGoogle CloudZhen QinGoogle DeepMindZiqi WangUniversity of Illinois at Urbana-ChampaignWei XiongUniversity of Illinois at Urbana-ChampaignYu MengUniversity of VirginiaJiawei HanUniversity of Illinois at Urbana-ChampaignSercan Ö. ArıkGoogle Cloud",
+  "abstract": "Large Language Models (LLMs) have revolutionized artificial intelligence with capabilities in reasoning, coding, and communication, driving innovation across industries. Their true potential depends on effective alignment to ensure correct, trustworthy and ethical behavior, addressing challenges like misinformation, hallucinations, bias and misuse. While existing Reinforcement Learning (RL)-based alignment methods are notoriously complex, direct optimization approaches offer a simpler alternative. In this work, we introduce a novel direct optimization approach for LLM alignment by drawing on established Information Retrieval (IR) principles. We present a systematic framework that bridges LLM alignment and IR methodologies, mapping LLM generation and reward models to IR’s retriever-reranker paradigm. Building on this foundation, we propose LLM Alignment as Retriever Preference Optimization (LarPO), a new alignment method that enhances overall alignment quality. Extensive experiments validate LarPO’s effectiveness with 38.9% and 13.7% averaged improvement on AlpacaEval2 and MixEval-Hard respectively. Our work opens new avenues for advancing LLM alignment by integrating IR foundations, offering a promising direction for future research.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Large Language Models (LLMs) (Achiam et al., 2023; Team et al., 2024a) have demonstrated remarkable capacities in a wide range of fields including conversational modeling (Zhao et al., 2023a), reasoning (Wei et al., 2022) and code generation (Jiang et al., 2024). Unlocking the full potential of LLMs while ensuring their ethical, safe, and high-quality performance hinges on effective alignment (Wang et al., 2023). However, existing reinforcement learning-based LLM alignment methods (e.g., PPO (Ouyang et al., 2022)) involve multi-stage training and are challenging to optimize. To this end, direct LLM preference optimization methods (e.g., DPO (Rafailov et al., 2024)) are proposed to simplify the alignment process.",
+        "In this work, we further enhance direct LLM preference optimization, focusing on bringing Information Retrieval (IR) perspectives (Tay et al., 2022). Striking parallels exist between IR methodologies and LLM alignment techniques (Lin et al., 2022). For example, IR’s retriever-reranker framework, which uses a retriever for broad semantic matching to generate a candidate set and a reranker for fine-grained refinement, offers a compelling analogy to the Best-of-N approach in LLM alignment (Dong et al., 2023; Sessa et al., 2024). In this analogy, the LLM acts as the retriever, while the reward model serves as the reranker. Furthermore, the common use of dual-encoder architectures in both LLM generation and IR retrievers, coupled with the reliance on cross-encoder architectures in reward models and IR rerankers, further underscores this synergy. Leveraging established IR techniques offers the potential to develop novel, easily implementable LLM alignment methods grounded in IR principles, leading to improved alignment quality. ",
+        "Despite the promising connections between LLM alignment and IR, a systematic exploration of this synergy remains lacking. Specifically, three key gaps exist: (1) a clear mapping between LLM alignment mechanisms and core IR principles has not been established; (2) empirical evaluations of LLMs through an IR lens are scarce; and (3) proven IR techniques like retriever optimization, hard negative mining, and candidate list construction are underutilized for LLM alignment. This paper directly addresses these gaps by systematically bridging LLM alignment and IR methodologies. Our contributions are fourfold: In summary, this work establishes a crucial link between IR and LLM alignment, offering both novel insights and practical methods for advancing the field.",
+        "• We introduce a comprehensive framework that connects LLM alignment techniques with the established IR principles, providing a new perspective on LLM alignment.",
+        "• We demonstrate the significance of three key IR principles - retriever optimization objectives, hard negative mining, and candidate list construction - for improving LLM alignment.",
+        "• Building on these insights, we propose a novel alignment method, LLM Alignment as Retriever Preference Optimization (LarPO), which demonstrably enhances alignment quality, with 38.9 % and 13.7 % relative averaged improvement on AlpacaEval2 and MixEval-Hard.",
+        "• We conduct further empirical studies to evaluate LLM performance using IR metrics, analyzing the impact of various post-training techniques."
+      ],
+      "subsections": []
+    },
+    "2 An Information Retrieval Perspective on LLMs": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "2.1 Primer on information retrieval",
+          "paragraphs": [
+            "Information retrieval systems (Zhu et al., 2023) typically employ a two-stage process involving retrievers (Zhao et al., 2024) and rerankers (Lin et al., 2022). The retriever, often implemented as a bi-encoder (Figure 1), efficiently identifies a large set of (KK) potentially relevant passages, denoted as DretrievalD_{\\text{retrieval}}, from a corpora CC given a query qq. This is achieved using a coarse-grained similarity function, pretrieval​(d|q)=EncqT​(q)⋅Encd​(d)p_{\\text{retrieval}}(d|q)=\\text{Enc}^{T}_{q}(q)\\cdot\\text{Enc}_{d}(d), where Encq\\text{Enc}_{q} and Encd\\text{Enc}_{d} represent the query and passage encoders respectively:",
+            "However, due to the scale of the corpus, retrievers might not accurately capture fine-grained query-passage similarity with the simple dot production interaction function. Therefore, rerankers, typically implemented with cross-encoder (Figure 1), are employed to refine the ranking of the retrieved passages DretrievalD_{\\text{retrieval}}. The reranker produces a smaller set (kk) of top-ranked passages, DrankD_{\\text{rank}}, using a fine-grained similarity function, rrank​(q,d)=w⋅Enc​(q,d)r_{\\text{rank}}(q,d)=w\\cdot\\text{Enc}(q,d), where ww is a learnable linear layer. Here, reranker adopts cross-encoder with both query/passage as inputs and encoded together while retriever adopts dual encoder for separate query/passage encoding.",
+            "The resulting ranked passages are ordered such that Drank​(q)={d1,d2,…,dk}D_{\\text{rank}}(q)=\\{d_{1},d_{2},\\ldots,d_{k}\\} where rrank​(q,d1)≥rrank​(q,d2)≥⋯≥rrank​(q,dk)r_{\\text{rank}}(q,d_{1})\\geq r_{\\text{rank}}(q,d_{2})\\geq\\cdots\\geq r_{\\text{rank}}(q,d_{k})."
+          ]
+        },
+        {
+          "title": "2.2 LLMs as retrievers. Reward models as rerankers",
+          "paragraphs": [
+            "During inference, an LLM generates a response yy given an input prompt xx by modeling the probability distribution pLLM​(y|x)p_{\\text{LLM}}(y|x). Assuming a fixed maximum sequence length LL and a vocabulary space VV (Li et al., 2024), the set of all possible responses can be defined as Y={y:y​(1)​y​(2)​…​y​(L)|y​(i)∈V}⊆VLY=\\{y:y(1)y(2)...y(L)|y(i)\\in V\\}\\subseteq V^{L}.",
+            "We can conceptualize this process through an IR lens (Tay et al., 2022). The prompt xx can be viewed as analogous to a query qq, the set of all possible responses YY can be treated as the corpus CC, and the generated response yy can be considered as the retrieved passage dd. Thus, given a prompt xx, the LLM effectively acts as a retriever, searching for the most probable responses DLLM​(x)D_{\\text{LLM}}(x) from response space YY:",
+            "where pLLM​(y|x)p_{\\text{LLM}}(y|x) is analogous to pretrieval​(d|q)p_{\\text{retrieval}}(d|q) in IR.",
+            "This analogy is further supported by the LLMs’ architecture. As illustrated in Figure 1, the generative modeling with LLMs can be interpreted as the matching process of a bi-encoder model. The prompt is encoded into a vector representation by LLM, while response tokens are represented as token embedding vectors. For each token position decoding, prompt embedding (obtained often from the hidden state of the last layer of the LLM) and vocabulary token embeddings are compared with a dot product, to determine the likelihood of a selected token for the response.",
+            "Furthermore, reward models rrm​(x,y)r_{\\text{rm}}(x,y) (Lambert et al., 2024), which take both the prompt and response as input, function similarly to cross-encoders (i.e., rerankers rrank​(q,d)r_{\\text{rank}}(q,d) (Zhuang et al., 2023)) in IR. To enhance LLM performance, various inference-time strategies have been developed, including Best-of-N sampling (Stiennon et al., 2020) and majority voting (Wang et al., 2022). These can be interpreted as different configurations of retrievers and rerankers, as summarized in Appendix Table 5."
+          ]
+        },
+        {
+          "title": "2.3 LLM tuning as retriever optimization",
+          "paragraphs": [
+            "Retriever training, aiming for accurate retrieval, often employs contrastive learning with the InfoNCE loss (Oord et al., 2018) to maximize P​(dgold|q)P(d_{\\text{gold}}|q) of retrieving the ground truth passage dgoldd_{\\text{gold}} given a query qq. This can be expressed as:",
+            "In the context of LLM alignment, supervised fine-tuning (SFT) aims to quickly adapt the model to a target task using prompt-response pairs (x,ygoldx,y_{\\text{gold}}). SFT maximizes the conditional probability P​(ygold|x)P(y_{\\text{gold}}|x) as:",
+            "where y​(i)y(i) is the ii-th token of yy, zi=[x,ygold(1:i−1)]z_{i}=[x,y_{\\text{gold}}(1:i-1)] represent the concatenation of the prompt xx and the preceding tokens of ygoldy_{\\text{gold}}, LLM​(⋅)\\text{LLM}(\\cdot) produces a contextualized representation, and Emb​(⋅)\\text{Emb}(\\cdot) is the token embedding function.",
+            "Consequently, the SFT objective can be interpreted as a composite of multiple retrieval optimization objectives. In this analogy, LLM​(⋅)\\text{LLM}(\\cdot) acts as the query encoder and Emb​(⋅)\\text{Emb}(\\cdot) serves as the passage (or, in this case, token) encoder.",
+            "In retriever training, optimizing solely based on query/ground-truth document pairs can be suboptimal, particularly when using in-batch negatives for efficiency. Performance can be enhanced by distilling knowledge from a more powerful reranker to retriever (Qu et al., 2020; Zeng et al., 2022). This distillation process can be represented as frerank​(⋅)​→𝑟​data​→g​(⋅)​fretrieval​(⋅)f_{\\text{rerank}}(\\cdot)\\overset{r}{\\rightarrow}\\text{data}\\overset{g(\\cdot)}{\\rightarrow}f_{\\text{retrieval}}(\\cdot), where new data, generated by the reranker frerank​(⋅)f_{\\text{rerank}}(\\cdot) based on a rule rr, is used to optimize the retriever fretrieval​(⋅)f_{\\text{retrieval}}(\\cdot) with an objective g​(⋅)g(\\cdot).",
+            "Similarly, in LLM alignment, a preference alignment phase often follows supervised fine-tuning (SFT) to further enhance the model using an external reward model to absorb preferential supervision effectively. Methods like PPO (Schulman et al., 2017) and iterative DPO (Guo et al., 2024) exemplify this approach. Here, the LLM (considered acting as the retriever) generates responses that are then scored by the reward model (considered acting as the reranker). These scores are used to create new training data, effectively performing distillation from the reward model into the LLM: freward-model​(⋅)​→𝑟​data​→g​(⋅)​fLLM​(⋅)f_{\\text{reward-model}}(\\cdot)\\overset{r}{\\rightarrow}\\text{data}\\overset{g(\\cdot)}{\\rightarrow}f_{\\text{LLM}}(\\cdot). Thus, preference optimization can be viewed as a form of reranker-to-retriever distillation, analogous to the process used in traditional IR.",
+            "We conduct empirical studies to understand SFT and preference optimization from IR perspective in Appendix B and have further discussion in Appendices C and D."
+          ]
+        },
+        {
+          "title": "Supervised fine-tuning as direct retriever optimization.",
+          "paragraphs": [
+            "Retriever training, aiming for accurate retrieval, often employs contrastive learning with the InfoNCE loss (Oord et al., 2018) to maximize P​(dgold|q)P(d_{\\text{gold}}|q) of retrieving the ground truth passage dgoldd_{\\text{gold}} given a query qq. This can be expressed as:",
+            "In the context of LLM alignment, supervised fine-tuning (SFT) aims to quickly adapt the model to a target task using prompt-response pairs (x,ygoldx,y_{\\text{gold}}). SFT maximizes the conditional probability P​(ygold|x)P(y_{\\text{gold}}|x) as:",
+            "where y​(i)y(i) is the ii-th token of yy, zi=[x,ygold(1:i−1)]z_{i}=[x,y_{\\text{gold}}(1:i-1)] represent the concatenation of the prompt xx and the preceding tokens of ygoldy_{\\text{gold}}, LLM​(⋅)\\text{LLM}(\\cdot) produces a contextualized representation, and Emb​(⋅)\\text{Emb}(\\cdot) is the token embedding function.",
+            "Consequently, the SFT objective can be interpreted as a composite of multiple retrieval optimization objectives. In this analogy, LLM​(⋅)\\text{LLM}(\\cdot) acts as the query encoder and Emb​(⋅)\\text{Emb}(\\cdot) serves as the passage (or, in this case, token) encoder."
+          ]
+        },
+        {
+          "title": "Preference optimization as reranker-retriever distillation.",
+          "paragraphs": [
+            "In retriever training, optimizing solely based on query/ground-truth document pairs can be suboptimal, particularly when using in-batch negatives for efficiency. Performance can be enhanced by distilling knowledge from a more powerful reranker to retriever (Qu et al., 2020; Zeng et al., 2022). This distillation process can be represented as frerank​(⋅)​→𝑟​data​→g​(⋅)​fretrieval​(⋅)f_{\\text{rerank}}(\\cdot)\\overset{r}{\\rightarrow}\\text{data}\\overset{g(\\cdot)}{\\rightarrow}f_{\\text{retrieval}}(\\cdot), where new data, generated by the reranker frerank​(⋅)f_{\\text{rerank}}(\\cdot) based on a rule rr, is used to optimize the retriever fretrieval​(⋅)f_{\\text{retrieval}}(\\cdot) with an objective g​(⋅)g(\\cdot).",
+            "Similarly, in LLM alignment, a preference alignment phase often follows supervised fine-tuning (SFT) to further enhance the model using an external reward model to absorb preferential supervision effectively. Methods like PPO (Schulman et al., 2017) and iterative DPO (Guo et al., 2024) exemplify this approach. Here, the LLM (considered acting as the retriever) generates responses that are then scored by the reward model (considered acting as the reranker). These scores are used to create new training data, effectively performing distillation from the reward model into the LLM: freward-model​(⋅)​→𝑟​data​→g​(⋅)​fLLM​(⋅)f_{\\text{reward-model}}(\\cdot)\\overset{r}{\\rightarrow}\\text{data}\\overset{g(\\cdot)}{\\rightarrow}f_{\\text{LLM}}(\\cdot). Thus, preference optimization can be viewed as a form of reranker-to-retriever distillation, analogous to the process used in traditional IR.",
+            "We conduct empirical studies to understand SFT and preference optimization from IR perspective in Appendix B and have further discussion in Appendices C and D."
+          ]
+        },
+        {
+          "title": "2.4 Empirical insights into LLMs as IR models",
+          "paragraphs": [
+            "A common metric for evaluating retrievers is Recall@NN, which assesses whether the top-NN retrieved passages include any relevant passages for a given query. In the context of LLMs, this translates to evaluating whether the top-NN generated responses contain a suitable response to the prompt, analogous to Pass@NN (Chen et al., 2021).",
+            "To draw the empirical connection between LLM and retrievers, we conduct an experiment on the GSM8K dataset (Cobbe et al., 2021) using Mathstral-7b-it (Mistral AI, 2025) and an experiment on the NQ dataset (Kwiatkowski et al., 2019) using e5 retriever. Figure 2 illustrates that increasing N can contribute to improved performance for both retriever and LLM. Detailed analysis can be found in Appendix E.",
+            "Greedy decoding, equivalent to N=1N=1, is a prevalent LLM inference strategy. However, as shown in Figure 2(b), Pass@1 is often suboptimal, and thus increasing NN can substantially improve performance. This highlights the importance of inference-time scaling techniques like Best-of-N (Stiennon et al., 2020) in LLM similar to retriever-reranker scaling (Zhuang et al., 2023) in IR. More results and analyses can be found in Appendix E."
+          ]
+        },
+        {
+          "title": "Evaluating LLMs as retrievers.",
+          "paragraphs": [
+            "A common metric for evaluating retrievers is Recall@NN, which assesses whether the top-NN retrieved passages include any relevant passages for a given query. In the context of LLMs, this translates to evaluating whether the top-NN generated responses contain a suitable response to the prompt, analogous to Pass@NN (Chen et al., 2021).",
+            "To draw the empirical connection between LLM and retrievers, we conduct an experiment on the GSM8K dataset (Cobbe et al., 2021) using Mathstral-7b-it (Mistral AI, 2025) and an experiment on the NQ dataset (Kwiatkowski et al., 2019) using e5 retriever. Figure 2 illustrates that increasing N can contribute to improved performance for both retriever and LLM. Detailed analysis can be found in Appendix E.",
+            "Greedy decoding, equivalent to N=1N=1, is a prevalent LLM inference strategy. However, as shown in Figure 2(b), Pass@1 is often suboptimal, and thus increasing NN can substantially improve performance. This highlights the importance of inference-time scaling techniques like Best-of-N (Stiennon et al., 2020) in LLM similar to retriever-reranker scaling (Zhuang et al., 2023) in IR. More results and analyses can be found in Appendix E."
+          ]
+        }
+      ]
+    },
+    "3 Iterative LLM alignment as retriever optimization": {
+      "paragraphs": [
+        "Iterative learning is a common technique in retriever optimization (Xiong et al., 2020), where results from the newly-trained model are used to generate new training data, as illustrated in Figure 3(a). Similarly, for LLM alignment, iterative preference optimization has been shown to enhance performance (Xiong et al., 2024; Xu et al., 2024b; Guo et al., 2024) (Figure 3(b)). Drawing inspirations from retriever optimization, we re-examine iterative LLM preference optimization, focusing on three key aspects: (1) the optimization objective; (2) the use of hard negatives; and (3) the candidate list construction. Based on these aspects, we propose a new LLM alignment with an IR perspective, LarPO."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Retriever optimization objective",
+          "paragraphs": [
+            "Typical objectives for retriever optimization include pairwise, contrastive and listwise objectives (Zhao et al., 2024). In this section, we discuss preference optimization variants (Wang et al., 2023) corresponding to different retriever optimization objectives. The optimization objective for preference optimization is given as:",
+            "As discussed in (Rafailov et al., 2024), the equation above has the optimal solution as:",
+            "where Z=∑y′πref​(y′|x)​exp​(1β​r​(x,y′))Z=\\sum_{y^{\\prime}}\\pi_{\\text{ref}}(y^{\\prime}|x)\\text{exp}(\\frac{1}{\\beta}r(x,y^{\\prime})) is the normalization constant and r​(⋅)r(\\cdot) is the reward model which can also be seen as a reranker. According to different assumption for r​(x,y)r(x,y) from IR, we can obtain different training objectives as shown in Table 1, with proofs in Appendix F.",
+            "Under the pairwise (Bradley-Terry) assumption ℙ​r​(yw⪰yl)=σ​(r​(x,yw)−r​(x,yl))\\mathbb{P}\\text{r}(y_{w}\\succeq y_{l})=\\sigma(r(x,y_{w})-r(x,y_{l})), the policy objective becomes DPO (Rafailov et al., 2024) ℒpair\\mathcal{L}_{\\text{pair}}.",
+            "Another widely used objective for ranking is contrastive learning (Oord et al., 2018):",
+            "It handles multiple negatives in a single step, allowing the model to learn more robust representations for retrieval and ranking. It is widely used for dense retriever training (Karpukhin et al., 2020). Under this ranking assumption, the policy objective becomes ℒcon\\mathcal{L}_{\\text{con}} as shown in Table 1.",
+            "In addition to pairwise and contrastive learning, list-wise ranking is widely adopted to sufficiently utilize the comprehensive information in candidate list. Inspired by LambdaRank (Burges, 2010; Zeng et al., 2022):",
+            "the policy optimization objective becomes ℒlamb\\mathcal{L}_{\\text{lamb}} (Table 1).",
+            "Another list-wise ranking assumption is the ListMLE assumption (Xia et al., 2008), which provides theoretical grounding and global optimization perspective:",
+            "In this case, the objective becomes ℒlmle\\mathcal{L}_{\\text{lmle}} shown in Table 1."
+          ]
+        },
+        {
+          "title": "Pairwise ranking.",
+          "paragraphs": [
+            "Under the pairwise (Bradley-Terry) assumption ℙ​r​(yw⪰yl)=σ​(r​(x,yw)−r​(x,yl))\\mathbb{P}\\text{r}(y_{w}\\succeq y_{l})=\\sigma(r(x,y_{w})-r(x,y_{l})), the policy objective becomes DPO (Rafailov et al., 2024) ℒpair\\mathcal{L}_{\\text{pair}}."
+          ]
+        },
+        {
+          "title": "Contrastive ranking.",
+          "paragraphs": [
+            "Another widely used objective for ranking is contrastive learning (Oord et al., 2018):",
+            "It handles multiple negatives in a single step, allowing the model to learn more robust representations for retrieval and ranking. It is widely used for dense retriever training (Karpukhin et al., 2020). Under this ranking assumption, the policy objective becomes ℒcon\\mathcal{L}_{\\text{con}} as shown in Table 1."
+          ]
+        },
+        {
+          "title": "LambdaRank.",
+          "paragraphs": [
+            "In addition to pairwise and contrastive learning, list-wise ranking is widely adopted to sufficiently utilize the comprehensive information in candidate list. Inspired by LambdaRank (Burges, 2010; Zeng et al., 2022):",
+            "the policy optimization objective becomes ℒlamb\\mathcal{L}_{\\text{lamb}} (Table 1)."
+          ]
+        },
+        {
+          "title": "ListMLE.",
+          "paragraphs": [
+            "Another list-wise ranking assumption is the ListMLE assumption (Xia et al., 2008), which provides theoretical grounding and global optimization perspective:",
+            "In this case, the objective becomes ℒlmle\\mathcal{L}_{\\text{lmle}} shown in Table 1."
+          ]
+        },
+        {
+          "title": "3.2 Hard negatives",
+          "paragraphs": [
+            "Hard negatives are crucial for effective retriever training (Zhan et al., 2021; Qu et al., 2020), as learning to distinguish harder negatives potentially lead to more powerful retrievers (Xiong et al., 2020). In LLM alignment, negatives correspond to unpreferred responses (yly_{l}) for a given prompt (xx). In iterative on-policy training, various types of negatives can be identified, ordered by increasing difficulty: (1) Easiest: A random, unrelated response to xx; (2) Easy: A response to a related but different prompt (x′x^{\\prime}); (3) Hard: An incorrect response to xx generated with a high temperature; (4) Hardest: An incorrect response to xx generated with a low temperature.",
+            "Note that, assuming a well-initialized policy LLM, as indicated by Figure 2(b) (N=1N=1), low temperatures tend to produce harder negatives, yielding the above ranking. According to Zhan et al. (2021), hardest negatives could be most important to LLM alignment."
+          ]
+        },
+        {
+          "title": "3.3 Candidate list",
+          "paragraphs": [
+            "In iterative retriever optimization, construction of the candidate list [d1,…,dm][d_{1},...,d_{m}], which is used by the reranker to generate data for the next iteration, is crucial. Prior research (Zeng et al., 2022) has identified factors such as list size and candidate selection as being particularly important. Similarly, in iterative preference optimization, construction of the candidate response list Y=[y1,…,ym]Y=[y_{1},...,y_{m}] is critical. We identify two key factors influencing the quality of YY: inclusiveness and memorization. Given their importance in IR (Qu et al., 2020; Zeng et al., 2022), the impact of these factors on LLM alignment, however, remains largely under-explored.",
+            "(1) Inclusiveness (Qu et al., 2020) refers to the size of the response list YY. A larger YY potentially encompasses more information.",
+            "(2) Memorization (Zeng et al., 2022) refers whether previously generated responses Y′Y^{\\prime} are included in the current list YY to preserve past results.",
+            "Inclusiveness (Qu et al., 2020) refers to the size of the response list YY. A larger YY potentially encompasses more information.",
+            "Memorization (Zeng et al., 2022) refers whether previously generated responses Y′Y^{\\prime} are included in the current list YY to preserve past results."
+          ]
+        }
+      ]
+    },
+    "4 The Proposed Solution:LarPO": {
+      "paragraphs": [
+        "Motivated by iterative retriever optimization pipeline as shown in Figure 3(a) and the three key points in IR, we introduce LarPO, a novel approach to LLM alignment formulated as iterative retriever preference optimization. The algorithmic details are provided in Algorithm 1. Specifically, our experimental setup explores the following key aspects: (1) Optimization objective: We evaluate three distinct loss functions as the ranking objective (ℒrank\\mathcal{L}_{\\text{rank}}): ℒcon\\mathcal{L}_{\\text{con}}, ℒlamb\\mathcal{L}_{\\text{lamb}}, and ℒlmle\\mathcal{L}_{\\text{lmle}}. (2) Hard negatives: For a given prompt, hard negative samples are constructed by selecting less preferred responses generated with an appropriate temperature through parameter search. More details of how the temperature are available in Appendix H.1. (3) Candidate list: In each iteration, we generate multiple (10) candidate responses considering inclusiveness. In terms of memorization, the candidate pool for subsequent iterations includes all previously generated responses."
+      ],
+      "subsections": []
+    },
+    "5 Main Results": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Baselines.",
+          "paragraphs": [
+            "We evaluate the performance of LarPO against a range of established preference optimization methods, encompassing both offline and online approaches. Our offline comparison set includes RRHF (Yuan et al., 2023), SLiC-HF (Zhao et al., 2023b), DPO (Guo et al., 2024), IPO (Azar et al., 2024), CPO (Xu et al., 2024a), KTO (Ethayarajh et al., 2024), RDPO (Park et al., 2024) and SimPO (Meng et al., 2024b). For online methods, we compare with iterative DPO (Xiong et al., 2024). The baseline checkpoints are from (Meng et al., 2024b). Further details regarding these baselines and our experimental setup are provided in Appendix G. Both baselines and LarPO are trained on Ultrafeedback dataset (Cui et al., 2024) for fair comparison."
+          ]
+        },
+        {
+          "title": "Datasets.",
+          "paragraphs": [
+            "We conduct evaluation on two widely used benchmarks AlpacaEval2 (Dubois et al., 2024) and MixEval (Ni et al., 2024). These benchmarks are designed to assess the conversational capabilities of models across a diverse range of queries. AlpacaEval2 comprises 805 questions sourced from five datasets, while MixEval includes 4000 general and 1000 hard questions. Evaluation follows the established protocols for each benchmark. For AlpacaEval 2, we report both the raw win rate (WR) and the length-controlled win rate (LC). These benchmarks collectively provide a comprehensive assessment of the models’ instruction-following and problem-solving capabilities."
+          ]
+        },
+        {
+          "title": "Results.",
+          "paragraphs": [
+            "The baseline performances on AlpacaEval 2 are directly from Meng et al. (2024b), while the performances on MixEval is evaluated by ourselves with the opensourced checkpoints. We adopt the same LLM-Blender (Jiang et al., 2023b) reward model for a fair comparison with the baselines and also explore stronger reward model: FsfairX (Dong et al., 2024). The results, presented in Table 2, show that LarPO consistently outperforms the competitive baseline methods on both datasets, with 38.9 % and 13.7 % averaged relative improvements, on AlpacaEval2 and MixEval-Hard respectively, with the same reward model as the baselines. With a stronger reward model, we can further improve LarPO by 25.8 % on the challenging AlpacaEval2 dataset. Additional details regarding our experimental setup are available in Appendix H.1."
+          ]
+        }
+      ]
+    },
+    "6 Analyses": {
+      "paragraphs": [
+        "This section provides empirical analyses of the three factors identified in Section 3."
+      ],
+      "subsections": [
+        {
+          "title": "6.1 Retriever optimization objective",
+          "paragraphs": [
+            "Iterative preference optimization is performed on LLMs using the different learning objectives outlined in Section 3.1. Alignment experiments are conducted using the Gemma2-2b-it (Team et al., 2024b) and Mistral-7b-it (Jiang et al., 2023a) models, trained on the Ultrafeedback dataset (Cui et al., 2024). Following the methodology of (Dong et al., 2024), we conduct three iterations of training and report the performance of the final checkpoint in Table 3. Model evaluations are performed on AlpacaEval2 (Dubois et al., 2024) and MixEval (Ni et al., 2024). Detailed settings can be found in Appendix H.2.",
+            "Table 3 presents the results, from which we make the following observations: (1) Contrastive optimization generally outperforms pairwise optimization (e.g., DPO), likely due to its ability to incorporate more negative examples during each learning step. (2) Listwise optimization methods, including ListMLE and LambdaRank, generally demonstrate superior performance compared to both pairwise and contrastive approaches. This is attributed to their utilization of a more comprehensive set of preference information within the candidate list."
+          ]
+        },
+        {
+          "title": "Experimental setting.",
+          "paragraphs": [
+            "Iterative preference optimization is performed on LLMs using the different learning objectives outlined in Section 3.1. Alignment experiments are conducted using the Gemma2-2b-it (Team et al., 2024b) and Mistral-7b-it (Jiang et al., 2023a) models, trained on the Ultrafeedback dataset (Cui et al., 2024). Following the methodology of (Dong et al., 2024), we conduct three iterations of training and report the performance of the final checkpoint in Table 3. Model evaluations are performed on AlpacaEval2 (Dubois et al., 2024) and MixEval (Ni et al., 2024). Detailed settings can be found in Appendix H.2."
+          ]
+        },
+        {
+          "title": "Observation.",
+          "paragraphs": [
+            "Table 3 presents the results, from which we make the following observations: (1) Contrastive optimization generally outperforms pairwise optimization (e.g., DPO), likely due to its ability to incorporate more negative examples during each learning step. (2) Listwise optimization methods, including ListMLE and LambdaRank, generally demonstrate superior performance compared to both pairwise and contrastive approaches. This is attributed to their utilization of a more comprehensive set of preference information within the candidate list."
+          ]
+        },
+        {
+          "title": "6.2 Hard negatives",
+          "paragraphs": [
+            "The Mathstral-7b-it model is trained on the GSM8k training set and evaluated its performance on the GSM8k test set. Iterative DPO is employed as the RLHF method, with the gold or correct response designated as the positive example. The impact of different hard negative variants is investigated, as described in Section 3.2, with the results presented in Figure 4(a). Additionally, the influence of temperature on negative hardness with Lambdarank objective are examined using experiments on the AlpacaEval 2 dataset, with results shown in Figure 4(b). Detailed settings are in Appendix H.5 and H.6.",
+            "Figure 4(a) illustrates that the effectiveness of the final LLM is directly correlated with the hardness of the negatives used during training. Harder negatives consistently lead to a more performant LLM. Figure 4(b) further demonstrates that, within a specific range, lower temperatures generate harder negatives, resulting in a more effective final trained LLM. However, much lower temperature could lead to less diverse responses and finally lead to LLM alignment performance drop. "
+          ]
+        },
+        {
+          "title": "Experimental setting.",
+          "paragraphs": [
+            "The Mathstral-7b-it model is trained on the GSM8k training set and evaluated its performance on the GSM8k test set. Iterative DPO is employed as the RLHF method, with the gold or correct response designated as the positive example. The impact of different hard negative variants is investigated, as described in Section 3.2, with the results presented in Figure 4(a). Additionally, the influence of temperature on negative hardness with Lambdarank objective are examined using experiments on the AlpacaEval 2 dataset, with results shown in Figure 4(b). Detailed settings are in Appendix H.5 and H.6."
+          ]
+        },
+        {
+          "title": "Observation.",
+          "paragraphs": [
+            "Figure 4(a) illustrates that the effectiveness of the final LLM is directly correlated with the hardness of the negatives used during training. Harder negatives consistently lead to a more performant LLM. Figure 4(b) further demonstrates that, within a specific range, lower temperatures generate harder negatives, resulting in a more effective final trained LLM. However, much lower temperature could lead to less diverse responses and finally lead to LLM alignment performance drop. "
+          ]
+        },
+        {
+          "title": "6.3 Candidate List",
+          "paragraphs": [
+            "To investigate the impact of inclusiveness and memorization on LLM alignment, experiments are conducted using Gemma2-2b-it, employing the same training settings as in our objective study. For the inclusiveness study, the performance of the trained LLM is evaluated using varying numbers of candidates in the list. For the memorization study, three approaches are compared: (i) using only the current iteration’s responses, (ii) using responses from the current and previous iteration, and (iii) using responses from the current and all previous iterations. Detailed settings can be found in Appendix H.7 and H.3.",
+            "Figure 4(c) illustrates the significant impact of candidate list size on LLM alignment performance. As the candidate list size increases, performance improves, albeit with a diminishing rate of return. This is intuitive, given that a bigger candidate list size can contribute to more hard negatives and potentially benefit the model learning (Qu et al., 2020). Table 4 demonstrates that incorporating responses from previous iterations can enhance performance. This is potentially because introducing previous responses can make the candidate list more comprehensive and lead to better preference signal capturing. More explanations are in Appendix H.3."
+          ]
+        },
+        {
+          "title": "Experimental setting.",
+          "paragraphs": [
+            "To investigate the impact of inclusiveness and memorization on LLM alignment, experiments are conducted using Gemma2-2b-it, employing the same training settings as in our objective study. For the inclusiveness study, the performance of the trained LLM is evaluated using varying numbers of candidates in the list. For the memorization study, three approaches are compared: (i) using only the current iteration’s responses, (ii) using responses from the current and previous iteration, and (iii) using responses from the current and all previous iterations. Detailed settings can be found in Appendix H.7 and H.3."
+          ]
+        },
+        {
+          "title": "Observation.",
+          "paragraphs": [
+            "Figure 4(c) illustrates the significant impact of candidate list size on LLM alignment performance. As the candidate list size increases, performance improves, albeit with a diminishing rate of return. This is intuitive, given that a bigger candidate list size can contribute to more hard negatives and potentially benefit the model learning (Qu et al., 2020). Table 4 demonstrates that incorporating responses from previous iterations can enhance performance. This is potentially because introducing previous responses can make the candidate list more comprehensive and lead to better preference signal capturing. More explanations are in Appendix H.3."
+          ]
+        }
+      ]
+    },
+    "7 Related works": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "LLM alignment.",
+          "paragraphs": [
+            "Pretrained LLMs demonstrate remarkable capabilities across a broad spectrum of tasks (Brown et al., 2020). Their performance at downstream tasks, such as conversational modeling, is significantly enhanced through alignment with human preferences (Ouyang et al., 2022; Bai et al., 2022). RLHF (Christiano et al., 2017) has emerged as a foundational framework for this alignment, typically involving learning a reward function via a preference model, often using the Bradley-Terry model (Bradley and Terry, 1952), and tuning the LLM using reinforcement learning (RL) to optimize this reward. Despite its success, RLHF’s practical implementation is notoriously complex, requiring multiple LLMs, careful hyperparameter tuning, and navigating challenging optimization landscapes.",
+            "Recent research has focused on simplifying this process. A line of works studies the direct alignment algorithms (Zhao et al., 2023b; Rafailov et al., 2024; Azar et al., 2024), which directly optimize the LLM in a supervised manner without first constructing a separate reward model. In particular, the representative DPO (Rafailov et al., 2024) attracts significant attention in both academia and industry. After these, SimPO (Meng et al., 2024b) simplifies DPO by using length regularization in place of a reference model.",
+            "Although LLMs are adopted for IR (Tay et al., 2022), there is a lack of study to improve direct LLM alignment with IR principles. This paper fills this gap by establishing a systematic link between LLM alignment and IR methodologies, and introducing a novel iterative LLM alignment approach that leverages insights from retriever optimization to advance the state of the art. The most related work is LiPO (Liu et al., 2024), which applies learning-to-rank objectives. However, LiPO relies on off-the-shelf listwise preference data, which is hard to satisfy in practice."
+          ]
+        },
+        {
+          "title": "Language models for information retrieval.",
+          "paragraphs": [
+            "Language models (LMs) have become integral to modern IR systems (Zhu et al., 2023), particularly after the advent of pretrained models like BERT (Devlin, 2019). A typical IR pipeline employs retrievers and rerankers, often based on dual-encoder and cross-encoder architectures, respectively (Humeau, 2019). Dense Passage Retrieval (DPR) (Karpukhin et al., 2020) pioneered the concept of dense retrieval, laying the groundwork for subsequent research. Building on DPR, studies have emphasized the importance of hard negatives in training (Zhan et al., 2021; Qu et al., 2020) and the benefits of online retriever optimization (Xiong et al., 2020).",
+            "In the realm of reranking, (Nogueira and Cho, 2019) were among the first to leverage pretrained language models for improved passage ranking. This was followed by MonoT5 (Nogueira et al., 2020), which scaled rerankers using large encoder-decoder transformer architectures, and RankT5 (Zhuang et al., 2023), which introduced pairwise and listwise ranking objectives. Recent work has also highlighted the importance of candidate list preprocessing before reranking (Meng et al., 2024a).",
+            "Despite the pervasive use of LMs in IR, the interplay between LLM alignment and IR paradigms remains largely unexplored. This work aims to bridge this gap, establishing a strong connection between LLM alignment and IR, and leveraging insights from both fields to advance our understanding of LLM alignment from an IR perspective."
+          ]
+        }
+      ]
+    },
+    "8 Conclusions": {
+      "paragraphs": [
+        "This paper investigates the impact of increasing the number of retrieved passages on the performance of long-context LLMs in retrieval-augmented generation (RAG) systems. Contrary to expectations, we observe that performance initially improve but then degrade as more passages are included. This phenomenon is attributed to the detrimental influence of retrieved \"hard negatives\". To mitigate this issue, we propose and evaluate three solutions: training-free retrieval reordering, RAG-specific implicit LLM fine-tuning, and RAG-oriented LLM fine-tuning with intermediate reasoning. A systematic analysis of the training-based methods explores the effects of data distribution, retriever for training, and training context length. Interesting future directions include exploring (automated) position optimization with more advanced retrieval ordering methods, and fine-tuning the LLMs for RAG with more fine-grained and multi-step reasoning chains.",
+        "*"
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A LLM inference strategy and IR pipelines": {
+      "paragraphs": [
+        "[Table: Table 5: Correspondence between LLM inference and IR pipelines.]"
+      ],
+      "subsections": []
+    },
+    "Appendix B How can SFT and preference optimization help the LLM from an IR perspective?": {
+      "paragraphs": [
+        "We assess how well LLMs perform at two tasks: fine-grained reranking (using greedy decoding accuracy) and coarse-grained retrieval (using Recall@NN). We focus on how SFT and DPO, affect these abilities. Using the Mistral-7b model, we evaluate on the GSM8k and MATH datasets with two approaches: SFT-only, and SFT followed by DPO (SFT →\\rightarrow DPO).",
+        "In the SFT phase, the model is trained directly on correct answers. For DPO, we generate 20 responses per prompt and created preference pairs by randomly selecting one correct and one incorrect response. We use hyperparameter tuning and early stopping to find the best model checkpoints (see Appendix H.4 for details).",
+        "The results are shown in Table 6. We observe that both SFT and DPO improve both retrieval and reranking, with SFT being more effective. Adding DPO after SFT further improves performance on both tasks. This is consistent with information retrieval principles that both direct retriever optimization and reranker-retrieval distillation can enhance the retriever performance, while the latter on top of the former can further improve the performance. Further discussions can be found in Appendices C and D.",
+        "[Table: Table 6: Retrieval (Recall@N) and reranking (greedy accuracy) metrics across dataset and training strategies, with Mistral-7b as the LLM. 0.7 is used as the temperature. Recall@N can also be denoted as pass@N.]"
+      ],
+      "subsections": []
+    },
+    "Appendix C Discussion on the connection and difference between SFT and direct retriever optimization": {
+      "paragraphs": [
+        "As discussed in Section 2.3, the direct retriever optimization goal with InfoNCE is shown as:",
+        "while the SFT optimization goal is shown as:",
+        "As a result, the SFT objective can be seen as a summation of multiple retrieval optimization objectives, where LLM​(⋅)\\text{LLM}(\\cdot) and word embedding Emb​(⋅)\\text{Emb}(\\cdot) are query encoder and passage encoder respectively.",
+        "However, for direct retriever optimization with InfoNCE, Encd​(⋅)\\text{Enc}_{d}(\\cdot) is usually a large-scale pretrained language model which is computationally expensive on both time and memory. In this case, it is unrealistic to calculate the Encd​(dj)\\text{Enc}_{d}(d_{j}) for all dj∈Cd_{j}\\in C, when CC is large, because of the time constrain and GPU memory constrain. As a result, a widely-adopted technique is to adopt “in-batch negatives” with “hard negatives” to estimate the log⁡P​(dgold|q)\\log P(d_{\\text{gold}}|q) function:",
+        "where BB is the in-batch negative set and HH is the hard negative set. Note that B​⋃H⊂CB\\bigcup H\\subset C. This objective is more efficient to optimize but is not the original optimization goal. As a result, the learned model after direct retriever optimization is not optimal. It is also found that the hard negatives HH is the key to estimate the original optimization goal (Zhan et al., 2021). Thus, reranker-retriever distillation can further improve the retriever by introducing more hard negatives.",
+        "On the other hand, LLM optimization, as shown in Eq. (8), can be seen as a summation of multiple retrieval optimization function. In each retrieval step, the passage can be seen as a token and the corpus is the vocabulary space VV. Given that the passage encoder Emb​(⋅)\\text{Emb}(\\cdot) (word embedding) here is cheap to compute and the vocabulary space VV (<<100k) is usually not as large as CC (>>1M) in IR, the objective in Eq. (8) can be directly optimized without any estimation. In this case, the LLM as a retriever is more sufficiently trained compared with the retriever training in IR."
+      ],
+      "subsections": []
+    },
+    "Appendix D Discussion on the connection and difference between preference optimization and reranker-retriever distillation": {
+      "paragraphs": [
+        "As discussed in Section 2.3, preference optimization with an online reward model freward-model​(⋅)​→𝑟​data​→g​(⋅)​fLLM​(⋅)f_{\\text{reward-model}}(\\cdot)\\overset{r}{\\rightarrow}\\text{data}\\overset{g(\\cdot)}{\\rightarrow}f_{\\text{LLM}}(\\cdot) can be seen as a reranker to retriever distillation process frerank​(⋅)​→𝑟​data​→g​(⋅)​fretrieval​(⋅)f_{\\text{rerank}}(\\cdot)\\overset{r}{\\rightarrow}\\text{data}\\overset{g(\\cdot)}{\\rightarrow}f_{\\text{retrieval}}(\\cdot), where the reward model is the reranker (i.e., cross-encoder) and the LLM is the retriever (i.e., bi-encoder).",
+        "However, there are two slight differences here:",
+        "• The LLM after SFT is more sufficiently trained compared to a retriever after direct optimization. As discussed in Appendix C, the SFT optimization function is not an estimated retriever optimization goal compared with the direct retrieval optimization. As a result, the LLM after SFT is suffienctly trained. In this case, if the reward model (reranker) cannot provide information other than that already in the SFT set (e.g., using the SFT prompts), this step may not contribute to significant LLM capability improvement.",
+        "• The reward model may introduce auxiliary information than the reranker in IR. For a reranker in IR, it captures a same semantic with the retriever: semantic similarity between the query and the passage. However, in LLM post-training, the goal and data in SFT and preference optimization can be different. For example, the SFT phase could have query/response pairs which enable basic chat-based retrieval capability for the LLM. While the reward model may contain some style preference information or safety information which do not exist in SFT data. In this case, the preference optimization which is the reranker to retriever distillation step could also contribution to performance improvement."
+      ],
+      "subsections": []
+    },
+    "Appendix E Evaluate LLMs as retrievers": {
+      "paragraphs": [
+        "In addition to Mathstral-7b-it on GSM8K in Figure 2, we conduct extensive experiments to both Mistral-7b-it and Mathstral-7b-it on GSM8K and MATH. The results are shown in Figure 5. We have similar findings as in Figure 2 that: (1) As NN increases, Recall@NN improves significantly, indicating that retrieving a larger number of documents increases the likelihood of including a correct one within the set. (2) For smaller values of NN (e.g., N=1N=1), lower temperatures yield higher Recall@NN. This is because lower temperatures reduce response randomness, favoring the selection of the most relevant result. (3) Conversely, for larger NN (e.g., N>10N>10), higher temperatures enhance Recall@NN. Increased temperature promotes greater response diversity, which, when combined with a larger retrieval set, improves the chances of capturing the correct answer within the results.",
+        "[Figure: (a) Mistral-7b-it on GSM8k]",
+        "[Figure: (a) Mistral-7b-it on GSM8k]",
+        "[Figure: (b) Mistral-7b-it on GSM8k]",
+        "[Figure: (c) Mathstral-7b-it on MATH]",
+        "[Figure: (d) Mistral-7b-it on MATH]"
+      ],
+      "subsections": []
+    },
+    "Appendix F LarPOretriever optimization objective": {
+      "paragraphs": [
+        "We provide the proof for different variants of LarPO’s objective functions."
+      ],
+      "subsections": [
+        {
+          "title": "F.1 Contrastive ranking",
+          "paragraphs": [
+            "Let xx be a prompt and (yw,yl(1),…,yl(m))(y_{w},y^{(1)}_{l},...,y^{(m)}_{l}) be the responses for xx under the contrastive assumption (Eq.(5)). Then the objective function to learn the LLM πθ\\pi_{\\theta}:",
+            "Proof. From (Rafailov et al., 2024), we know that",
+            "where Z=∑y′πref​(y′|x)​exp​(1β​r​(x,y′))Z=\\sum_{y^{\\prime}}\\pi_{\\text{ref}}(y^{\\prime}|x)\\text{exp}(\\frac{1}{\\beta}r(x,y^{\\prime})).",
+            "Then,",
+            "We can learn πθ\\pi_{\\theta} by maximizing the logarithm-likelihood:"
+          ]
+        },
+        {
+          "title": "F.2 LambdaRank ranking",
+          "paragraphs": [
+            "Let xx be a prompt and (y1,…,ym)(y_{1},...,y_{m}) be the responses for xx under the LambdaRank assumption (Eq.(6)). Then the objective function to learn the LLM πθ\\pi_{\\theta}:",
+            "Proof.",
+            "We can learn πθ\\pi_{\\theta} by maximizing the logarithm-likelihood:"
+          ]
+        },
+        {
+          "title": "F.3 ListMLE ranking",
+          "paragraphs": [
+            "Let xx be a prompt and (y1,…,ym)(y_{1},...,y_{m}) be the responses for xx under the ListMLE assumption (Eq.(7)). Then the objective function to learn the LLM πθ\\pi_{\\theta}:",
+            "Proof. From Eq.(11),",
+            "We can learn πθ\\pi_{\\theta} by maximizing the logarithm-likelihood:"
+          ]
+        }
+      ]
+    },
+    "Appendix G Baselines": {
+      "paragraphs": [
+        "We conduct detailed illustrations on the baselines compared with LarPO in Section 5 below.",
+        "• RRHF (Yuan et al., 2023) scores responses via a logarithm of conditional probabilities and learns to align these probabilities with human preferences through ranking loss.",
+        "• SLiC-HF (Zhao et al., 2023b) proposes a sequence likelihood calibration method which can learn from human preference data.",
+        "• DPO (Guo et al., 2024) simplifies the PPO (Ouyang et al., 2022) algorithms into an offline direct optimization objective with the pairwise Bradley-Terry assumption.",
+        "• IPO (Azar et al., 2024) theoretically grounds pairwise assumption in DPO into a pointwise reward.",
+        "• CPO (Xu et al., 2024a) adds a reward objective with sequence likelihood along with the SFT objective.",
+        "• KTO (Ethayarajh et al., 2024) adopts the Kahneman-Tversky model and proposes a method which directly maximizes the utility of generation instead of the likelihood of the preferences.",
+        "• RDPO (Park et al., 2024) modifies DPO by including an additional regularization term to disentangle the influence of length.",
+        "• SimPO (Meng et al., 2024b) further simplifies the DPO objective by using the average log probability of a sequence as the implicit reward and adding a target reward margin to the Bradley-Terry objective.",
+        "• Iterative DPO (Xiong et al., 2024) identifies the challenge of offline preference optimization and proposes an iterative learning framework."
+      ],
+      "subsections": []
+    },
+    "Appendix H Experiment settings": {
+      "paragraphs": [
+        "[Figure: Figure 6: Training temperature study with ℒpair\\mathcal{L}_{\\text{pair}} on Gemma2-2b-it and Alpaca Eval 2. Within a specific range (>> 0.9), lower temperature leads to harder negative and benefit the trained LLM. However, temperature lower than this range can cause preferred and rejected responses non-distinguishable and lead to degrade training.]",
+        "[Table: Table 7: Preference optimization objective study on AlpacaEval2 and MixEval. For AlpacaEval2, we report the result with both opensource LLM evaluator alpaca_eval_llama3_70b_fn and GPT4 evaluator alpaca_eval_gpt4_turbo_fn. SFT corresponds to the initial chat model.]"
+      ],
+      "subsections": [
+        {
+          "title": "H.1 Table2",
+          "paragraphs": [
+            "We conduct evaluation on two widely used benchmark: AlpacaEval2 (Dubois et al., 2024) and MixEval (Ni et al., 2024). We consider two base models: Mistral-7b-base and Mistral-7b-it. For Mistral-7b-base, we first conduct supervised finetuning following Meng et al. (2024b) before the preference optimization.",
+            "The performance scores for offline preference optimization baselines are from SimPO (Meng et al., 2024b). To have a fair comparison with these baselines, we adopt the same off-the-shelf reward model (Jiang et al., 2023b) as in SimPO for the iterative DPO baseline and LarPO.",
+            "For the iterative DPO baseline, we generate 2 responses for each prompt, score them with the off-the-shelf reward model and construct the preference pair data to tune the model.",
+            "For LarPO (contrastive ℒcon\\mathcal{L}_{\\text{con}}), we generate 10 responses each iteration and score them with the reward model. The top-1 ranked response and the bottom-3 ranked responses are adopted as the chose response and rejected responses respectively. Generation temperature is selected as 1 and 0.8 for Mistral-7b-base and Mistral-7b-it respectively (we search it among 0.8, 0.9, 1.0, 1.1, 1.2).",
+            "For LarPO (LambdaRank ℒlamb\\mathcal{L}_{\\text{lamb}}), we generate 10 responses each iteration and score them with the reward model. The top-2 ranked response and the bottom-2 ranked responses are adopted as the chose response and rejected responses respectively. Generation temperature is selected as 1 and 0.8 for Mistral-7b-base and Mistral-7b-it respectively (we search it among 0.8, 0.9, 1.0, 1.1, 1.2).",
+            "For LarPO (ListMLE ℒlmle\\mathcal{L}_{\\text{lmle}}), we generate 10 responses each iteration and score them with the reward model. The top-2 ranked response and the bottom-2 ranked responses are adopted as the chose response and rejected responses respectively. Generation temperature is selected as 1 and 0.8 for Mistral-7b-base and Mistral-7b-it respectively (we search it among 0.8, 0.9, 1.0, 1.1, 1.2).",
+            "LarPO can achieve even stronger performance with stronger off-the-shelf reward model (Dong et al., 2024)."
+          ]
+        },
+        {
+          "title": "H.2 Table3",
+          "paragraphs": [
+            "We conduct experiments on both Gemma2-2b-it (Team et al., 2024b) and Mistral-7b-it (Jiang et al., 2023a). Following Tunstall et al. and Dong et al. (2024), we perform training on UltraFeedback dataset for 3 iterations and show the performance of the final model checkpoint. We use the pretrained reward model from Dong et al. (2024). The learning rate is set as 5e-7 and we train the LLM for 2 epochs per iteration.",
+            "For the pairwise objective, we generate 2 responses for each prompt and construct the preference pair data with the reward model. For the others, we generate 4 responses per prompt and rank them with the reward model. For the contrastive objective, we construct the 1-vs-N data with the top-1 ranked response and the other responses. For the listMLE and lambdarank objective, we take the top-2 as positives and the last-2 as the negatives. Experiments with opensource LLM as the evaluator (alpaca_eval_llama3_70b_fn) can be found in Table 7."
+          ]
+        },
+        {
+          "title": "H.3 Table4",
+          "paragraphs": [
+            "We adopt Gemma2-2b-it as the initial model. All the models are trained with iterative DPO for 3 iterations. We use the off-the-shelf reward model (Dong et al., 2024). We generate 2 responses for each prompt in each iteration. For “w. current”, we only use the scored responses in the current iteration for preference optimization data construction. For “w. current + prev”, we rank the responses in the current iteration and the previous one iteration, and construct the preference pair data with the top-1 and bottom-1 ranked responses. For “w. current + all prev”, we rank all the responses for the prompt in the current and previous iterations and construct the preference pair data. For “single temperature”, we only adopt temperature 1 and generate 2 responses for reward model scoring. For “diverse temperature”, we generate 2 responses with temperature 1 and 0.5 respective and rank the 4 responses to construct the preference data with the reward model."
+          ]
+        },
+        {
+          "title": "H.4 Table6",
+          "paragraphs": [
+            "We use mistral-7b-it (Jiang et al., 2023a) as the initial model to alleviate the influence of the math related post-training data of the original model. For SFT, we conduct training on the meta-math dataset (Yu et al., 2023). For DPO, we use the prompts in the training set of the two dataset and conduct online iterative preference optimization with the binary rule-based reward (measure if the final answer is correct or not with string match). The evaluation is performed on the test set of MATH and GSM8K respectively. For SFT, we follow the same training setting with Yu et al. (2023). For DPO, we search the learning rate in 1e-7, 2e-7, 5e-7, 2e-8, 5e-8 and train the LLM for 5 iterations with early stop (1 epoch per iteration for MATH and 2 epoch per iteration for GSM8K). The learning rate is set as 1e-7 and we select the checkpoint after the first and fourth iteration for GSM8K and MATH respectively."
+          ]
+        },
+        {
+          "title": "H.5 Figure4(a)",
+          "paragraphs": [
+            "We conduct training with the prompts in the training set of GSM8K and perform evaluation on GSM8K testing set. We conduct learning rate search and finalize it to be 2e-7. The learning is performed for 3 iterations.",
+            "We make explanations of how we construct the four types of negative settings: For (1) a random response not related to the given prompt, we select a response for a random prompt in Ultrafeedback. For (2) a response to a related prompt, we pick up a response for a different prompt in the GSM8K training set. For (3) an incorrect response to the given prompt with high temperature, we select the temperature to be 1. For (4) an incorrect response to the given prompt with low temperature, we select the temperature to be 0.7.",
+            "[Figure: Figure 6: Training temperature study with ℒpair\\mathcal{L}_{\\text{pair}} on Gemma2-2b-it and Alpaca Eval 2. Within a specific range (>> 0.9), lower temperature leads to harder negative and benefit the trained LLM. However, temperature lower than this range can cause preferred and rejected responses non-distinguishable and lead to degrade training.]"
+          ]
+        },
+        {
+          "title": "H.6 Figure4(b)",
+          "paragraphs": [
+            "We conduct experiments on both Gemma2-2b-it and Mistral-7B-it models. For both LLMs, we conduct iterative DPO for 3 iterations and report the performance of the final model. We perform evaluation on Alpaca Eval2 with alpaca_eval_llama3_70b_fn as the evaluator.",
+            "For temperature study, we find that under a specific temperature threshold, repeatedly generated responses will be large identical for all LLMs and cannot be used to construct preference data, while the threshold varies for different LLMs. The “low” and “high” refer to the value of those selected temperatures. We also conduct experiments on Gemma2-2b-it model and show the results in Figure 6."
+          ]
+        },
+        {
+          "title": "H.7 Figure4(c)",
+          "paragraphs": [
+            "We adopt Mistral-7b-it as the initial LLM and the contrastive objective (Eq. 9) in iterative preference optimization. We generate 4/6/8/10 responses with the LLM and score the responses with the off-the-shelf reward model (Dong et al., 2024). The top-1 scored response is adopted as the positive response and the other responses are treated as the negative responses to construct the 1-vs-N training data. The temperature is set as 1 to generate the responses."
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "Achiam et al. (2023) J. Achiam, S. Adler, S. Agarwal, L. Ahmad, I. Akkaya, F. L. Aleman, D. Almeida, J. Altenschmidt, S. Altman, S. Anadkat, et al. Gpt-4 technical report. arXiv preprint arXiv:2303.08774, 2023.",
+    "Azar et al. (2024) M. G. Azar, Z. D. Guo, B. Piot, R. Munos, M. Rowland, M. Valko, and D. Calandriello. A general theoretical paradigm to understand learning from human preferences. In International Conference on Artificial Intelligence and Statistics, pages 4447–4455. PMLR, 2024.",
+    "Bai et al. (2022) Y. Bai, A. Jones, K. Ndousse, A. Askell, A. Chen, N. DasSarma, D. Drain, S. Fort, D. Ganguli, T. Henighan, et al. Training a helpful and harmless assistant with reinforcement learning from human feedback. arXiv preprint arXiv:2204.05862, 2022.",
+    "Bradley and Terry (1952) R. A. Bradley and M. E. Terry. Rank analysis of incomplete block designs: I. the method of paired comparisons. Biometrika, 39(3/4):324–345, 1952.",
+    "Brown et al. (2020) T. Brown, B. Mann, N. Ryder, M. Subbiah, J. D. Kaplan, P. Dhariwal, A. Neelakantan, P. Shyam, G. Sastry, A. Askell, et al. Language models are few-shot learners. Advances in neural information processing systems, 33:1877–1901, 2020.",
+    "Burges (2010) C. J. Burges. From ranknet to lambdarank to lambdamart: An overview. Learning, 11(23-581):81, 2010.",
+    "Chen et al. (2021) M. Chen, J. Tworek, H. Jun, Q. Yuan, H. P. D. O. Pinto, J. Kaplan, H. Edwards, Y. Burda, N. Joseph, G. Brockman, et al. Evaluating large language models trained on code. arXiv preprint arXiv:2107.03374, 2021.",
+    "Christiano et al. (2017) P. F. Christiano, J. Leike, T. Brown, M. Martic, S. Legg, and D. Amodei. Deep reinforcement learning from human preferences. Advances in neural information processing systems, 30, 2017.",
+    "Cobbe et al. (2021) K. Cobbe, V. Kosaraju, M. Bavarian, M. Chen, H. Jun, L. Kaiser, M. Plappert, J. Tworek, J. Hilton, R. Nakano, et al. Training verifiers to solve math word problems. arXiv preprint arXiv:2110.14168, 2021.",
+    "Cui et al. (2024) G. Cui, L. Yuan, N. Ding, G. Yao, B. He, W. Zhu, Y. Ni, G. Xie, R. Xie, Y. Lin, et al. Ultrafeedback: Boosting language models with scaled ai feedback. In Forty-first International Conference on Machine Learning, 2024.",
+    "Devlin (2019) J. Devlin. Bert: Pre-training of deep bidirectional transformers for language understanding. In NAACL, 2019.",
+    "Dong et al. (2023) H. Dong, W. Xiong, D. Goyal, Y. Zhang, W. Chow, R. Pan, S. Diao, J. Zhang, K. Shum, and T. Zhang. Raft: Reward ranked finetuning for generative foundation model alignment. arXiv preprint arXiv:2304.06767, 2023.",
+    "Dong et al. (2024) H. Dong, W. Xiong, B. Pang, H. Wang, H. Zhao, Y. Zhou, N. Jiang, D. Sahoo, C. Xiong, and T. Zhang. Rlhf workflow: From reward modeling to online rlhf. arXiv preprint arXiv:2405.07863, 2024.",
+    "Dubois et al. (2024) Y. Dubois, B. Galambosi, P. Liang, and T. B. Hashimoto. Length-controlled alpacaeval: A simple way to debias automatic evaluators. arXiv preprint arXiv:2404.04475, 2024.",
+    "Ethayarajh et al. (2024) K. Ethayarajh, W. Xu, N. Muennighoff, D. Jurafsky, and D. Kiela. Kto: Model alignment as prospect theoretic optimization. arXiv preprint arXiv:2402.01306, 2024.",
+    "Guo et al. (2024) S. Guo, B. Zhang, T. Liu, T. Liu, M. Khalman, F. Llinares, A. Rame, T. Mesnard, Y. Zhao, B. Piot, et al. Direct language model alignment from online ai feedback. arXiv preprint arXiv:2402.04792, 2024.",
+    "Humeau (2019) S. Humeau. Poly-encoders: Transformer architectures and pre-training strategies for fast and accurate multi-sentence scoring. arXiv preprint arXiv:1905.01969, 2019.",
+    "Jiang et al. (2023a) A. Q. Jiang, A. Sablayrolles, A. Mensch, C. Bamford, D. S. Chaplot, D. d. l. Casas, F. Bressand, G. Lengyel, G. Lample, L. Saulnier, et al. Mistral 7b. arXiv preprint arXiv:2310.06825, 2023a.",
+    "Jiang et al. (2023b) D. Jiang, X. Ren, and B. Y. Lin. Llm-blender: Ensembling large language models with pairwise ranking and generative fusion. arXiv preprint arXiv:2306.02561, 2023b.",
+    "Jiang et al. (2024) J. Jiang, F. Wang, J. Shen, S. Kim, and S. Kim. A survey on large language models for code generation. arXiv preprint arXiv:2406.00515, 2024.",
+    "Karpukhin et al. (2020) V. Karpukhin, B. Oğuz, S. Min, P. Lewis, L. Wu, S. Edunov, D. Chen, and W.-t. Yih. Dense passage retrieval for open-domain question answering. arXiv preprint arXiv:2004.04906, 2020.",
+    "Kwiatkowski et al. (2019) T. Kwiatkowski, J. Palomaki, O. Redfield, M. Collins, A. Parikh, C. Alberti, D. Epstein, I. Polosukhin, J. Devlin, K. Lee, et al. Natural questions: a benchmark for question answering research. Transactions of the Association for Computational Linguistics, 7:453–466, 2019.",
+    "Lambert et al. (2024) N. Lambert, V. Pyatkin, J. Morrison, L. Miranda, B. Y. Lin, K. Chandu, N. Dziri, S. Kumar, T. Zick, Y. Choi, et al. Rewardbench: Evaluating reward models for language modeling. arXiv preprint arXiv:2403.13787, 2024.",
+    "Li et al. (2024) X. Li, J. Jin, Y. Zhou, Y. Zhang, P. Zhang, Y. Zhu, and Z. Dou. From matching to generation: A survey on generative information retrieval. arXiv preprint arXiv:2404.14851, 2024.",
+    "Lin et al. (2022) J. Lin, R. Nogueira, and A. Yates. Pretrained transformers for text ranking: Bert and beyond. Springer Nature, 2022.",
+    "Liu et al. (2024) T. Liu, Z. Qin, J. Wu, J. Shen, M. Khalman, R. Joshi, Y. Zhao, M. Saleh, S. Baumgartner, J. Liu, et al. Lipo: Listwise preference optimization through learning-to-rank. arXiv preprint arXiv:2402.01878, 2024.",
+    "Madaan et al. (2024) A. Madaan, N. Tandon, P. Gupta, S. Hallinan, L. Gao, S. Wiegreffe, U. Alon, N. Dziri, S. Prabhumoye, Y. Yang, et al. Self-refine: Iterative refinement with self-feedback. Advances in Neural Information Processing Systems, 36, 2024.",
+    "Meng et al. (2024a) C. Meng, N. Arabzadeh, A. Askari, M. Aliannejadi, and M. de Rijke. Ranked list truncation for large language model-based re-ranking. In Proceedings of the 47th International ACM SIGIR Conference on Research and Development in Information Retrieval, pages 141–151, 2024a.",
+    "Meng et al. (2024b) Y. Meng, M. Xia, and D. Chen. Simpo: Simple preference optimization with a reference-free reward. arXiv preprint arXiv:2405.14734, 2024b.",
+    "Mistral AI (2025) Mistral AI. Introducing mathstral, 2025. URL https://mistral.ai/news/mathstral/. Accessed: 2025-01-16.",
+    "Ni et al. (2024) J. Ni, F. Xue, X. Yue, Y. Deng, M. Shah, K. Jain, G. Neubig, and Y. You. Mixeval: Deriving wisdom of the crowd from llm benchmark mixtures. arXiv preprint arXiv:2406.06565, 2024.",
+    "Nogueira and Cho (2019) R. Nogueira and K. Cho. Passage re-ranking with bert. arXiv preprint arXiv:1901.04085, 2019.",
+    "Nogueira et al. (2020) R. Nogueira, Z. Jiang, and J. Lin. Document ranking with a pretrained sequence-to-sequence model. arXiv preprint arXiv:2003.06713, 2020.",
+    "Oord et al. (2018) A. v. d. Oord, Y. Li, and O. Vinyals. Representation learning with contrastive predictive coding. arXiv preprint arXiv:1807.03748, 2018.",
+    "Ouyang et al. (2022) L. Ouyang, J. Wu, X. Jiang, D. Almeida, C. Wainwright, P. Mishkin, C. Zhang, S. Agarwal, K. Slama, A. Ray, et al. Training language models to follow instructions with human feedback. Advances in neural information processing systems, 35:27730–27744, 2022.",
+    "Park et al. (2024) R. Park, R. Rafailov, S. Ermon, and C. Finn. Disentangling length from quality in direct preference optimization. arXiv preprint arXiv:2403.19159, 2024.",
+    "Qu et al. (2020) Y. Qu, Y. Ding, J. Liu, K. Liu, R. Ren, W. X. Zhao, D. Dong, H. Wu, and H. Wang. Rocketqa: An optimized training approach to dense passage retrieval for open-domain question answering. arXiv preprint arXiv:2010.08191, 2020.",
+    "Rafailov et al. (2024) R. Rafailov, A. Sharma, E. Mitchell, C. D. Manning, S. Ermon, and C. Finn. Direct preference optimization: Your language model is secretly a reward model. Advances in Neural Information Processing Systems, 36, 2024.",
+    "Schulman et al. (2017) J. Schulman, F. Wolski, P. Dhariwal, A. Radford, and O. Klimov. Proximal policy optimization algorithms. arXiv preprint arXiv:1707.06347, 2017.",
+    "Sessa et al. (2024) P. G. Sessa, R. Dadashi, L. Hussenot, J. Ferret, N. Vieillard, A. Ramé, B. Shariari, S. Perrin, A. Friesen, G. Cideron, et al. Bond: Aligning llms with best-of-n distillation. arXiv preprint arXiv:2407.14622, 2024.",
+    "Stiennon et al. (2020) N. Stiennon, L. Ouyang, J. Wu, D. Ziegler, R. Lowe, C. Voss, A. Radford, D. Amodei, and P. F. Christiano. Learning to summarize with human feedback. Advances in Neural Information Processing Systems, 33:3008–3021, 2020.",
+    "Tay et al. (2022) Y. Tay, V. Tran, M. Dehghani, J. Ni, D. Bahri, H. Mehta, Z. Qin, K. Hui, Z. Zhao, J. Gupta, et al. Transformer memory as a differentiable search index. Advances in Neural Information Processing Systems, 35:21831–21843, 2022.",
+    "Team et al. (2024a) G. Team, P. Georgiev, V. I. Lei, R. Burnell, L. Bai, A. Gulati, G. Tanzer, D. Vincent, Z. Pan, S. Wang, et al. Gemini 1.5: Unlocking multimodal understanding across millions of tokens of context. arXiv preprint arXiv:2403.05530, 2024a.",
+    "Team et al. (2024b) G. Team, M. Riviere, S. Pathak, P. G. Sessa, C. Hardin, S. Bhupatiraju, L. Hussenot, T. Mesnard, B. Shahriari, A. Ramé, et al. Gemma 2: Improving open language models at a practical size. arXiv preprint arXiv:2408.00118, 2024b.",
+    "(45) L. Tunstall, E. Beeching, N. Lambert, N. Rajani, S. Huang, K. Rasul, A. Bartolome, A. M. Rush, and T. Wolf. The Alignment Handbook. URL https://github.com/huggingface/alignment-handbook.",
+    "Vaswani (2017) A. Vaswani. Attention is all you need. Advances in Neural Information Processing Systems, 2017.",
+    "Wang et al. (2022) X. Wang, J. Wei, D. Schuurmans, Q. Le, E. Chi, S. Narang, A. Chowdhery, and D. Zhou. Self-consistency improves chain of thought reasoning in language models. arXiv preprint arXiv:2203.11171, 2022.",
+    "Wang et al. (2023) Y. Wang, W. Zhong, L. Li, F. Mi, X. Zeng, W. Huang, L. Shang, X. Jiang, and Q. Liu. Aligning large language models with human: A survey. arXiv preprint arXiv:2307.12966, 2023.",
+    "Wei et al. (2022) J. Wei, X. Wang, D. Schuurmans, M. Bosma, F. Xia, E. Chi, Q. V. Le, D. Zhou, et al. Chain-of-thought prompting elicits reasoning in large language models. Advances in neural information processing systems, 35:24824–24837, 2022.",
+    "Xia et al. (2008) F. Xia, T.-Y. Liu, J. Wang, W. Zhang, and H. Li. Listwise approach to learning to rank: theory and algorithm. In Proceedings of the 25th international conference on Machine learning, pages 1192–1199, 2008.",
+    "Xiong et al. (2020) L. Xiong, C. Xiong, Y. Li, K.-F. Tang, J. Liu, P. Bennett, J. Ahmed, and A. Overwijk. Approximate nearest neighbor negative contrastive learning for dense text retrieval. arXiv preprint arXiv:2007.00808, 2020.",
+    "Xiong et al. (2024) W. Xiong, H. Dong, C. Ye, Z. Wang, H. Zhong, H. Ji, N. Jiang, and T. Zhang. Iterative preference learning from human feedback: Bridging theory and practice for rlhf under kl-constraint. In Forty-first International Conference on Machine Learning, 2024.",
+    "Xu et al. (2024a) H. Xu, A. Sharaf, Y. Chen, W. Tan, L. Shen, B. Van Durme, K. Murray, and Y. J. Kim. Contrastive preference optimization: Pushing the boundaries of llm performance in machine translation. arXiv preprint arXiv:2401.08417, 2024a.",
+    "Xu et al. (2024b) W. Xu, J. Li, W. Y. Wang, and L. Li. Bpo: Staying close to the behavior llm creates better online llm alignment. In Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing, pages 11125–11139, 2024b.",
+    "Yu et al. (2023) L. Yu, W. Jiang, H. Shi, J. Yu, Z. Liu, Y. Zhang, J. T. Kwok, Z. Li, A. Weller, and W. Liu. Metamath: Bootstrap your own mathematical questions for large language models. arXiv preprint arXiv:2309.12284, 2023.",
+    "Yuan et al. (2023) Z. Yuan, H. Yuan, C. Tan, W. Wang, S. Huang, and F. Huang. Rrhf: Rank responses to align language models with human feedback without tears. arXiv preprint arXiv:2304.05302, 2023.",
+    "Zeng et al. (2022) H. Zeng, H. Zamani, and V. Vinay. Curriculum learning for dense retrieval distillation. In Proceedings of the 45th International ACM SIGIR Conference on Research and Development in Information Retrieval, pages 1979–1983, 2022.",
+    "Zhan et al. (2021) J. Zhan, J. Mao, Y. Liu, J. Guo, M. Zhang, and S. Ma. Optimizing dense retrieval model training with hard negatives. In Proceedings of the 44th International ACM SIGIR Conference on Research and Development in Information Retrieval, pages 1503–1512, 2021.",
+    "Zhao et al. (2023a) W. X. Zhao, K. Zhou, J. Li, T. Tang, X. Wang, Y. Hou, Y. Min, B. Zhang, J. Zhang, Z. Dong, et al. A survey of large language models. arXiv preprint arXiv:2303.18223, 2023a.",
+    "Zhao et al. (2024) W. X. Zhao, J. Liu, R. Ren, and J.-R. Wen. Dense text retrieval based on pretrained language models: A survey. ACM Transactions on Information Systems, 42(4):1–60, 2024.",
+    "Zhao et al. (2023b) Y. Zhao, R. Joshi, T. Liu, M. Khalman, M. Saleh, and P. J. Liu. Slic-hf: Sequence likelihood calibration with human feedback. arXiv preprint arXiv:2305.10425, 2023b.",
+    "Zhu et al. (2023) Y. Zhu, H. Yuan, S. Wang, J. Liu, W. Liu, C. Deng, H. Chen, Z. Liu, Z. Dou, and J.-R. Wen. Large language models for information retrieval: A survey. arXiv preprint arXiv:2308.07107, 2023.",
+    "Zhuang et al. (2023) H. Zhuang, Z. Qin, R. Jagerman, K. Hui, J. Ma, J. Lu, J. Ni, X. Wang, and M. Bendersky. Rankt5: Fine-tuning t5 for text ranking with ranking losses. In Proceedings of the 46th International ACM SIGIR Conference on Research and Development in Information Retrieval, pages 2308–2313, 2023."
+  ]
+}

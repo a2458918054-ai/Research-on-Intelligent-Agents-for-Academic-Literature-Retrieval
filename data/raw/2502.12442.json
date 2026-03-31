@@ -1,0 +1,369 @@
+{
+  "title": "HopRAG: Multi-Hop Reasoning for Logic-AwareRetrieval-Augmented Generation",
+  "authors": "Hao Liu1†, Zhengren Wang1,2†, Xi Chen3, Zhiyu Li2∗Feiyu Xiong2,Qinhan Yu1,Wentao Zhang1∗1Peking University2Center for LLM, Institute for Advanced Algorithms Research, Shanghai3Huazhong University of Science and Technology{liuhao_2002,wzr,yuqinhan}@stu.pku.edu.cnxichenai@hust.edu.cn{lizy, xiongfy}@iaar.ac.cnwentao.zhang@pku.edu.cn",
+  "abstract": "Retrieval-Augmented Generation (RAG) systems often struggle with imperfect retrieval, as traditional retrievers focus on lexical or semantic similarity rather than logical relevance. To address this, we propose HopRAG, a novel RAG framework that augments retrieval with logical reasoning through graph-structured knowledge exploration. During indexing, HopRAG constructs a passage graph, with text chunks as vertices and logical connections established via LLM-generated pseudo-queries as edges. During retrieval, it employs a retrieve-reason-prune mechanism: starting with lexically or semantically similar passages, the system explores multi-hop neighbors guided by pseudo-queries and LLM reasoning to identify truly relevant ones. Extensive experiments demonstrate HopRAG’s superiority, achieving 76.78% higher answer accuracy and 65.07% improved retrieval F1 score compared to conventional methods. The repository is available at https://github.com/LIU-Hao-2002/HopRAG.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "“Everyone and everything is six or fewer steps away, by way of introduction, from any other person in the world.”",
+        "— Six Degrees of Separation",
+        "Retrieval-augmented generation (RAG) has become the standard approach for large language models (LLMs) to tackle knowledge-intensive tasks (Guu et al., 2020a; Lewis et al., 2020a; Izacard et al., 2022; Min et al., 2023; Ram et al., 2023; Liang et al., 2025). Not only can it effectively address the inherent knowledge limitations and hallucination issues Zhang et al. (2023), but it can also enable easy interpretability and provenance tracking (Akyurek et al., 2022). Especially, the efficacy of RAG hinges on its retrieval module for identifying relevant documents from a vast corpus.",
+        "Currently, there are two mainstream types of retrievers: sparse retrievers (Jones, 1973; Robertson and Zaragoza, 2009b) and dense retrievers (Xiao et al., 2024; Wang et al., 2024b; Sturua et al., 2024; Wang et al., 2024c), which focus on lexical similarity and semantic similarity respectively, and are often combined for better retrieval performance (Sawarkar et al., 2024). Despite advancements, the ultimate goal of information retrieval extends beyond lexical and semantic similarity, striving instead for logical relevance. Due to the lack of logic-aware mechanism, the imperfect retrieval remains prominent (Wang et al., 2024a; Shao et al., 2024; Dai et al., 2024; Su et al., 2024a, b). For precision, the retrieval system may return lexically and semantically similar but indirectly relevant passages; regarding recall, it may fail to retrieve all the necessary passages for the user query.",
+        "Both cases eventually lead to inaccurate or incomplete LLM responses (Chen et al., 2024; Xiang et al., 2024; Zou et al., 2024), especially for multi-hop or multi-document QA tasks requiring multiple relevant passages for the final answer. In contrast, the reasoning capability of generative models is rapidly advancing, with notable examples such as openai-o1 (Jaech et al., 2024) and deepseek-r1 (Guo et al., 2025). Therefore, a natural research question arises: \"Is it possible to introduce reasoning capability into the retrieval module for more advanced RAG systems?\"",
+        "From a logical structure perspective, existing RAG systems can be mainly categorized into three types: Non-structured RAG simply adopts sparse or dense retrievers. The retrieval is only based on keyword matching or semantic vector similarity, but fails to capture the logical relations between user queries and passages. Tree-structured RAG (Sarthi et al., 2024; Chen et al., 2023; Fatehkia et al., 2024) focuses on the hierarchical logic of passages within a single document, but ignores relations beyond the hierarchical structure or across documents. Additionally, it introduces redundant information across different levels. Graph-structured RAG (Soman et al., 2024; Kang et al., 2023; Edge et al., 2024a; Guo et al., 2024) models logical relations in the most ideal form by constructing knowledge graphs (KGs) to represent documents, where entities are vertices and their relations are edges. However, the reliance on predefined schemas limits the flexible expressive capability (Li et al., 2024); constructing and updating knowledge graphs is challenging and prone to errors or omissions (Edge et al., 2024a); the triplet format of knowledge necessitates extra textualization or fine-tuning to improve LLMs’ understanding (He et al., 2024)."
+      ],
+      "subsections": [
+        {
+          "title": "Motivation",
+          "paragraphs": [
+            "As reported by (Wang et al., 2024a), even with advanced real-world search engines, roughly 70% retrieved passages do not directly contain true answers in their settings. We confirm the severity of imperfect retrieval in terms of both precision and recall, as illustrated in Figure 1(a). Inspired by the small-world theory (Kleinberg, 2000) or six degrees of separation (Guare, 2016), we propose that, although lexically and semantically similar passages could be indirectly relevant or even distracting, they can serve as helpful starting points to reach truly relevant ones. As shown in Figure 1(b), considering a graph composed of passages with logical relations as edges, a large proportion of retrieved passages fall within several hops of the ground truths.",
+            "Based on these observations, we propose HopRAG, an innovative graph-structured RAG system. At indexing phase, we construct a graph-structured knowledge index with passages as vertices and logic relations as directed edges. Specifically, the passages are connected by pseudo-queries generated by query simulation and edge merging operations. For example, as demonstrated in Figure 2, the pseudo-query \"What does the frog do?\" connects the raiser passage and the solver passage, as the pivot for logical hops. During retrieval, we employ reasoning-augmented graph traversal, following a three-step paradigm of retrieval, reasoning, and pruning. This process searches for truly relevant passages within the multi-hop neighborhood of indirectly relevant passages, guided by both the index structure and LLM reasoning."
+          ]
+        },
+        {
+          "title": "Contributions",
+          "paragraphs": [
+            "Our contributions are as follows:",
+            "• We reveal the severe imperfect retrieval phenomenon for multi-hop QA tasks. The results quantify that currently over 60% of retrieved passages are indirectly relevant or irrelevant. To turn \"trash\" into \"treasure\", we further employ indirectly relevant passages as stepping stones to reach truly relevant ones.",
+            "• We propose HopRAG, a novel RAG system with logic-aware retrieval mechanism. As lexically or semantically similar passages complement each other, HopRAG connects the raiser and solver passages with pseudo-queries. Beyond similarity-based retrieval, it reasons and prunes along the queries during retrieval. It also features flexible logical modeling, cross-document organization, efficient construction and updating.",
+            "• Extensive experiments confirm the effectiveness of HopRAG. The retrieve-reason-prune mechanism achieves over 76.78% higher answer metric and 65.07% higher retrieval F1 score compared to conventional RAG approaches. Several ablation studies provide more valuable insights.",
+            "We reveal the severe imperfect retrieval phenomenon for multi-hop QA tasks. The results quantify that currently over 60% of retrieved passages are indirectly relevant or irrelevant. To turn \"trash\" into \"treasure\", we further employ indirectly relevant passages as stepping stones to reach truly relevant ones.",
+            "We propose HopRAG, a novel RAG system with logic-aware retrieval mechanism. As lexically or semantically similar passages complement each other, HopRAG connects the raiser and solver passages with pseudo-queries. Beyond similarity-based retrieval, it reasons and prunes along the queries during retrieval. It also features flexible logical modeling, cross-document organization, efficient construction and updating.",
+            "Extensive experiments confirm the effectiveness of HopRAG. The retrieve-reason-prune mechanism achieves over 76.78% higher answer metric and 65.07% higher retrieval F1 score compared to conventional RAG approaches. Several ablation studies provide more valuable insights."
+          ]
+        }
+      ]
+    },
+    "2 Related Work": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Retrieval-Augmented Generation",
+          "paragraphs": [
+            "Retrieval-augmented generation significantly improves large language models by incorporating a retrieval module that fetches relevant information from external knowledge sources (Févry et al., 2020; Guu et al., 2020b; Izacard and Grave, 2021; Zhao et al., 2024; Yu et al., 2025). Retrieval models have evolved from early sparse retrievers, such as TF-IDF (Jones, 1973) and BM25 (Robertson and Zaragoza, 2009b), which rely on word statistics and inverted indices, to dense retrievers (Lewis et al., 2020b) that utilize neural representations for semantic matching. Advanced methods, such as Self-RAG (Asai et al., 2023) and FLARE (Jiang et al., 2023) which determine the necessity and timing of retrieval, represent significant developments. However, the knowledge index remains logically unstructured, with each round of search considering only lexical or semantic similarity."
+          ]
+        },
+        {
+          "title": "Tree&Graph-structured RAG",
+          "paragraphs": [
+            "Tree and graph are both effective structures for modeling logical relations. RAPTOR (Sarthi et al., 2023) recursively embeds, clusters, and summarizes passages, constructing a tree with differing levels of summarization from the bottom up. MemWalker (Chen et al., 2023) treats the LLM as an interactive agent walking on the tree of summarization. SiReRAG (Zhang et al., 2024) explicitly considers both similar and related information by constructing both similarity tree and relatedness tree. PG-RAG (Liang et al., 2024) prompts LLMs to organize document knowledge into mindmaps, and unifies them for multiple documents. GNN-RAG (Mavromatis and Karypis, 2024) reasons over dense KG subgraphs with learned GNNs to retrieve answer candidates. For query-focused summarization, GraphRAG (Edge et al., 2024b) builds a hierarchical graph index with knowledge graph construction and recursive summarization. Despite advancements, tree-structured RAG only focuses on the hierarchical logic within a single document; graph-structured RAG is costly, time-consuming, and returns triplets instead of plain text. In contrast, HopRAG offers a more lightweight and downstream task friendly alternative, with flexible logical modeling, cross-document organization, efficient construction and updating."
+          ]
+        }
+      ]
+    },
+    "3 Method": {
+      "paragraphs": [
+        "In this section, we introduce our logic-aware RAG system, named HopRAG. An overview of this system is illustrated in Figure 3."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Problem Formulation",
+          "paragraphs": [
+            "Given a passage corpus P={p1,p2,…,pN}P=\\{p_{1},p_{2},...,p_{N}\\} and a query qq which requires the information from multiple passages in PP, the task is to design (1) a graph-structured RAG knowledge base that not only stores all the passages in corpus PP but also models the similarity and logic between passages; (2) a corresponding retrieval strategy that can hop from indirectly relevant passages to truly relevant passages for better retrieval. Finally, with the query qq and kk passages as context C={pi1,pi2,…,pik}{C}=\\{p_{i_{1}},p_{i_{2}},...,p_{i_{k}}\\}, the LLM generates the response 𝒪∼𝒫​(𝒪|q,C)\\mathcal{O}\\sim\\mathcal{P}(\\mathcal{O}|q,{C})."
+          ]
+        },
+        {
+          "title": "3.2 Graph-Structured Index",
+          "paragraphs": [
+            "We construct a graph-structured index G=(𝒱,ℰ)G=(\\mathcal{V},\\mathcal{E}) where we store each passage in a vertex to get vertex set 𝒱\\mathcal{V} and capture the logical relations between passages to establish directed edge set ℰ={⟨vi,ei,j,vj⟩|vi,vj∈𝒱}\\mathcal{E}=\\{\\langle v_{i},e_{i,j},v_{j}\\rangle|v_{i},v_{j}\\in\\mathcal{V}\\} for multi-hop reasoning (ℰ⊂𝒱×𝒱\\mathcal{E}\\subset\\mathcal{V}\\times\\mathcal{V}). To identify the relations between passages and establish the graph-structured index, we utilize query simulation to dig out the logical relations between passages and leverage textual similarity for efficient edge merging.",
+            "To fully explore the logical relations between passages and bridge the inherent gap between queries and passages (Wang et al., 2024c), we generate a series of pseudo-queries for each passage to explicitly capture the logical relations. Specifically, we adopt LLM to generate two groups of pseudo-queries for each passage: (1) mm out-coming questions Qi+=⋃1≤j≤m{qi,j+}Q_{i}^{+}=\\bigcup_{1\\leq j\\leq m}\\{q_{i,j}^{+}\\} that originate from the passage but cannot be answered by itself; (2) nn in-coming questions Qi−=⋃1≤j≤n{qi,j−}Q_{i}^{-}=\\bigcup_{1\\leq j\\leq n}\\{q_{i,j}^{-}\\} whose answers are within the passage. The prompts are in Appendix A.5.",
+            "We extract keywords from Qi+Q_{i}^{+} and Qi−Q_{i}^{-} using named entity recognition NER​(⋅)\\text{NER}(\\cdot) for sparse representation, and embed these questions into semantic vectors using an embedding model EMB​(⋅)\\text{EMB}(\\cdot) for dense representation. This results in sparse representations Ki+=⋃1≤j≤m{ki,j+}K_{i}^{+}=\\bigcup_{1\\leq j\\leq m}\\{k_{i,j}^{+}\\} and Ki−=⋃1≤j≤n{ki,j−}K_{i}^{-}=\\bigcup_{1\\leq j\\leq n}\\{k_{i,j}^{-}\\}, and dense representations Vi+=⋃1≤j≤m{vi,j+}V_{i}^{+}=\\bigcup_{1\\leq j\\leq m}\\{v_{i,j}^{+}\\} and Vi−=⋃1≤j≤n{vi,j−}V_{i}^{-}=\\bigcup_{1\\leq j\\leq n}\\{v_{i,j}^{-}\\}. We further define out-coming triplets as ri,j+:=(qi,j+,ki,j+,vi,j+)r_{i,j}^{+}:=(q_{i,j}^{+},k_{i,j}^{+},v_{i,j}^{+}) and in-coming triplets ri,j−:=(qi,j−,ki,j−,vi,j−)r_{i,j}^{-}:=(q_{i,j}^{-},k_{i,j}^{-},v_{i,j}^{-}). Each passage pip_{i} is a vertex viv_{i}, featured with out-coming triplets Ri+=⋃1≤j≤m{ri,j+}R_{i}^{+}=\\bigcup_{1\\leq j\\leq m}\\{r_{i,j}^{+}\\} and in-coming triplets Ri−=⋃1≤j≤n{ri,j−}R_{i}^{-}=\\bigcup_{1\\leq j\\leq n}\\{r_{i,j}^{-}\\}.",
+            "Given the out-coming and in-coming triplets, we match paired triplets via hybrid retrieval and establish directed edges between passages. For each out-coming triplet rs,i+r_{s,i}^{+} of source vertex vsv_{s}, the most matching in-coming triplet rt∗,j∗−r_{t^{*},j^{*}}^{-} is determined as follows:",
+            "We then build the directed edge ⟨vs,es,t∗,vt∗⟩\\langle v_{s},e_{s,t^{*}},v_{t^{*}}\\rangle with aggregated attribution, where es,t∗:=(qt∗,j∗−,kt∗,j∗−∪ks,i+,vt∗,j∗−)e_{s,t^{*}}:=({q_{t^{*},j^{*}}^{-}},{k_{t^{*},j^{*}}^{-}\\cup k_{s,i}^{+}},{v_{t^{*},j^{*}}^{-}})."
+          ]
+        },
+        {
+          "title": "Query Simulation",
+          "paragraphs": [
+            "To fully explore the logical relations between passages and bridge the inherent gap between queries and passages (Wang et al., 2024c), we generate a series of pseudo-queries for each passage to explicitly capture the logical relations. Specifically, we adopt LLM to generate two groups of pseudo-queries for each passage: (1) mm out-coming questions Qi+=⋃1≤j≤m{qi,j+}Q_{i}^{+}=\\bigcup_{1\\leq j\\leq m}\\{q_{i,j}^{+}\\} that originate from the passage but cannot be answered by itself; (2) nn in-coming questions Qi−=⋃1≤j≤n{qi,j−}Q_{i}^{-}=\\bigcup_{1\\leq j\\leq n}\\{q_{i,j}^{-}\\} whose answers are within the passage. The prompts are in Appendix A.5.",
+            "We extract keywords from Qi+Q_{i}^{+} and Qi−Q_{i}^{-} using named entity recognition NER​(⋅)\\text{NER}(\\cdot) for sparse representation, and embed these questions into semantic vectors using an embedding model EMB​(⋅)\\text{EMB}(\\cdot) for dense representation. This results in sparse representations Ki+=⋃1≤j≤m{ki,j+}K_{i}^{+}=\\bigcup_{1\\leq j\\leq m}\\{k_{i,j}^{+}\\} and Ki−=⋃1≤j≤n{ki,j−}K_{i}^{-}=\\bigcup_{1\\leq j\\leq n}\\{k_{i,j}^{-}\\}, and dense representations Vi+=⋃1≤j≤m{vi,j+}V_{i}^{+}=\\bigcup_{1\\leq j\\leq m}\\{v_{i,j}^{+}\\} and Vi−=⋃1≤j≤n{vi,j−}V_{i}^{-}=\\bigcup_{1\\leq j\\leq n}\\{v_{i,j}^{-}\\}. We further define out-coming triplets as ri,j+:=(qi,j+,ki,j+,vi,j+)r_{i,j}^{+}:=(q_{i,j}^{+},k_{i,j}^{+},v_{i,j}^{+}) and in-coming triplets ri,j−:=(qi,j−,ki,j−,vi,j−)r_{i,j}^{-}:=(q_{i,j}^{-},k_{i,j}^{-},v_{i,j}^{-}). Each passage pip_{i} is a vertex viv_{i}, featured with out-coming triplets Ri+=⋃1≤j≤m{ri,j+}R_{i}^{+}=\\bigcup_{1\\leq j\\leq m}\\{r_{i,j}^{+}\\} and in-coming triplets Ri−=⋃1≤j≤n{ri,j−}R_{i}^{-}=\\bigcup_{1\\leq j\\leq n}\\{r_{i,j}^{-}\\}."
+          ]
+        },
+        {
+          "title": "Edge Merging",
+          "paragraphs": [
+            "Given the out-coming and in-coming triplets, we match paired triplets via hybrid retrieval and establish directed edges between passages. For each out-coming triplet rs,i+r_{s,i}^{+} of source vertex vsv_{s}, the most matching in-coming triplet rt∗,j∗−r_{t^{*},j^{*}}^{-} is determined as follows:",
+            "We then build the directed edge ⟨vs,es,t∗,vt∗⟩\\langle v_{s},e_{s,t^{*}},v_{t^{*}}\\rangle with aggregated attribution, where es,t∗:=(qt∗,j∗−,kt∗,j∗−∪ks,i+,vt∗,j∗−)e_{s,t^{*}}:=({q_{t^{*},j^{*}}^{-}},{k_{t^{*},j^{*}}^{-}\\cup k_{s,i}^{+}},{v_{t^{*},j^{*}}^{-}})."
+          ]
+        },
+        {
+          "title": "3.3 Reasoning-Augmented Graph Traversal",
+          "paragraphs": [
+            "For more accurate and complete responses, HopRAG’s retrieval strategy leverages the reasoning ability of LLMs to explore the neighborhood of probably indirectly relevant passages based on the logical relations in the graph structure so as to hop to relevant ones. As shown in Algorithm 1, by reasoning over the questions on out edges ei,je_{i,j} of a current vertex viv_{i} and then choosing to hop to the most promising vertex vjv_{j}, we realize reasoning-augmented graph traversal for better retrieval performance.",
+            "To start the local search over the graph for query qq, we first use NER​(⋅)\\text{NER}(\\cdot) and EMB​(⋅)\\text{EMB}(\\cdot) to get the keywords kqk_{q} and vector vqv_{q} of qq, which will be used for hybrid retrieval to match t​o​pktop_{k} similar ⟨vi,ei,j,vj⟩\\langle v_{i},e_{i,j},v_{j}\\rangle edges, following Equation 1. With each head vertex vjv_{j} from these edges we initialize a context queue Cq​u​e​u​eC_{queue} for breadth-first local search (Voudouris et al., 2010).",
+            "To fully exploit the logical relations over the graph and hop from indirectly relevant vertices to relevant ones, we introduce breadth-first local search which utilizes the LLM to choose the most appropriate neighbor for each vjv_{j} in Cq​u​e​u​eC_{queue} to append to the tail of the queue. Specifically, for each vjv_{j} in Cq​u​e​u​eC_{queue} in each round of hop, we leverage LLM to reason over all the questions from its out edges to choose one ej,ke_{j,k} with the question which the LLM regards as the most helpful for answering qq and append the tail vertex vkv_{k} to Cq​u​e​u​eC_{queue}.",
+            "After hopping from each vertex in the current Cq​u​e​u​eC_{queue} we can expand the context with t​o​pktop_{k} logically more relevant vertices, from which we continue to conduct the next round of hop. By conducting nh​o​pn_{hop} rounds of hop, we realize reasoning-augmented graph traversal that expands the context to (nh​o​p+1)×t​o​pk(n_{hop}+1)\\times top_{k} vertices. We use a counter C′C^{\\prime} to track the number of arrivals of each vertex during the traversal.",
+            "To avoid including too many intermediate vertices during the traversal, we introduce a novel metric Helpfulness H​(⋅)H(\\cdot) that integrates similarity and logic to re-rank and then prune the traversal context C′C^{\\prime} with arrival counts. We calculate HiH_{i} following Equation 2 for each viv_{i} in C′C^{\\prime} and keep the t​o​pktop_{k} vertices with the highest HiH_{i}, where hybrid textual similarity SIM​(vi,q)\\text{SIM}(v_{i},q) follows Equation 1 to calculate the average lexical and semantic similarity between the passage in viv_{i} and query qq; and IMP​(vi,C′)\\text{IMP}(v_{i},C^{\\prime}) is defined as the normalized number of arrivals of viv_{i} in C′C^{\\prime} during traversal (Equation 3). With HiH_{i} for each viv_{i} in C′C^{\\prime}, we prune C′C^{\\prime} by keeping t​o​pktop_{k} vertices with the highest HH and get final context CC."
+          ]
+        },
+        {
+          "title": "Retrieval Phase",
+          "paragraphs": [
+            "To start the local search over the graph for query qq, we first use NER​(⋅)\\text{NER}(\\cdot) and EMB​(⋅)\\text{EMB}(\\cdot) to get the keywords kqk_{q} and vector vqv_{q} of qq, which will be used for hybrid retrieval to match t​o​pktop_{k} similar ⟨vi,ei,j,vj⟩\\langle v_{i},e_{i,j},v_{j}\\rangle edges, following Equation 1. With each head vertex vjv_{j} from these edges we initialize a context queue Cq​u​e​u​eC_{queue} for breadth-first local search (Voudouris et al., 2010)."
+          ]
+        },
+        {
+          "title": "Reasoning Phase",
+          "paragraphs": [
+            "To fully exploit the logical relations over the graph and hop from indirectly relevant vertices to relevant ones, we introduce breadth-first local search which utilizes the LLM to choose the most appropriate neighbor for each vjv_{j} in Cq​u​e​u​eC_{queue} to append to the tail of the queue. Specifically, for each vjv_{j} in Cq​u​e​u​eC_{queue} in each round of hop, we leverage LLM to reason over all the questions from its out edges to choose one ej,ke_{j,k} with the question which the LLM regards as the most helpful for answering qq and append the tail vertex vkv_{k} to Cq​u​e​u​eC_{queue}.",
+            "After hopping from each vertex in the current Cq​u​e​u​eC_{queue} we can expand the context with t​o​pktop_{k} logically more relevant vertices, from which we continue to conduct the next round of hop. By conducting nh​o​pn_{hop} rounds of hop, we realize reasoning-augmented graph traversal that expands the context to (nh​o​p+1)×t​o​pk(n_{hop}+1)\\times top_{k} vertices. We use a counter C′C^{\\prime} to track the number of arrivals of each vertex during the traversal."
+          ]
+        },
+        {
+          "title": "Pruning Phase",
+          "paragraphs": [
+            "To avoid including too many intermediate vertices during the traversal, we introduce a novel metric Helpfulness H​(⋅)H(\\cdot) that integrates similarity and logic to re-rank and then prune the traversal context C′C^{\\prime} with arrival counts. We calculate HiH_{i} following Equation 2 for each viv_{i} in C′C^{\\prime} and keep the t​o​pktop_{k} vertices with the highest HiH_{i}, where hybrid textual similarity SIM​(vi,q)\\text{SIM}(v_{i},q) follows Equation 1 to calculate the average lexical and semantic similarity between the passage in viv_{i} and query qq; and IMP​(vi,C′)\\text{IMP}(v_{i},C^{\\prime}) is defined as the normalized number of arrivals of viv_{i} in C′C^{\\prime} during traversal (Equation 3). With HiH_{i} for each viv_{i} in C′C^{\\prime}, we prune C′C^{\\prime} by keeping t​o​pktop_{k} vertices with the highest HH and get final context CC."
+          ]
+        }
+      ]
+    },
+    "4 Experiments": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "4.1 Experimental Setups",
+          "paragraphs": [
+            "We collect several multiple-hop QA datasets to evaluate the performance of HopRAG. We use HotpotQA dataset (Yang et al., 2018), 2WikiMultiHopQA dataset (Ho et al., 2020) and MuSiQue dataset (Trivedi et al., 2022). Following the same procedure as (Zhang et al., 2024), we obtain 1000 questions from each validation set of these three datasets. See Appendix A.2 for details.",
+            "We compare HopRAG with a variety of baselines: (1) unstructured RAG - sparse retriever BM25 (Robertson and Zaragoza, 2009a) (2) unstructured RAG - dense retriever BGE (Xiao et al., 2024; Karpukhin et al., 2020) (3) tree-structured RAG - RAPTOR (Sarthi et al., 2024) (4) tree-structured RAG - SiReRAG (Zhang et al., 2024) (5) graph-structured RAG - GraphRAG (Edge et al., 2024a) with the local search function (6) graph-structured RAG - HippoRAG (Gutiérrez et al., 2025). For structured RAG baselines, we follow the same setting as previous work (Zhang et al., 2024).",
+            "We adopt exact match (EM) and F1 scores on answers to measure the QA performance of different methods, which focus on the accuracy between a generated answer and the corresponding ground truth. We do not use retrieval metrics to compare all the methods because some baseline methods like SiReRAG (Zhang et al., 2024) and RAPTOR (Sarthi et al., 2024) create new candidates (e.g., summary nodes) in the retrieval pool and it would be unfair to use retrieval metrics to compare the methods. But we report both the answer metrics and the retrieval metrics in the ablation study when comparing the effects of different hyperparameters and reasoning models on HopRAG. See Appendix A.3 for more metric details.",
+            "We adopt the BGE embedding model for semantic vectors at 768 dimensions. To avoid the loss of semantic information caused by chunking at a fixed size, we adopt the same chunking methods utilized in the original datasets respectively. GPT-4o-mini serves as both the model generating in-coming and out-coming questions when constructing the graph index, and the reasoning model for graph traversal. We use two reader models GPT-4o and GPT-3.5-turbo to generate the response given the context with the fixed size of 20 retrieval candidates and at most nh​o​p=4n_{hop}=4. See Appendix A.4 for more setting details."
+          ]
+        },
+        {
+          "title": "Datasets",
+          "paragraphs": [
+            "We collect several multiple-hop QA datasets to evaluate the performance of HopRAG. We use HotpotQA dataset (Yang et al., 2018), 2WikiMultiHopQA dataset (Ho et al., 2020) and MuSiQue dataset (Trivedi et al., 2022). Following the same procedure as (Zhang et al., 2024), we obtain 1000 questions from each validation set of these three datasets. See Appendix A.2 for details."
+          ]
+        },
+        {
+          "title": "Baselines",
+          "paragraphs": [
+            "We compare HopRAG with a variety of baselines: (1) unstructured RAG - sparse retriever BM25 (Robertson and Zaragoza, 2009a) (2) unstructured RAG - dense retriever BGE (Xiao et al., 2024; Karpukhin et al., 2020) (3) tree-structured RAG - RAPTOR (Sarthi et al., 2024) (4) tree-structured RAG - SiReRAG (Zhang et al., 2024) (5) graph-structured RAG - GraphRAG (Edge et al., 2024a) with the local search function (6) graph-structured RAG - HippoRAG (Gutiérrez et al., 2025). For structured RAG baselines, we follow the same setting as previous work (Zhang et al., 2024)."
+          ]
+        },
+        {
+          "title": "Metrics",
+          "paragraphs": [
+            "We adopt exact match (EM) and F1 scores on answers to measure the QA performance of different methods, which focus on the accuracy between a generated answer and the corresponding ground truth. We do not use retrieval metrics to compare all the methods because some baseline methods like SiReRAG (Zhang et al., 2024) and RAPTOR (Sarthi et al., 2024) create new candidates (e.g., summary nodes) in the retrieval pool and it would be unfair to use retrieval metrics to compare the methods. But we report both the answer metrics and the retrieval metrics in the ablation study when comparing the effects of different hyperparameters and reasoning models on HopRAG. See Appendix A.3 for more metric details."
+          ]
+        },
+        {
+          "title": "Settings",
+          "paragraphs": [
+            "We adopt the BGE embedding model for semantic vectors at 768 dimensions. To avoid the loss of semantic information caused by chunking at a fixed size, we adopt the same chunking methods utilized in the original datasets respectively. GPT-4o-mini serves as both the model generating in-coming and out-coming questions when constructing the graph index, and the reasoning model for graph traversal. We use two reader models GPT-4o and GPT-3.5-turbo to generate the response given the context with the fixed size of 20 retrieval candidates and at most nh​o​p=4n_{hop}=4. See Appendix A.4 for more setting details."
+          ]
+        },
+        {
+          "title": "4.2 Main Results",
+          "paragraphs": [
+            "The main results are presented in Table 1 and 2. We observe that almost in all the settings our method gives the best performance, with exceptions on HotpotQA when compared against SiReRAG and 2WikiMultiHopQA against HippoRAG. Overall, HopRAG achieves approximately 76.78% higher than dense retriever (BGE), 9.94% higher than RAPTOR, 3.08% higher than HippoRAG, 1.11% higher than SiReRAG. This illustrates the strengths of HopRAG in capturing both textual similarity and logical relations for handling multi-hop QA.",
+            "Specifically, unstructured RAG baselines sparse retriever (BM25) and dense retriever (BGE) yield unsatisfactory results since they rely solely on similarity. Since GraphRAG only considers relevance among entities instead of similarity for graph search, and RAPTOR mainly focuses on the hierarchical logical relations among passages but cannot capture other kinds of relevance, both of them are more suitable for query-focused summarization but they are not the most competitive method for multi-hop QA tasks, as also reported in (Zhang et al., 2024).",
+            "In terms of HippoRAG, it prioritizes relevance signals such as vertices with the most edges and does not explicitly model similarity in its design while our design HopRAG directly integrates similarity with logical relations when constructing edges. Although HopRAG only outperforms SiReRAG by a small margin in the scenario with top 20 candidate passages, our general graph structure does not introduce additional summary and proposition aggregate nodes and can facilitate efficient multi hops for faster retrieval compared with SiReRAG. In the discussion, we will show that HopRAG can achieve competitive results with smaller context length. Besides quantitative scores, we also demonstrate a case study in Appendix A.6."
+          ]
+        },
+        {
+          "title": "4.3 Ablations and Discussion",
+          "paragraphs": [
+            "To confirm the robustness of HopRAG and provide more insights, we vary hyperparameters t​o​pktop_{k}, nh​o​pn_{hop} and conduct ablation studies on whether to use a reasoning model during traversal.",
+            "To show our efficiency in faster hopping from indirectly relevant passages to truly relevant ones, we test the robustness by evaluating both the QA and retrieval performance on GPT-3.5-turbo with smaller t​o​pktop_{k}, as is shown in Table 3. From the results we find that even with top 12 candidates, the QA performance of HopRAG is still comparable with HippoRAG or RAPTOR with 20 candidates, which emphasizes the advantage of our graph traversal design on efficient hopping to retrieve more information within a limited context length. Meanwhile, we also observe that as t​o​pktop_{k} and context length increase, the retrieval F1 score gradually decreases due to the inclusion of excessive redundant information. Conversely, the answer quality generally improves, attributed to GPT-3.5-turbo’s strong capability in processing and reasoning over extended contexts, with only one exception in the MuSiQue dataset where the answer Exact Match (EM) score is slightly higher with top 8 candidates compared to top 12. This suggests that excessive redundancy in the context can, to some extent, hinder the LLM’s ability to identify truly useful information during QA inference.",
+            "To assess the effect of the hyperparameter nh​o​pn_{hop} in reasoning-augmented graph traversal, we varied nh​o​pn_{hop} from 1 to 4 and evaluated the corresponding retrieval performance and cost of graph traversal, which is represented by the total number of calling LLM for each vertex in the queue in each round of hop. The results shown in Table 4 indicate that as nh​o​pn_{hop} increases, retrieval performance tends to improve, as more vertices are covered during traversal for reasoning and pruning. However, the expense of calling LLM also increases with nh​o​pn_{hop}, creating a trade-off between performance and cost. To find the ideal nh​o​pn_{hop}, we notice that as nh​o​pn_{hop} increases, the number of new vertices that require LLM reasoning in the queue in each hop decays quickly, as different vertices may hop to the same important vertex, making the actual queue length of each hop less than t​o​pktop_{k}. Specifically, the average queue length in the fourth hop is only 2.60 while in the fifth hop it is only 1.23 so there is no absolute need for one more hop. Based on these findings, we believe that 4 is the ideal nh​o​pn_{hop} for the three datasets, as is what we set for nh​o​pn_{hop} in Table 1 and 2. We also evaluate the answer performance as nh​o​pn_{hop} varies and show the overall results in the appendix A.7.",
+            "In order to generalize our method to the scenario with no budget of calling LLM during retrieval, we provide a graph traversal version based purely on logical relations and textual similarity. Specifically, we replace the Reasoning phase in Algorithm 1 with similarity matching where we directly choose the most similar edge ej,k{e_{j,k}} with the query qq and hop to vkv_{k} to extend Cq​u​e​u​eC_{queue}. The results are shown in Table 5. From the results we observe that even without using the reasoning ability of LLM in the graph traversal, HopRAG can achieve 45.84% higher than BM25 and 25.43% higher than dense retriever (BGE), which shows that our graph-structured index can fully capture the textual similarity and logical relations among different vertices to assist in logic-aware retrieval. But as is discussed in Section 1, high similarity doesn’t necessarily mean logical relevance so the introduction of reasoning ability from LLM is still irreplaceable and it can achieve about 45.78% higher average score than non-LLM version. Non-LLM graph traversal is suitable for scenarios that require efficiency, while reasoning-augmented graph traversal is designed for QA tasks that require high accuracy."
+          ]
+        },
+        {
+          "title": "Effects oft​o​pktop_{k}",
+          "paragraphs": [
+            "To show our efficiency in faster hopping from indirectly relevant passages to truly relevant ones, we test the robustness by evaluating both the QA and retrieval performance on GPT-3.5-turbo with smaller t​o​pktop_{k}, as is shown in Table 3. From the results we find that even with top 12 candidates, the QA performance of HopRAG is still comparable with HippoRAG or RAPTOR with 20 candidates, which emphasizes the advantage of our graph traversal design on efficient hopping to retrieve more information within a limited context length. Meanwhile, we also observe that as t​o​pktop_{k} and context length increase, the retrieval F1 score gradually decreases due to the inclusion of excessive redundant information. Conversely, the answer quality generally improves, attributed to GPT-3.5-turbo’s strong capability in processing and reasoning over extended contexts, with only one exception in the MuSiQue dataset where the answer Exact Match (EM) score is slightly higher with top 8 candidates compared to top 12. This suggests that excessive redundancy in the context can, to some extent, hinder the LLM’s ability to identify truly useful information during QA inference."
+          ]
+        },
+        {
+          "title": "Effects ofnh​o​pn_{hop}",
+          "paragraphs": [
+            "To assess the effect of the hyperparameter nh​o​pn_{hop} in reasoning-augmented graph traversal, we varied nh​o​pn_{hop} from 1 to 4 and evaluated the corresponding retrieval performance and cost of graph traversal, which is represented by the total number of calling LLM for each vertex in the queue in each round of hop. The results shown in Table 4 indicate that as nh​o​pn_{hop} increases, retrieval performance tends to improve, as more vertices are covered during traversal for reasoning and pruning. However, the expense of calling LLM also increases with nh​o​pn_{hop}, creating a trade-off between performance and cost. To find the ideal nh​o​pn_{hop}, we notice that as nh​o​pn_{hop} increases, the number of new vertices that require LLM reasoning in the queue in each hop decays quickly, as different vertices may hop to the same important vertex, making the actual queue length of each hop less than t​o​pktop_{k}. Specifically, the average queue length in the fourth hop is only 2.60 while in the fifth hop it is only 1.23 so there is no absolute need for one more hop. Based on these findings, we believe that 4 is the ideal nh​o​pn_{hop} for the three datasets, as is what we set for nh​o​pn_{hop} in Table 1 and 2. We also evaluate the answer performance as nh​o​pn_{hop} varies and show the overall results in the appendix A.7."
+          ]
+        },
+        {
+          "title": "Ablation on Reasoning Model",
+          "paragraphs": [
+            "In order to generalize our method to the scenario with no budget of calling LLM during retrieval, we provide a graph traversal version based purely on logical relations and textual similarity. Specifically, we replace the Reasoning phase in Algorithm 1 with similarity matching where we directly choose the most similar edge ej,k{e_{j,k}} with the query qq and hop to vkv_{k} to extend Cq​u​e​u​eC_{queue}. The results are shown in Table 5. From the results we observe that even without using the reasoning ability of LLM in the graph traversal, HopRAG can achieve 45.84% higher than BM25 and 25.43% higher than dense retriever (BGE), which shows that our graph-structured index can fully capture the textual similarity and logical relations among different vertices to assist in logic-aware retrieval. But as is discussed in Section 1, high similarity doesn’t necessarily mean logical relevance so the introduction of reasoning ability from LLM is still irreplaceable and it can achieve about 45.78% higher average score than non-LLM version. Non-LLM graph traversal is suitable for scenarios that require efficiency, while reasoning-augmented graph traversal is designed for QA tasks that require high accuracy."
+          ]
+        }
+      ]
+    },
+    "5 Conclusion": {
+      "paragraphs": [
+        "In this paper, we introduced HopRAG, a novel RAG system with a logic-aware retrieval mechanism. HopRAG connects related passages through pseudo-queries, which allows identifying truly relevant passages within multi-hop neighborhoods of indirectly relevant ones, significantly enhancing both the precision and recall of retrieval.",
+        "Extensive experiments on multi-hop QA benchmarks, i.e. MuSiQue, 2WikiMultiHopQA, and HotpotQA, demonstrate that HopRAG outperforms conventional RAG systems and state-of-the-art baselines. Specifically, HopRAG achieved over 76.78% higher answer accuracy and 65.07% improved retrieval F1 score compared to dense retrievers. It highlights the effectiveness of integrating logical reasoning into the retrieval module. Moreover, ablation studies provide insights into the sensitivity of hyperparameters such as top-k and hop number, revealing trade-offs between retrieval performance and computational costs.",
+        "HopRAG paves the way toward reasoning-driven knowledge retrieval. Future work involves scaling HopRAG to broader domains beyond QA tasks; optimizing the indexing and traversal strategies to handle even more complex scenarios with lower computation costs."
+      ],
+      "subsections": []
+    },
+    "6 Limitations": {
+      "paragraphs": [
+        "Despite the benefits of HopRAG, the current evaluation focuses on multi-hop or multi-document QA tasks. In order to mitigate the risk of performance fluctuations when applying HopRAG to other datasets, we should explore its generalization capabilities across a broader range of domains. Besides, more sophisticated query simulation and edge merging strategies may lead to further improvements. Finally, though we were inspired by the theories of six degrees of separation and small-world networks, the degree distribution of our passage graph vertices does not exhibit the power-law characteristic. On the one hand, these theories only serve as the motivation and intuitive analogy; on the other hand, exploring more appropriate degree distribution strategies is an interesting research topic. We leave these research problems for future work."
+      ],
+      "subsections": []
+    },
+    "7 Ethics Impact": {
+      "paragraphs": [
+        "In our work, we acknowledge two key ethical considerations. First, we utilized AI assistant to enhance the writing process of our paper and code. We ensure that the AI assistant was used as a tool to improve clarity and conciseness, while the final content and ideas were developed and reviewed by human authors. Second, we employed multiple open source datasets and one open source tool Neo4j Community Edition(Webber, 2012) under GPL v3 license in our experiments. We are transparent about their origin and limitations, and we respect data ownership and user privacy."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Appendix": {
+      "paragraphs": [
+        "[Figure: Figure 4: Prompt for generating in-coming questions.]",
+        "[Figure: Figure 5: Prompt for generating out-coming questions.]",
+        "[Figure: (a) Demonstration of our graph structure.]",
+        "[Figure: (a) Demonstration of our graph structure.]",
+        "[Figure: (b) Demonstration of reasoning-augmented graph traversal.]",
+        "[Figure: Figure 7: Prompt for reasoning-augmented graph traversal.]",
+        "[Figure: Figure 8: Demonstration of one edge between two vertices.]",
+        "[Table: Table 6: Table of symbols and meanings.]",
+        "[Table: Table 7: Dataset Statistics. We report the basic statistics of the graph structure on different datasets and demonstrate that our efficient graph structure is traversal-friendly.]",
+        "[Table: Table 8: We test the effect of hyperparameter nh​o​pn_{hop} on HopRAG using GPT-3.5-turbo on multiple datasets with top 20 passages. We vary nh​o​pn_{hop} from 1 to 4 and report both the answer and retrieval metrics here. For answer metrics, we report the answer EM and F1 score; For retrieval metrics, we report the F1 score and average number of calling LLM during traversal to measure the cost (the lower, the better). The best score is in bold and the second best is underlined. ]"
+      ],
+      "subsections": [
+        {
+          "title": "A.1 Symbols",
+          "paragraphs": [
+            "The symbols and their corresponding meanings are listed in Table 6."
+          ]
+        },
+        {
+          "title": "A.2 Datasets",
+          "paragraphs": [
+            "Table 7 shows the basic statistics of our datasets with their corresponding passage pool. Compared with knowledge graph, our graph-structured index is less dense and more efficient to construct. Since we put each passage text in the vertex, we can use fewer vertices to cover all the passages, which lowers the space complexity of the database. The average number of directed edges for each vertex is only 5.87, which lowers the time complexity for graph traversal."
+          ]
+        },
+        {
+          "title": "A.3 Metrics",
+          "paragraphs": [
+            "In our experiment, we mainly report the answer exact match (EM) and F1 score to compare all the methods.",
+            "The Exact Match (EM) metric measures the percentage of predictions that match any one of the ground truth answers exactly. It is defined as:",
+            "where pp denotes a predicted answer, gg denotes the corresponding ground truth answer, and PP is the set of all the predictions.",
+            "The F1 score is the harmonic mean of precision and recall, which measures the average overlap between the prediction and ground truth answer. Precision PP and recall RR are defined as:",
+            "where |A∩A^||A\\cap\\hat{A}| refers to the number of matching tokens between the prediction A^\\hat{A} and the ground truth AA, and |A^||\\hat{A}|, |A||A| denote the number of tokens in the predicted and ground truth answers, respectively.",
+            "The F1 score is then computed as:",
+            "In our ablation study, we also report the retrieval F1 score to test the sensitivity of HopRAG, which is calculated as follows.",
+            "The Precision (P) and Recall (R) for retrieval are computed as:",
+            "where Ret represents the set of passages retrieved during retrieval, and Rel denotes the set of relevant passages that support the ground truth answer.",
+            "The Retrieval F1 score is then calculated as the harmonic mean of precision and recall:"
+          ]
+        },
+        {
+          "title": "Exact Match (EM)",
+          "paragraphs": [
+            "The Exact Match (EM) metric measures the percentage of predictions that match any one of the ground truth answers exactly. It is defined as:",
+            "where pp denotes a predicted answer, gg denotes the corresponding ground truth answer, and PP is the set of all the predictions."
+          ]
+        },
+        {
+          "title": "F1 Score",
+          "paragraphs": [
+            "The F1 score is the harmonic mean of precision and recall, which measures the average overlap between the prediction and ground truth answer. Precision PP and recall RR are defined as:",
+            "where |A∩A^||A\\cap\\hat{A}| refers to the number of matching tokens between the prediction A^\\hat{A} and the ground truth AA, and |A^||\\hat{A}|, |A||A| denote the number of tokens in the predicted and ground truth answers, respectively.",
+            "The F1 score is then computed as:",
+            "In our ablation study, we also report the retrieval F1 score to test the sensitivity of HopRAG, which is calculated as follows.",
+            "The Precision (P) and Recall (R) for retrieval are computed as:",
+            "where Ret represents the set of passages retrieved during retrieval, and Rel denotes the set of relevant passages that support the ground truth answer.",
+            "The Retrieval F1 score is then calculated as the harmonic mean of precision and recall:"
+          ]
+        },
+        {
+          "title": "A.4 Settings",
+          "paragraphs": [
+            "To avoid semantic loss by chunking the documents at a fixed size, we chunk each document in a way corresponding to the supporting facts of each dataset. Specifically, we chunk each document in HotpotQA and 2WikiMultiHopQA by sentence since the smallest unit of these two datasets’ supporting facts is a sentence. To get embedding representation for each chunk, we use bge-base model. To extract keywords, we use the part-of-speech tagging function of Python package PaddleNLP to extract and filter entities. In our method, we use the Neo4j graph database to store vertices and build edges. When building edges we employ prompt engineering technique to instruct the LLM to generate an appropriate number of questions for each vertex to cover its information, with a minimum requirement of at least 2 in-coming questions and 4 out-coming questions. To prevent the graph structure from becoming overly complex and dense, we retain only O​(n⋅log⁡(n))O(n\\cdot\\log(n)) edges, where nn is the number of vertices. We use GPT-4o-mini for reasoning-augmented graph traversal, GPT-4o and GPT-3.5-turbo for inference with 2048 max tokens and 0.1 temperature."
+          ]
+        },
+        {
+          "title": "A.5 Prompts",
+          "paragraphs": [
+            "The prompt used for generating in-coming questions is shown in Figure 4. The prompt used for generating out-coming questions is shown in Figure 5. The prompt for reasoning-augmented graph traversal is shown in Figure 7.",
+            "[Figure: Figure 4: Prompt for generating in-coming questions.]",
+            "[Figure: Figure 5: Prompt for generating out-coming questions.]",
+            "[Figure: (a) Demonstration of our graph structure.]",
+            "[Figure: (a) Demonstration of our graph structure.]",
+            "[Figure: (b) Demonstration of reasoning-augmented graph traversal.]",
+            "[Figure: Figure 7: Prompt for reasoning-augmented graph traversal.]",
+            "[Figure: Figure 8: Demonstration of one edge between two vertices.]"
+          ]
+        },
+        {
+          "title": "A.6 Case Study",
+          "paragraphs": [
+            "We demonstrate the graph structure in Figure 6(a), one example edge with two vertices in Figure 8. Using the query \"Donnie Smith who plays as a left back for New England Revolution belongs to what league featuring 22 teams?\" as an example we conduct a qualitative analysis. For this multi-hop question (correct answer: Major League Soccer), the HotpotQA corpus contains three relevant sentences: (1) \"Donald W. \\\"Donnie\\\" Smith (born December 7, 1990 in Detroit, Michigan) is an American soccer player who plays as a left back for New England Revolution in Major League Soccer. \"; (2) \"Major League Soccer (MLS) is a men’s professional soccer league, sanctioned by U.S. Soccer, that represents the sport’s highest level in both the United States and Canada. \" and (3) \"The league comprises 22 teams in the U.S. and 3 in Canada.\"",
+            "With dense retriever (BGE), we can easily retrieve the first sentence but the last two facts can’t be retrieved in the context even with a t​o​pktop_{k} of 30. However, in our graph-structured index, these three vertices are logically connected, as is shown in Figure 6(b). During the traversal, LLM starts from the semantically similar but indirectly relevant vertices and can reach all the supporting facts within only a maximum of 3 hops."
+          ]
+        },
+        {
+          "title": "A.7 Discussion results onnh​o​pn_{hop}",
+          "paragraphs": [
+            "In the discussion we notice that as the hyper-parameter nh​o​pn_{hop} varies from 1 to 4, the answer and retrieval performance both increase, along with the retrieval cost of calling LLM during traversal. Since the average queue length in the fifth hop is only as small as 1.23, we believe 4 is the ideal nh​o​pn_{hop}. The overall results are shown in Table 8."
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "Akyurek et al. (2022) Ekin Akyurek, Tolga Bolukbasi, Frederick Liu, Binbin Xiong, Ian Tenney, Jacob Andreas, and Kelvin Guu. 2022. Towards tracing knowledge in language models back to the training data. In Findings of the Association for Computational Linguistics: EMNLP 2022, pages 2429–2446, Abu Dhabi, United Arab Emirates. Association for Computational Linguistics.",
+    "Asai et al. (2023) Akari Asai, Zeqiu Wu, Yizhong Wang, et al. 2023. Self-rag: Learning to retrieve, generate, and critique through self-reflection. arxiv:2310.11511.",
+    "Chen et al. (2023) Howard Chen, Ramakanth Pasunuru, Jason Weston, and Asli Celikyilmaz. 2023. Walking Down the Memory Maze: Beyond Context Limit through Interactive Reading. arXiv preprint. ArXiv:2310.05029.",
+    "Chen et al. (2024) Jiawei Chen, Hongyu Lin, Xianpei Han, and Le Sun. 2024. Benchmarking large language models in retrieval-augmented generation. In Proceedings of the AAAI Conference on Artificial Intelligence, volume 38, pages 17754–17762.",
+    "Dai et al. (2024) Sunhao Dai, Chen Xu, Shicheng Xu, Liang Pang, Zhenhua Dong, and Jun Xu. 2024. Unifying bias and unfairness in information retrieval: A survey of challenges and opportunities with large language models. arXiv preprint arXiv:2404.11457.",
+    "Edge et al. (2024a) Darren Edge, Ha Trinh, Newman Cheng, Joshua Bradley, Alex Chao, Apurva Mody, Steven Truitt, and Jonathan Larson. 2024a. From Local to Global: A Graph RAG Approach to Query-Focused Summarization. arXiv preprint. ArXiv:2404.16130 [cs].",
+    "Edge et al. (2024b) Darren Edge, Ha Trinh, Newman Cheng, Joshua Bradley, Alex Chao, Apurva Mody, Steven Truitt, and Jonathan Larson. 2024b. From local to global: A graph rag approach to query-focused summarization. arXiv preprint arXiv:2404.16130.",
+    "Fatehkia et al. (2024) Masoomali Fatehkia, Ji Kim Lucas, and Sanjay Chawla. 2024. T-rag: Lessons from the llm trenches. Preprint, arXiv:2402.07483.",
+    "Févry et al. (2020) Thibault Févry, Livio Baldini Soares, et al. 2020. Entities as experts: Sparse memory access with entity supervision. In EMNLP.",
+    "Guare (2016) John Guare. 2016. Six degrees of separation. In The Contemporary Monologue: Men, pages 89–93. Routledge.",
+    "Guo et al. (2025) Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Ruoyu Zhang, Runxin Xu, Qihao Zhu, Shirong Ma, Peiyi Wang, Xiao Bi, et al. 2025. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning. arXiv preprint arXiv:2501.12948.",
+    "Guo et al. (2024) Zirui Guo, Lianghao Xia, Yanhua Yu, Tu Ao, and Chao Huang. 2024. LightRAG: Simple and Fast Retrieval-Augmented Generation. arXiv preprint. ArXiv:2410.05779.",
+    "Gutiérrez et al. (2025) Bernal Jiménez Gutiérrez, Yiheng Shu, Yu Gu, Michihiro Yasunaga, and Yu Su. 2025. Hipporag: Neurobiologically inspired long-term memory for large language models. Preprint, arXiv:2405.14831.",
+    "Guu et al. (2020a) Kelvin Guu, Kenton Lee, Zora Tung, Panupong Pasupat, and Mingwei Chang. 2020a. Retrieval augmented language model pre-training. In International conference on machine learning, pages 3929–3938. PMLR.",
+    "Guu et al. (2020b) Kelvin Guu, Kenton Lee, Zora Tung, et al. 2020b. REALM: retrieval-augmented language model pre-training. ICML.",
+    "He et al. (2024) Xiaoxin He, Yijun Tian, Yifei Sun, Nitesh V. Chawla, Thomas Laurent, Yann LeCun, Xavier Bresson, and Bryan Hooi. 2024. G-Retriever: Retrieval-Augmented Generation for Textual Graph Understanding and Question Answering. arXiv preprint. ArXiv:2402.07630.",
+    "Ho et al. (2020) Xanh Ho, Anh-Khoa Duong Nguyen, Saku Sugawara, and Akiko Aizawa. 2020. Constructing a multi-hop qa dataset for comprehensive evaluation of reasoning steps. Preprint, arXiv:2011.01060.",
+    "Izacard and Grave (2021) Gautier Izacard and Edouard Grave. 2021. Leveraging passage retrieval with generative models for open domain question answering. In EACL.",
+    "Izacard et al. (2022) Gautier Izacard, Patrick Lewis, Maria Lomeli, Lucas Hosseini, Fabio Petroni, Timo Schick, Jane Dwivedi-Yu, Armand Joulin, Sebastian Riedel, and Edouard Grave. 2022. Few-shot learning with retrieval augmented language models. arXiv preprint arXiv:2208.03299.",
+    "Jaech et al. (2024) Aaron Jaech, Adam Kalai, Adam Lerer, Adam Richardson, Ahmed El-Kishky, Aiden Low, Alec Helyar, Aleksander Madry, Alex Beutel, Alex Carney, et al. 2024. Openai o1 system card. arXiv preprint arXiv:2412.16720.",
+    "Jiang et al. (2023) Zhengbao Jiang, Frank F Xu, Luyu Gao, et al. 2023. Active retrieval augmented generation. arXiv:2305.06983.",
+    "Jones (1973) Karen Sparck Jones. 1973. Index term weighting. Information storage and retrieval, 9(11):619–633.",
+    "Kang et al. (2023) Minki Kang, Jin Myung Kwak, Jinheon Baek, and Sung Ju Hwang. 2023. Knowledge graph-augmented language models for knowledge-grounded dialogue generation. Preprint, arXiv:2305.18846.",
+    "Karpukhin et al. (2020) Vladimir Karpukhin, Barlas Oğuz, Sewon Min, Patrick Lewis, Ledell Wu, Sergey Edunov, Danqi Chen, and Wen tau Yih. 2020. Dense passage retrieval for open-domain question answering. Preprint, arXiv:2004.04906.",
+    "Kleinberg (2000) Jon Kleinberg. 2000. The small-world phenomenon: An algorithmic perspective. In Proceedings of the thirty-second annual ACM symposium on Theory of computing, pages 163–170.",
+    "Lewis et al. (2020a) Patrick Lewis, Ethan Perez, Aleksandra Piktus, Fabio Petroni, Vladimir Karpukhin, Naman Goyal, Heinrich Küttler, Mike Lewis, Wen-tau Yih, Tim Rocktäschel, et al. 2020a. Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks. Advances in Neural Information Processing Systems, 33:9459–9474.",
+    "Lewis et al. (2020b) Patrick S. H. Lewis, Ethan Perez, Aleksandra Piktus, et al. 2020b. Retrieval-augmented generation for knowledge-intensive NLP tasks. In NeurIPS.",
+    "Li et al. (2024) Zijian Li, Qingyan Guo, Jiawei Shao, Lei Song, Jiang Bian, Jun Zhang, and Rui Wang. 2024. Graph Neural Network Enhanced Retrieval for Question Answering of LLMs. arXiv preprint. ArXiv:2406.06572.",
+    "Liang et al. (2025) Xun Liang, Simin Niu, Zhiyu Li, Sensen Zhang, Hanyu Wang, Feiyu Xiong, Jason Zhaoxin Fan, Bo Tang, Shichao Song, Mengwei Wang, et al. 2025. Saferag: Benchmarking security in retrieval-augmented generation of large language model. arXiv preprint arXiv:2501.18636.",
+    "Liang et al. (2024) Xun Liang, Simin Niu, Sensen Zhang, Shichao Song, Hanyu Wang, Jiawei Yang, Feiyu Xiong, Bo Tang, Chenyang Xi, et al. 2024. Empowering large language models to set up a knowledge retrieval indexer via self-learning. arXiv preprint arXiv:2405.16933.",
+    "Mavromatis and Karypis (2024) Costas Mavromatis and George Karypis. 2024. Gnn-rag: Graph neural retrieval for large language model reasoning. arXiv preprint arXiv:2405.20139.",
+    "Min et al. (2023) Sewon Min, Weijia Shi, Mike Lewis, Xilun Chen, Wen-tau Yih, Hannaneh Hajishirzi, and Luke Zettlemoyer. 2023. Nonparametric masked language modeling. In Findings of the Association for Computational Linguistics: ACL 2023, pages 2097–2118, Toronto, Canada. Association for Computational Linguistics.",
+    "Ram et al. (2023) Ori Ram, Yoav Levine, Itay Dalmedigos, Dor Muhlgay, Amnon Shashua, Kevin Leyton-Brown, and Yoav Shoham. 2023. In-context retrieval-augmented language models. arXiv preprint arXiv:2302.00083.",
+    "Robertson and Zaragoza (2009a) Stephen Robertson and Hugo Zaragoza. 2009a. The Probabilistic Relevance Framework: BM25 and Beyond. Foundations and Trends® in Information Retrieval, 3(4):333–389.",
+    "Robertson and Zaragoza (2009b) Stephen E. Robertson and Hugo Zaragoza. 2009b. The probabilistic relevance framework: BM25 and beyond. FTIR, 3(4):333–389.",
+    "Sarthi et al. (2024) Parth Sarthi, Salman Abdullah, Aditi Tuli, Shubh Khanna, Anna Goldie, and Christopher D. Manning. 2024. RAPTOR: Recursive Abstractive Processing for Tree-Organized Retrieval. arXiv preprint. ArXiv:2401.18059 [cs].",
+    "Sarthi et al. (2023) Parth Sarthi, Salman Abdullah, Aditi Tuli, et al. 2023. Raptor: Recursive abstractive processing for tree-organized retrieval. In ICLR.",
+    "Sawarkar et al. (2024) Kunal Sawarkar, Abhilasha Mangal, and Shivam Raj Solanki. 2024. Blended rag: Improving rag (retriever-augmented generation) accuracy with semantic search and hybrid query-based retrievers. arXiv preprint arXiv:2404.07220.",
+    "Shao et al. (2024) Rulin Shao, Jacqueline He, Akari Asai, Weijia Shi, Tim Dettmers, Sewon Min, Luke Zettlemoyer, and Pang Wei Koh. 2024. Scaling retrieval-based language models with a trillion-token datastore. arXiv preprint arXiv:2407.12854.",
+    "Soman et al. (2024) Karthik Soman, Peter W Rose, John H Morris, Rabia E Akbas, Brett Smith, Braian Peetoom, Catalina Villouta-Reyes, Gabriel Cerono, Yongmei Shi, Angela Rizk-Jackson, Sharat Israni, Charlotte A Nelson, Sui Huang, and Sergio E Baranzini. 2024. Biomedical knowledge graph-optimized prompt generation for large language models. Preprint, arXiv:2311.17330.",
+    "Sturua et al. (2024) Saba Sturua, Isabelle Mohr, Mohammad Kalim Akram, Michael Günther, Bo Wang, Markus Krimmel, Feng Wang, Georgios Mastrapas, Andreas Koukounas, Nan Wang, et al. 2024. jina-embeddings-v3: Multilingual embeddings with task lora. arXiv preprint arXiv:2409.10173.",
+    "Su et al. (2024a) Hongjin Su, Howard Yen, Mengzhou Xia, Weijia Shi, Niklas Muennighoff, Han-yu Wang, Haisu Liu, Quan Shi, Zachary S Siegel, Michael Tang, et al. 2024a. Bright: A realistic and challenging benchmark for reasoning-intensive retrieval. arXiv preprint arXiv:2407.12883.",
+    "Su et al. (2024b) Hongjin Su, Howard Yen, Mengzhou Xia, Weijia Shi, Niklas Muennighoff, Han yu Wang, Haisu Liu, Quan Shi, Zachary S. Siegel, Michael Tang, Ruoxi Sun, Jinsung Yoon, Sercan O. Arik, Danqi Chen, and Tao Yu. 2024b. Bright: A realistic and challenging benchmark for reasoning-intensive retrieval. Preprint, arXiv:2407.12883.",
+    "Trivedi et al. (2022) Harsh Trivedi, Niranjan Balasubramanian, Tushar Khot, and Ashish Sabharwal. 2022. Musique: Multihop questions via single-hop question composition. Preprint, arXiv:2108.00573.",
+    "Voudouris et al. (2010) Christos Voudouris, Edward PK Tsang, and Abdullah Alsheddy. 2010. Guided local search. In Handbook of metaheuristics, pages 321–361. Springer.",
+    "Wang et al. (2024a) Fei Wang, Xingchen Wan, Ruoxi Sun, Jiefeng Chen, and Sercan Ö Arık. 2024a. Astute rag: Overcoming imperfect retrieval augmentation and knowledge conflicts for large language models. arXiv preprint arXiv:2410.07176.",
+    "Wang et al. (2024b) Liang Wang, Nan Yang, Xiaolong Huang, Linjun Yang, Rangan Majumder, and Furu Wei. 2024b. Multilingual e5 text embeddings: A technical report. arXiv preprint arXiv:2402.05672.",
+    "Wang et al. (2024c) Zhengren Wang, Qinhan Yu, Shida Wei, Zhiyu Li, Feiyu Xiong, Xiaoxing Wang, Simin Niu, Hao Liang, and Wentao Zhang. 2024c. QAEncoder: Towards Aligned Representation Learning in Question Answering System. arXiv preprint. ArXiv:2409.20434 [cs].",
+    "Webber (2012) Jim Webber. 2012. A programmatic introduction to neo4j. In Proceedings of the 3rd Annual Conference on Systems, Programming, and Applications: Software for Humanity, SPLASH ’12, page 217–218, New York, NY, USA. Association for Computing Machinery.",
+    "Xiang et al. (2024) Chong Xiang, Tong Wu, Zexuan Zhong, David Wagner, Danqi Chen, and Prateek Mittal. 2024. Certifiably robust rag against retrieval corruption. arXiv preprint arXiv:2405.15556.",
+    "Xiao et al. (2024) Shitao Xiao, Zheng Liu, Peitian Zhang, Niklas Muennighoff, Defu Lian, and Jian-Yun Nie. 2024. C-pack: Packaged resources to advance general chinese embedding. Preprint, arXiv:2309.07597.",
+    "Yang et al. (2018) Zhilin Yang, Peng Qi, Saizheng Zhang, Yoshua Bengio, William W. Cohen, Ruslan Salakhutdinov, and Christopher D. Manning. 2018. Hotpotqa: A dataset for diverse, explainable multi-hop question answering. Preprint, arXiv:1809.09600.",
+    "Yu et al. (2025) Qinhan Yu, Zhiyou Xiao, Binghui Li, Zhengren Wang, Chong Chen, and Wentao Zhang. 2025. Mramg-bench: A beyondtext benchmark for multimodal retrieval-augmented multimodal generation. arXiv preprint arXiv:2502.04176.",
+    "Zhang et al. (2024) Nan Zhang, Prafulla Kumar Choubey, Alexander Fabbri, Gabriel Bernadett-Shapiro, Rui Zhang, Prasenjit Mitra, Caiming Xiong, and Chien-Sheng Wu. 2024. Sirerag: Indexing similar and related information for multihop reasoning. Preprint, arXiv:2412.06206.",
+    "Zhang et al. (2023) Yue Zhang, Yafu Li, Leyang Cui, Deng Cai, Lemao Liu, Tingchen Fu, Xinting Huang, Enbo Zhao, Yu Zhang, Yulong Chen, Longyue Wang, Anh Tuan Luu, Wei Bi, Freda Shi, and Shuming Shi. 2023. Siren’s Song in the AI Ocean: A Survey on Hallucination in Large Language Models. arXiv preprint. ArXiv:2309.01219 [cs].",
+    "Zhao et al. (2024) Penghao Zhao, Hailin Zhang, Qinhan Yu, Zhengren Wang, Yunteng Geng, Fangcheng Fu, Ling Yang, Wentao Zhang, and Bin Cui. 2024. Retrieval-augmented generation for ai-generated content: A survey. arXiv preprint arXiv:2402.19473.",
+    "Zou et al. (2024) Wei Zou, Runpeng Geng, Binghui Wang, and Jinyuan Jia. 2024. Poisonedrag: Knowledge poisoning attacks to retrieval-augmented generation of large language models. arXiv preprint arXiv:2402.07867."
+  ]
+}

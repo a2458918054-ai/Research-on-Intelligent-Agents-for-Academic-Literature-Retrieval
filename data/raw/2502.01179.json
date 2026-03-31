@@ -1,0 +1,315 @@
+{
+  "title": "Joint Localization and Activation Editing for Low-Resource Fine-Tuning",
+  "authors": "Wen LaiAlexander FraserIvan Titov",
+  "abstract": "Parameter-efficient fine-tuning (PEFT) methods, such as LoRA, are commonly used to adapt LLMs. However, the effectiveness of standard PEFT methods is limited in low-resource scenarios with only a few hundred examples. Recent advances in interpretability research have inspired the emergence of activation editing techniques, which modify the activations of specific model components. These methods, due to their extremely small parameter counts, show promise for small datasets. However, their performance is highly dependent on identifying the correct modules to edit and often lacks stability across different datasets. In this paper, we propose Joint Localization and Activation Editing (JoLA), a method that jointly learns (1) which heads in the Transformer to edit (2) whether the intervention should be additive, multiplicative, or both and (3) the intervention parameters themselves - the vectors applied as additive offsets or multiplicative scalings to the head output. Through evaluations on three benchmarks spanning commonsense reasoning, natural language understanding, and natural language generation, we demonstrate that JoLA consistently outperforms existing methods.111The code for the method is released at https://github.com/wenlai-lavine/jola.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Parameter-efficient fine-tuning (PEFT; Han et al., 2024) methods are widely used to adapt large language models (LLMs). However, popular PEFT approaches like LoRA (Hu et al., 2021) often struggle in low-resource settings with only a few hundred examples. Inspired by advances in interpretability research (Vig et al., 2020; Zhang & Nanda, 2023), activation editing techniques (Wu et al., 2024a; Yin et al., 2024) have emerged as an alternative. These methods modify model activations to adapt LLMs to new tasks, leveraging the intuition that LLMs encode many semantically meaningful properties in a coordinate-aligned (or even disentangled) manner. The activations can then be adjusted with simple operations such as pruning, rescaling or addition. Activation editing method avoid more complex transformations, such as the MLPs used in the original Adapters (Houlsby et al., 2019). Editable components in activation editing include bias terms (Ben Zaken et al., 2022), MLP layer outputs (Wu et al., 2024a), hidden states within MLP layers (Wu et al., 2024b), and attention head outputs (Yin et al., 2024).",
+        "Compared to standard PEFT methods like LoRA (Hu et al., 2021), activation editing modifies significantly fewer parameters. For example, in our experiments, the optimal LoRA configuration altered 0.826% of LLaMA-3 8B’s (Dubey et al., 2024) parameters, whereas LOFIT (Yin et al., 2024) updated only 0.002%.222Detailed comparisons are provided in Appendix A. This drastic reduction makes activation editing particularly appealing for low-resource scenarios, where only a few hundred training examples are available.",
+        "However, activation editing’s effectiveness is highly sensitive to the choice of modules. This selection is typically determined either by fixed hyperparameters – specifying which layers and component types to modify (Ben Zaken et al., 2022; Wu et al., 2024b) – or by additional methods that estimate the importance of different model components for a given task (Yin et al., 2024). Furthermore, existing approaches vary in their intervention strategies (e.g., additive vs. multiplicative modifications), with no clear consensus on which method is most effective across tasks and models. As a result, performance tends to be inconsistent across different datasets and models (see Figure 4 and Table 1).",
+        "To address these limitations, we propose Joint Localization and Activation Editing (JoLA), a method that, for a given task, jointly learns (1) which components to edit, (2) whether to apply additive, multiplicative, or combined interventions, and (3) the optimal intervention parameters – the vectors applied as additive offsets or multiplicative scalings to modules’ outputs. Rather than relying on fixed heuristics or manual selection, JoLA dynamically identifies the most relevant components and applies targeted modifications to their activations.",
+        "To achieve this, JoLA uses HardConcrete gates with expected-L0 regularization, a technique previously employed for parameter (Louizos et al., 2018) and component pruning (Voita et al., 2019). This method encourages sparsity, ensuring that only a small subset of components is selected for editing, thereby reducing the number of interventions and, thus, the method’s effective parameter count. We also observe that it appears sufficient to focus on heads’ outputs rather than other component types, further reducing the parameter counts and enhancing the simplicity of the method. By combining additive offsets and multiplicative scalings, JoLA provides a flexible, data-efficient adaptation strategy.",
+        "We evaluate JoLA across three benchmark categories: commonsense reasoning, natural language understanding, and natural language generation. Experimental results on 26 tasks from the benchmarks (Hu et al., 2023; Wang et al., 2024b; Gehrmann et al., 2022) demonstrate that JoLA consistently outperforms existing methods in low-resource settings (as shown in Figure 4), delivering robust performance across various data scales and model sizes.",
+        "In summary, our contributions are as follows: (i) We introduce JoLA, a novel activation editing approach that jointly optimizes the selection of intervention components and the intervention strategy, specifically tailored for low-resource scenarios. (ii) We demonstrate that JoLA achieves stable and consistent performance across diverse tasks, addressing key limitations of existing methods. We further validate its effectiveness across different data scales and model sizes. (iii) We provide new insights into the role of attention heads in activation editing, showing that they are the most impactful components for fine-tuning."
+      ],
+      "subsections": []
+    },
+    "2 Background": {
+      "paragraphs": [
+        "Activation editing in LLMs modifies intermediate activation outputs to steer model behavior. We categorize existing approaches into three types based on the transformation function applied to activations. Given an activation output zt(l,i)∈ℝdlz_{t}^{(l,i)}\\in\\mathbb{R}^{d_{l}} for iith component at layer ll, the general transformation is: where f​(⋅)f(\\cdot) determines the intervention type:",
+        "• Additive methods apply a bias vector ali∈ℝdla^{i}_{l}\\in\\mathbb{R}^{d_{l}} : zt(l,i)′=zt(l,i)+a(l,i)z_{t}^{(l,i)^{\\prime}}=z_{t}^{(l,i)}+a^{(l,i)}.",
+        "• Multiplicative methods scale activations as zt(l,i)′=m(l,i)⊙zt(l,i)z_{t}^{(l,i)^{\\prime}}=m^{(l,i)}\\odot z_{t}^{(l,i)}, where m(l,i)∈ℝdlm^{(l,i)}\\in\\mathbb{R}^{d_{l}} and ⊙\\odot is an element-wise product.",
+        "• Hybrid methods combine both transformations: zt(l,i)′=m(l,i)⊙zt(l,i)+a(l,i)z_{t}^{(l,i)^{\\prime}}=m^{(l,i)}\\odot z_{t}^{(l,i)}+a^{(l,i)}.",
+        "Existing methods follow these paradigms but often rely on fixed selections of components for modification, limiting adaptability. For example, BitFit (Ben Zaken et al., 2022) updates bias terms, while RED (Wu et al., 2024a) employs per-dimension scaling vectors and bias vectors. ReFT (Wu et al., 2024b) applies fine-tuned low-rank hidden states with MLP layers, and LoFIT (Yin et al., 2024) intervenes in selected attention heads with additive bias vectors but requires manual selection."
+      ],
+      "subsections": []
+    },
+    "3 Method": {
+      "paragraphs": [
+        "In this section, we introduce JoLA, a novel approach for fine-tuning LLMs in low-resource settings. We first identify two key challenges in existing approaches and present an analysis to better motivate our method (Section 3.1). We then propose a gated dynamic attention head selection mechanism to address these limitations (Section 3.2). Figure 1 illustrates the comparison of previous activation editing approaches and JoLA."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Motivation",
+          "paragraphs": [
+            "Activation editing methods have demonstrated success in modifying Transformer components such as bias terms (Ben Zaken et al., 2022), MLP layers (Wu et al., 2024a), low-rank hidden state subspaces (Wu et al., 2024b), and specific attention heads (Yin et al., 2024). However, two critical questions remain underexplored: Q1: Which Transformer components are most crucial for effective activation editing? Q2: What combination of multiplicative and additive operations yields the best performance for intervention? Existing approaches predefine the components to edit and rely on fixed intervention strategies, such as simple multiplicative scaling, which limits adaptability and can lead to inconsistent performance across tasks, especially in low-resource scenarios. To address these questions, we conduct controlled experiments to compare the effectiveness of editing different Transformer components and analyze the relative contributions of multiplicative and additive operations.333Details on experimental setup and datasets are provided in Section 4.",
+            "We evaluate activation editing across four Transformer components: bias terms, MLP layers, hidden states, and attention heads. Figure 2 indicates that attention heads are the most impactful module to target. Unlike other modules, which primarily refine intermediate representations, attention heads encode key semantic relationships and play a crucial role in reasoning and task adaptation (Ren et al., 2024). Moreover, intervening in multiple components often degrades performance, reinforcing the need for targeted attention head modifications.",
+            "Activation editing typically involves two operations: scaling (multiplicative) and offset (additive) adjustments. To evaluate their relative importance, we conduct ablation studies isolating each operation. As shown in Figure 3, bias offsets consistently contribute more to performance improvements than scaling. We hypothesize that this behavior arises because the bias directly adjusts the latent representations, facilitating fine-grained task-specific adaptation while retaining the features of the pre-trained model. In contrast, scaling modifies the activations uniformly, which may introduce unintended distortions. These findings motivate our approach: JoLA incorporates both operations but prioritizes offset interventions for more effective adaptation."
+          ]
+        },
+        {
+          "title": "Q1: Component Selection.",
+          "paragraphs": [
+            "We evaluate activation editing across four Transformer components: bias terms, MLP layers, hidden states, and attention heads. Figure 2 indicates that attention heads are the most impactful module to target. Unlike other modules, which primarily refine intermediate representations, attention heads encode key semantic relationships and play a crucial role in reasoning and task adaptation (Ren et al., 2024). Moreover, intervening in multiple components often degrades performance, reinforcing the need for targeted attention head modifications."
+          ]
+        },
+        {
+          "title": "Q2: Scaling vs. Offset Operations.",
+          "paragraphs": [
+            "Activation editing typically involves two operations: scaling (multiplicative) and offset (additive) adjustments. To evaluate their relative importance, we conduct ablation studies isolating each operation. As shown in Figure 3, bias offsets consistently contribute more to performance improvements than scaling. We hypothesize that this behavior arises because the bias directly adjusts the latent representations, facilitating fine-grained task-specific adaptation while retaining the features of the pre-trained model. In contrast, scaling modifies the activations uniformly, which may introduce unintended distortions. These findings motivate our approach: JoLA incorporates both operations but prioritizes offset interventions for more effective adaptation."
+          ]
+        },
+        {
+          "title": "3.2 Joint Localization and Editing",
+          "paragraphs": [
+            "Based on our insights from Section 3.1, JoLA focuses on adaptive attention head interventions to maximize activation editing effectiveness. Existing methods like LoFIT (Yin et al., 2024) require manual hyperparameter tuning to select the number of attention heads and cannot adjust the chosen heads during training. Moreover, their head selection criteria do not necessarily align with interventions. For instance, LoFIT employs multiplicative variables to determine head selection before restarting training with additive-only interventions. To address these limitations, we propose a method that jointly learns which heads to modify while optimizing intervention parameters (i.e., vectors m(l,i)m^{(l,i)} and a(l,i)a^{(l,i)}).",
+            "We extend the hybrid intervention method from Section 2 by introducing two scalar gates, ga(l,i)g_{a}^{(l,i)} and gm(l,i)g_{m}^{(l,i)}, both in [0,1][0,1]. This results in the transformation:",
+            "where 𝟏∈ℝdl\\mathbf{1}\\in\\mathbb{R}^{d_{l}} is a vector of ones. The transformation is designed so that when both gates are closed (ga(l,i)=gm(l,i)=0g_{a}^{(l,i)}=g_{m}^{(l,i)}=0), it reduces to the identity map, effectively disabling the intervention for that head. By using separate gates, the model can learn to apply additive and multiplicative modifications independently.",
+            "Since our goal is to apply activation editing to a small, adaptively chosen subset of heads, we encourage the gates to be exactly zero where intervention is unnecessary. To achieve this, we use expected-L0L_{0} regularization, a technique originally introduced by Louizos et al. (2018) for pruning neural network weights. This approach has since been successfully applied to tasks such as head pruning (Voita et al., 2019) and extracting reasoning paths in graph neural networks (Schlichtkrull et al., 2021).",
+            "During training, each gate is modeled as a stochastic variable drawn from a Hard-Concrete distribution (Louizos et al., 2018),",
+            "The Hard-Concrete distribution is a mixed discrete-continuous distribution over [0,1][0,1], with point masses at 0 and 11 and a continuous density over (0,1)(0,1). The closed-form probability of a gate being non-zero (e.g., 1−P​(ga(l,i)=0∣ϕa(l,i))1-P(g_{a}^{(l,i)}=0\\mid\\phi_{a}^{(l,i)})), is used to define a sparsity-inducing regularizer:",
+            "The overall training objective balances task-specific performance with sparsity:",
+            "where Lx​e​n​tL_{xent} is the standard cross-entropy loss, and λ\\lambda controls the trade-off between performance and sparsity. Optimization is performed over all intervention parameters: ϕ\\mathbf{\\phi}, 𝐦\\mathbf{m} and 𝐚\\mathbf{a}.",
+            "As with parameter pruning (Louizos et al., 2018), the expected value of each gate can be computed. The interventions with very low expected gate value (i.e., 𝔼​[gm(l,i)]<ϵ\\mathbb{E}[g_{m}^{(l,i)}]<\\epsilon) can be disregarded with no effect on JoLA performance. For the remaining heads, the gate is set during inference to its expected value.",
+            "By dynamically selecting and adapting attention head interventions, JoLA achieves efficient and effective activation editing, overcoming the limitations of previous methods. Our approach ensures robust, data-efficient adaptation across diverse tasks, making it well-suited for low-resource settings."
+          ]
+        }
+      ]
+    },
+    "4 Experiments": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "4.1 Datasets and Tasks",
+          "paragraphs": [
+            "We evaluate JoLA on three diverse tasks: commonsense reasoning, natural language understanding, and natural language generation. Additional details regarding the datasets can be found in Appendix B.",
+            "For commonsense reasoning, we utilize a widely adopted benchmark (Hu et al., 2023; Wu et al., 2024b) containing 8 datasets: ARC-c and ARC-e (Clark et al., 2018), BoolQ (Clark et al., 2019), HellaSwag (Zellers et al., 2019), OBQA (Mihaylov et al., 2018), PIQA (Bisk et al., 2020), SIQA (Sap et al., 2019), and WinoGrande (Sakaguchi et al., 2021). These datasets consist of multiple-choice questions, where the model must directly generate the correct option without providing explanations.",
+            "We evaluate on the MMLU-Pro benchmark (Wang et al., 2024b), covering 14 domains: Biology, Business, Chemistry, Computer Science, Economics, Engineering, Health, History, Law, Math, Philosophy, Physics, Psychology, and Others. Each task requires selecting the correct answer from ten options, testing the model’s broad knowledge and reasoning capabilities.",
+            "For generation tasks, we select 4 datasets from GEM benchmark (Gehrmann et al., 2022), including CommonGen (Lin et al., 2020) for concept-to-sentence generation, E2E (Novikova et al., 2017) and WebNLG (Gardent et al., 2017) for data-to-text generation, and XSum (Narayan et al., 2018) for abstractive summarization of long documents. This selection ensures a diverse evaluation of generation tasks, including coherence, informativeness, and abstraction."
+          ]
+        },
+        {
+          "title": "Commonsense Reasoning.",
+          "paragraphs": [
+            "For commonsense reasoning, we utilize a widely adopted benchmark (Hu et al., 2023; Wu et al., 2024b) containing 8 datasets: ARC-c and ARC-e (Clark et al., 2018), BoolQ (Clark et al., 2019), HellaSwag (Zellers et al., 2019), OBQA (Mihaylov et al., 2018), PIQA (Bisk et al., 2020), SIQA (Sap et al., 2019), and WinoGrande (Sakaguchi et al., 2021). These datasets consist of multiple-choice questions, where the model must directly generate the correct option without providing explanations."
+          ]
+        },
+        {
+          "title": "Natural Language Understanding.",
+          "paragraphs": [
+            "We evaluate on the MMLU-Pro benchmark (Wang et al., 2024b), covering 14 domains: Biology, Business, Chemistry, Computer Science, Economics, Engineering, Health, History, Law, Math, Philosophy, Physics, Psychology, and Others. Each task requires selecting the correct answer from ten options, testing the model’s broad knowledge and reasoning capabilities."
+          ]
+        },
+        {
+          "title": "Natural Language Generation.",
+          "paragraphs": [
+            "For generation tasks, we select 4 datasets from GEM benchmark (Gehrmann et al., 2022), including CommonGen (Lin et al., 2020) for concept-to-sentence generation, E2E (Novikova et al., 2017) and WebNLG (Gardent et al., 2017) for data-to-text generation, and XSum (Narayan et al., 2018) for abstractive summarization of long documents. This selection ensures a diverse evaluation of generation tasks, including coherence, informativeness, and abstraction."
+          ]
+        },
+        {
+          "title": "4.2 Baselines",
+          "paragraphs": [
+            "We compare JoLA against a range of state-of-the-art baselines: (1) Zero-Shot: Direct evaluation of pre-trained large language models (LLMs) without fine-tuning, including LLaMA-3 (Dubey et al., 2024) and Qwen-2.5 (Yang et al., 2024). (2) Parameter-Efficient Fine-Tuning: LoRA (Hu et al., 2021), a method for efficient fine-tuning by injecting trainable low-rank updates into the model’s weights. (3) Activation editing during training: BitFiT (Ben Zaken et al., 2022), a method that fine-tunes only the bias terms of the model; RED (Wu et al., 2024a), which adds scaling and bias vectors to the outputs of MLP layer; ReFT (Wu et al., 2024b), which directly intervenes on task-specific hidden states with MLP Layers, and LOFIT (Yin et al., 2024), a two-stage method that selects task-relevant attention heads and applies bias tuning. (4) Activation editing during infernece: REPE (Zou et al., 2023), which modifies representations derived from contrastive prompts."
+          ]
+        },
+        {
+          "title": "4.3 Implementation",
+          "paragraphs": [
+            "We conduct experiments using the Llama-3.1-8B-Instruct (8B) and Qwen2.5-7B-Instruct (7B) models as the primary base models. Both are publicly available via the Huggingface repository444https://huggingface.co. To study the impact of model size, we also experiment with smaller (Llama-3.2-1B-Instruct, Llama-3.2-3B-Instruct) and larger (Llama-3.1-70B-Instruct) model variants. For all datasets, we sample 200 examples to simulate low-resource scenarios, with further analysis of data size effects provided in Section 6. The prompt templates used in our method are also included in the Appendix C. In all baseline experiments, we observe that the choice of hyperparameters significantly affected performance across different tasks. To address this, we conduct a hyperparameter search for each method, selecting five hyperparameters and averaging the results. The final outcomes are presented in Table 1 and Figure 4. More details on the training setup, computational resources, and hyperparameter selection process are provided in Appendix D."
+          ]
+        },
+        {
+          "title": "4.4 Evaluation Metrics",
+          "paragraphs": [
+            "We employ exact match accuracy as the evaluation metric for commonsense reasoning and natural language understanding tasks. For natural language generation, we use BLEU (Papineni et al., 2002), ROUGE-L (Lin, 2004) and BERTScore (Zhang et al., 2019) scores as implemented in the GEM benchmark (Gehrmann et al., 2022)."
+          ]
+        }
+      ]
+    },
+    "5 Results": {
+      "paragraphs": [
+        "This section evaluates the performance of our proposed method, JoLA, in comparison with various baselines. Table 1 presents the average performance for all methods across the three tasks, while Figure 4 illustrates the results for individual subtasks. More detailed numerical results can be found in Appendix E.",
+        "Performance of Activation-Based Baselines. Activation editing baselines exhibit varying levels of success across tasks, but their sensitivity to hyperparameter selection and layer intervention limits their consistency. For example, BitFit (Ben Zaken et al., 2022) demonstrates notable sensitivity to the placement of bias terms within the model. Adjusting bias terms in dropout layers or attention mechanisms results in performance fluctuations, particularly in low-data scenarios. Similarly, RED (Wu et al., 2024a) depends on the specific positions where scaling and bias vectors are introduced, leading to inconsistent results. REPE (Zou et al., 2023) is highly sensitive to the quality of activation representations across tasks, making it challenging to generalize its performance. ReFT (Wu et al., 2024b) achieves moderate success by intervening on selected layers but faces challenges in determining the optimal number and choice of layers. LoFIT (Yin et al., 2024), while effective in leveraging task-relevant attention heads, struggles to maintain consistency across tasks.",
+        "Performance of LoRA. LoRA achieves noticeable improvements over zero-shot baselines and, somewhat surprisingly, outperforms previous activation editing methods across all tasks when its rank hyperparameter is appropriately tuned. In tasks such as natural language generation, LoRA achieves higher BLEU and ROUGE-L scores, highlighting its ability to generate coherent outputs.",
+        "Performance of JoLA Our proposed method, JoLA, consistently outperforms all baselines across the three tasks by a significant margin. This can be attributed to JoLA’s dynamic gated attention mechanism, which allows for adaptive activation of attention heads. Unlike LoFIT (Yin et al., 2024), which requires manual selection of attention heads, JoLA’s mechanism enables less relevant heads to gradually “die off” during training, improving robustness and adaptability. In commonsense reasoning, JoLA achieves an average improvement of 3.97% over the best-performing baseline (LoRA) in LLaMA-3, as shown in Table 1. For natural language understanding, JoLA demonstrates consistent performance across diverse domains in the MMLU-Pro benchmark (Wang et al., 2024b) across all 14 subtasks as illustrated in Figure 4. In natural language generation tasks, JoLA achieves higher BLEU, ROUGE-L and BERTScore scores compared to activation-based baselines and LoRA."
+      ],
+      "subsections": []
+    },
+    "6 Analysis": {
+      "paragraphs": [
+        "In this section, we present a detailed analysis of JoLA through ablation studies (Section 6.1, Section 6.2, and Section 6.3), an exploration of gate status during training (Section 6.4), and evaluations across varying data and model sizes (Section 6.5). Unless otherwise specified, the analyses in this section are conducted on selected tasks, including SIQA, WinoGrande, Law, Physics, E2E_NLG, and WEB_NLG. In addition, we provide a case study to better visualize the advantages of JoLA in Appendix F."
+      ],
+      "subsections": [
+        {
+          "title": "6.1 Ablation 1: Gate Mechanism",
+          "paragraphs": [
+            "Dynamic gating attention head selection is central to the performance of JoLA, as detailed in Section 3.2. To evaluate its necessity, we compare models with and without the gating mechanism. As illustrated in Figure 5, the gating mechanism provides a significant improvement to task performance. We speculate that this improvement arises because certain attention heads can be modified more effectively to achieve the desired behavior in a generalizable way, whereas modifying others may disrupt the model. The gating mechanism can selectively adjust the activation outputs of relevant attention heads, avoiding excessive or unnecessary edits that could harm performance. In contrast, models without this gating mechanism fail to differentiate between “editable” and less “editable” heads, resulting in performance instability."
+          ]
+        },
+        {
+          "title": "6.2 Ablation 2: Number of Gates",
+          "paragraphs": [
+            "In Equation 2, we employ separate gating units for the scaling vector and the bias vector. To investigate the impact of this design, we compare configurations where each vector has its own gate with configurations where both vectors share a single gate. As illustrated in Figure 6, although the shared gating configuration achieves a performance improvement over the zero-shot baseline, it underperforms compared to the configuration with separate gates. This suggests that the choice of intervention should depend on what role the head plays in a given task. Using independent gating units enables fine-grained control over each vector’s contribution, facilitating more precise task-specific adjustments and preventing over-modification of the activation outputs."
+          ]
+        },
+        {
+          "title": "6.3 Ablation 3: Different Head Selection Strategies",
+          "paragraphs": [
+            "Head selection is a critical component of JoLA’s design. To evaluate whether alternative selection strategies could achieve similar outcomes, we compare JoLA with three established methods: (1) SMP (Zhang et al., 2021), which trains a separate pruner to rank and identify attention heads that are less important for the task; (2) DSP (Li et al., 2021), which employs Gumbel-Softmax (Jang et al., 2017) to iteratively select the top-K heads; and (3) PASS (Ding et al., 2024), which uses robust optimization to enforce deterministic sparsity.",
+            "As shown in Figure 7, JoLA outperforms these methods, especially in low-resource scenarios. SMP’s reliance on large datasets for training the pruner makes it ill-suited for sparse data. DSP’s iterative selection process is highly sensitive to noisy gradients from small datasets, leading to unstable or incorrect selection decisions. While PASS achieves deterministic sparsity, its regularization objective overfits to limited data distributions, resulting in suboptimal gate decisions. By contrast, JoLA’s stochastic gating mechanism effectively balances exploration and exploitation, allowing it to adaptively identify important heads even in low-data settings."
+          ]
+        },
+        {
+          "title": "6.4 Gate Status During Traning",
+          "paragraphs": [
+            "To further investigate the dynamic gating mechanism, we analyzed the probability of the gmg_{m} and gag_{a} gates being “closed” (i.e., having a value of 0) during training on the OBQA dataset (Mihaylov et al., 2018). As shown in Figure 8, both gates start in the “open” state (at batch=0), allowing all attention heads to contribute to the learning process. The probability of the gates being closed increases during training, which reflects the gradual closing of redundant attention heads. This behavior is consistent with our expectations, i.e., attention heads that encode task-relevant information remain active early in training, while less important heads are pruned as their representations converge."
+          ]
+        },
+        {
+          "title": "6.5 Further Analysis",
+          "paragraphs": [
+            "To evaluate JoLA’s robustness across varying data scales, we conduct experiments using 100 to 1000 training examples sampled from the SIQA and WinoGrande datasets. Figure 9 shows that JoLA consistently outperforms baselines even with only 100 examples, demonstrating its efficacy in extreme low-resource settings. Performance improves steadily with increasing data, highlighting the method’s adaptability to diverse levels of data availability. This scalability across data sizes underscores the practicality of JoLA for real-world applications where labeled data is often limited.",
+            "To evaluate the scalability of JoLA with respect to model size, we test three variants: Llama-3.2-1B-Instruct, Llama-3.2-3B-Instruct, and Llama-3.1-70B-Instruct. As shown in Table 2, JoLA consistently delivers significant performance improvements across all model sizes. Notably, larger models benefit more substantially from JoLA’s dynamic selection mechanism, as they inherently possess greater redundancy in attention heads. This finding highlights JoLA’s scalability and effectiveness in optimizing large-scale models while maintaining robust performance in low-data scenarios."
+          ]
+        },
+        {
+          "title": "Different Data Size",
+          "paragraphs": [
+            "To evaluate JoLA’s robustness across varying data scales, we conduct experiments using 100 to 1000 training examples sampled from the SIQA and WinoGrande datasets. Figure 9 shows that JoLA consistently outperforms baselines even with only 100 examples, demonstrating its efficacy in extreme low-resource settings. Performance improves steadily with increasing data, highlighting the method’s adaptability to diverse levels of data availability. This scalability across data sizes underscores the practicality of JoLA for real-world applications where labeled data is often limited."
+          ]
+        },
+        {
+          "title": "Different Model Size",
+          "paragraphs": [
+            "To evaluate the scalability of JoLA with respect to model size, we test three variants: Llama-3.2-1B-Instruct, Llama-3.2-3B-Instruct, and Llama-3.1-70B-Instruct. As shown in Table 2, JoLA consistently delivers significant performance improvements across all model sizes. Notably, larger models benefit more substantially from JoLA’s dynamic selection mechanism, as they inherently possess greater redundancy in attention heads. This finding highlights JoLA’s scalability and effectiveness in optimizing large-scale models while maintaining robust performance in low-data scenarios."
+          ]
+        }
+      ]
+    },
+    "7 Related Work": {
+      "paragraphs": [
+        "Low-Resource Fine-tuning. Recent advancements in LLMs have transformed a wide range of NLP tasks (Zhao et al., 2023). However, efficiently adapting these models to diverse applications remains challenging, especially in low-resource settings. Parameter-efficient fine-tuning (PEFT) methods (Hu et al., 2021; Dettmers et al., 2024), which update a small subset of parameters or integrate new modules (Houlsby et al., 2019), achieve performance comparable to full fine-tuning across various tasks (Wang et al., 2024a). Yet, mitigating overfitting in low-resource scenarios remains a key challenge. Activation editing techniques (Ben Zaken et al., 2022; Wu et al., 2024a, b; Yin et al., 2024) offer a lightweight approach to model adaptation, often argued to be more data-efficient than standard PEFT methods.",
+        "Pruning. Neural network pruning (Cheng et al., 2024) aims to reduce model complexity and computational demands by removing less important or redundant components. Our approach builds on pruning techniques, specifically expected-L0L_{0} regularization (Louizos et al., 2018). However, rather than pruning heads, our goal is to modify a selected subset of heads while keeping the rest intact. Subnetwork pruning techniques (e.g., Frantar & Alistarh, 2023;Sun et al., 2023) seek to identify an effective subnetwork, often tailored to a specific task, domain, or language. However, their primary objective is typically to match the performance of the full model rather than to specialize it for a particular task.",
+        "Sparse Fine-tuning. Sparse finetuning (Dao et al., 2022; Thangarasa et al., 2023) is a technique for adapting LLMs to specific tasks or datasets while only updating a small subset of the model’s parameters. Our approach shares similarities with sparse fine-tuning, a technique commonly used in multilingual modeling (Nooralahzadeh & Sennrich, 2023; Choenni et al., 2024), where languages are typically assumed to be encoded modularly. Sparse fine-tuning identifies specific components (e.g., heads), fine-tunes all their parameters, and discards the others. In contrast, JoLA adjusts the activations of selected components while keeping the rest intact. While the goal of sparse fine-tuning is often to match the performance of the full model using a smaller version, our aim is not only to reduce model size but to enhance performance over the full model."
+      ],
+      "subsections": []
+    },
+    "8 Conclusion": {
+      "paragraphs": [
+        "In this paper, we introduce JoLA, a novel approach for low-resource fine-tuning that jointly learns to dynamically localize the attention heads to be targeted for intervention and the best practice for editing the activation outputs with multiplicative scaling vectors and/or additive bias vectors. We observe that attention heads are more effective than other model components in activation editing, offering a novel perspective for future research in this area. Extensive experiments and ablation studies demonstrate the robustness of our method in low-data scenarios and across varying model sizes, highlighting the importance of joint component selection and activation editing."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Comparison of the number of parameters\nwith Full Parameter Fine-Tuning, PEFT and Activation Editing": {
+      "paragraphs": [
+        "To better demonstrate the advantages of our approach over full parameter fine-tuning, LoRA (Hu et al., 2021), and existing activation editing methods, we compare them across five key aspects: the percentage of modified parameters, the intervention modules, dynamic localization of intervention modules, data efficiency, and robustness across various tasks. Using the fine-tuning of LLaMA-3 (Dubey et al., 2024) as an example, as shown in Table 3, compared to full parameter fine-tuning and LoRA, activation editing requires editing only a small fraction of parameters, significantly fewer than the parameters from LoRA. Activation editing is also a data-efficient approach, often effective even with just 100 examples. However, we find that existing activation editing methods lack robustness across different datasets, primarily due to their reliance on manually configuring intervention module parameters, which are highly sensitive to task-specific variations. In contrast, our proposed method, JoLA, achieves comparable parameter efficiency to the best activation editing methods (e.g., LoFIT (Yin et al., 2024)), while also delivering robust performance across tasks in low-resource settings. This is due to dynamically adjusting the intervention module configurations rather than relying on manual parameter tuning.",
+        "[Table: Table 3: Comparison of full parameter tuning, LoRA, and activation editing methods. We compare the intervention components, the percentage of new parameters introduced, the data efficiency, and robustness across different tasks. We use LLaMA-3 (Dubey et al., 2024) to compute the parameters. Note that full parameter tuning∗ does not introduce new parameters. ]",
+        "[Table: Table 4: Overview of the sub-datasets and sub-tasks evaluated across three main tasks: commonsense reasoning, natural language understanding, and natural language generation. Each task is designed to assess different aspects of language processing, with commonsense reasoning and natural language understanding framed as multiple-choice problems, and natural language generation as an end-to-end text generation task.]"
+      ],
+      "subsections": []
+    },
+    "Appendix B Datasets": {
+      "paragraphs": [
+        "We conduct experiments across three tasks: commonsense reasoning (Hu et al., 2023), natural language understanding (Wang et al., 2024b), and natural language generation (Gehrmann et al., 2022). Table 4 provides a brief overview of the sub-datasets or sub-tasks within the three benchmarks evaluated. The commonsense reasoning task is framed as a multiple-choice problem, where the correct answer is selected from 2 to 4 possible options. The natural language understanding task also follows a multiple-choice format, but with ten options. The natural language generation task, on the other hand, is an end-to-end text generation task, where unstructured data (such as commonsense concepts or data) is converted into coherent text. In the training phase, we simulate a low-resource scenario by using 200 examples. Section 6.5 further explores experiments with varying numbers of samples. To ensure consistency across experiments, we used the same random seed (seed=42=42) for data sampling, ensuring identical training samples in all runs.",
+        "[Table: Table 5: Prompt settings are employed across various benchmarks, including Commonsense Reasoning, MMLU-Pro, and GEM. ]",
+        "[Table: Table 6: Hyperparameter configurations for the baseline methods evaluated in our experiments. These settings are used across multiple tasks to assess model performance in low-resource settings, as discussed in Sections 1 and Section 4. ]"
+      ],
+      "subsections": []
+    },
+    "Appendix C Prompt Setting": {
+      "paragraphs": [
+        "Recent studies (He et al., 2024; Lai et al., 2024) have highlighted the substantial impact of prompt design on model performance. In our experiments, we adopt the same prompt configurations as Hu et al. (2023) for the commonsense reasoning benchmark, and used the prompts from the original paper for the MMLU-Pro benchmark (Wang et al., 2024b). For the GEM benchmark (Gehrmann et al., 2022), where the original paper did not provide the prompt settings, we utilized commonly used prompts curated from PromptSource666https://github.com/bigscience-workshop/promptsource. To ensure reproducibility of our results, we present the prompts employed in our experiments in Table 5."
+      ],
+      "subsections": []
+    },
+    "Appendix D Experiment Configurations": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "D.1 Training Setup",
+          "paragraphs": [
+            "We conduct all experiments using the HuggingFace Transformers777https://github.com/huggingface/transformers library and fine-tuned the models with the TRL toolkit888https://github.com/huggingface/trl. The AdamW optimizer (Loshchilov, 2017) was used for fine-tuning, with ϵ=1​e−6\\epsilon=1e-6 and one epoch of warm-up. In addition, we employ an exponentially decaying (Li & Arora, 2019) learning rate schedule, defined by the following formula:",
+            "where lr0\\text{lr}_{0} is the initial learning rate l​r0lr_{0}set to 5×10−45\\times 10^{-4} , λ\\lambda is 0.1, and the decay rate is 0.01. For the gating units, we used a temperature of 0.33 in the Gumbel Softmax (Jang et al., 2017). Fine-tuning was performed in full precision for the 7B, 8B, 1B, and 3B models, while for the 70B model, we applied 4-bit quantization to enable single-precision fine-tuning."
+          ]
+        },
+        {
+          "title": "D.2 Computational Resources",
+          "paragraphs": [
+            "All experiments for the 1B, 3B, 8B, and 13B models were conducted on a single NVIDIA A100 80GB GPU server. The 70B model, described in Section 6.5, was evaluated on an NVIDIA H100 94GB GPU server. As an example, with the 8B LLaMA-3 model, JoLA converged within 2 GPU hours on most tasks in the low-resource setting, using only 200 training samples."
+          ]
+        },
+        {
+          "title": "D.3 Hyperparameter Search for Baselines",
+          "paragraphs": [
+            "As discussed in Section 1 and Section 4, the performance of baseline methods in low-resource settings is highly sensitive to hyperparameters across different tasks. However, it is impractical to conduct hyperparameter searches for each task individually, given that we evaluate 26 tasks in total, and performing a separate search for each would be time-consuming. To mitigate this, we use five different sets of hyperparameters during the baseline experiments. The average results of these five configurations are reported in Table 1 and Figure 4. The specific hyperparameters used for each method are detailed in Table 6."
+          ]
+        }
+      ]
+    },
+    "Appendix E Full Results Across all Tasks": {
+      "paragraphs": [
+        "Due to page limitations, we present the average performance across the 26 tasks in Table 1 and Figure 4. In this section, we provide detailed performance metrics for each individual task. Specifically, Table 7 reports the accuracy of LLaMA-3 on the commonsense reasoning task, while Table 8 presents the accuracy of Qwen-2.5 on the same task. Table 9 shows the accuracy of LLaMA-3 on the natural language understanding task, and Table 10 shows the corresponding accuracy for Qwen-2.5. Finally, Table 11 presents the BLEU, ROUGE-L, and BERTScore for LLaMA-3 on the natural language generation task, with Table 12 displaying the corresponding metrics for Qwen-2.5.",
+        "[Table: Table 7: The accuracy of LLaMA-3 across various commonsense reasoning tasks, comparing different baseline methods and our proposed method (JoLA). ]",
+        "[Table: Table 8: The accuracy of Qwen-2.5 across various commonsense reasoning tasks, comparing different baseline methods and our proposed method (JoLA). ]",
+        "[Table: Table 9: The performance of LLaMA-3 across multiple domains in the MMLU-Pro benchmark. ]",
+        "[Table: Table 10: The performance of Qwen-2.5 across multiple domains in the MMLU-Pro benchmark. ]",
+        "[Table: Table 11: The performance of LLaMA-3 across various natural language generation tasks (Commen_Gen, E2E_NLG, WEB_NLG, and Xsum), using BLEU, ROUGE-L, and BERTScore as evaluation metrics. ]",
+        "[Table: Table 12: The performance of Qwen-2.5 across various natural language generation tasks (Commen_Gen, E2E_NLG, WEB_NLG, and Xsum), using BLEU, ROUGE-L, and BERTScore as evaluation metrics. ]"
+      ],
+      "subsections": []
+    },
+    "Appendix F Case Study": {
+      "paragraphs": [
+        "To provide an intuitive evaluation of the advantages of our method, we select one representative case from each of the tasks: commonsense reasoning, natural language understanding, and natural language generation. The results generated by the baseline and our approach are presented below."
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "Ben Zaken et al. (2022) Ben Zaken, E., Goldberg, Y., and Ravfogel, S. BitFit: Simple parameter-efficient fine-tuning for transformer-based masked language-models. In Muresan, S., Nakov, P., and Villavicencio, A. (eds.), Proceedings of the 60th Annual Meeting of the Association for Computational Linguistics (Volume 2: Short Papers), pp. 1–9, Dublin, Ireland, May 2022. Association for Computational Linguistics. doi: 10.18653/v1/2022.acl-short.1. URL https://aclanthology.org/2022.acl-short.1/.",
+    "Bisk et al. (2020) Bisk, Y., Zellers, R., Gao, J., Choi, Y., et al. Piqa: Reasoning about physical commonsense in natural language. In Proceedings of the AAAI conference on artificial intelligence, volume 34, pp. 7432–7439, 2020.",
+    "Cheng et al. (2024) Cheng, H., Zhang, M., and Shi, J. Q. A survey on deep neural network pruning: Taxonomy, comparison, analysis, and recommendations. IEEE Transactions on Pattern Analysis and Machine Intelligence, 46(12):10558–10578, 2024. doi: 10.1109/TPAMI.2024.3447085.",
+    "Choenni et al. (2024) Choenni, R., Shutova, E., and Garrette, D. Examining modularity in multilingual LMs via language-specialized subnetworks. In Duh, K., Gomez, H., and Bethard, S. (eds.), Findings of the Association for Computational Linguistics: NAACL 2024, pp. 287–301, Mexico City, Mexico, June 2024. Association for Computational Linguistics. doi: 10.18653/v1/2024.findings-naacl.21. URL https://aclanthology.org/2024.findings-naacl.21/.",
+    "Clark et al. (2019) Clark, C., Lee, K., Chang, M.-W., Kwiatkowski, T., Collins, M., and Toutanova, K. BoolQ: Exploring the surprising difficulty of natural yes/no questions. In Burstein, J., Doran, C., and Solorio, T. (eds.), Proceedings of the 2019 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, Volume 1 (Long and Short Papers), pp. 2924–2936, Minneapolis, Minnesota, June 2019. Association for Computational Linguistics. doi: 10.18653/v1/N19-1300. URL https://aclanthology.org/N19-1300/.",
+    "Clark et al. (2018) Clark, P., Cowhey, I., Etzioni, O., Khot, T., Sabharwal, A., Schoenick, C., and Tafjord, O. Think you have solved question answering? try arc, the ai2 reasoning challenge. arXiv preprint arXiv:1803.05457, 2018.",
+    "Dao et al. (2022) Dao, T., Chen, B., Sohoni, N. S., Desai, A., Poli, M., Grogan, J., Liu, A., Rao, A., Rudra, A., and Ré, C. Monarch: Expressive structured matrices for efficient and accurate training. In International Conference on Machine Learning, pp. 4690–4721. PMLR, 2022.",
+    "Dettmers et al. (2024) Dettmers, T., Pagnoni, A., Holtzman, A., and Zettlemoyer, L. Qlora: Efficient finetuning of quantized llms. Advances in Neural Information Processing Systems, 36, 2024.",
+    "Ding et al. (2024) Ding, D., Jawahar, G., and Lakshmanan, L. V. S. PASS: Pruning attention heads with almost-sure sparsity targets. Transactions on Machine Learning Research, 2024. ISSN 2835-8856. URL https://openreview.net/forum?id=S4duStTKGL.",
+    "Dubey et al. (2024) Dubey, A., Jauhri, A., Pandey, A., Kadian, A., Al-Dahle, A., Letman, A., Mathur, A., Schelten, A., Yang, A., Fan, A., et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783, 2024.",
+    "Frantar & Alistarh (2023) Frantar, E. and Alistarh, D. Sparsegpt: Massive language models can be accurately pruned in one-shot. In International Conference on Machine Learning, pp. 10323–10337. PMLR, 2023.",
+    "Gardent et al. (2017) Gardent, C., Shimorina, A., Narayan, S., and Perez-Beltrachini, L. Creating training corpora for NLG micro-planners. In Barzilay, R. and Kan, M.-Y. (eds.), Proceedings of the 55th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pp. 179–188, Vancouver, Canada, July 2017. Association for Computational Linguistics. doi: 10.18653/v1/P17-1017. URL https://aclanthology.org/P17-1017/.",
+    "Gehrmann et al. (2022) Gehrmann, S., Bhattacharjee, A., Mahendiran, A., Wang, A., Papangelis, A., Madaan, A., Mcmillan-major, A., Shvets, A., Upadhyay, A., Bohnet, B., Yao, B., Wilie, B., Bhagavatula, C., You, C., Thomson, C., Garbacea, C., Wang, D., Deutsch, D., Xiong, D., Jin, D., Gkatzia, D., Radev, D., Clark, E., Durmus, E., Ladhak, F., Ginter, F., Winata, G. I., Strobelt, H., Hayashi, H., Novikova, J., Kanerva, J., Chim, J., Zhou, J., Clive, J., Maynez, J., Sedoc, J., Juraska, J., Dhole, K., Chandu, K. R., Beltrachini, L. P., Ribeiro, L. F. . R., Tunstall, L., Zhang, L., Pushkarna, M., Creutz, M., White, M., Kale, M. S., Eddine, M. K., Daheim, N., Subramani, N., Dusek, O., Liang, P. P., Ammanamanchi, P. S., Zhu, Q., Puduppully, R., Kriz, R., Shahriyar, R., Cardenas, R., Mahamood, S., Osei, S., Cahyawijaya, S., Štajner, S., Montella, S., Jolly, S., Mille, S., Hasan, T., Shen, T., Adewumi, T., Raunak, V., Raheja, V., Nikolaev, V., Tsai, V., Jernite, Y., Xu, Y., Sang, Y., Liu, Y., and Hou, Y. GEMv2: Multilingual NLG benchmarking in a single line of code. In Che, W. and Shutova, E. (eds.), Proceedings of the 2022 Conference on Empirical Methods in Natural Language Processing: System Demonstrations, pp. 266–281, Abu Dhabi, UAE, December 2022. Association for Computational Linguistics. doi: 10.18653/v1/2022.emnlp-demos.27. URL https://aclanthology.org/2022.emnlp-demos.27/.",
+    "Han et al. (2024) Han, Z., Gao, C., Liu, J., Zhang, J., and Zhang, S. Q. Parameter-efficient fine-tuning for large models: A comprehensive survey. arXiv preprint arXiv:2403.14608, 2024.",
+    "He et al. (2024) He, J., Rungta, M., Koleczek, D., Sekhon, A., Wang, F. X., and Hasan, S. Does prompt formatting have any impact on llm performance? arXiv preprint arXiv:2411.10541, 2024.",
+    "Hendrycks et al. (2020) Hendrycks, D., Burns, C., Basart, S., Zou, A., Mazeika, M., Song, D., and Steinhardt, J. Measuring massive multitask language understanding. arXiv preprint arXiv:2009.03300, 2020.",
+    "Houlsby et al. (2019) Houlsby, N., Giurgiu, A., Jastrzebski, S., Morrone, B., De Laroussilhe, Q., Gesmundo, A., Attariyan, M., and Gelly, S. Parameter-efficient transfer learning for nlp. In International conference on machine learning, pp. 2790–2799. PMLR, 2019.",
+    "Hu et al. (2021) Hu, E. J., Shen, Y., Wallis, P., Allen-Zhu, Z., Li, Y., Wang, S., Wang, L., and Chen, W. Lora: Low-rank adaptation of large language models. arXiv preprint arXiv:2106.09685, 2021.",
+    "Hu et al. (2023) Hu, Z., Wang, L., Lan, Y., Xu, W., Lim, E.-P., Bing, L., Xu, X., Poria, S., and Lee, R. LLM-adapters: An adapter family for parameter-efficient fine-tuning of large language models. In Bouamor, H., Pino, J., and Bali, K. (eds.), Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, pp. 5254–5276, Singapore, December 2023. Association for Computational Linguistics. doi: 10.18653/v1/2023.emnlp-main.319. URL https://aclanthology.org/2023.emnlp-main.319/.",
+    "Jang et al. (2017) Jang, E., Gu, S., and Poole, B. Categorical reparameterization with gumbel-softmax. In International Conference on Learning Representations, 2017. URL https://openreview.net/forum?id=rkE3y85ee.",
+    "Lai et al. (2024) Lai, W., Mesgar, M., and Fraser, A. LLMs beyond English: Scaling the multilingual capability of LLMs with cross-lingual feedback. In Ku, L.-W., Martins, A., and Srikumar, V. (eds.), Findings of the Association for Computational Linguistics: ACL 2024, pp. 8186–8213, Bangkok, Thailand, August 2024. Association for Computational Linguistics. doi: 10.18653/v1/2024.findings-acl.488. URL https://aclanthology.org/2024.findings-acl.488/.",
+    "Li et al. (2021) Li, J., Cotterell, R., and Sachan, M. Differentiable subset pruning of transformer heads. Transactions of the Association for Computational Linguistics, 9:1442–1459, 2021. doi: 10.1162/tacl˙a˙00436. URL https://aclanthology.org/2021.tacl-1.86/.",
+    "Li & Arora (2019) Li, Z. and Arora, S. An exponential learning rate schedule for deep learning. arXiv preprint arXiv:1910.07454, 2019.",
+    "Lin et al. (2020) Lin, B. Y., Zhou, W., Shen, M., Zhou, P., Bhagavatula, C., Choi, Y., and Ren, X. CommonGen: A constrained text generation challenge for generative commonsense reasoning. In Cohn, T., He, Y., and Liu, Y. (eds.), Findings of the Association for Computational Linguistics: EMNLP 2020, pp. 1823–1840, Online, November 2020. Association for Computational Linguistics. doi: 10.18653/v1/2020.findings-emnlp.165. URL https://aclanthology.org/2020.findings-emnlp.165/.",
+    "Lin (2004) Lin, C.-Y. ROUGE: A package for automatic evaluation of summaries. In Text Summarization Branches Out, pp. 74–81, Barcelona, Spain, July 2004. Association for Computational Linguistics. URL https://aclanthology.org/W04-1013/.",
+    "Loshchilov (2017) Loshchilov, I. Decoupled weight decay regularization. arXiv preprint arXiv:1711.05101, 2017.",
+    "Louizos et al. (2018) Louizos, C., Welling, M., and Kingma, D. P. Learning sparse neural networks through l_0 regularization. In International Conference on Learning Representations, 2018.",
+    "Mihaylov et al. (2018) Mihaylov, T., Clark, P., Khot, T., and Sabharwal, A. Can a suit of armor conduct electricity? a new dataset for open book question answering. In Riloff, E., Chiang, D., Hockenmaier, J., and Tsujii, J. (eds.), Proceedings of the 2018 Conference on Empirical Methods in Natural Language Processing, pp. 2381–2391, Brussels, Belgium, October-November 2018. Association for Computational Linguistics. doi: 10.18653/v1/D18-1260. URL https://aclanthology.org/D18-1260/.",
+    "Narayan et al. (2018) Narayan, S., Cohen, S. B., and Lapata, M. Don‘t give me the details, just the summary! topic-aware convolutional neural networks for extreme summarization. In Riloff, E., Chiang, D., Hockenmaier, J., and Tsujii, J. (eds.), Proceedings of the 2018 Conference on Empirical Methods in Natural Language Processing, pp. 1797–1807, Brussels, Belgium, October-November 2018. Association for Computational Linguistics. doi: 10.18653/v1/D18-1206. URL https://aclanthology.org/D18-1206/.",
+    "Nooralahzadeh & Sennrich (2023) Nooralahzadeh, F. and Sennrich, R. Improving the cross-lingual generalisation in visual question answering. In Proceedings of the AAAI Conference on Artificial Intelligence, volume 37, pp. 13419–13427, 2023.",
+    "Novikova et al. (2017) Novikova, J., Dušek, O., and Rieser, V. The E2E dataset: New challenges for end-to-end generation. In Jokinen, K., Stede, M., DeVault, D., and Louis, A. (eds.), Proceedings of the 18th Annual SIGdial Meeting on Discourse and Dialogue, pp. 201–206, Saarbrücken, Germany, August 2017. Association for Computational Linguistics. doi: 10.18653/v1/W17-5525. URL https://aclanthology.org/W17-5525/.",
+    "Papineni et al. (2002) Papineni, K., Roukos, S., Ward, T., and Zhu, W.-J. Bleu: a method for automatic evaluation of machine translation. In Isabelle, P., Charniak, E., and Lin, D. (eds.), Proceedings of the 40th Annual Meeting of the Association for Computational Linguistics, pp. 311–318, Philadelphia, Pennsylvania, USA, July 2002. Association for Computational Linguistics. doi: 10.3115/1073083.1073135. URL https://aclanthology.org/P02-1040/.",
+    "Ren et al. (2024) Ren, J., Guo, Q., Yan, H., Liu, D., Zhang, Q., Qiu, X., and Lin, D. Identifying semantic induction heads to understand in-context learning. In Ku, L.-W., Martins, A., and Srikumar, V. (eds.), Findings of the Association for Computational Linguistics: ACL 2024, pp. 6916–6932, Bangkok, Thailand, August 2024. Association for Computational Linguistics. doi: 10.18653/v1/2024.findings-acl.412. URL https://aclanthology.org/2024.findings-acl.412/.",
+    "Sakaguchi et al. (2021) Sakaguchi, K., Bras, R. L., Bhagavatula, C., and Choi, Y. Winogrande: An adversarial winograd schema challenge at scale. Communications of the ACM, 64(9):99–106, 2021.",
+    "Sap et al. (2019) Sap, M., Rashkin, H., Chen, D., Le Bras, R., and Choi, Y. Social IQa: Commonsense reasoning about social interactions. In Inui, K., Jiang, J., Ng, V., and Wan, X. (eds.), Proceedings of the 2019 Conference on Empirical Methods in Natural Language Processing and the 9th International Joint Conference on Natural Language Processing (EMNLP-IJCNLP), pp. 4463–4473, Hong Kong, China, November 2019. Association for Computational Linguistics. doi: 10.18653/v1/D19-1454. URL https://aclanthology.org/D19-1454/.",
+    "Schlichtkrull et al. (2021) Schlichtkrull, M. S., De Cao, N., and Titov, I. Interpreting graph neural networks for nlp with differentiable edge masking. ICLR, 2021.",
+    "Sun et al. (2023) Sun, M., Liu, Z., Bair, A., and Kolter, J. Z. A simple and effective pruning approach for large language models. arXiv preprint arXiv:2306.11695, 2023.",
+    "Thangarasa et al. (2023) Thangarasa, V., Gupta, A., Marshall, W., Li, T., Leong, K., DeCoste, D., Lie, S., and Saxena, S. Spdf: Sparse pre-training and dense fine-tuning for large language models. In Uncertainty in Artificial Intelligence, pp. 2134–2146. PMLR, 2023.",
+    "Vig et al. (2020) Vig, J., Gehrmann, S., Belinkov, Y., Qian, S., Nevo, D., Sakenis, S., Huang, J., Singer, Y., and Shieber, S. Causal mediation analysis for interpreting neural nlp: The case of gender bias. arXiv preprint arXiv:2004.12265, 2020.",
+    "Voita et al. (2019) Voita, E., Talbot, D., Moiseev, F., Sennrich, R., and Titov, I. Analyzing multi-head self-attention: Specialized heads do the heavy lifting, the rest can be pruned. In Korhonen, A., Traum, D., and Màrquez, L. (eds.), Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics, pp. 5797–5808, Florence, Italy, July 2019. Association for Computational Linguistics. doi: 10.18653/v1/P19-1580. URL https://aclanthology.org/P19-1580/.",
+    "Wang et al. (2024a) Wang, L., Chen, S., Jiang, L., Pan, S., Cai, R., Yang, S., and Yang, F. Parameter-efficient fine-tuning in large models: A survey of methodologies. arXiv preprint arXiv:2410.19878, 2024a.",
+    "Wang et al. (2024b) Wang, Y., Ma, X., Zhang, G., Ni, Y., Chandra, A., Guo, S., Ren, W., Arulraj, A., He, X., Jiang, Z., et al. Mmlu-pro: A more robust and challenging multi-task language understanding benchmark. arXiv preprint arXiv:2406.01574, 2024b.",
+    "Wu et al. (2024a) Wu, M., Liu, W., Wang, X., Li, T., Lv, C., Ling, Z., JianHao, Z., Zhang, C., Zheng, X., and Huang, X. Advancing parameter efficiency in fine-tuning via representation editing. In Ku, L.-W., Martins, A., and Srikumar, V. (eds.), Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pp. 13445–13464, Bangkok, Thailand, August 2024a. Association for Computational Linguistics. doi: 10.18653/v1/2024.acl-long.726. URL https://aclanthology.org/2024.acl-long.726/.",
+    "Wu et al. (2024b) Wu, Z., Arora, A., Wang, Z., Geiger, A., Jurafsky, D., Manning, C. D., and Potts, C. Reft: Representation finetuning for language models. arXiv preprint arXiv:2404.03592, 2024b.",
+    "Yang et al. (2024) Yang, A., Yang, B., Zhang, B., Hui, B., Zheng, B., Yu, B., Li, C., Liu, D., Huang, F., Wei, H., et al. Qwen2. 5 technical report. arXiv preprint arXiv:2412.15115, 2024.",
+    "Yin et al. (2024) Yin, F., Ye, X., and Durrett, G. Lofit: Localized fine-tuning on llm representations. arXiv preprint arXiv:2406.01563, 2024.",
+    "Zellers et al. (2019) Zellers, R., Holtzman, A., Bisk, Y., Farhadi, A., and Choi, Y. HellaSwag: Can a machine really finish your sentence? In Korhonen, A., Traum, D., and Màrquez, L. (eds.), Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics, pp. 4791–4800, Florence, Italy, July 2019. Association for Computational Linguistics. doi: 10.18653/v1/P19-1472. URL https://aclanthology.org/P19-1472/.",
+    "Zhang & Nanda (2023) Zhang, F. and Nanda, N. Towards best practices of activation patching in language models: Metrics and methods. arXiv preprint arXiv:2309.16042, 2023.",
+    "Zhang et al. (2019) Zhang, T., Kishore, V., Wu, F., Weinberger, K. Q., and Artzi, Y. Bertscore: Evaluating text generation with bert. arXiv preprint arXiv:1904.09675, 2019.",
+    "Zhang et al. (2021) Zhang, Z., Qi, F., Liu, Z., Liu, Q., and Sun, M. Know what you don’t need: Single-shot meta-pruning for attention heads. AI Open, 2:36–42, 2021.",
+    "Zhao et al. (2023) Zhao, W. X., Zhou, K., Li, J., Tang, T., Wang, X., Hou, Y., Min, Y., Zhang, B., Zhang, J., Dong, Z., et al. A survey of large language models. arXiv preprint arXiv:2303.18223, 2023.",
+    "Zou et al. (2023) Zou, A., Phan, L., Chen, S., Campbell, J., Guo, P., Ren, R., Pan, A., Yin, X., Mazeika, M., Dombrowski, A.-K., et al. Representation engineering: A top-down approach to ai transparency. arXiv preprint arXiv:2310.01405, 2023."
+  ]
+}

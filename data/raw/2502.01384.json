@@ -1,0 +1,453 @@
+{
+  "title": "Fine-Tuning Discrete Diffusion Models with Policy Gradient Methods",
+  "authors": "Oussama ZekriNicolas Boullé",
+  "abstract": "Discrete diffusion models have recently gained significant attention due to their ability to process complex discrete structures for language modeling. However, fine-tuning these models with policy gradient methods, as is commonly done in Reinforcement Learning from Human Feedback (RLHF), remains a challenging task. We propose an efficient, broadly applicable, and theoretically justified policy gradient algorithm, called Score Entropy Policy Optimization (SEPO), for fine-tuning discrete diffusion models over non-differentiable rewards. Our numerical experiments across several discrete generative tasks demonstrate the scalability and efficiency of our method. Our code is available at https://github.com/ozekri/SEPO.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Diffusion models have become efficient generative modeling tools in various tasks, including image and video generation (Song et al., 2021; Ho et al., 2020). Although most of the applications of diffusion models depend on a continuous state space (such as images), recent works extended these models to discrete settings, enabling their use in language modeling and other discrete generative tasks (Sun et al., 2023; Campbell et al., 2022; Austin et al., 2021; Benton et al., 2024). Moreover, several studies showed that these models can be competitive with autoregressive models, such as GPT (Brown et al., 2020) or Llama (Touvron et al., 2023), while allowing for more flexible generation as opposed to next-token prediction (Lou et al., 2024; Sahoo et al., 2024; Shi et al., 2024). These discrete diffusion models hold great promise if they can be scaled up to natural language processing tasks.",
+        "However, fine-tuning discrete diffusion models remains a challenging task. Different approaches, such as classifier guidance (Ho & Salimans, 2021; Nisonoff et al., 2025; Gruver et al., 2024) or steering (Rector-Brooks et al., 2025) often suffer from scalability issues or intractable training objectives. In this work, we focus on fine-tuning based on reinforcement learning (RL), where the aim is to maximize an objective by modifying the weights of a pre-trained model. The limitations of the existing methods mentioned earlier highlight the need for novel and efficient methodologies to address the unique challenges of discrete diffusion models.",
+        "More specifically, sampling from a categorical distribution, which is the type of distribution arising in the discrete setting, is a non-differentiable procedure that cannot be handled by gradient-based optimization algorithms. To bypass this issue, a recent work by Wang et al. 2025 proposes to fine-tune discrete diffusion models through direct backpropagation of rewards with the Gumbel-Softmax trick (Jang et al., 2017). While this is an interesting approach, it cannot handle non-differentiable rewards. Moreover, when working at scale, the size of a reward model that one wants to differentiate with backpropagation may quickly become memory-intensive.",
+        "Finally, methods that achieved state-of-the-art results in Reinforcement Learning from Human Feedback (RLHF) are policy gradient method, namely Proximal Policy Optimization (PPO) (Schulman et al., 2017) or Group Relative Policy Optimization (GRPO) (Shao et al., 2024) due to their stability, efficiency, unbiased gradient estimates, and mechanisms like trust region constraints to handle noisy feedback. These methods deal with the zero-order derivative of the reward oracle, in contrast to (Wang et al., 2025) that uses the first-order derivative of the reward oracle.",
+        "In this work, we focus on developing policy gradient methods specifically tailored to discrete diffusion models to improve performance and robustness, and introduce a Score Entropy Policy Optimization (SEPO), for fine-tuning discrete diffusion models. Unlike (Wang et al., 2025), our approach does not require the reward function RR to be differentiable, which expands the possibilities for fine-tuning beyond Direct Reward Backpropagation. Our method provides a unified framework for optimizing discrete diffusion models."
+      ],
+      "subsections": [
+        {
+          "title": "1.1 Main contributions",
+          "paragraphs": [
+            "Our contributions are summarized as follows:",
+            "1) We provide an explicit characterization of policy gradient algorithms for discrete diffusion models in the concrete score matching framework. This allows the use of non-differentiable rewards in discrete fine-tuning tasks without steering and guidance mechanisms.",
+            "2) We propose an efficient and scalable algorithm based on policy gradient methods (Schulman et al., 2017; Shao et al., 2024), called Score Entropy Policy Optimization (SEPO), for discrete diffusion. We also introduce a gradient flow alternative that improves sample quality at a higher complexity cost.",
+            "3) We perform numerical experiments on DNA fine-tuning and natural language tasks to demonstrate the performance of our methods.",
+            "We provide an explicit characterization of policy gradient algorithms for discrete diffusion models in the concrete score matching framework. This allows the use of non-differentiable rewards in discrete fine-tuning tasks without steering and guidance mechanisms.",
+            "We propose an efficient and scalable algorithm based on policy gradient methods (Schulman et al., 2017; Shao et al., 2024), called Score Entropy Policy Optimization (SEPO), for discrete diffusion. We also introduce a gradient flow alternative that improves sample quality at a higher complexity cost.",
+            "We perform numerical experiments on DNA fine-tuning and natural language tasks to demonstrate the performance of our methods."
+          ]
+        }
+      ]
+    },
+    "2 Background and preliminaries": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "2.1 Related works",
+          "paragraphs": [
+            "Inference-time techniques are simple yet effective as they require no fine-tuning or training when reward functions are available. Recent studies (Singhal et al., 2025; Ma et al., 2025) showed that they can achieve competitive performance by scaling computational resources. Although inference-time techniques offer distinct advantages, they typically result in longer inference times compared to fine-tuned models. The key considerations for these techniques include computational efficiency and differentiability of the reward (Uehara et al., 2025).",
+            "Policy gradient algorithms are a key class of reinforcement learning methods that optimize parameterized policies by directly maximizing expected returns. Modern implementations include Proximal Policy Optimization (Schulman et al., 2017) or Group Relative Policy Optimization (Shao et al., 2024). These algorithms are highly sensitive to policy design since the architecture impacts expressiveness, optimization stability, and exploration.",
+            "In the case of continuous diffusion models, fine-tuning via policy gradients has been proposed (Fan et al., 2024; Li et al., 2024; Black et al., 2024; Ren et al., 2025). In a more recent study, (Marion et al., 2024) implements REINFORCE algorithm (Williams, 1992) for continuous diffusion models in a single-loop algorithm, avoiding nested optimization. However, extending these approaches to discrete diffusion models is more challenging. This work adapts these studies to the discrete case and extends them to general policy gradient algorithms."
+          ]
+        },
+        {
+          "title": "2.2 Discrete Diffusion",
+          "paragraphs": [
+            "In discrete diffusion models, the dynamics of a single particle is described by a continuous-time Markov chain (CTMC), denoted as a stochastic process (xt)0≤t≤T(x_{t})_{0\\leq t\\leq T} operating on a finite space 𝒳={α1,…,αm}n\\mathcal{X}=\\{\\alpha_{1},\\ldots,\\alpha_{m}\\}^{n}. Here, (αi)1≤i≤m(\\alpha_{i})_{1\\leq i\\leq m} represents the possible states that form a vocabulary of size mm, and nn is the length of the sequences, which is a fixed number known as context window or block size. Typically, it describes sequences of tokens or image pixel values. While the size d≔|𝒳|=mnd\\coloneqq\\lvert\\mathcal{X}\\rvert=m^{n} of 𝒳\\mathcal{X} is exponential in nn, deep neural networks like transformers (Vaswani, 2017) were shown to perform and generalize well on these incredibly large state spaces (Zekri et al., 2024).",
+            "At any given time tt, the distribution of a particle xtx_{t} is given by 𝒑t\\boldsymbol{p}_{t}, which lies within the probability simplex Δd⊂ℝd\\Delta_{d}\\subset\\mathbb{R}^{d}. The forward process is a noising process that maps the initial data distribution 𝒑0≔pdata\\boldsymbol{p}_{0}\\coloneqq p_{\\mathrm{data}} to some final noisy distribution 𝒑T≔pref\\boldsymbol{p}_{T}\\coloneqq p_{\\mathrm{ref}}, which is easy to sample. During the noising forward process, the particle’s probability transitions between states are given by a rate matrix Qt∈ℝd×dQ_{t}\\in\\mathbb{R}^{d\\times d}, indexed by 𝒳\\mathcal{X}, through the following equation:",
+            "The time reversal of this equation is known as (Kelly, 2011),",
+            "where for x,y∈𝒳x,y\\in\\mathcal{X},",
+            "Lou et al. 2024 recently showed that one can approximate Eq. 2 via concrete score matching (Meng et al., 2022). This is done by learning the concrete score as sθ​(x,t)y≈𝒑t​(x)/𝒑t​(y)s_{\\theta}(x,t)_{y}\\approx\\boldsymbol{p}_{t}(x)/\\boldsymbol{p}_{t}(y) with a sequence-to-sequence neural network sθs_{\\theta} parametrized by θ∈ℝp\\theta\\in\\mathbb{R}^{p}. We emphasize that this setup includes the simplified approaches detailed in (Sahoo et al., 2024; Shi et al., 2024). The resulting process is described by the following equation:",
+            "where the denoising process 𝒒tθ≈𝒑T−t\\boldsymbol{q}^{\\theta}_{t}\\approx\\boldsymbol{p}_{T-t} maps 𝒒0θ≔pref\\boldsymbol{q}^{\\theta}_{0}\\coloneqq p_{\\mathrm{ref}} to 𝒒Tθ≔𝝅​(θ)\\boldsymbol{q}^{\\theta}_{T}\\coloneqq\\boldsymbol{\\pi}(\\theta), and θ\\theta is learned to achieve 𝝅​(θ)≈pdata\\boldsymbol{\\pi}(\\theta)\\approx p_{\\mathrm{data}}. The matrix Q¯tθ\\overline{Q}_{t}^{\\theta} is defined for x,y∈𝒳x,y\\in\\mathcal{X} as",
+            "Note that, in practice, the quantity sθ​(x,t)ys_{\\theta}(x,t)_{y} is available for all y∈𝒳y\\in\\mathcal{X} at Hamming distance (Hamming, 1950) one of xx, i.e., the states yy that differ from xx by exactly one token. This represents only 𝒪​(m​n)\\mathcal{O}(mn) ratios, instead of 𝒪​(m2​n)\\mathcal{O}(m^{2n}) (Campbell et al., 2022; Lou et al., 2024).",
+            "Sampling discrete diffusion models involves selecting efficient strategies to simulate the backward equation (3), while balancing computational cost and sample quality. Among other strategies for CTMCs, sampling can be done via the tau-leaping algorithm (Gillespie, 2001), which implements an Euler step at each position ii simultaneously and independently:",
+            "Discrete diffusion models can also be used to perform flexible conditional sampling (Lou et al., 2024). Unlike unconditional sampling, which samples 𝒒t​(xt−Δ​t|xt)\\boldsymbol{q}_{t}(x_{t-\\Delta t}|x_{t}), we incorporate auxiliary data 𝐜\\mathbf{c} by modifying the probability to be sampled to 𝒒t​(xt−Δ​t|xt,𝐜)\\boldsymbol{q}_{t}(x_{t-\\Delta t}|x_{t},\\mathbf{c}). Finally, the number of reverse diffusion steps, TT, directly impacts computational efficiency and sample fidelity, with larger TT providing more accurate approximations of the target distribution at a higher computational cost."
+          ]
+        },
+        {
+          "title": "2.3 Fine-tuning with Reinforcement Learning",
+          "paragraphs": [
+            "After the pretraining phase, a discrete diffusion model with learned parameter θpre\\theta_{\\mathrm{pre}} aims to approximate pdatap_{\\mathrm{data}}, in the sense 𝝅​(θpre)≈pdata\\boldsymbol{\\pi}(\\theta_{\\mathrm{pre}})\\approx p_{\\mathrm{data}}. Our goal is to fine-tune the target distribution 𝝅​(θ)\\boldsymbol{\\pi}(\\theta) to increase a reward function R:𝒳→ℝR:\\mathcal{X}\\to\\mathbb{R}, without having access to pdatap_{\\mathrm{data}}.",
+            "We focus on optimization problems over implicitly parameterized distributions. For a given family of functions (ℱt)t∈[0,T]:Δd→ℝ(\\mathcal{F}_{t})_{t\\in[0,T]}:\\Delta_{d}\\to\\mathbb{R}, we aim to minimize the loss function defined as",
+            "over θ∈ℝp\\theta\\in\\mathbb{R}^{p}. Classical choices of ℱt\\mathcal{F}_{t} include ℱt​(𝒒tθ)=𝔼x∼𝒒tθ​[Rt​(x)]\\mathcal{F}_{t}(\\boldsymbol{q}^{\\theta}_{t})=\\mathbb{E}_{x\\sim\\boldsymbol{q}^{\\theta}_{t}}[R_{t}(x)], where Rt=0R_{t}=0 for t<Tt<T and RT=RR_{T}=R, to maximize a reward function R:𝒳→ℝR:\\mathcal{X}\\to\\mathbb{R}, or ℱt​(𝒒tθ)=−KL(𝒒tθ∥𝒒tθpre)\\mathcal{F}_{t}(\\boldsymbol{q}^{\\theta}_{t})=-\\mathop{\\mathrm{KL}}\\nolimits(\\boldsymbol{q}^{\\theta}_{t}\\|\\boldsymbol{q}^{\\theta_{\\mathrm{pre}}}_{t}) to minimize the KL divergence of ptp_{t} from a distribution 𝒒tθpre\\boldsymbol{q}^{\\theta_{\\mathrm{pre}}}_{t}. As detailed in (Uehara et al., 2024), a typical fine-tuning algorithm for diffusion models combines these two terms as follows,",
+            "where α>0\\alpha>0 is a weighting factor. Following standard choices in the fine-tuning diffusion models with reinforcement learning literature (Black et al., 2024; Fan et al., 2024; Clark et al., 2024; Uehara et al., 2024), we assume that Rt=0R_{t}=0 for t<Tt<T and RT=RR_{T}=R in the rest of this paper. Therefore, the first term on the right side of Eq. 6 is nonzero and equal to ℓR≔−𝔼x∼𝝅​(θ)​[R​(x)]\\ell^{R}\\coloneqq-\\mathbb{E}_{x\\sim\\boldsymbol{\\pi}(\\theta)}[R(x)] when t=Tt=T.",
+            "To apply first-order optimization methods, one needs to compute the gradient ∇θℓR​(θ)\\nabla_{\\theta}\\ell^{R}(\\theta). Since 𝒳\\mathcal{X} is a finite space of size dd, we have",
+            "where 𝐟∈ℝd\\mathbf{f}\\in\\mathbb{R}^{d} is the vector of first variations ℱT​(𝝅​(θ))\\mathcal{F}_{T}(\\boldsymbol{\\pi}(\\theta)) (see Section D.1). Importantly, we note that 𝐟​(𝒑)​(x)=R​(x)\\mathbf{f}(\\boldsymbol{p})(x)=R(x) for x∈𝒳x\\in\\mathcal{X}, which does not involve the differentiability of RR (with respect to some embedding ℰ​(𝒳)\\mathcal{E}\\left(\\mathcal{X}\\right) of the state space). One can then design deterministic non-differentiable functions that act on 𝒳\\mathcal{X} as rewards, similar to those arising in RLHF, or elsewhere. This may include designing desired protein properties (Rector-Brooks et al., 2025)."
+          ]
+        }
+      ]
+    },
+    "3 Methods": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "3.1 Policy gradients for concrete score",
+          "paragraphs": [
+            "The gradient of the target distribution ∇θ𝝅​(θ)\\nabla_{\\theta}\\boldsymbol{\\pi}(\\theta), which appears in Eq. 7, can be calculated based on to its relationship with the concrete score sθs_{\\theta} as sθ​(x,0)=𝝅​(θ)/𝝅x​(θ)s_{\\theta}(x,0)=\\boldsymbol{\\pi}(\\theta)/\\boldsymbol{\\pi}_{x}(\\theta) for x∈𝒳x\\in\\mathcal{X}. The following theorem shows that one can first compute ∇θ𝝅​(θ)\\nabla_{\\theta}\\boldsymbol{\\pi}(\\theta), and then ∇θℓR​(θ)\\nabla_{\\theta}\\ell^{R}(\\theta) through a discrete analogue of the REINFORCE algorithm (Williams, 1992).",
+            "[Discrete REINFORCE trick] With the notations introduced in Section 2, applying the discrete REINFORCE algorithm to the concrete score changes Eq. 7 to:",
+            "The summand in Section 3.1 involves the unknown distributions 𝝅x​(θ)\\boldsymbol{\\pi}_{x}(\\theta) and 𝝅y​(θ)\\boldsymbol{\\pi}_{y}(\\theta). While the outer sum can be estimated via Monte Carlo sampling, the inner sum is weighted by 𝝅y​(θ)\\boldsymbol{\\pi}_{y}(\\theta). As noted in (Lou et al., 2024), a single x∈𝒳x\\in\\mathcal{X} provides access to every component of the concrete score sθ​(x,0)ys_{\\theta}(x,0)_{y}, for y≠xy\\neq x, and then to 𝝅y​(θ)\\boldsymbol{\\pi}_{y}(\\theta) since it this is the only missing quantity in the tau-leaping sampling scheme Eq. 4. It is then possible to compute the gradient as",
+            "where g​(x,θ)≔∑y∈𝒳y≠x𝝅y​(θ)​∇θlog⁡sθ​(x,0)yg(x,\\theta)\\coloneqq\\sum_{\\begin{subarray}{c}y\\in\\mathcal{X}\\\\ y\\neq x\\end{subarray}}{\\boldsymbol{\\pi}_{y}(\\theta)\\nabla_{\\theta}\\log s_{\\theta}(x,0)_{y}}.",
+            "Although this defines an unbiased gradient, the REINFORCE algorithm is known to have high variance and to not restrict large policy updates. To address the latter limitation and estimate g​(x,θ)g(x,\\theta), we build upon the core ideas introduced by Trust Region Policy Optimization (TRPO) (Schulman et al., 2015). Instead of sampling from 𝝅​(θ)\\boldsymbol{\\pi}(\\theta) one can leverage importance sampling through an old policy 𝝅​(θold)\\boldsymbol{\\pi}(\\theta_{\\mathrm{old}}), and constraint the KL\\mathop{\\mathrm{KL}}\\nolimits divergence between the old and the current policy as follows:",
+            "Once adapted for concrete score, this formulation leads us to the following result.",
+            "[Importance sampling gradient] With the notations introduced in Section 2, applying TRPO to Eq. 7 yields:",
+            "where",
+            "The quantity h​(x,θ)h(x,\\theta) is expressed in this way in Eq. 8 to emphasize how the loss will be computed in practice. While being the founding step of state-of-the-art policy gradient algorithms, TRPO requires solving a constrained optimization problem at each step. However, thanks to Section 3.1, we can now build powerful, stable, scalable, and easy-to-implement policy gradient algorithms."
+          ]
+        },
+        {
+          "title": "3.2 SEPO: Score Entropy Policy Optimization",
+          "paragraphs": [
+            "Our algorithm relies on the ideas introduced in (Schulman et al., 2017; Shao et al., 2024), but can be adapted to any policy gradient algorithm built on REINFORCE or TRPO. Inspired from these algorithms, we clip the following ratio that appears in the inner sum of Section 3.1:",
+            "to the interval [1−ϵ,1+ϵ][1-\\epsilon,1+\\epsilon] for some hyperparameter ϵ>0\\epsilon>0. Another advantage of discrete diffusion models is their great generation flexibility. It is then be possible to apply our algorithm conditionally (via a training dataset, typically in RHLF) or unconditionally for fine-tuning. Hence, in the conditional form, Eq. 8 becomes",
+            "Instead of using directly the reward R​(x)R(x), we compute an advantage A​(x)A(x) to reduce the variance of the Monte-Carlo estimations. This quantifies how much better an action is compared to the expected return at a given state. A common approach in PPO (Schulman et al., 2017) is to learn a value network to approximate the reward, and then define the advantage as A​(x)=R​(x)−V​(x)A(x)=R(x)-V(x). For GRPO (Shao et al., 2024), the advantage is the standardized reward over each group. Specifically, for a group of outputs x={x1,…,xG}x=\\{x_{1},\\ldots,x_{G}\\} the advantages are defined as",
+            "The loss function takes the form",
+            "where wx,y=𝛑y​(θ)​rx,yw_{x,y}\\!=\\!\\boldsymbol{\\pi}_{y}(\\theta)r_{x,y} is a coefficient and the log concrete score log⁡sθ​(x,0)y\\log s_{\\theta}(x,0)_{y} is the only term with an attached gradient. PPO, GRPO, and other methods can be constructed by modifying the coefficient wx,yw_{x,y}. In Appendix B, we present a unified framework encompassing methods that can be derived from SEPO.",
+            "Optionally for t∈[0,T]t\\in[0,T], a KL(𝒒tθ∥𝒒tθpre)\\mathop{\\mathrm{KL}}\\nolimits(\\boldsymbol{q}^{\\theta}_{t}\\|\\boldsymbol{q}^{\\theta_{\\mathrm{pre}}}_{t}) term can also be added to the loss, as in Eq. 6. Although this is not absolutely necessary, as clipping already implicitly regularizes with a KL(𝝅​(θ)∥𝝅​(θold))\\mathop{\\mathrm{KL}}\\nolimits(\\boldsymbol{\\pi}(\\theta)\\|\\boldsymbol{\\pi}(\\theta_{\\mathrm{old}})) term (Schulman et al., 2017; Fan et al., 2024), the derivation is given in Section D.2, for completeness. This leads to the Score Entropy Policy Optimization (SEPO) algorithm described in Algorithm 1.",
+            "SEPO iteratively samples from the target distribution via a CTMC (Line 44) and optimizes θs\\theta_{s} using an optimization objective (Line 66), refining the policy with policy gradients. Specifically :",
+            "• Line 4: This step generates samples from the target distribution 𝝅​(θold)\\boldsymbol{\\pi}(\\theta_{\\mathrm{old}}) using the CTMC Q¯θold\\overline{Q}^{\\theta_{\\mathrm{old}}}. This can be done in O​(1)O(1) time complexity by leveraging the queuing trick introduced in (Marion et al., 2024, Alg. 3), at a higher memory cost.",
+            "• Line 6: This step updates the parameters θs\\theta_{s} using a policy optimization algorithm based on the objective ℓA\\ell^{A} (see Eq. 10). This means performing KK iterations of gradient ascent (or descent) on the policy loss function to improve the policy 𝝅​(θs)\\boldsymbol{\\pi}(\\theta_{s}) using the previously collected samples and computed advantages.",
+            "Line 4: This step generates samples from the target distribution 𝝅​(θold)\\boldsymbol{\\pi}(\\theta_{\\mathrm{old}}) using the CTMC Q¯θold\\overline{Q}^{\\theta_{\\mathrm{old}}}. This can be done in O​(1)O(1) time complexity by leveraging the queuing trick introduced in (Marion et al., 2024, Alg. 3), at a higher memory cost.",
+            "Line 6: This step updates the parameters θs\\theta_{s} using a policy optimization algorithm based on the objective ℓA\\ell^{A} (see Eq. 10). This means performing KK iterations of gradient ascent (or descent) on the policy loss function to improve the policy 𝝅​(θs)\\boldsymbol{\\pi}(\\theta_{s}) using the previously collected samples and computed advantages."
+          ]
+        },
+        {
+          "title": "3.3 Sampling through gradient flow",
+          "paragraphs": [
+            "We use sampling to reach the limiting process of the backward distribution 𝝅​(θ)\\boldsymbol{\\pi}(\\theta). This procedure can be interpreted as optimizing a functional 𝒢:Δd×ℝp→ℝ\\mathcal{G}:\\Delta_{d}\\times\\mathbb{R}^{p}\\to\\mathbb{R} over the probability simplex Δd⊂ℝd\\Delta_{d}\\subset\\mathbb{R}^{d} as",
+            "When 𝝅​(θ)\\boldsymbol{\\pi}(\\theta) is the limiting distribution of an infinite time process (e.g., Langevin diffusion in the continuous case, Langevin 1908; Pavliotis 2014), one can recast Eq. 5 as a bilevel optimization problem. This has been proposed by Marion et al. 2024 in the continuous diffusion case and allows to efficiently alternate between optimizing one-step of the inner problem and one step of the outer problem.",
+            "In our case, 𝝅​(θ)\\boldsymbol{\\pi}(\\theta) is reached with finite-time horizon, in TT steps of sampling. However, it is possible to reach 𝝅​(θ)\\boldsymbol{\\pi}(\\theta) in infinite-time horizon by sampling from a specific time-homogeneous CTMC. The choice of the functional 𝒢(𝒑,θ)=KL(𝒑||𝝅(θ))\\mathcal{G}(\\boldsymbol{p},\\theta)=\\mathop{\\mathrm{KL}}\\nolimits(\\boldsymbol{p}||\\boldsymbol{\\pi}(\\theta)) leads to a gradient flow interpretation of sampling via a specific CTMC.",
+            "[Gradient flow] Sampling from the following ordinary differential equation",
+            "implements a gradient flow for KL(⋅||pdata)\\mathop{\\mathrm{KL}}\\nolimits(~\\cdot~||p_{\\mathrm{data}}) in Δd\\Delta_{d}, with respect to a Wassertein-like metric.",
+            "Of course, sθs_{\\theta} is not perfectly learned in practice, and we just have access to the rate matrix Q0c,θ≔Q0+Q¯0θQ_{0}^{c,\\theta}\\coloneqq Q_{0}+\\overline{Q}_{0}^{\\theta}. But this gives us insight into the choice of our sampling strategy, especially with predictor-corrector techniques for discrete diffusion, introduced in (Campbell et al., 2022) and developed in (Zhao et al., 2024). We will then sample from the time-homogeneous CTMC of rate Q0c,θQ_{0}^{c,\\theta} to reach 𝝅​(θ)\\boldsymbol{\\pi}(\\theta) with infinite-time horizon. Note that this does not require computing an integral compared to the time-inhomogeneous case. We are then optimizing a functional in Wassertein space through sampling (Marion et al., 2024; Bonet et al., 2024).",
+            "Sampling from Q0cQ^{c}_{0} affects Line 4 of Algorithm 1. In practice, the sample quality can be improved by adding corrector steps with Qtc=Qt+Q¯tθQ^{c}_{t}=Q_{t}+\\overline{Q}_{t}^{\\theta}, as proposed in (Campbell et al., 2022). Once the process has run for TT steps, multiple sampling iterations from Q0cQ^{c}_{0} can be performed.",
+            "In this case, ∇θ𝝅​(θ)\\nabla_{\\theta}\\boldsymbol{\\pi}(\\theta) in Eq. 7 will be obtained by solving a linear system, using the implicit function theorem (see Section C.3) on ∇1𝒢\\nabla_{1}\\mathcal{G}, through a corrected version denoted ∇θη𝝅​(θ)\\nabla^{\\eta}_{\\theta}\\boldsymbol{\\pi}(\\theta). While both the evaluation of the derivatives and the inversion of this linear system can be done automatically (Blondel et al., 2022), it is costly given the dimensionality dd. Instead, we provide the exact linear system as well as a closed form of the inverse in Section 3.3.",
+            "For each η>0\\eta>0, ∇θη𝝅​(θ)\\nabla^{\\eta}_{\\theta}\\boldsymbol{\\pi}(\\theta) is the solution to a linear system of the form",
+            "where AηA_{\\eta} is a rank-11 update to the d×dd\\times d identity matrix, whose inverse can be explicitly computed using the Sherman–Morrison formula.",
+            "Note that this affects Line 6 of Algorithm 1, where ∇θ𝝅​(θ)\\nabla_{\\theta}\\boldsymbol{\\pi}(\\theta) in Eq. 7 is replaced by ∇θη𝝅​(θ)\\nabla^{\\eta}_{\\theta}\\boldsymbol{\\pi}(\\theta)."
+          ]
+        },
+        {
+          "title": "3.4 Convergence bounds",
+          "paragraphs": [
+            "From a high-level point of view, Algorithm 1 alternates between sampling and optimization steps. We can then view Algorithm 1 as the following coupled equations:",
+            "for 0≤s≤S0\\leq s\\leq S. The gradient used on line 66 of Algorithm 1 depends both on 𝒒s\\boldsymbol{q}_{s} and θs\\theta_{s}, and we refer to it as Γ\\Gamma (so that ∇θℓA​(θs)=Γ​(𝝅​(θs),θs)\\nabla_{\\theta}\\ell^{A}(\\theta_{s})=\\Gamma(\\boldsymbol{\\pi}(\\theta_{s}),{\\theta_{s}})). To simplify the analysis, the evolution of both 𝒒s\\boldsymbol{q}_{s} and θs\\theta_{s} is done in continuous time flow, for some s∈[0,S]s\\in[0,S], with S>0S>0. Let ∥⋅∥\\|\\cdot\\| denote the Euclidean norm on ℝp\\mathbb{R}^{p}. We reintroduce assumptions on 𝝅​(θ)\\boldsymbol{\\pi}(\\theta) and Γ\\Gamma made in (Marion et al., 2024).",
+            "There exists C≥0C\\geq 0 such that for all x∈𝒳x\\in\\mathcal{X} and θ∈ℝp\\theta\\in\\mathbb{R}^{p}, ‖∇θ𝛑x​(θ)‖≤C\\|\\nabla_{\\theta}\\boldsymbol{\\pi}_{x}(\\theta)\\|\\leq C. There exists ε>0\\varepsilon>0 such that for all x∈𝒳x\\in\\mathcal{X} and θ∈ℝp\\theta\\in\\mathbb{R}^{p}, 𝛑x​(θ)>ε\\boldsymbol{\\pi}_{x}(\\theta)>\\varepsilon.",
+            "This assumption states that the gradient of the target distribution is bounded. The second part is similar to the ambiguity of the language often considered when studying models acting on spaces like 𝒳\\mathcal{X} (Zekri et al., 2024; Hu et al., 2024; Xie et al., 2021).",
+            "There exists C≥0C\\geq 0 such that for all p,q∈Δdp,q\\in\\Delta_{d}, θ∈ℝp\\theta\\in\\mathbb{R}^{p}, ‖Γ​(p,θ)−Γ​(q,θ)‖≤CΓ​KL(p||q)\\|\\Gamma(p,\\theta)-\\Gamma(q,\\theta)\\|\\leq C_{\\Gamma}\\sqrt{\\mathop{\\mathrm{KL}}\\nolimits(p||q)}.",
+            "This assumption essentially states that the gradient Γ\\Gamma is Lipschitz continuous with respect to the KL\\mathop{\\mathrm{KL}}\\nolimits divergence on Δd\\Delta_{d}.",
+            "With all these elements in place, we establish the convergence of the average objective gradients.",
+            "[Convergence of Algorithm 1] Let S>0S>0 and θs\\theta_{s} be the solution to Eq. 11 with βs=min⁡(1,1/s)\\beta_{s}=\\min(1,1/\\sqrt{s}), for s∈[0,S]s\\in[0,S]. Under Assumptions 3.2 and 3.3, we have",
+            "as S→∞S\\to\\infty."
+          ]
+        }
+      ]
+    },
+    "4 Experiments": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "4.1 DNA sequence modeling",
+          "paragraphs": [
+            "In this first experiment, we employ the pretrained model of (Wang et al., 2025), a masked discrete diffusion model (Sahoo et al., 2024) pretrained on ∼700​k\\sim 700k DNA sequences of the Gosai dataset (Gosai et al., 2023).",
+            "We illustrate the upper bound of 3.3 in Fig. 2, where we used a reward function designed to enhance CG content in DNA sequences. Details about the non-differentiable reward function can be found in Appendix E. We applied SEPO GRPO with a group size G=50G=50, with 1010 gradient flow corrector sampling steps at the end."
+          ]
+        },
+        {
+          "title": "4.2 Discrete diffusion language modeling",
+          "paragraphs": [
+            "We implement SEPO in an Actor-Critic PPO style to fine-tuning SEDD Medium Absorb (Lou et al., 2024), a discrete diffusion model with 320320M non-embedding parameters, pretrained on OpenWebText (Gokaslan et al., 2019).",
+            "Following (Li, 2023), we put the initial GPT-2 weights (Radford et al., 2019) in a GPT-2 Vanilla model. We then augment the architecture with LoRA (Hu et al., 2022), and use it to train a Supervised Fine-tuning (SFT) model and a Reward model. We use half of the HH-RLHF dataset (Bai et al., 2022) to train the SFT model in an autoregressive fashion, and the other half to train the reward model, which has a logistic output R​(x)R(x). The whole reward modeling pipeline is illustrated in Fig. 3.",
+            "We use the same first part of the HH-RLHF dataset that was used to train the GPT-22 SFT model. We skip any SFT stage for SEDD as our algorithm is only designed for the RL fine-tuning part. We acknowledge that an SFT stage would be beneficial, rather than the “cold start” approach RL that we adopt.",
+            "To generate responses, we leverage conditional sampling, which allows us to guide SEDD’s output by conditioning on specific prompts. A prompt pp and its completion cc form a sequence x=c|px=c|p. We then denote by 𝝅x​(θ)=𝝅c|p​(θ)\\boldsymbol{\\pi}_{x}(\\theta)=\\boldsymbol{\\pi}_{c|p}(\\theta) the target probability of a prompt and its completion. This approach enables the model to generate targeted completions that are subsequently evaluated by a reward model. Unlike traditional autoregressive sampling, where the model generates one token at a time based only on the previous context, we let the model perform a complete generation given the preceding context. We then only select the next 128128 tokens following the prompt. This procedure is illustrated in Table 1.",
+            "Following (Ouyang et al., 2022), we augment the reward by a KL regularization between 𝝅x​(θ)\\boldsymbol{\\pi}_{x}(\\theta) and 𝝅x​(θpre)\\boldsymbol{\\pi}_{x}(\\theta_{\\mathrm{pre}}), as",
+            "We compute the advantage as A​(x)=R​(x)−V​(x)A(x)=R(x)-V(x), where the value loss is a standard mean squared error loss between the value and the reward. Following good practice, we set ϵ=0.2\\epsilon=0.2 in Eq. 10.",
+            "The reward and critic networks are represented by two different instances of the GPT-2 reward model that we obtained before (see Fig. 3). Two other instances of SEDD Medium will be used. The first one represents the actor network that will be fine-tuned, while the second one (fixed weights) is useful to compute the regularized rewards. The whole SEDD fine-tuning pipeline is illustrated in Fig. 4.",
+            "We fine-tune two versions of SEDD Medium, with a different number of denoising steps TT to measure the impact on the quality of the fine-tuning. The first version, SEDD-SEPO-128128 generates completions over 128128 denoising steps. The second instance, SEDD-SEPO-10241024 generates completions over 1024 steps. Both versions are trained for 7​k7k steps on the HH-RLHF dataset.",
+            "We use the 153153 prompts from the Awesome ChatGPT Prompts dataset (Akın, 2023). This dataset contains prompts that cover a wide range of topics, ideal to see what these <1​B<1B parameter models are capable of, once fine-tuned.",
+            "For each of our two models, SEDD-SEPO-128128 and SEDD-SEPO-10241024, we use a Judge LLM, GPT-3.53.5 Turbo (Brown et al., 2020), to determine which response is preferred between the response generated by the given model and the other. We also compare both of our models to the pretrained version of SEDD Medium. We also generate answers for different numbers of denoising steps T∈{128,512,1024}T\\in\\{128,512,1024\\}. The percentage of preferred responses for each evaluation is detailed in Table 3.",
+            "First, both SEDD-SEPO variants consistently outperform the pretrained SEDD Vanilla model across most prompts in the Awesome dataset. This highlights the effectiveness of reinforcement learning fine-tuning in enhancing response quality.",
+            "Furthermore, SEDD-SEPO-10241024 outperforms SEDD-SEPO-128128 in general. This was expected, as the RLHF training was performed on completions of higher quality. According to (Lou et al., 2024), increasing the number of denoising steps improves generation quality, at a higher computational cost. However, while SEDD-SEPO-10241024 does not exhibit a statistically significant advantage over different values of TT, SEDD-SEPO-128128 appears to perform better at the number of steps for which it was trained to generate responses. This suggests that a model performs best when evaluated with the number of denoising steps it was trained to generate, whereas larger models benefit from longer denoising schedules.",
+            "We also provide some qualitative results. Some answers are displayed in Table 2, for each model and with T=1024T=1024 denoising steps. More answers and steps are displayed in Appendix E.",
+            "The qualitative results presented in Table 2 highlight the diversity in the responses generated by three models (SEDD Vanilla, SEDD-SEPO-128128 and SEDD-SEPO-10241024) for a creative writing task. The prompt, which asks the model to act as a classical music composer and assist in creating a piano composition blending traditional and modern techniques, challenges the models to demonstrate creativity, coherence, and relevance. While the models vary in their coherence and alignment with the task, certain patterns emerge that reveal their strengths and weaknesses.",
+            "SEDD Vanilla’s answer seems disjoint and lacks coherence. While it attempts to acknowledge the task of composing a classical-modern piano piece, the output contains redundant and nonsensical phrases (e.g., ”Classical (Classical Classical Music) and both Modern”). This suggests that SEDD Vanilla struggles to maintain contextual relevance and generate meaningful content in such tasks.",
+            "Both SEDD-SEPO-128128 and SEDD-SEPO-10241024 answers display an improvement in structure and clarity compared to SEDD Vanilla. However, the lack of an SFT stage clearly appears: the output from SEDD-SEPO-10241024 seems more like a continuation of the prompt rather than a direct response. We explain this behavior because the model learned from the HH-RHLF dataset (Bai et al., 2022) to create a conversation between an assistant and a human, rather than a direct output. This behavior was also observed during training, as in Table 1."
+          ]
+        }
+      ]
+    },
+    "5 Conclusion": {
+      "paragraphs": [
+        "We introduced SEPO, a novel approach for fine-tuning discrete diffusion models using policy gradient methods. By extending previous works that applied these methods on continuous spaces, we developed a unified framework that adapts this methodology to the discrete case. Experimental results demonstrate the effectiveness of our approach in optimizing discrete diffusion models while addressing key challenges such as non-differentiability and combinatorial complexity. Future work includes further refining gradient estimation techniques and exploring applications in structured generative modeling."
+      ],
+      "subsections": []
+    },
+    "Acknowledgements": {
+      "paragraphs": [
+        "The authors would like to thank Pierre Marion, Anna Korba, and Omar Chehab for fruitful discussions. This work was supported by the Office of Naval Research (ONR), under grant N00014-23-1-2729. This work was done thanks to the ARPE program of ENS Paris-Saclay, which supported the visit of the first author to Imperial College London."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Notations": {
+      "paragraphs": [
+        "This appendix uses the following notations: [d][d] denotes the set of integers {1,…,d}\\{1,\\ldots,d\\}, [t]+≔max⁡{0,t}[t]_{+}\\coloneqq\\max\\{0,t\\}, and IdI_{d} stands for the d×dd\\times d identity matrix. We also denote the diagonal matrix with diagonal components (𝒛1,…,𝒛d)(\\boldsymbol{z}_{1},\\ldots,\\boldsymbol{z}_{d}) by diag​(𝒛1,…,𝒛d)\\mathrm{diag}(\\boldsymbol{z}_{1},\\ldots,\\boldsymbol{z}_{d}). Finally, if 𝒛=(𝒛1,…,𝒛d)\\boldsymbol{z}=(\\boldsymbol{z}_{1},\\ldots,\\boldsymbol{z}_{d}), the same matrix will be denoted by diag​(𝒛)\\mathrm{diag}(\\boldsymbol{z})."
+      ],
+      "subsections": []
+    },
+    "Appendix B Unified Paradigm of Policy Gradient Methods": {
+      "paragraphs": [
+        "As in (Shao et al., 2024), we provide the expression of the coefficient wx,yw_{x,y} for SEPO in its PPO and GRPO variants. This can be easily extended to the other training methods synthesized in Shao et al. 2024, Section 5.2."
+      ],
+      "subsections": [
+        {
+          "title": "B.1 Proximal Policy Optimization (PPO)",
+          "paragraphs": [
+            "For PPO (Schulman et al., 2017), the coefficient wx,yw_{x,y} takes the form",
+            "A common approach is to learn a value network to approximate the reward, and then compute the advantage as A​(x)=R​(x)−V​(x)A(x)=R(x)-V(x)."
+          ]
+        },
+        {
+          "title": "B.2 Group Relative Policy Optimization (GRPO)",
+          "paragraphs": [
+            "For GRPO (Shao et al., 2024), we consider a group of outputs x={x1,…,xG}x=\\{x_{1},\\ldots,x_{G}\\}. The coefficient wx,yw_{x,y} takes the form",
+            "The advantages are the standardized reward over each group. Specifically, the advantages are defined as",
+            "The KL\\mathop{\\mathrm{KL}}\\nolimits term of the original GRPO objective (Shao et al., 2024) is discussed in Section 3.2."
+          ]
+        }
+      ]
+    },
+    "Appendix C Proofs of the results": {
+      "paragraphs": [
+        "This section details the proof of the results that appear in the main text."
+      ],
+      "subsections": [
+        {
+          "title": "C.1 Proof ofSection3.1",
+          "paragraphs": [
+            "We begin by calculating ∇θ𝝅​(θ)\\nabla_{\\theta}\\boldsymbol{\\pi}(\\theta) appearing in Eq. 7 component-wise. Let x∈𝒳x\\in\\mathcal{X} and recall that we can express 𝝅x​(θ)\\boldsymbol{\\pi}_{x}(\\theta) as 𝝅x​(θ)=e−Vx​(θ)/Zθ\\boldsymbol{\\pi}_{x}(\\theta)=\\mathrm{e}^{-V_{x}(\\theta)}/Z_{\\theta} for some normalization constant Zθ=∑y∈𝒳e−Vy​(θ)Z_{\\theta}=\\sum_{y\\in\\mathcal{X}}\\mathrm{e}^{-V_{y}(\\theta)}. Therefore,",
+            "On the other hand, since for y≠x∈𝒳y\\neq x\\in\\mathcal{X}, [sθ​(x,0)]y=𝝅y​(θ)/𝝅x​(θ)[s_{\\theta}(x,0)]_{y}=\\boldsymbol{\\pi}_{y}(\\theta)/\\boldsymbol{\\pi}_{x}(\\theta), we have [sθ​(x,0)]y=e−[Vy​(θ)−Vx​(θ)][s_{\\theta}(x,0)]_{y}=\\mathrm{e}^{-\\left[V_{y}(\\theta)-V_{x}(\\theta)\\right]}. Then, ∇θlog⁡([sθ​(x,0)]y)=−(∇θVy​(θ)−∇θVx​(θ))\\nabla_{\\theta}\\log([s_{\\theta}(x,0)]_{y})=-(\\nabla_{\\theta}V_{y}(\\theta)-\\nabla_{\\theta}V_{x}(\\theta)), leading to",
+            "We can weight Eq. 12 by 𝝅y​(θ)\\boldsymbol{\\pi}_{y}(\\theta) and sum over y≠x∈𝒳y\\neq x\\in\\mathcal{X} to obtain",
+            "Moving the term 𝝅x​(θ)​∇θVx​(θ)\\boldsymbol{\\pi}_{x}(\\theta)\\nabla_{\\theta}V_{x}(\\theta) to the left-hand side leads to",
+            "Combining this with the expression for ∇θ𝝅x​(θ)\\nabla_{\\theta}\\boldsymbol{\\pi}_{x}(\\theta) derived at the beginning of this section yields",
+            "Finally, after replacing this term in Eq. 7 we obtain the desired expression as"
+          ]
+        },
+        {
+          "title": "C.2 Proof ofSection3.1",
+          "paragraphs": [
+            "Following Section 3.1, we can artificially introduce 𝝅x​(θold)\\boldsymbol{\\pi}_{x}(\\theta_{\\mathrm{old}}) in the expression of ∇ℓR​(θ)\\nabla\\ell_{R}(\\theta) as",
+            "Since for all x≠y∈𝒳x\\neq y\\in\\mathcal{X},",
+            "we can rewrite Eq. 13 as",
+            "Finally, we note that this is equivalent to the following equation"
+          ]
+        },
+        {
+          "title": "C.3 Proof ofSection3.3",
+          "paragraphs": [
+            "To prove Section 3.3, we are going to prove the following explicit proposition regarding the linear system satisfied by ∇θη𝝅​(θ)\\nabla^{\\eta}_{\\theta}\\boldsymbol{\\pi}(\\theta).",
+            "Let η>0\\eta>0, and Dr⋆D_{r}^{\\star} denotes the block diagonal matrix defined in Section C.3. Then, ∇θη𝝅​(θ)\\nabla^{\\eta}_{\\theta}\\boldsymbol{\\pi}(\\theta) is the solution of the linear system",
+            "where Aη≔Dr⋆​[Id−η​diag​(1/𝝅​(θ))]−Id∈ℝd×dA_{\\eta}\\coloneqq D_{r}^{\\star}\\left[I_{d}-\\eta\\mathrm{diag}(1/\\boldsymbol{\\pi}(\\theta))\\right]-I_{d}\\in\\mathbb{R}^{d\\times d} and Bη≔−η​Dr⋆​∇θ𝝅​(θ)/𝝅​(θ)∈ℝd×pB_{\\eta}\\coloneqq-\\eta D_{r}^{\\star}\\nabla_{\\theta}\\boldsymbol{\\pi}(\\theta)/{\\boldsymbol{\\pi}(\\theta)}\\in\\mathbb{R}^{d\\times p}.",
+            "The proof contains three parts and occupies the rest of this section:",
+            "1. recalling the implicit function theorem,",
+            "2. computing the matrices that appear in the linear system,",
+            "3. solving the linear system.",
+            "recalling the implicit function theorem,",
+            "computing the matrices that appear in the linear system,",
+            "solving the linear system.",
+            "Let us first recall the implicit function theorem.",
+            "[Implicit function theorem, Krantz & Parks 2002] Let UU be an open subset of ℝd×ℝp\\mathbb{R}^{d}\\times\\mathbb{R}^{p}, and f:U→ℝdf:U\\to\\mathbb{R}^{d} a continuously differentiable function. Let (a,b)∈U(a,b)\\in U such that f​(a,b)=0f(a,b)=0 and ∇1f​(a,b)\\nabla_{1}f(a,b) is invertible. Then, there exists an open set W⊂ℝpW\\subset\\mathbb{R}^{p} containing bb and a function g:W→ℝdg:W\\to\\mathbb{R}^{d} such that g​(b)=ag(b)=a and ∀x∈W,f​(g​(x),x)=0\\forall x\\in W,f(g(x),x)=0. Moreover, gg is continuously differentiable and",
+            "where ∂g\\partial g denotes the Jacobian of gg on WW.",
+            "A first point to note is that ∇1𝒢​(𝒑,θ)=log⁡(𝒑/𝝅​(θ))+𝟏\\nabla_{1}\\mathcal{G}(\\boldsymbol{p},\\theta)=\\log(\\boldsymbol{p}/\\boldsymbol{\\pi}(\\theta))+\\mathbf{1}. Even if 𝝅​(θ)=argmin𝒑∈Δd​𝒢​(𝒑,θ)\\boldsymbol{\\pi}(\\theta)=\\underset{\\boldsymbol{p}\\in\\Delta_{d}}{\\operatorname*{argmin}}~\\mathcal{G}(\\boldsymbol{p},\\theta), we have ∇1𝒢​(𝝅​(θ),θ)=1≠0\\nabla_{1}\\mathcal{G}(\\boldsymbol{\\pi}(\\theta),\\theta)=1\\neq 0, because we compute the derivative in ℝd\\mathbb{R}^{d} and not in the probability simplex Δd\\Delta_{d}. This means that we cannot directly apply Section C.3 to ∇1𝒢​(𝒑,θ)\\nabla_{1}\\mathcal{G}(\\boldsymbol{p},\\theta). To address this issue, we follow (Blondel et al., 2022) and consider 𝒢\\mathcal{G} as a function of ℝd×ℝp\\mathbb{R}^{d}\\times\\mathbb{R}^{p}. Since we have a problem of the form 𝝅​(θ)=argmin𝒑∈Δd​𝒢​(𝒑,θ)\\boldsymbol{\\pi}(\\theta)=\\underset{\\boldsymbol{p}\\in\\Delta_{d}}{\\operatorname*{argmin}}~\\mathcal{G}(\\boldsymbol{p},\\theta), we can define the fixed point operator",
+            "for η>0\\eta>0. In fact, Tη​(𝝅​(θ),θ)=projΔd​(𝝅​(θ)−η​𝟏)T_{\\eta}(\\boldsymbol{\\pi}(\\theta),\\theta)=\\mathrm{proj}_{\\Delta_{d}}(\\boldsymbol{\\pi}(\\theta)-\\eta\\mathbf{1}) where projΔd=sparsemax\\mathrm{proj}_{\\Delta_{d}}=\\operatorname*{sparsemax} (Martins & Astudillo, 2016; Rakotomandimby et al., 2024). From (Martins & Astudillo, 2016, Prop. 2), we have",
+            "This leads to Tη​(𝝅​(θ),θ)=𝝅​(θ)T_{\\eta}(\\boldsymbol{\\pi}(\\theta),\\theta)=\\boldsymbol{\\pi}(\\theta), because sparsemax(𝝅​(θ))=𝝅​(θ)\\operatorname*{sparsemax}(\\boldsymbol{\\pi}(\\theta))=\\boldsymbol{\\pi}(\\theta). We can therefore apply Section C.3 to the function fη​(𝒑,θ)=Tη​(𝒑,θ)−𝒑f_{\\eta}(\\boldsymbol{p},\\theta)=T_{\\eta}(\\boldsymbol{p},\\theta)-\\boldsymbol{p}.",
+            "Let η>0\\eta>0, and define hη​(𝒑,θ)=𝒑−η​∇1𝒢​(𝒑,θ)h_{\\eta}(\\boldsymbol{p},\\theta)=\\boldsymbol{p}-\\eta\\nabla_{1}\\mathcal{G}(\\boldsymbol{p},\\theta). Then, we have Tη​(𝒑,θ)=sparsemax(hη​(𝒑,θ))T_{\\eta}(\\boldsymbol{p},\\theta)=\\operatorname*{sparsemax}(h_{\\eta}(\\boldsymbol{p},\\theta)) and fη​(𝒑,θ)=Tη​(𝒑,θ)−𝒑f_{\\eta}(\\boldsymbol{p},\\theta)=T_{\\eta}(\\boldsymbol{p},\\theta)-\\boldsymbol{p}. We note that since 𝝅​(θ)∈Δd\\boldsymbol{\\pi}(\\theta)\\in\\Delta_{d} and TηT_{\\eta} is a projection onto the probability simplex, fη​(𝝅​(θ),θ)=0f_{\\eta}(\\boldsymbol{\\pi}(\\theta),\\theta)=0. Following (Blondel et al., 2022, App. D) (this computation can be done by using the chain rule), we have",
+            "where Dr​(𝒑,θ)≔diag​(r​(hη​(𝒑,θ)))−r​(hη​(𝒑,θ))​r​(hη​(𝒑,θ))⊺/∥r​(hη​(𝒑,θ))∥1∈ℝd×dD_{r}(\\boldsymbol{p},\\theta)\\coloneqq\\mathrm{diag}(r(h_{\\eta}(\\boldsymbol{p},\\theta)))-r(h_{\\eta}(\\boldsymbol{p},\\theta))r(h_{\\eta}(\\boldsymbol{p},\\theta))^{\\intercal}/\\lVert r(h_{\\eta}(\\boldsymbol{p},\\theta))\\rVert_{1}\\in\\mathbb{R}^{d\\times d} and r​(hη​(𝒑,θ))∈{0,1}dr(h_{\\eta}(\\boldsymbol{p},\\theta))\\in\\{0,1\\}^{d} (Martins & Astudillo, 2016). Here, for all 𝒛∈ℝd\\boldsymbol{z}\\in\\mathbb{R}^{d}, we define the vector r​(𝒛)r(\\boldsymbol{z}) as follows:",
+            "where τ\\tau is the unique function satisfying ∑i=1d[𝒛j−τ​(𝒛)]+=1\\sum_{i=1}^{d}[\\boldsymbol{z}_{j}-\\tau(\\boldsymbol{z})]_{+}=1 for all 𝒛∈ℝd\\boldsymbol{z}\\in\\mathbb{R}^{d}. This definition is a bit tricky, but overall r​(hη​(𝒑,θ))r(h_{\\eta}(\\boldsymbol{p},\\theta)) contains kh{k}_{h} times the number 11 and d−khd-{k}_{h} times the number 0, where kh∈[d]{k}_{h}\\in[d]. This means that",
+            "We then obtain the following lemma.",
+            "Denote r~​(𝒛)\\tilde{r}(\\boldsymbol{z}) as the vector with the sorted coordinates of r​(𝒛)r(\\boldsymbol{z}), i.e., the vector with coordinates r~​(𝒛)i=r​(𝒛)σ​(i)\\tilde{r}(\\boldsymbol{z})_{i}=r(\\boldsymbol{z})_{\\sigma(i)}, where σ\\sigma is the permutation such that r​(𝒛)σ​(1)≥⋯≥r​(𝒛)σ​(d)r(\\boldsymbol{z})_{\\sigma(1)}\\geq\\cdots\\geq r(\\boldsymbol{z})_{\\sigma(d)}. Then, kh=max⁡{k∈[d]​∣1+k​r​(𝒛)σ​(k)>​∑j=1kr​(𝒛)σ​(j)}{k}_{h}=\\max\\{k\\in[d]\\mid 1+kr(\\boldsymbol{z})_{\\sigma(k)}>\\sum_{j=1}^{k}r(\\boldsymbol{z})_{\\sigma(j)}\\} and,",
+            "where R≔diag​(1,…,1⏟kh​times,0,…,0⏟d−kh​times)R\\coloneqq\\mathrm{diag}(\\underbrace{1,\\ldots,1}_{{k}_{h}\\mathrm{times}},\\underbrace{0,\\ldots,0}_{d-{k}_{h}\\mathrm{times}}) and T≔{pNiceMatrix}​[c​o​l​u​m​n​s−w​i​d​t​h=a​u​t​o,h​v​l​i​n​e​s,c​e​l​l−s​p​a​c​e−l​i​m​i​t​s=4​p​t]​J​&​000T\\coloneqq\\pNiceMatrix[columns-width=auto,hvlines,cell-space-limits=4pt]J&0\\\\ 00\\\\ . Here, JJ denotes the kh×kh{k}_{h}\\times{k}_{h} matrix whose entries are all equal to 11.",
+            "We can now replace the derivatives in Eq. 14 by their expression as ∇1,1𝒢​(𝒑,θ)=diag​(1/𝒑)\\nabla_{1,1}\\mathcal{G}(\\boldsymbol{p},\\theta)=\\mathrm{diag}(1/\\boldsymbol{p}) and ∇1,2𝒢​(𝒑,θ)=−∇θ𝝅​(θ)/𝝅​(θ)\\nabla_{1,2}\\mathcal{G}(\\boldsymbol{p},\\theta)=-\\nabla_{\\theta}\\boldsymbol{\\pi}(\\theta)/{\\boldsymbol{\\pi}(\\theta)}. Following Section 3.1, we have",
+            "Let us define",
+            "Since hη(𝝅(θ),θ))=𝝅(θ)−η𝟏h_{\\eta}(\\boldsymbol{\\pi}(\\theta),\\theta))=\\boldsymbol{\\pi}(\\theta)-\\eta\\mathbf{1}, we find from Section C.3 that if η≤mini∈[d]⁡𝝅i​(θ)\\eta\\leq\\min_{i\\in[d]}\\boldsymbol{\\pi}_{i}(\\theta), then kh=dk_{h}=d.",
+            "Let us continue the proof without additional assumption on η\\eta. We begin by verifying that the matrix",
+            "is invertible. Without loss of generality, instead of reordering the elements of the canonical basis with σ\\sigma (Section C.3), we can check the invertibility directly on Ar~⋆A_{\\tilde{r}}^{\\star} as follows.",
+            "where the second inequality is due to Section C.3, and",
+            "We then find that −Ar~⋆-A_{\\tilde{r}}^{\\star} is a rank-one update of a diagonal matrix, which can be inverted explicitly using the Sherman–Morrison formula (Bartlett, 1951).",
+            "[Sherman–Morrison formula, Bartlett 1951] Let M∈ℝd×dM\\in\\mathbb{R}^{d\\times d} be an invertible matrix and u,v∈ℝdu,v\\in\\mathbb{R}^{d}. Then, M+u​v⊺M+uv^{\\intercal} is invertible if and only if 1+v⊺​M−1​u≠01+v^{\\intercal}M^{-1}u\\neq 0, and",
+            "We replace the elements in Section C.3 by our variables as M=diag​(η/𝝅σ​(1)​(θ),…,η/𝝅σ​(kh)​(θ),1,…,1)M=\\mathrm{diag}(\\eta/\\boldsymbol{\\pi}_{\\sigma(1)}(\\theta),\\ldots,\\eta/\\boldsymbol{\\pi}_{\\sigma({k}_{h})}(\\theta),1,\\ldots,1) is invertible, u=1kh​𝟏d(kh)u=\\frac{1}{{k}_{h}}\\mathbf{1}_{d}^{({k}_{h})} and v=𝟏d(kh)−η​w​(θ)(kh)v=\\mathbf{1}_{d}^{({k}_{h})}-\\eta w(\\theta)^{({k}_{h})}. Then,",
+            "The nonzero terms in the numerator are located in the upper-left square of size kh{k}_{h}, and for 1≤i,j≤kh1\\leq i,j\\leq{k}_{h},",
+            "This shows that −Ar⋆-A_{r}^{\\star} is invertible, and its inverse is given as",
+            "where LL is the rank-one matrix defined as",
+            "We can now apply Section C.3 to conclude that ∇θη𝝅​(θ)\\nabla_{\\theta}^{\\eta}\\boldsymbol{\\pi}(\\theta) is the solution to the linear system",
+            "where Aη≔Dr⋆​[Id−η​diag​(1/𝝅​(θ))]−Id∈ℝd×dA_{\\eta}\\coloneqq D_{r}^{\\star}\\left[I_{d}-\\eta\\mathrm{diag}(1/\\boldsymbol{\\pi}(\\theta))\\right]-I_{d}\\in\\mathbb{R}^{d\\times d} and Bη≔−η​Dr⋆​∇θ𝝅​(θ)/𝝅​(θ)∈ℝd×pB_{\\eta}\\coloneqq-\\eta D_{r}^{\\star}\\nabla_{\\theta}\\boldsymbol{\\pi}(\\theta)/{\\boldsymbol{\\pi}(\\theta)}\\in\\mathbb{R}^{d\\times p}.",
+            "The matrix product gives us that",
+            "where S≔z​𝟏⊺S\\coloneqq z\\mathbf{1}^{\\intercal} with zi={kh​𝝅σ​(i)​(θ)∑l=1kh𝝅σ​(l)​(θ)if ​1≤i≤kh,0otherwise.z_{i}=\\begin{cases}\\displaystyle\\frac{{k}_{h}\\boldsymbol{\\pi}_{\\sigma(i)}(\\theta)}{\\sum_{l=1}^{{k}_{h}}{\\boldsymbol{\\pi}_{\\sigma(l)}(\\theta)}}&\\text{if }1\\leq i\\leq{k}_{h},\\\\ 0&\\text{otherwise}.\\end{cases}.",
+            "∇θη𝝅​(θ)\\nabla_{\\theta}^{\\eta}\\boldsymbol{\\pi}(\\theta) is then a weighted version of ∇θ𝝅​(θ)\\nabla_{\\theta}\\boldsymbol{\\pi}(\\theta). In fact, ∇θη𝝅​(θ)=z⋅(∇θ1𝝅​(θ),…,∇θp𝝅​(θ))\\nabla_{\\theta}^{\\eta}\\boldsymbol{\\pi}(\\theta)=z\\cdot(\\nabla_{\\theta_{1}}\\boldsymbol{\\pi}(\\theta),\\ldots,\\nabla_{\\theta_{p}}\\boldsymbol{\\pi}(\\theta)) each gradient is then weighted by ziz_{i}.",
+            "Interestingly, as in (Blondel et al., 2022), η\\eta does not appear directly in SS. In our case, the dependence is implicit through kh{k}_{h}. We will then choose η\\eta so that kh{k}_{h} correspond to term we have in our Monte Carlo approximation of the policy gradient. By doing this, we will be able to totally compute zz since we have access to 𝝅σ​(i),∀1≤i≤kh\\boldsymbol{\\pi}_{\\sigma(i)},~\\forall 1\\leq i\\leq{k}_{h} through the concrete score sθ​(σ​(i),0)s_{\\theta}(\\sigma(i),0)."
+          ]
+        },
+        {
+          "title": "C.4 Proof ofSection3.3",
+          "paragraphs": [
+            "The proof is a direct consequence of (Campbell et al., 2022, Prop. 4) and (Maas, 2011, Thm. 4.7).",
+            "[Campbell et al. 2022] The corrector rate matrix Qtc≔Qt+Q¯tQ^{c}_{t}\\coloneqq Q_{t}+\\overline{Q}_{t} has 𝒑t\\boldsymbol{p}_{t} as its stationary distribution.",
+            "Then, the rate matrix Q0cQ^{c}_{0} has 𝒑0=pdata\\boldsymbol{p}_{0}=p_{\\mathrm{data}} as a stationary distribution. To provide a gradient flow interpretation, Maas 2011 introduces a specific Wassertein-like metric 𝒲:Δd×Δd→ℝ\\mathcal{W}:\\Delta_{d}\\times\\Delta_{d}\\to\\mathbb{R}. We refer to (Maas, 2011, Sec. 1) for a complete definition.",
+            "This metric is really close to the Wassertein metric, as it has a transport-cost interpretation. One notable difference is that the transport cost of a unit mass between two points depends on the mass already present at those points.",
+            "We state one of the main results of (Maas, 2011). {boxthm}[Maas 2011] Let Δ\\Delta be a rate matrix of stationary distribution ν\\nu. Then, d​𝒑td​t=Δ​𝒑t\\frac{\\mathrm{d}\\boldsymbol{p}_{t}}{\\mathrm{d}t}=\\Delta\\boldsymbol{p}_{t} is a gradient flow trajectory for the functional ℋ(𝒑)=KL(𝒑||ν)\\mathcal{H}(\\boldsymbol{p})=\\mathop{\\mathrm{KL}}\\nolimits(\\boldsymbol{p}||\\nu) with respect to 𝒲\\mathcal{W}. Combining these two results means that sampling from the ODE",
+            "implements a gradient flow for KL(⋅||pdata)\\mathop{\\mathrm{KL}}\\nolimits(~\\cdot~||p_{\\mathrm{data}}) in Δd\\Delta_{d}, with respect to 𝒲\\mathcal{W}."
+          ]
+        },
+        {
+          "title": "C.5 Proof of3.3",
+          "paragraphs": [
+            "The proof contains two parts and occupies the rest of this section:",
+            "1. proving technical lemmas,",
+            "2. main proof.",
+            "proving technical lemmas,",
+            "main proof.",
+            "We first recall the differential form of Grönwall’s lemma. {boxlem}[Grönwall’s lemma, differential form] Let II be an interval of the real line closed on the left point. Let u:I→ℝu:I\\to\\mathbb{R} be a function differentiable in the interior I̊\\mathring{I} of II and a,b:I→ℝa,b:I\\to\\mathbb{R} be two continuous functions. Assume that uu satisfies the following inequality",
+            "Then,",
+            "We then recall the expression of the functional derivative of the KL\\mathop{\\mathrm{KL}}\\nolimits over Δd\\Delta_{d} for our setup.",
+            "[Functional derivatives] For KL divergence, the chain rule for functional derivatives can be written as",
+            "We provide a useful bound on ‖∇θlog⁡𝝅​(θs)‖\\left\\lVert\\nabla_{\\theta}\\log\\boldsymbol{\\pi}({\\theta_{s}})\\right\\rVert.",
+            "[Bound on the derivative of the log distribution] Under 3.2, we have that",
+            "where Clog>0C_{\\log}>0.",
+            "∇θlog⁡𝝅​(θ)=∇θ𝝅​(θ)𝝅​(θ).\\nabla_{\\theta}\\log\\boldsymbol{\\pi}({\\theta})=\\frac{\\nabla_{\\theta}\\boldsymbol{\\pi}({\\theta})}{\\boldsymbol{\\pi}({\\theta})}. Then, from 3.2, for θ∈ℝp,‖∇θlog⁡𝝅​(θ)‖≤Clog≔Cε\\theta\\in\\mathbb{R}^{p},\\left\\lVert\\nabla_{\\theta}\\log\\boldsymbol{\\pi}({\\theta})\\right\\rVert\\leq C_{\\log}\\coloneqq\\frac{C}{\\varepsilon}.",
+            "∎",
+            "To end this subsection, we provide an expression of the Logarithmic Sobolev Inequality for our discrete setup.",
+            "[Log-Sobolev inequality, Diaconis & Saloff-Coste 1996]",
+            "Thanks to Section C.4, we can apply the Log-Sobolev Inequality (LSI) of (Diaconis & Saloff-Coste, 1996):",
+            "to f​(x)=𝒒s​(y)𝝅y​(θs)f(x)=\\sqrt{\\frac{\\boldsymbol{q}_{s}(y)}{\\boldsymbol{\\pi}_{y}(\\theta_{s})}}.",
+            "We applied (Diaconis & Saloff-Coste, 1996, Lem. 2.7) to the standard LSI form in the paper.",
+            "∎",
+            "We recall the coupled equations stated in the main document:",
+            "We provide below the main proof of 3.3, inspired by (Marion et al., 2024).",
+            "Since ∇ℓA​(θs)=Γ​(𝝅​(θs),θs)\\nabla\\ell^{A}(\\theta_{s})=\\Gamma(\\boldsymbol{\\pi}({\\theta_{s}}),\\theta_{s}), we have,",
+            "Then, by 3.3,",
+            "where we used the inequality a​b≤12​(a2+b2)ab\\leq\\frac{1}{2}(a^{2}+b^{2}).",
+            "Since KL(𝒒s||𝝅(θs))=∑x∈𝒳log(𝒒s𝝅​(θs))𝒒s\\mathop{\\mathrm{KL}}\\nolimits(\\boldsymbol{q}_{s}\\,||\\,\\boldsymbol{\\pi}({\\theta_{s}}))=\\sum_{x\\in\\mathcal{X}}\\log\\left(\\frac{\\boldsymbol{q}_{s}}{\\boldsymbol{\\pi}({\\theta_{s}})}\\right)\\boldsymbol{q}_{s}, we have that",
+            "Section C.5.1 gives us that",
+            "since ∑d​𝒒sd​s=dd​s​∑𝒒s=dd​s​1=0\\sum\\frac{\\mathrm{d}\\boldsymbol{q}_{s}}{\\mathrm{d}s}=\\frac{\\mathrm{d}}{\\mathrm{d}s}\\sum\\boldsymbol{q}_{s}=\\frac{\\mathrm{d}}{\\mathrm{d}s}1=0.",
+            "First, from Eq. 15, d​𝒒sd​s​(x)=(Q0c,θs​𝒒s)​(x)=∑yQ0c,θs​(x,y)​𝒒s​(y)\\frac{\\mathrm{d}\\boldsymbol{q}_{s}}{\\mathrm{d}s}(x)=(Q_{0}^{c,\\theta_{s}}\\boldsymbol{q}_{s})(x)=\\sum_{y}Q_{0}^{c,\\theta_{s}}(x,y)\\boldsymbol{q}_{s}(y). Then, since Q0c,θsQ_{0}^{c,\\theta_{s}} sum to zero, we can write that",
+            "This procedure is analogous to an integration by parts in discrete space. We can then apply Section C.5.1,",
+            "By the chain rule, ∂𝝅​(θs)∂s=⟨∇θ𝝅​(θs),dd​s​θs⟩\\frac{\\partial\\boldsymbol{\\pi}({\\theta_{s}})}{\\partial s}=\\left\\langle\\nabla_{\\theta}\\boldsymbol{\\pi}({\\theta_{s}}),\\frac{\\mathrm{d}}{\\mathrm{d}s}\\theta_{s}\\right\\rangle. By plugging in Eq. 15, we can rewrite bb as",
+            "where Ψ​(𝒒s,θs)=∫𝒒s​∇θlog⁡𝝅​(θs)\\Psi(\\boldsymbol{q}_{s},\\theta_{s})=\\int\\boldsymbol{q}_{s}\\nabla_{\\theta}\\log\\boldsymbol{\\pi}({\\theta_{s}}). Then,",
+            "where we used Section C.5.1 for the first inequality and Pinsker’s inequality for the second. Note that Ψ​(𝝅​(θs),θs)=∑𝝅​(θs)​∇θlog⁡𝝅​(θs)=∑∇θ𝝅​(θs)=∇θ​∑𝝅​(θs)=∇θ1=0.\\Psi(\\boldsymbol{\\pi}({\\theta_{s}}),\\theta_{s})=\\sum\\boldsymbol{\\pi}({\\theta_{s}})\\nabla_{\\theta}\\log\\boldsymbol{\\pi}({\\theta_{s}})=\\sum\\nabla_{\\theta}\\boldsymbol{\\pi}({\\theta_{s}})=\\nabla_{\\theta}\\sum\\boldsymbol{\\pi}({\\theta_{s}})=\\nabla_{\\theta}1=0. By Cauchy-Schwarz inequality, we have that |b|≤βs​K​KL(𝒒s||𝝅(θs))\\lvert b\\rvert\\leq\\beta_{s}K\\sqrt{\\mathop{\\mathrm{KL}}\\nolimits(\\boldsymbol{q}_{s}\\,||\\,\\boldsymbol{\\pi}({\\theta_{s}}))}, where K=Clog​CΓ​2K=C_{\\log}C_{\\Gamma}\\sqrt{2}.",
+            "Combining the bounds on aa and bb with Eq. 17 yields",
+            "Let y(s)=KL(𝒒s||𝝅(θs))y(s)=\\mathop{\\mathrm{KL}}\\nolimits(\\boldsymbol{q}_{s}\\,||\\,\\boldsymbol{\\pi}({\\theta_{s}})). We can rewrite",
+            "Then, by writing dd​s​y=2​y​dd​s​y\\frac{\\mathrm{d}}{\\mathrm{d}s}y=2\\sqrt{y}\\frac{\\mathrm{d}}{\\mathrm{d}s}\\sqrt{y}, we have dd​s​y≤−μ​y​(s)+βs​K2\\frac{\\mathrm{d}}{\\mathrm{d}s}\\sqrt{y}\\leq-\\mu\\sqrt{y(s)}+\\frac{\\beta_{s}K}{2}. We can then apply Section C.5.1 to obtain",
+            "We recall the bound on the loss:",
+            "By integrating between 0 and SS, and exploiting the fact that we can bound βs\\beta_{s} by βS\\beta_{S} since βs\\beta_{s} is decreasing, we have",
+            "Recall that, by assumption of the Theorem, βs=min⁡(1,1s)\\beta_{s}=\\min(1,\\frac{1}{\\sqrt{s}}). Thus S​βS=SS\\beta_{S}=\\sqrt{S}.",
+            "From Eq. 18, we can bound ∫0Sβs​y​(s)​ds\\int_{0}^{S}\\beta_{s}y(s)\\mathrm{d}s. In fact,",
+            "The first two terms are converging when S→∞S\\to\\infty. Let us analyze the last term by defining I​(s)=∫0sβu​eμ​(u−s)​duI(s)=\\int_{0}^{s}\\beta_{u}\\mathrm{e}^{\\mu(u-s)}\\mathrm{d}u. Let S0≥2S_{0}\\geq 2 (depending only on μ\\mu) such that ln⁡(S0)μ≤S02\\frac{\\ln(S_{0})}{\\mu}\\leq\\frac{S_{0}}{2}. For s≥S0s\\geq S_{0}, let α​(s):=s−ln⁡sμ\\alpha(s):=s-\\frac{\\ln s}{\\mu}. We have, for s≥S0s\\geq S_{0},",
+            "where in the last inequality we used that α​(s)≥s/2\\alpha(s)\\geq s/2 and βs\\beta_{s} is decreasing. It means that for s≥T0s\\geq T_{0},",
+            "For s<S0s<S_{0}, we can simply bound by I​(s)I(s) by β0​S0\\beta_{0}S_{0}. We obtain",
+            "Since βs=min⁡(1,1s)\\beta_{s}=\\min(1,\\frac{1}{\\sqrt{s}}), and S0≥2S_{0}\\geq 2, all integrals are converging when S→∞S\\to\\infty. Plugging this into (19), we finally obtain the existence of a constant c>0c>0 such that"
+          ]
+        }
+      ]
+    },
+    "Appendix D Mathematical supplements": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "D.1 First Variation in the discrete setup onΔd\\Delta_{d}",
+          "paragraphs": [
+            "In the discrete setup, when considering a functional ℱ​(𝒑)\\mathcal{F}(\\boldsymbol{p}) defined on the probability simplex Δd\\Delta_{d}, the first variation quantifies the sensitivity of ℱ\\mathcal{F} to perturbations in the probability distribution 𝒑={p1,…,pd}\\boldsymbol{p}=\\{p_{1},\\ldots,p_{d}\\}. For a small perturbation 𝒑→𝒑+ϵ​η\\boldsymbol{p}\\to\\boldsymbol{p}+\\epsilon\\eta, the first variation is given by",
+            "In practice, the first variation can often be expressed as a weighted sum over the components of η\\eta, as",
+            "where ∂ℱ∂pi\\displaystyle\\frac{\\partial\\mathcal{F}}{\\partial p_{i}} denotes the partial derivative of ℱ\\mathcal{F} with respect to pip_{i}, which is the quantity of interest. The next two paragraphs details the derivation for the two functionals considered in this paper.",
+            "The functional can be written as:",
+            "where 𝒑={p1,…,pd}\\boldsymbol{p}=\\{p_{1},\\ldots,p_{d}\\} is a probability vector, and R​(xi)R(x_{i}) represents the value of RR at xix_{i}. Consider a small perturbation 𝒑→𝒑+ϵ​η\\boldsymbol{p}\\to\\boldsymbol{p}+\\epsilon\\eta. Then, ℱ​(𝒑+ϵ​η)=∑i=1d(pi+ϵ​ηi)​R​(xi)\\mathcal{F}(\\boldsymbol{p}+\\epsilon\\eta)=\\sum_{i=1}^{d}(p_{i}+\\epsilon\\eta_{i})R(x_{i}). After expanding this first order in ϵ\\epsilon, we obtain",
+            "Thus, the first variation is",
+            "which leads to",
+            "Consider the small perturbation of the functional as ℱ​(𝒑+ϵ​η)=∑i=1n(pi+ϵ​ηi)​ln⁡pi+ϵ​ηiqi,\\mathcal{F}(\\boldsymbol{p}+\\epsilon\\eta)=\\sum_{i=1}^{n}(p_{i}+\\epsilon\\eta_{i})\\ln\\frac{p_{i}+\\epsilon\\eta_{i}}{q_{i}}, and its expansion to the first order in ϵ\\epsilon:",
+            "Keeping only the terms linear in ϵ\\epsilon, we find that",
+            "Therefore,",
+            "which leads us to"
+          ]
+        },
+        {
+          "title": "D.2 KL regularization term",
+          "paragraphs": [
+            "For t∈[0,T]t\\in[0,T], we take advantage of the computation of (Zhang et al., 2025, Lem. 1) to 𝒒tθ\\boldsymbol{q}^{\\theta}_{t} and 𝒒tθpre\\boldsymbol{q}^{\\theta_{\\mathrm{pre}}}_{t}. In fact, KL(𝒒tθ∥𝒒tθpre)=𝔼xt∼𝒒tθ​[d​𝒒tθd​𝒒tθpre]\\mathop{\\mathrm{KL}}\\nolimits(\\boldsymbol{q}^{\\theta}_{t}\\|\\boldsymbol{q}^{\\theta_{\\mathrm{pre}}}_{t})=\\mathbb{E}_{x_{t}\\sim\\boldsymbol{q}^{\\theta}_{t}}\\left[\\frac{\\mathrm{d}\\boldsymbol{q}^{\\theta}_{t}}{\\mathrm{d}\\boldsymbol{q}^{\\theta_{\\mathrm{pre}}}_{t}}\\right]. By applying Girsanov’s theorem (Palmowski & Rolski, 2002) to the Radon-Nikodym derivative as in (Zhang et al., 2025), a generalized II-divergence term appears (Amari, 2012). We obtain",
+            "Once integrated on the whole path from t=0t=0 to t=Tt=T, we recover the result from (Wang et al., 2025):"
+          ]
+        }
+      ]
+    },
+    "Appendix E Additional experiments and details": {
+      "paragraphs": [
+        "[Table: Table 4: Comparison of model responses for a prompt from the HH-RLHF dataset, for T=128T=128. We present outputs from the pretrained model and the fine-tuned SEPO-128128 and SEPO-10241024 variants.]",
+        "[Table: Table 5: Comparison of model responses for a prompt from the HH-RLHF dataset, for T=512T=512. We present outputs from the pretrained model and the fine-tuned SEPO-128128 and SEPO-10241024 variants..]"
+      ],
+      "subsections": [
+        {
+          "title": "E.1 DNA experimental details",
+          "paragraphs": [
+            "To enhance CG content while maintaining the naturalness of DNA sequences. Given a DNA sequence s=(s1,…,sm)s=(s_{1},\\dots,s_{m}) of length mm, we define the reward as we define the reward function as:",
+            "The first term maximizes the proportion of CG motifs. The second term is the entropy of the sequence, it measures the sequence diversity to prevent the model from generating sequences composed uniquely of C and G nucleotides.",
+            "We also augment the GRPO loss with a KL\\mathop{\\mathrm{KL}}\\nolimits term as defined in Section D.2. In addition to the entropy term in the reward, this allows the model to stay close to a reference natural DNA sequence, ensuring the preservation of typical biological motifs encountered in the (Gosai et al., 2023) dataset."
+          ]
+        },
+        {
+          "title": "E.2 Additional qualitative results for language modeling",
+          "paragraphs": [
+            "We provide additional answers for different prompts for each model, for T=128T=128 denoising steps Table 4, and for T=512T=512 denoising steps Table 5."
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "Akın (2023) Akın, F. awesome-chatgpt-prompts. https://github.com/f/awesome-chatgpt-prompts, 2023. Accessed: 2025-01-29.",
+    "Amari (2012) Amari, S.-i. Differential-geometrical methods in statistics. Springer Science & Business Media, 2012.",
+    "Austin et al. (2021) Austin, J., Johnson, D. D., Ho, J., Tarlow, D., and Van Den Berg, R. Structured denoising diffusion models in discrete state-spaces. In Advances in Neural Information Processing Systems, volume 34, pp. 17981–17993, 2021.",
+    "Bai et al. (2022) Bai, Y., Jones, A., Ndousse, K., Askell, A., Chen, A., DasSarma, N., Drain, D., Fort, S., Ganguli, D., Henighan, T., et al. Training a helpful and harmless assistant with reinforcement learning from human feedback. arXiv preprint arXiv:2204.05862, 2022.",
+    "Bartlett (1951) Bartlett, M. S. An inverse matrix adjustment arising in discriminant analysis. Ann. Math. Stat., 22(1):107–111, 1951.",
+    "Benton et al. (2024) Benton, J., Shi, Y., De Bortoli, V., Deligiannidis, G., and Doucet, A. From denoising diffusions to denoising Markov models. J. R. Stat. Soc. B, 86(2):286–301, 2024.",
+    "Black et al. (2024) Black, K., Janner, M., Du, Y., Kostrikov, I., and Levine, S. Training diffusion models with reinforcement learning. In International Conference on Learning Representations, 2024.",
+    "Blondel et al. (2022) Blondel, M., Berthet, Q., Cuturi, M., Frostig, R., Hoyer, S., Llinares-López, F., Pedregosa, F., and Vert, J.-P. Efficient and modular implicit differentiation. In Advances in Neural Information Processing Systems, volume 35, pp. 5230–5242, 2022.",
+    "Bonet et al. (2024) Bonet, C., Uscidda, T., David, A., Aubin-Frankowski, P.-C., and Korba, A. Mirror and Preconditioned Gradient Descent in Wasserstein Space. In Advances in Neural Information Processing Systems, 2024.",
+    "Brown et al. (2020) Brown, T., Mann, B., Ryder, N., et al. Language models are few-shot learners. In Advances in Neural Information Processing Systems, volume 33, pp. 1877–1901, 2020.",
+    "Campbell et al. (2022) Campbell, A., Benton, J., De Bortoli, V., Rainforth, T., Deligiannidis, G., and Doucet, A. A continuous time framework for discrete denoising models. In Advances in Neural Information Processing Systems, volume 35, pp. 28266–28279, 2022.",
+    "Clark et al. (2024) Clark, K., Vicol, P., Swersky, K., and Fleet, D. J. Directly fine-tuning diffusion models on differentiable rewards. In International Conference on Learning Representations, 2024.",
+    "Diaconis & Saloff-Coste (1996) Diaconis, P. and Saloff-Coste, L. Logarithmic sobolev inequalities for finite markov chains. The Annals of Applied Probability, 6(3):695–750, 1996.",
+    "Fan et al. (2024) Fan, Y., Watkins, O., Du, Y., Liu, H., Ryu, M., Boutilier, C., Abbeel, P., Ghavamzadeh, M., Lee, K., and Lee, K. Reinforcement learning for fine-tuning text-to-image diffusion models. In Advances in Neural Information Processing Systems, volume 36, 2024.",
+    "Gillespie (2001) Gillespie, D. T. Approximate accelerated stochastic simulation of chemically reacting systems. J. Chem. Phys., 115(4):1716–1733, 2001.",
+    "Gokaslan et al. (2019) Gokaslan, A., Cohen, V., Pavlick, E., and Tellex, S. Openwebtext corpus. http://Skylion007.github.io/OpenWebTextCorpus, 2019.",
+    "Gosai et al. (2023) Gosai, S. J., Castro, R. I., Fuentes, N., Butts, J. C., Kales, S., Noche, R. R., Mouri, K., Sabeti, P. C., Reilly, S. K., and Tewhey, R. Machine-guided design of synthetic cell type-specific cis-regulatory elements. bioRxiv, 2023.",
+    "Gruver et al. (2024) Gruver, N., Stanton, S., Frey, N., Rudner, T. G., Hotzel, I., Lafrance-Vanasse, J., Rajpal, A., Cho, K., and Wilson, A. G. Protein design with guided discrete diffusion. In Advances in Neural Information Processing Systems, volume 36, 2024.",
+    "Hamming (1950) Hamming, R. W. Error detecting and error correcting codes. Bell Syst. Tech. J., 29(2):147–160, 1950.",
+    "Ho & Salimans (2021) Ho, J. and Salimans, T. Classifier-free diffusion guidance. In NeurIPS 2021 Workshop on Deep Generative Models and Downstream Applications, 2021.",
+    "Ho et al. (2020) Ho, J., Jain, A., and Abbeel, P. Denoising diffusion probabilistic models. In Advances in Neural Information Processing Systems, volume 33, pp. 6840–6851, 2020.",
+    "Hu et al. (2022) Hu, E. J., Shen, Y., Wallis, P., Allen-Zhu, Z., Li, Y., Wang, S., Wang, L., and Chen, W. LoRA: Low-Rank Adaptation of Large Language Models. In International Conference on Learning Representations, 2022.",
+    "Hu et al. (2024) Hu, X., Zhang, F., Chen, S., and Yang, Z. Unveiling the statistical foundations of chain-of-thought prompting methods. arXiv preprint arXiv:2408.14511, 2024.",
+    "Jang et al. (2017) Jang, E., Gu, S., and Poole, B. Categorical Reparameterization with Gumbel-Softmax. In International Conference on Learning Representations, 2017.",
+    "Kelly (2011) Kelly, F. P. Reversibility and stochastic networks. Cambridge University Press, 2011.",
+    "Krantz & Parks (2002) Krantz, S. G. and Parks, H. R. The implicit function theorem: history, theory, and applications. Springer Science & Business Media, 2002.",
+    "Langevin (1908) Langevin, P. Sur la théorie du mouvement brownien. CR Acad. Sci. Paris, 146(530-533):530, 1908.",
+    "Li (2023) Li, Y. minChatGPT: A minimum example of aligning language models with RLHF similar to ChatGPT. https://github.com/ethanyanjiali/minChatGPT, 2023.",
+    "Li et al. (2024) Li, Z., Krohn, R., Chen, T., Ajay, A., Agrawal, P., and Chalvatzaki, G. Learning multimodal behaviors from scratch with diffusion policy gradient. In Advances in Neural Informations Processing Systems, 2024.",
+    "Lou et al. (2024) Lou, A., Meng, C., and Ermon, S. Discrete diffusion language modeling by estimating the ratios of the data distribution. In International Conference on Machine Learning, 2024.",
+    "Ma et al. (2025) Ma, N., Tong, S., Jia, H., Hu, H., Su, Y.-C., Zhang, M., Yang, X., Li, Y., Jaakkola, T., Jia, X., et al. Inference-time scaling for diffusion models beyond scaling denoising steps. arXiv preprint arXiv:2501.09732, 2025.",
+    "Maas (2011) Maas, J. Gradient flows of the entropy for finite Markov chains. J. Funct. Anal., 261(8):2250–2292, 2011.",
+    "Marion et al. (2024) Marion, P., Korba, A., Bartlett, P., Blondel, M., De Bortoli, V., Doucet, A., Llinares-López, F., Paquette, C., and Berthet, Q. Implicit diffusion: Efficient optimization through stochastic sampling. arXiv preprint arXiv:2402.05468, 2024.",
+    "Martins & Astudillo (2016) Martins, A. and Astudillo, R. From Softmax to Sparsemax: A Sparse Model of Attention and Multi-Label Classification. In International Conference on Machine Learning, pp. 1614–1623, 2016.",
+    "Meng et al. (2022) Meng, C., Choi, K., Song, J., and Ermon, S. Concrete score matching: Generalized score matching for discrete data. In Advances in Neural Information Processing Systems, volume 35, pp. 34532–34545, 2022.",
+    "Nisonoff et al. (2025) Nisonoff, H., Xiong, J., Allenspach, S., and Listgarten, J. Unlocking guidance for discrete state-space diffusion and flow models. In International Conference on Learning Representations, 2025.",
+    "Ouyang et al. (2022) Ouyang, L., Wu, J., Jiang, X., Almeida, D., Wainwright, C., Mishkin, P., Zhang, C., Agarwal, S., Slama, K., Ray, A., et al. Training language models to follow instructions with human feedback. Advances in neural information processing systems, 35:27730–27744, 2022.",
+    "Palmowski & Rolski (2002) Palmowski, Z. and Rolski, T. A technique for exponential change of measure for Markov processes. Bernoulli, 8(6):767 – 785, 2002.",
+    "Pavliotis (2014) Pavliotis, G. A. Stochastic Processes and Applications. Springer, 2014.",
+    "Radford et al. (2019) Radford, A., Wu, J., Child, R., Luan, D., Amodei, D., Sutskever, I., et al. Language models are unsupervised multitask learners. OpenAI blog, 1(8):9, 2019.",
+    "Rakotomandimby et al. (2024) Rakotomandimby, S., Chancelier, J.-P., De Lara, M., and Blondel, M. Learning with Fitzpatrick Losses. In Advances in Neural Information Processing Systems, 2024.",
+    "Rector-Brooks et al. (2025) Rector-Brooks, J., Hasan, M., Peng, Z., Quinn, Z., Liu, C., Mittal, S., Dziri, N., Bronstein, M., Bengio, Y., Chatterjee, P., et al. Steering masked discrete diffusion models via discrete denoising posterior prediction. In International Conference on Learning Representations, 2025.",
+    "Ren et al. (2025) Ren, A. Z., Lidard, J., Ankile, L. L., Simeonov, A., Agrawal, P., Majumdar, A., Burchfiel, B., Dai, H., and Simchowitz, M. Diffusion policy policy optimization. In International Conference on Learning Representations, 2025.",
+    "Sahoo et al. (2024) Sahoo, S. S., Arriola, M., Schiff, Y., Gokaslan, A., Marroquin, E., Chiu, J. T., Rush, A., and Kuleshov, V. Simple and effective masked diffusion language models. In Advances in Neural Information Processing Systems, 2024.",
+    "Schulman et al. (2015) Schulman, J., Levine, S., Abbeel, P., Jordan, M., and Moritz, P. Trust Region Policy Optimization. In International Conference on Machine Learning, volume 37, pp. 1889–1897, 2015.",
+    "Schulman et al. (2017) Schulman, J., Wolski, F., Dhariwal, P., Radford, A., and Klimov, O. Proximal policy optimization algorithms. arXiv preprint arXiv:1707.06347, 2017.",
+    "Shao et al. (2024) Shao, Z., Wang, P., Zhu, Q., Xu, R., Song, J., Bi, X., Zhang, H., Zhang, M., Li, Y., Wu, Y., et al. Deepseekmath: Pushing the limits of mathematical reasoning in open language models. arXiv preprint arXiv:2402.03300, 2024.",
+    "Shi et al. (2024) Shi, J., Han, K., Wang, Z., Doucet, A., and Titsias, M. K. Simplified and generalized masked diffusion for discrete data. In Advances in Neural Information Processing Systems, 2024.",
+    "Singhal et al. (2025) Singhal, R., Horvitz, Z., Teehan, R., Ren, M., Yu, Z., McKeown, K., and Ranganath, R. A general framework for inference-time scaling and steering of diffusion models. arXiv preprint arXiv:2501.06848, 2025.",
+    "Song et al. (2021) Song, Y., Sohl-Dickstein, J., Kingma, D. P., Kumar, A., Ermon, S., and Poole, B. Score-based generative modeling through stochastic differential equations. In International Conference on Learning Representations, 2021.",
+    "Sun et al. (2023) Sun, H., Yu, L., Dai, B., Schuurmans, D., and Dai, H. Score-based continuous-time discrete diffusion models. In International Conference on Learning Representations, 2023.",
+    "Touvron et al. (2023) Touvron, H., Martin, L., Stone, K., Albert, P., Almahairi, A., Babaei, Y., Bashlykov, N., Batra, S., Bhargava, P., Bhosale, S., et al. Llama 2: Open foundation and fine-tuned chat models. arXiv preprint arXiv:2307.09288, 2023.",
+    "Uehara et al. (2024) Uehara, M., Zhao, Y., Biancalani, T., and Levine, S. Understanding reinforcement learning-based fine-tuning of diffusion models: A tutorial and review. arXiv preprint arXiv:2407.13734, 2024.",
+    "Uehara et al. (2025) Uehara, M., Zhao, Y., Wang, C., Li, X., Regev, A., Levine, S., and Biancalani, T. Reward-Guided Controlled Generation for Inference-Time Alignment in Diffusion Models: Tutorial and Review. arXiv preprint arXiv:2501.09685, 2025.",
+    "Vaswani (2017) Vaswani, A. Attention is all you need. Advances in Neural Information Processing Systems, 2017.",
+    "Wang et al. (2025) Wang, C., Uehara, M., He, Y., Wang, A., Biancalani, T., Lal, A., Jaakkola, T., Levine, S., Wang, H., and Regev, A. Fine-Tuning Discrete Diffusion Models via Reward Optimization with Applications to DNA and Protein Design. In International Conference on Learning Representations, 2025.",
+    "Williams (1992) Williams, R. J. Simple statistical gradient-following algorithms for connectionist reinforcement learning. Machine learning, 8:229–256, 1992.",
+    "Xie et al. (2021) Xie, S. M., Raghunathan, A., Liang, P., and Ma, T. An explanation of in-context learning as implicit bayesian inference. arXiv preprint arXiv:2111.02080, 2021.",
+    "Zekri et al. (2024) Zekri, O., Odonnat, A., Benechehab, A., Bleistein, L., Boullé, N., and Redko, I. Large language models as Markov chains. arXiv preprint arXiv:2410.02724, 2024.",
+    "Zhang et al. (2025) Zhang, Z., Chen, Z., and Gu, Q. Convergence of score-based discrete diffusion models: A discrete-time analysis. In International Conference on Learning Representations, 2025.",
+    "Zhao et al. (2024) Zhao, Y., Shi, J., Mackey, L., and Linderman, S. Informed correctors for discrete diffusion models. arXiv preprint arXiv:2407.21243, 2024."
+  ]
+}

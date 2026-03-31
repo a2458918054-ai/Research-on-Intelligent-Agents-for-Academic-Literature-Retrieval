@@ -1,0 +1,416 @@
+{
+  "title": "Tuning-Free Personalized Alignment via Trial-Error-ExplainIn-Context Learning",
+  "authors": "Hyundong Cho1, \nKarishma Sharma2, \nNicolaas Jedema2, \nLeonardo F. R. Ribeiro2,Alessandro Moschitti2, \nRavi Krishnan2, \nJonathan May11University of Southern California, Information Sciences Institute2Amazon AGIhd.justincho@gmail.comWork was done while HC was an intern at Amazon AGI.",
+  "abstract": "Language models are aligned to the collective voice of many, resulting in generic outputs that do not align with specific users’ styles. In this work, we present Trial-Error-Explain In-Context Learning (TICL), a tuning-free method that personalizes language models for text generation tasks with fewer than 10 examples per user. TICL iteratively expands an in-context learning prompt via a trial-error-explain process, adding model-generated negative samples and explanations that provide fine-grained guidance towards a specific user’s style. TICL achieves favorable win rates on pairwise comparisons with LLM-as-a-judge up to 91.5% against the previous state-of-the-art and outperforms competitive tuning-free baselines for personalized alignment tasks of writing emails, essays and news articles. Both lexical and qualitative analyses show that the negative samples and explanations enable language models to learn stylistic context more effectively and overcome the bias towards structural and formal phrases observed in their zero-shot outputs. By front-loading inference compute to create a user-specific in-context learning prompt that does not require extra generation steps at test time, TICL presents a novel yet simple approach for personalized alignment.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Large language models (LLMs) are biased towards generic outputs as they are trained to align to an aggregate preference to be generally useful Padmakumar and He (2024); Rafailov et al. (2024); Lee et al. (2023); Wang et al. (2023). Yet end users often have specific needs that call for personalized text generation, such as writing an email Kumar et al. (2024); Salemi et al. (2023). Hence, adapting LLMs for personalized text generation has drawn a growing interest Jang et al. (2023); Shaikh et al. (2024); Mysore et al. (2023); Li et al. (2024), but prior work on personalized text generation either rely on large amounts of personal data Li et al. (2024, 2023); Mysore et al. (2023) or parameter updates that result in cumbersome per-user111We use the term “user” and “author” interchangeably throughout this work. A user is anyone who provides personally written text that style can be learned from. model parameters Shaikh et al. (2024); Liu et al. (2023).",
+        "These are critical limitations. Personalization is impractical when premised on users providing ample data because most are not willing to exert such effort Tétard and Collan (2009) or are concerned about privacy Plant et al. (2022). In addition, fine-tuning may not even be a viable option. The best performing LLMs are most often only accessible via APIs or too large that fine-tuning them is prohibitive even if they are open-sourced Touvron et al. (2023); Firsich and Rios (2024); Anthropic (2024). Can we develop a method that overcomes these limitations such that it is effective with small amounts of data and requires no parameter updates?",
+        "To address this problem, we propose Trial-Error-Explain In-Context Learning (TICL), a tuning-free adaptation of Trial-and-Error Fine-tuning (TEFT) Shaikh et al. (2024); Gulcehre et al. (2023); Song et al. (2024). The key idea of TEFT is to iteratively generate synthetic negative samples to create a preference dataset and apply a preference optimization method such as DPO Rafailov et al. (2024) to learn a more nuanced preference even with a small amount of initial training data. TICL takes a similar approach but only relies on scaling inference compute to expand an in-context learning (ICL) prompt to include prior model-generated negative samples (trial-error) and corresponding explanations that describe their shortcomings (explain) to better understand a user’s personal style.",
+        "We evaluate the effectiveness of TICL with GPT-4o and Claude 3 Sonnet on two personalized writing datasets consisting of emails, essays, and news articles. Using an extensively verified LLM-as-a-judge setup as the evaluator for comparing style similarity between two pairs of generated text with a user’s text, we find that TICL achieves higher win rates (i.e. more frequently considered more similar in pairwise comparisons) than all other competitive prompting-based baselines, including Chain-of-Thought Wei et al. (2022) and OPRO Yang et al. (2024) for models. TICL also achieves an average win rate of 76.6% against the previous state-of-the-art Shaikh et al. (2024). We ablate TICL extensively and find that, while every procedure in TICL contributes to stronger performance, explanations are crucial, as it is responsible for up to 77% of the gains relative to a simple ICL baseline.",
+        "Lastly, we also share lexical analysis that shed light on the performance gaps between various models and methods. As illustrated in Figure 1, compared to ICL, we find TICL more reliably reduces LLM bias towards structural and formal phrases, e.g., “additionally” and “therefore”, and instead use more colloquial ones, e.g., “so why” and “honestly.” We also discover that Claude 3 Sonnet’s consistent dominance over GPT-4o is attributed to Claude 3 Sonnet more reliably generating phrases that elicit opinions, such as “believe” and “feel that,” which are frequently seen in the users’ texts."
+      ],
+      "subsections": []
+    },
+    "2 Methodology": {
+      "paragraphs": [
+        "Trial-Error-Explain In-Context Learning (TICL) is a method for expanding an ICL prompt through tuning-free correspondences of the three main stages in Trial-and-Error Fine-tuning (TEFT). Therefore, we describe TICL by going through each main stages of TEFT and the corresponding procedure in TICL, as illustrated in Figure 2. TEFT refers to a method that (i) fine-tunes a model with supervised fine-tuning (SFT) on a small set of training data (behavior cloning), (ii) uses the trained model to generate outputs that are considered less preferred to those from the training data (exploration), (iii) and fine-tunes the model further with a preference optimization method, such as DPO (learning). This method has been applied to various tasks in previous work with minor differences, such as machine translation with ReST Gulcehre et al. (2023), personalized text generation with DITTO Shaikh et al. (2024), and trajectory planning with ETO Song et al. (2024).",
+        "In TICL, we first replace SFT with ICL for behavior cloning (§LABEL:sec+behavioral_cloning). Exploration is mostly the same except that TICL updates the prompt at the step level while TEFT updates the policy at the epoch level in order to avoid augmenting the prompt with redundant errors (§2.2). Lastly, for learning, we substitute preference optimization with prompt augmentation (§2.3). TICL generates explanations that analyzes the differences between the generated text and the user’s actual text. Then, the generated text is labeled as a negative sample and the explanation are added to the prompt. We elaborate on each correspondence and share additional details in the following sections."
+      ],
+      "subsections": [
+        {
+          "title": "2.1 Behavioral cloning",
+          "paragraphs": [
+            "As shown in the first step in Figure 2, TEFT uses supervised fine-tuning (SFT) to fine-tune a model πθ\\pi_{\\theta} roughly towards the desired behavior with the initial training data. This helps with generating more relevant negative samples in the exploration phase Song et al. (2024).",
+            "Formally, with the initial training data 𝒟𝒯={(xi,yi)|i=1N}\\mathcal{D}^{\\mathcal{T}}=\\{(x_{i},y_{i})|_{i=1}^{N}\\}, where xx is the task and yy is the user’s text, SFT uses the negative log likelihood (NLL) loss to learn from 𝒟𝒯\\mathcal{D}^{\\mathcal{T}} to fine-tune a pretrained LLM πθ\\pi_{\\theta} parameterized by θ\\theta such that:",
+            "To substitute SFT, we use 𝒟𝒯\\mathcal{D}^{\\mathcal{T}} to form an in-context learning (ICL) prompt and perform few-shot ICL Brown et al. (2020). The resulting ICL prompt is defined as:",
+            "Each sample in 𝒟icl\\mathcal{D}^{\\texttt{icl}} is a tuple of task xx, user’s text yy, and a set of model-generated outputs and their corresponding explanations S={(y~l,el)}|l=1LS=\\{(\\tilde{y}_{l},e_{l})\\}|_{l=1}^{L} from previous iterations LL. 𝒫\\mathcal{P} is a templating function that takes 𝒟icl\\mathcal{D}^{\\texttt{icl}}, and the target input xix_{i} and forms an ICL prompt.222We share the details of 𝒫\\mathcal{P} and all other prompts used in this work in Appendix F. In the first step of TICL, there are no previous model-generated outputs and explanations, so Eq.1 is simply 𝒫​(xi,{(xk,yk)|k=1K})\\mathcal{P}\\left(x_{i},\\{(x_{k},y_{k})|_{k=1}^{K}\\}\\right)."
+          ]
+        },
+        {
+          "title": "SFT→\\rightarrowFew-shot ICL.",
+          "paragraphs": [
+            "To substitute SFT, we use 𝒟𝒯\\mathcal{D}^{\\mathcal{T}} to form an in-context learning (ICL) prompt and perform few-shot ICL Brown et al. (2020). The resulting ICL prompt is defined as:",
+            "Each sample in 𝒟icl\\mathcal{D}^{\\texttt{icl}} is a tuple of task xx, user’s text yy, and a set of model-generated outputs and their corresponding explanations S={(y~l,el)}|l=1LS=\\{(\\tilde{y}_{l},e_{l})\\}|_{l=1}^{L} from previous iterations LL. 𝒫\\mathcal{P} is a templating function that takes 𝒟icl\\mathcal{D}^{\\texttt{icl}}, and the target input xix_{i} and forms an ICL prompt.222We share the details of 𝒫\\mathcal{P} and all other prompts used in this work in Appendix F. In the first step of TICL, there are no previous model-generated outputs and explanations, so Eq.1 is simply 𝒫​(xi,{(xk,yk)|k=1K})\\mathcal{P}\\left(x_{i},\\{(x_{k},y_{k})|_{k=1}^{K}\\}\\right)."
+          ]
+        },
+        {
+          "title": "2.2 Exploration",
+          "paragraphs": [
+            "The objective of the exploration phase, the middle stage in Figure 2, is to generate negative samples that will be used for learning. TEFT and TICL is mostly similar except for minor technical differences.",
+            "In TEFT, the model πθ\\pi_{\\theta} resulting from SFT or the previous iteration of DPO generates output y~\\tilde{y} for the target task xx without any prompt templating. In contrast, TICL takes prompts resulting from Eq.1 as input:",
+            "Another difference is that TEFT generates outputs for the full set of inputs in 𝒟𝒯\\mathcal{D}^{\\mathcal{T}}: {yi~∼πθ​(xi)|xi∈𝒟0𝒯}\\{\\tilde{y_{i}}\\sim\\pi_{\\theta}(x_{i})|x_{i}\\in\\mathcal{D}^{\\mathcal{T}}_{0}\\}, prior to the learning stage. TICL only generates one output from a single sample before moving on to the learning phase – think of batch size=1\\text{batch size}=1. We observe that generating outputs for all samples in 𝒟𝒯\\mathcal{D}^{\\mathcal{T}} leads to multiple y~\\tilde{y} that contain redundant modes of failure. We empirically see that this inefficiency can be avoided by exploring a single y~\\tilde{y} at a time."
+          ]
+        },
+        {
+          "title": "2.3 Learning",
+          "paragraphs": [
+            "In the learning phase for TEFT, the preference optimization samples 𝒟ipref\\mathcal{D}_{i}^{\\texttt{pref}} collected from the exploration phase are used for fine-tuning πθ\\pi_{\\theta} with the use of a reference model πref\\pi_{\\text{ref}}, usually a pre-trained language model for preventing overfitting and reward hacking, and a preference optimization method, such as direct preference optimization (DPO) Rafailov et al. (2024):",
+            "The main benefit of preference optimization is that the fine-tuned model learns a fine-grained understanding of the differences between reference outputs and negative samples. With TICL, we provide similar information in context via the negative samples and their corresponding explanations that analyze the difference between them and the reference outputs.",
+            "We first let the model analyze the differences between the reference output yy and its respective negative output y~\\tilde{y}. This step is akin to rationale generation Wang et al. (2022); Wei et al. (2022); Zhou et al. (2022), but the difference with prior work is that TICL’s rationale focuses on explicitly extracting the differences between the reference output and the negative output, rather than producing a rationale as an intermediate step before fulfilling the target task.",
+            "For this step, we generate explanations using an explanation generation prompt template ℰ\\mathcal{E} that takes in yy and y~\\tilde{y}:",
+            "where eie_{i} is the explanation and viv_{i} is a validator Boolean that checks whether yi~\\tilde{y_{i}} is comparable in quality or accuracy as yiy_{i}. f​(⋅)f(\\cdot) can be any function or combination of functions that generates eie_{i} and viv_{i}. We use the same πθ\\pi_{\\theta} unless specified otherwise and have ℰ\\mathcal{E} instruct the model to generate both eie_{i} and viv_{i} in a JSON format. If vi≠Truev_{i}\\neq\\text{True}, then we add (yi~,ei)(\\tilde{y_{i}},e_{i}) to SiS_{i}: (xi,yi)(x_{i},y_{i})’s set of model-generated outputs and explanations. Otherwise, we prevent good y~\\tilde{y} from being included in the following iterations as negative samples, in order to avoid noise and the context becoming unnecessarily longer.",
+            "In summary, TICL starts with standard ICL to substitute SFT and repeats (i) exploration with an expanding dataset to generate a candidate negative sample (Eq.2) and (ii) learning to generate an explanation, expand the dataset with the negative sample and explanation if the sample is deemed a proper negative sample (Eq.3). A formal algorithm for TICL is defined in Algorithm 1. Denoting the augmented dataset that starts from 𝒟𝒯\\mathcal{D}^{\\mathcal{T}} as 𝒟TICL\\mathcal{D}^{\\texttt{{TICL}}}, we keep track of the version of 𝒟TICL\\mathcal{D}^{\\texttt{{TICL}}} that attains the best performance on the validation set, measuring it every nn steps."
+          ]
+        },
+        {
+          "title": "Preference optimization→\\rightarrowPrompt augmentation with negative samples and explanations",
+          "paragraphs": [
+            "The main benefit of preference optimization is that the fine-tuned model learns a fine-grained understanding of the differences between reference outputs and negative samples. With TICL, we provide similar information in context via the negative samples and their corresponding explanations that analyze the difference between them and the reference outputs.",
+            "We first let the model analyze the differences between the reference output yy and its respective negative output y~\\tilde{y}. This step is akin to rationale generation Wang et al. (2022); Wei et al. (2022); Zhou et al. (2022), but the difference with prior work is that TICL’s rationale focuses on explicitly extracting the differences between the reference output and the negative output, rather than producing a rationale as an intermediate step before fulfilling the target task.",
+            "For this step, we generate explanations using an explanation generation prompt template ℰ\\mathcal{E} that takes in yy and y~\\tilde{y}:",
+            "where eie_{i} is the explanation and viv_{i} is a validator Boolean that checks whether yi~\\tilde{y_{i}} is comparable in quality or accuracy as yiy_{i}. f​(⋅)f(\\cdot) can be any function or combination of functions that generates eie_{i} and viv_{i}. We use the same πθ\\pi_{\\theta} unless specified otherwise and have ℰ\\mathcal{E} instruct the model to generate both eie_{i} and viv_{i} in a JSON format. If vi≠Truev_{i}\\neq\\text{True}, then we add (yi~,ei)(\\tilde{y_{i}},e_{i}) to SiS_{i}: (xi,yi)(x_{i},y_{i})’s set of model-generated outputs and explanations. Otherwise, we prevent good y~\\tilde{y} from being included in the following iterations as negative samples, in order to avoid noise and the context becoming unnecessarily longer."
+          ]
+        },
+        {
+          "title": "Iterations and checkpointing",
+          "paragraphs": [
+            "In summary, TICL starts with standard ICL to substitute SFT and repeats (i) exploration with an expanding dataset to generate a candidate negative sample (Eq.2) and (ii) learning to generate an explanation, expand the dataset with the negative sample and explanation if the sample is deemed a proper negative sample (Eq.3). A formal algorithm for TICL is defined in Algorithm 1. Denoting the augmented dataset that starts from 𝒟𝒯\\mathcal{D}^{\\mathcal{T}} as 𝒟TICL\\mathcal{D}^{\\texttt{{TICL}}}, we keep track of the version of 𝒟TICL\\mathcal{D}^{\\texttt{{TICL}}} that attains the best performance on the validation set, measuring it every nn steps."
+          ]
+        }
+      ]
+    },
+    "3 Experimental Setup": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "3.1 Evaluation Dataset",
+          "paragraphs": [
+            "We build on the evaluation setup from DITTO Shaikh et al. (2024), which uses two public authorship attribution (AA) datasets, because they also study personalized alignment. AA is a classification task of predicting the correct author for some written document, but it can also be reformulated as a personalized alignment task of generating text that is attributed to a specific author. Same as DITTO, we consider 20 authors from two sources: (i) CMCC Goldstein et al. (2008), which contains emails and essays on controversial topics written by students, and (ii) CCAT Lewis et al. (2004), which consists of news articles written by journalists. We preprocess the data with the same steps as DITTO to simulate a realistic data scenario for personalization in which per-user data is limited and treated as private. The number of samples per author and per task is small Zhang et al. (2020), limited to the smallest number of samples available for an author (12) across both datasets to control for data size. In addition, each author’s data is used in isolation such that performance does not depend on the total amount of data available among all authors. The train/val/test split is set to 7/2/3.333Our processed data can be found in https://justin-cho.com/ticl."
+          ]
+        },
+        {
+          "title": "3.2 Evaluation Method",
+          "paragraphs": [
+            "We evaluate model performance with pairwise comparisons of generated text using LLM-as-a-judge Zheng et al. (2023); Kim et al. (2023), asking which of the given candidates is more similar to a set of user’s texts. A simplified illustration of our evaluation approach is shown in Figure 3.",
+            "Specifically, we ask GPT-4o444The version we use is gpt-4o-2024-0806. which of two candidates outputs generated for an author’s prompt in the test set is more stylistically consistent with five examples sampled from the author’s training data. This is similar to the method used in DITTO Shaikh et al. (2024), but we found that we can further increase accuracy by providing more examples, providing a list of style elements to focus on, and generating an explanation before making its final decision. The two main comparisons we are interested in are how our methods and baselines compare with DITTO’s outputs and the author’s text. The former is a comparison against the prior state-of-the-art and the latter is against the gold output, and therefore serves as an upper bound. In other words, achieving a ≥50%\\geq 50\\% win rate against the author indicates that the method is able to produce outputs that are indistinguishable from the author’s texts for our LLM-as-a-judge in terms of stylistic consistency.",
+            "We validate the accuracy of our evaluation method by benchmarking it with user data in CMCC and CCAT. For CMCC, one of the two candidate outputs is the actual text from the correct author and the other is from another human author who wrote a response for the same prompt. This way we can prevent the LLM-as-a-judge from using topical similarity for determining correct authorship, since both candidates will discuss similar content Wegmann et al. (2022). For CCAT, there are no texts written for the same prompt, so we find the most similar distractor among texts from all other authors using TF-IDF. With this setup, our pairwise comparison evaluation with LLM-as-a-judge achieves ∼97%\\sim 97\\% accuracy for both CMCC and CCAT for the top 10 authors, as shown in Table 1.",
+            "Based on these benchmarking results, we discover significantly lower accuracies for some authors, as shown by the large drop in accuracy in Table 1 when all authors are considered. We hypothesize that these authors have less consistent style across their texts, which may cause inconsistent evaluation results. Therefore, instead of random sampling, we select the top 10 authors in terms of our LLM-as-a-judge’s accuracy from each dataset for a total of 20 authors."
+          ]
+        },
+        {
+          "title": "Pairwise comparison on stylistic similarity with LLM-as-a-judge",
+          "paragraphs": [
+            "We evaluate model performance with pairwise comparisons of generated text using LLM-as-a-judge Zheng et al. (2023); Kim et al. (2023), asking which of the given candidates is more similar to a set of user’s texts. A simplified illustration of our evaluation approach is shown in Figure 3.",
+            "Specifically, we ask GPT-4o444The version we use is gpt-4o-2024-0806. which of two candidates outputs generated for an author’s prompt in the test set is more stylistically consistent with five examples sampled from the author’s training data. This is similar to the method used in DITTO Shaikh et al. (2024), but we found that we can further increase accuracy by providing more examples, providing a list of style elements to focus on, and generating an explanation before making its final decision. The two main comparisons we are interested in are how our methods and baselines compare with DITTO’s outputs and the author’s text. The former is a comparison against the prior state-of-the-art and the latter is against the gold output, and therefore serves as an upper bound. In other words, achieving a ≥50%\\geq 50\\% win rate against the author indicates that the method is able to produce outputs that are indistinguishable from the author’s texts for our LLM-as-a-judge in terms of stylistic consistency."
+          ]
+        },
+        {
+          "title": "Evaluating LLM-as-a-judge for pairwise comparisons of stylistic similarity555We experiment with various automatic evaluation metrics, human evaluation and alternative LLM-as-a-judge setups, and find pairwise comparisons to be the most reliable. Refer to AppendixBfor these results. We intentionally avoid human evaluation based on our own results of human performance on comparing style similarity and evidence from previous work have shown that model-based classifiers are more reliable at determining stylistic similarity than untrained humansHallinan et al. (2023); Krishna et al. (2020); Liu et al. (2024); Liu and May (2024).",
+          "paragraphs": [
+            "We validate the accuracy of our evaluation method by benchmarking it with user data in CMCC and CCAT. For CMCC, one of the two candidate outputs is the actual text from the correct author and the other is from another human author who wrote a response for the same prompt. This way we can prevent the LLM-as-a-judge from using topical similarity for determining correct authorship, since both candidates will discuss similar content Wegmann et al. (2022). For CCAT, there are no texts written for the same prompt, so we find the most similar distractor among texts from all other authors using TF-IDF. With this setup, our pairwise comparison evaluation with LLM-as-a-judge achieves ∼97%\\sim 97\\% accuracy for both CMCC and CCAT for the top 10 authors, as shown in Table 1."
+          ]
+        },
+        {
+          "title": "Author selection",
+          "paragraphs": [
+            "Based on these benchmarking results, we discover significantly lower accuracies for some authors, as shown by the large drop in accuracy in Table 1 when all authors are considered. We hypothesize that these authors have less consistent style across their texts, which may cause inconsistent evaluation results. Therefore, instead of random sampling, we select the top 10 authors in terms of our LLM-as-a-judge’s accuracy from each dataset for a total of 20 authors."
+          ]
+        },
+        {
+          "title": "3.3 Baselines",
+          "paragraphs": [
+            "To measure the relative performance of TICL, we also evaluate on (i) Zero-shot, to capture the base model’s vanilla behavior when it is only given the task as input, and (ii) ICL, where NN samples of task and output pairs of the author are included in the context as examples to learn from, along with some guidance to focus on style elements.666The full set of prompts we use in our work can be found in Appendix F.",
+            "In addition, we evaluate other methods that scale test-time compute to improve downstream performance. (iii) Chain-of-Thought Wei et al. (2022) is a prompting method that asks to reason about the style elements in the few-shot examples and then generate the response according to the analyzed style and the few-shot examples. (iv) OPRO Yang et al. (2024)is a prompt optimization method that refines the prompt iteratively using chain-of-thought prompt as the initial prompt. The model self-updates its prompt based on the history of previous prompts and their scores as “gradients” that guide the update. The initial prompt is set to “Let’s think step by step” Kojima et al. (2022) and the scores are cosine similarity between the Style Embeddings (SE) Wegmann et al. (2022) of the generated outputs and the reference texts of the validation set. The prompt with the highest score is used at test time.",
+            "We also compare TICL to (v) DITTO Shaikh et al. (2024), the state-of-the-art that uses TEFT on a small model, i.e. Mistral 7B Instruct Jiang et al. (2023), and outperforms GPT-4 combined with few-shot ICL. We do not include SFT in our experiments because DITTO was already shown to be superior to SFT. Lastly, we also compare to (vi) Author, the author’s actual response to the given prompts and thus the upper bound. For (i)-(iv), we use gpt-4o-2024-08-06 Achiam et al. (2023) and Claude 3 Sonnet Anthropic (2024), abbreviated henceforth as GPT-4o and Claude 3 S unless otherwise specified. We let DITTO and TICL to run for four epochs. For TICL, we use LLM-as-a-judge between outputs from the validation set to choose the best performing prompt. We use Mistral 7B Instruct v0.2 for DITTO, following the original implementation."
+          ]
+        }
+      ]
+    },
+    "4 Results and Discussion": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "4.1 Main Results",
+          "paragraphs": [
+            "The main evaluation results that compare the baselines against DITTO and against the author’s actual reference text is shown in Table 2. Details on the sample size can be found in Appendix A.1.",
+            "TICL outperforms or performs on par with all other baselines and often outperforms DITTO by a significant margin. We find that explicitly analyzing writing style in the few-shot examples and asking the model to abide by these styles did not lead to consistent improvements. With the exception of Claude 3 Sonnet on CCAT, CoT actually underperforms the simpler few-shot setup. Interestingly, we find that OPRO consistently performs worst. When we analyzed the optimization sequence, OPRO lands on prompts that look sensible, e.g. “Respond with rhetorical devices, simple sentence structures, and easy vocabulary…, but these generalized guidance are not as effective as seeing few-shot examples within the context in producing stylized text.",
+            "We see similar strengths for TICL when compared to Author, for which the results are shown in Table 9. Surprisingly, Claude 3 Sonnet is able to exceed the ≥50\\geq 50 win rate threshold when using TICL for both CMCC and CCAT. Performance with GPT-4o is relatively lower, but still significantly higher than DITTO for both datasets. We further dive into why Claude 3 Sonnet outperforms GPT-4o in §4.3",
+            "Given Claude’s strong performance even in the zero-shot setting against DITTO, we suspect there may be some leakage of CCAT data into Claude. Therefore, we focus our analysis henceforth mainly on CMCC. Also, since the relative performance among models is similar between vs. DITTO and vs. Author results, we focus on vs. Author results in the following sections."
+          ]
+        },
+        {
+          "title": "Vs. DITTO",
+          "paragraphs": [
+            "TICL outperforms or performs on par with all other baselines and often outperforms DITTO by a significant margin. We find that explicitly analyzing writing style in the few-shot examples and asking the model to abide by these styles did not lead to consistent improvements. With the exception of Claude 3 Sonnet on CCAT, CoT actually underperforms the simpler few-shot setup. Interestingly, we find that OPRO consistently performs worst. When we analyzed the optimization sequence, OPRO lands on prompts that look sensible, e.g. “Respond with rhetorical devices, simple sentence structures, and easy vocabulary…, but these generalized guidance are not as effective as seeing few-shot examples within the context in producing stylized text."
+          ]
+        },
+        {
+          "title": "Vs. Author",
+          "paragraphs": [
+            "We see similar strengths for TICL when compared to Author, for which the results are shown in Table 9. Surprisingly, Claude 3 Sonnet is able to exceed the ≥50\\geq 50 win rate threshold when using TICL for both CMCC and CCAT. Performance with GPT-4o is relatively lower, but still significantly higher than DITTO for both datasets. We further dive into why Claude 3 Sonnet outperforms GPT-4o in §4.3",
+            "Given Claude’s strong performance even in the zero-shot setting against DITTO, we suspect there may be some leakage of CCAT data into Claude. Therefore, we focus our analysis henceforth mainly on CMCC. Also, since the relative performance among models is similar between vs. DITTO and vs. Author results, we focus on vs. Author results in the following sections."
+          ]
+        },
+        {
+          "title": "4.2 AblatingTICL",
+          "paragraphs": [
+            "We conduct an ablation study to understand how each of the components in TICL contributes to its performance. We observe how the win rates change when we remove the initial ICL setup that substitutes SFT for behavior cloning, explanations, checkpointing (choosing the best performing augmented prompt throughout iterations rather than simply using the final prompt), and both the negative samples and explanations. The last row is equivalent to the few-shot baseline. The results are shown in Table 3.",
+            "For both GPT-4o and Claude 3, removing any of the procedures leads to performance drops. For both cases, we see the largest drop attributed to removing both the explanations and negative samples. When only dropping the explanations, we see a smaller drop, indicating that both the negative samples and explanations provide additive advantages. For GPT-4o, checkpointing is also very important, but less so for Claude 3 Sonnet. In both models, not having the first step use ICL examples is not critical, meaning that we can even start with zero-shot outputs for the first step and not see large performance degradation."
+          ]
+        },
+        {
+          "title": "Explanations are most important, while starting with ICL provides smallest improvements.",
+          "paragraphs": [
+            "For both GPT-4o and Claude 3, removing any of the procedures leads to performance drops. For both cases, we see the largest drop attributed to removing both the explanations and negative samples. When only dropping the explanations, we see a smaller drop, indicating that both the negative samples and explanations provide additive advantages. For GPT-4o, checkpointing is also very important, but less so for Claude 3 Sonnet. In both models, not having the first step use ICL examples is not critical, meaning that we can even start with zero-shot outputs for the first step and not see large performance degradation."
+          ]
+        },
+        {
+          "title": "4.3 Why does Claude 3 Sonnet outperform GPT-4o?",
+          "paragraphs": [
+            "One striking trend from Table 2 is Claude 3 Sonnet’s noticeably stronger performance compared to GPT-4o. This is somewhat surprising given that GPT-4o is the latest model that ranks at the top of popular language modeling leaderboards, such as Chatbot Arena.777https://lmarena.ai/ In order to understand Claude’s comparative performance over GPT-4o, we examine how performance changes if we (i) use the other model for generating explanations during prompt augmentation (with other model expl.) and (ii) use the fully developed TICL prompt from the other model at test time (with other model TICL).",
+            "Results shown in Table 4 suggest that it is not that Claude 3 Sonnet generates better explanations than GPT-4o. Applying TICL on GPT-4o with Claude 3 Sonnet as the explanation generator leads to a mild increase in performance that is not statistically significant. This is further corroborated by Claude 3 Sonnet’s results when using GPT-4o as the explanation generator, which also leads to a statistically insignificant improvement.",
+            "Using the final augmented prompts developed by Claude 3 Sonnet and using GPT-4o at test-time does not improve on simply using GPT-4o’s own augmented prompt. This is likely due to the distribution shift: negative samples and their corresponding feedback is not as relevant and actually serves as noise such that the performance actually drops below the few-shot performance in Table 2. Based on these results, we attribute Claude 3 Sonnet’s superior performance on its superior few-shot ICL capabilities for writing tasks. The following section on lexical analysis adds support to this hypothesis."
+          ]
+        },
+        {
+          "title": "Explanations are similar in quality.",
+          "paragraphs": [
+            "Results shown in Table 4 suggest that it is not that Claude 3 Sonnet generates better explanations than GPT-4o. Applying TICL on GPT-4o with Claude 3 Sonnet as the explanation generator leads to a mild increase in performance that is not statistically significant. This is further corroborated by Claude 3 Sonnet’s results when using GPT-4o as the explanation generator, which also leads to a statistically insignificant improvement."
+          ]
+        },
+        {
+          "title": "TICLprompts are not transferable.",
+          "paragraphs": [
+            "Using the final augmented prompts developed by Claude 3 Sonnet and using GPT-4o at test-time does not improve on simply using GPT-4o’s own augmented prompt. This is likely due to the distribution shift: negative samples and their corresponding feedback is not as relevant and actually serves as noise such that the performance actually drops below the few-shot performance in Table 2. Based on these results, we attribute Claude 3 Sonnet’s superior performance on its superior few-shot ICL capabilities for writing tasks. The following section on lexical analysis adds support to this hypothesis."
+          ]
+        },
+        {
+          "title": "4.4 Lexical Analysis",
+          "paragraphs": [
+            "We further explore the models’ comparative performances using a lexical analysis, using Fightin’ Words model for extracting words with significant differences in between two corpora Monroe et al. (2008). The method shows different ratios of words that are significantly more frequent in one model over another. Using a pp-level of 0.05, we calculate the number of nn-grams that are significantly more frequent in the author’s text compared to the model’s text and vice-versa. Representative results are shown in Table 5.",
+            "Comparing GPT-4o TICL vs. GPT-4o few-shot elicits TICL improvement over a simple ICL baseline. We see that structural and formal phrases, e.g. “additionally” and “therefore”, are more frequent in the few-shot outputs, while TICL contain more colloquial phrases, e.g., “so why”. This suggests that TICL enables models to overcome its biases towards generic formal text and better learn from the given style context.",
+            "When comparing Claude 3 Sonnet and GPT-4o directly, the top words that Claude 3 Sonnet is able to generate more consistently are subjective and assertive words or phrases that are frequently seen in CMCC, e.g., “believe” and “feel that”, and also more casual phrases, e.g., “things like” and “kind of.” On the other hand, GPT-4o’s outputs consists of more formal phrases, such as “crucial to.” This dynamic is further corroborated by the Flesch Readability Ease (FRE) scores Flesch (1948). The words that appear significantly more frequently for Claude has a higher FRE score (FRE(A∖\\setminusB)==120.21) than the score for words that appear significantly more frequenty for GPT-4o (FRE(B∖\\setminusA==77.21). A higher FRE score means it is easier to understand when read, which correlates to more casual text Cho et al. (2024)."
+          ]
+        },
+        {
+          "title": "TICLovercomes model bias for structural and formal phrases better than ICL.",
+          "paragraphs": [
+            "Comparing GPT-4o TICL vs. GPT-4o few-shot elicits TICL improvement over a simple ICL baseline. We see that structural and formal phrases, e.g. “additionally” and “therefore”, are more frequent in the few-shot outputs, while TICL contain more colloquial phrases, e.g., “so why”. This suggests that TICL enables models to overcome its biases towards generic formal text and better learn from the given style context."
+          ]
+        },
+        {
+          "title": "Claude 3 Sonnet applies user styles more effectively than GPT-4o.",
+          "paragraphs": [
+            "When comparing Claude 3 Sonnet and GPT-4o directly, the top words that Claude 3 Sonnet is able to generate more consistently are subjective and assertive words or phrases that are frequently seen in CMCC, e.g., “believe” and “feel that”, and also more casual phrases, e.g., “things like” and “kind of.” On the other hand, GPT-4o’s outputs consists of more formal phrases, such as “crucial to.” This dynamic is further corroborated by the Flesch Readability Ease (FRE) scores Flesch (1948). The words that appear significantly more frequently for Claude has a higher FRE score (FRE(A∖\\setminusB)==120.21) than the score for words that appear significantly more frequenty for GPT-4o (FRE(B∖\\setminusA==77.21). A higher FRE score means it is easier to understand when read, which correlates to more casual text Cho et al. (2024)."
+          ]
+        }
+      ]
+    },
+    "5 Related Work": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "5.1 Personalization",
+          "paragraphs": [
+            "Personalization is an overloaded term in the context of language models as it can refer to multiple distinct features. Language models can be personalized to complete tasks as a specific user Salemi et al. (2023); Zhuang et al. (2024), answer questions according to a user’s profile Kim and Yang (2024); Dutt et al. (2022), and recommend content based on a user’s knowledge level Wang et al. (2016). They can also respond in a way that aligns with an individual’s preference of digital assistance behavior Jang et al. (2023), edit an existing text to match someone else’s style Horvitz et al. (2024); Patel et al. (2023) . and generate some output in the style of a target user, such as a response to another online user Liu et al. (2023) or text for a writing task Shaikh et al. (2024); Kumar et al. (2024); Li et al. (2024); Mysore et al. (2023).",
+            "TICL focuses on the last category mentioned above – personalized text generation – where we want to steer language models away from a generic output Li et al. (2016); Zhang et al. (2021); Padmakumar and He (2024) for a given writing task and instead produce one that is specific to a user’s style Rivera-Soto et al. (2021); Wegmann et al. (2022). Prior work on personalized text generation rely on at least one component that requires fine-tuning, either the model that generates the response Li et al. (2023); Liu et al. (2023); Shaikh et al. (2024); Mysore et al. (2023) or a model that revises the prompt passed on to a black box model Li et al. (2024). However, TICL is an inference-only method that does not require any parameter updates or new parameters."
+          ]
+        },
+        {
+          "title": "5.2 Inference-only learning",
+          "paragraphs": [
+            "One major branch of inference-only learning method focuses on automating prompt engineering, optimizing the wording of a prompt template that is placed prior to asking a model to complete a task Shin et al. (2020); Zhou et al. (2023); Ma et al. (2024); Yang et al. (2024); Kim and Yang (2024); Ye et al. (2024), e.g. “Let’s think step by step” from Kojima et al. (2022). Recent work have operationalized this process to also automate example selection for few-shot examples Yuksekgonul et al. (2024); Khattab et al. (2023). In contrast, TICL maximizes its understanding of the target task by iteratively augmenting the content used for ICL with contrastive examples and explanations while keeping the prompt template constant.",
+            "Another prominent branch of inference-only learning is agentic methods that build on intermediate LLM outputs to refine the final output Chen et al. (2023); Wei et al. (2022); Yao et al. (2023); Sumers et al. (2024); Shinn et al. (2024); Saha et al. (2024). Reflexion Shinn et al. (2024) is most similar to our work, but it cannot be directly applied without a reliable evaluator for measuring success. Another key difference with TICL is that it front-loads the trial-and-error process ahead of test time and does not augment the prompt a priori by reasoning over few-shot examples."
+          ]
+        }
+      ]
+    },
+    "6 Conclusion": {
+      "paragraphs": [
+        "In conclusion, we develop TICL, a tuning-free method for personalized alignment that adapts prior work on trial-and-error fine-tuning with scaling inference compute. Instead of fine-tuning a model with synthetic negative samples, TICL uses them to augment the prompt and generate explanations that provide further fine-grained guidance on how to align outputs towards a desirable style. On personalized text generation tasks, TICL outperforms other competitive tuning-free baselines and the previous state-of-the-art. TICL provides an approach for leveraging black box models for personalization without any fine-tuning."
+      ],
+      "subsections": []
+    },
+    "Limitations": {
+      "paragraphs": [
+        "One of the limitations of TICL is that it is more computationally costly than fine-tuned models at test time because of the longer inputs due to the few-shot examples and their corresponding negative samples and explanations. However, inference cost for repeating prompts can be significantly lowered by prompt caching.888https://www.anthropic.com/news/prompt-caching In addition, inference costs in general are continuously getting lower with optimization efforts that comprehensively span hardware999Groq and AWS Inferentia are some examples of inference-specific hardware development. and software Kwon et al. (2023). As the promise of inference-only methods become increasingly evident, we believe these efforts will be further accelerated and lead to even more favorable conditions for methods such as TICL.",
+        "Another limitation of TICL is that it is only effective for models that are able to understand long contexts well. In our preliminary experiments, our results on using TICL with smaller models such as Mistral 7B Instruct and GPT-4o mini were poor as these models continued to generate outputs similar in style to what were labeled in-context as bad examples, indicating that they were not able to distinguish between the good and bad examples included in the context. Therefore, the performance of TICL is dependent on a model’s long context understanding.",
+        "Lastly, TICL results in per-user or per-task prompts, which is similar to the limitations of prior work that rely on fine-tuned per-user model parameters. Whether we can use TICL to enable a single model to perform personalized task completion for multiple tasks without requiring excessively long prompts by (i) discovering methods that maintain or improve performance while compressing the prompt or (ii) injecting the information in the prompt for controlling style during decoding is an exciting avenue for future work."
+      ],
+      "subsections": []
+    },
+    "Generative AI Statement": {
+      "paragraphs": [
+        "No generative AI tools were used in the writing of this work."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix": {
+      "paragraphs": [],
+      "subsections": []
+    },
+    "Appendix A Evaluation Dataset Details": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "A.1 Sampling",
+          "paragraphs": [
+            "We rely on sampling to alleviate issues of having a small test set per author. For each of the three test prompts, we sample five outputs per method. We pair outputs for the same prompts to create 75 comparison pairs (5⋅5⋅35\\cdot 5\\cdot 3) and sample 40 of them for comparison and randomly assign the order they appear in the evaluation prompt to control for order bias. For the versus author results, we only have 15 samples since there’s only one original author response (1⋅5⋅3)1\\cdot 5\\cdot 3), so we permute the order for each pair to get 30 samples. This results in 400 (40⋅1040\\cdot 10) comparisons for vs DITTO and 300 (30⋅1030\\cdot 10) for vs Author to get the averaged win rates in Table 2. We are able to compute statistically significant win rates with these number of comparisons, as reported in Section 4.1."
+          ]
+        },
+        {
+          "title": "A.2 Technical Details",
+          "paragraphs": [
+            "The exact models that we use for our experiments are gpt-4o-2024-0806, Claude 3 Sonnet and Mistral 7B Instruct v0.2 via Amazon Bedrock. For evaluation (§3.2), we use batch inference using the OpenAI API, which lets us reduce inference costs by 50%.101010https://platform.openai.com/docs/guides/batch",
+            "At the first step of TICL, we hold out one sample (xi,yi)(x_{i},y_{i}) at random and use the rest 𝒟0𝒯∖{(xi,yi)}\\mathcal{D}^{\\mathcal{T}}_{0}\\setminus\\{(x_{i},y_{i})\\} as few-shot examples that form the ICL prompt. If we use the full set, we don’t have any samples for which we can explore and learn without seeing the reference output yiy_{i} of the input xix_{i}. from 𝒟0𝒯\\mathcal{D}^{\\mathcal{T}}_{0}. This information is made more explicit in Algorithm 1.",
+            "DITTO was trained with Mistral 7B Instruct, which is suspected to be a smaller model than Claude 3 Sonnet and GPT-4o. We found that the fine-tuned variants of Mistral 7B Instruct are prone to generating unstable outputs, producing template components such as [INST] or generating degenerate outputs that contain repetitive content. To give these approaches the best chances possible against our approaches with larger models, we reject samples that contain template components and repetitive content until we reach the desired number of samples N=5N=5 from each model."
+          ]
+        },
+        {
+          "title": "Notes onTICL",
+          "paragraphs": [
+            "At the first step of TICL, we hold out one sample (xi,yi)(x_{i},y_{i}) at random and use the rest 𝒟0𝒯∖{(xi,yi)}\\mathcal{D}^{\\mathcal{T}}_{0}\\setminus\\{(x_{i},y_{i})\\} as few-shot examples that form the ICL prompt. If we use the full set, we don’t have any samples for which we can explore and learn without seeing the reference output yiy_{i} of the input xix_{i}. from 𝒟0𝒯\\mathcal{D}^{\\mathcal{T}}_{0}. This information is made more explicit in Algorithm 1."
+          ]
+        },
+        {
+          "title": "Notes on DITTO.",
+          "paragraphs": [
+            "DITTO was trained with Mistral 7B Instruct, which is suspected to be a smaller model than Claude 3 Sonnet and GPT-4o. We found that the fine-tuned variants of Mistral 7B Instruct are prone to generating unstable outputs, producing template components such as [INST] or generating degenerate outputs that contain repetitive content. To give these approaches the best chances possible against our approaches with larger models, we reject samples that contain template components and repetitive content until we reach the desired number of samples N=5N=5 from each model."
+          ]
+        }
+      ]
+    },
+    "Appendix B Evaluation Methods": {
+      "paragraphs": [
+        "In this section, we describe benchmarking results using author texts from CMCC and CCAT for various evaluation methods. Results are shown in Table 7. For CMCC, several authors wrote responses to the same prompt, and therefore we use samples written for the same prompt as the compared samples, as this would help us control for content similarity between the tested sample and the examples in making the task arbitrarily easy.",
+        "For CCAT, which are news articles with a format of “Write a news article that starts with the following sentence: article’s first sentence”. There are no share prompts for this dataset. Since journalists tend to write articles on similar topics over time and thus content similarity can be an easy hint for detecting authorship, we select the negative sample as one that has the highest TF-IDF similarity with any one of the in-context examples.",
+        "[Table: Table 6: Mapping from author indices to actual author IDs in CMCC and CCAT that we use throughout our work. These authors are the authors that ranks in the top 10 for highest accuracy achieved with GPT-4 Eval, as described in Appendix B.2 and shown in Table 11.]",
+        "[Table: Table 7: Results with author texts from CMCC and CCAT for comparing various evaluation methods. GPT-4o: gpt-4o-2024-0806, GPT-4o mini: gpt-4o-2024-0718-mini, SE: Style Embeddings.]"
+      ],
+      "subsections": [
+        {
+          "title": "B.1 Embedding-based evaluation",
+          "paragraphs": [
+            "Universal authorship representations (UAR) (Rivera-Soto et al., 2021) is a sentence embedding method that uses a SBERT model Reimers and Gurevych (2019) fine-tuned with a contrastive learning objective such that the representations of sentences or documents from the same author become closer together than with those of other authors. Style Embeddings (SE) is a follow-up to UAR that refines the representations to focus on style rather than content by pairing contrastive samples that share similar content (Wegmann et al., 2022), and therefore we focus on embedding-based comparisons with Style Embeddings.",
+            "We compute the cosine similarity between candidate texts’ SE with those of the author examples and the one with higher cosine similarity is considered more stylistically similar. The best score for SE is 78.5%78.5\\% and 63.6%63.6\\% for CMCC and CCAT, respectively, which is significantly lower than GPT-4o results but better than GPT-4o mini’s results. While having more examples also helps with SE’s performance, it plateaus markedly at three examples, and there is only minimal gains observed for CCAT."
+          ]
+        },
+        {
+          "title": "B.2 LLM-as-a-Judge",
+          "paragraphs": [
+            "The pairwise comparison setup is described in Section 3.2. As an alternative, we also consider having LLM-as-a-judge provide ratings for individual instances, so that we can reduce the number of samples that the LLM-as-a-judge need to evaluate and also measure relative performance of each apporach based on their aggregate scores. The prompt is similar to the pairwise comparison setup except that only one candidate is shown and the LLM is asked to provide a score from 1-5 on how stylistically similar it thinks the candidate is to the examples. Unfortunately, this result is the poorest performing approach, only achieving 55.0% accuracy for CMCC and 20.0% accuracy for CCAT. The main reason for low accuracy is that the majority of instances were given the same rating such that they were deemed as ties."
+          ]
+        },
+        {
+          "title": "B.3 Human Evaluation",
+          "paragraphs": [
+            "We have three human annotators complete the same setup with 100 samples for CMCC only with five samples from each author. Conducting the same evaluation for CCAT was overwhelming for human participants because the average text length in CCAT is much larger. As shown in the results, human performance is lower than the best GPT-4o results. This reinforces findings from previous work that identifying authorship reliably is a difficult task for untrained humans and that model-based classifiers are more reliable and practical for this task Hallinan et al. (2023); Krishna et al. (2020); Liu et al. (2024); Liu and May (2024).",
+            "The full prompt template for this evaluation setup is shown in Figure 7."
+          ]
+        }
+      ]
+    },
+    "Appendix C Flesch Reading Ease": {
+      "paragraphs": [
+        "The Flesch Reading Ease (FRE) score is a simple equation for approximating readability of a given text based on the average number of words per sentence and the average number of syllables per word Flesch (1948). The formula for calculating FRE is the following:",
+        "where A​S​LASL is average sentence length (total wordstotal sentences\\frac{\\text{total words}}{\\text{total sentences}}) and ns​ynw\\frac{n_{sy}}{n_{w}} is the average number of syllables per word (total syllablestotal words\\frac{\\text{total syllables}}{\\text{total words}}). The higher the score, the easier it is to understand a piece of text when read. The maximum score is 121.22, while there is no limit to how low it can be and it can even be negative. We use Python’s textstat package111111https://github.com/textstat/textstat to compute FRE.",
+        "[Table: Table 8: LMJ-based win rate results against DITTO Shaikh et al. (2024). †{\\dagger} indicates a win rate that is larger than the next best performing baseline at a p<0.05p<0.05 statistically significant level. TICL outperforms all other baselines at a statistically significant level, except for Claude 3 Sonnet on CCAT. aa​v​ga_{avg} is the average win rate across all authors and a​1a1-a​10a10 are the author IDs from Table 6.]",
+        "[Table: Table 9: LLM-as-a-judge win rates against the author’s actual text. The table takes the same format as Table 8.]"
+      ],
+      "subsections": []
+    },
+    "Appendix D Full Per-Author Results": {
+      "paragraphs": [
+        "The full per-author results with comparisons against DITTO and against the author’s text are shown in Table 8 and Table 9, respectively."
+      ],
+      "subsections": []
+    },
+    "Appendix E Sample Outputs": {
+      "paragraphs": [
+        "We show some qualitative examples from our baselines and TICL in Table 10.",
+        "[Table: Table 10: Truncated sample responses from baselines and TICL using GPT-4o for CMCC and CCAT. ]"
+      ],
+      "subsections": []
+    },
+    "Appendix F Prompt Details": {
+      "paragraphs": [
+        "For details on the prompts that we use, we refer the reader to the following:",
+        "• Few-shot prompting: Figure 5",
+        "• TICL: Figure 6",
+        "• Pairwise LMJ evaluation: Figure 7",
+        "• Style guide generation for CoT: Figure 8",
+        "• Writing prompt for CoT that uses the generated style guide: Figure 9",
+        "• OPRO’s optimization prompt: Figure 10",
+        "• OPRO’s writing prompt that uses the prompt found from the optimization process: Figure 11",
+        "[Figure: Figure 4: Prompt template ℰ\\mathcal{E} for generating explanations on the difference between the reference output and the generated output.]",
+        "[Figure: Figure 5: Prompt template 𝒫\\mathcal{P} for the few-shot in-context learning baseline.]",
+        "[Figure: Figure 6: Prompt template 𝒫\\mathcal{P} for TICL. It builds on Figure 5 by adding negative samples and explanations generated with Figure 4.]",
+        "[Figure: Figure 7: Prompt template for evaluating which output is more stylistically similar to the target author’s writing style given five examples from the target author.]",
+        "[Figure: Figure 8: Prompt template for generating style guides that will be used for Chain-of-Thought guided writing in Figure 9.]",
+        "[Figure: Figure 9: Prompt template for Chain-of-Thought-guided writing. The blue text is the style guide generated from Figure 8.]",
+        "[Figure: Figure 10: OPRO optimization prompt. The instruction with the highest score is used for the OPRO writing prompt in Figure 11.]",
+        "[Figure: Figure 11: OPRO writing prompt. The blue text is the instruction that is selected from the prompt optimization process from Figure 10.]",
+        "[Table: Table 11: Full benchmarking results using human written texts in CMCC and CCAT for LLM-as-a-judge for style similarity, using gpt-4o-2024-0806. Values shown are per-author accuracies (%). We used only the first 20 authors for comparing CCAT with and without using TF-IDF. After finding that TF-IDF helps control for semantic similarity among author examples, we expanded the evaluation using TF-IDF to all authors to find authors that our evaluation achieves the highest accuracy.]"
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "Achiam et al. (2023) Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Florencia Leoni Aleman, Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal Anadkat, et al. 2023. Gpt-4 technical report. arXiv preprint arXiv:2303.08774.",
+    "Anthropic (2024) Anthropic. 2024. The claude 3 model family: Opus, sonnet, haiku.",
+    "Brown et al. (2020) Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, Sandhini Agarwal, Ariel Herbert-Voss, Gretchen Krueger, Tom Henighan, Rewon Child, Aditya Ramesh, Daniel Ziegler, Jeffrey Wu, Clemens Winter, Chris Hesse, Mark Chen, Eric Sigler, Mateusz Litwin, Scott Gray, Benjamin Chess, Jack Clark, Christopher Berner, Sam McCandlish, Alec Radford, Ilya Sutskever, and Dario Amodei. 2020. Language models are few-shot learners. In Advances in Neural Information Processing Systems, volume 33, pages 1877–1901. Curran Associates, Inc.",
+    "Chen et al. (2023) Wei-Lin Chen, Cheng-Kuang Wu, Yun-Nung Chen, and Hsin-Hsi Chen. 2023. Self-ICL: Zero-shot in-context learning with self-generated demonstrations. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, pages 15651–15662, Singapore. Association for Computational Linguistics.",
+    "Cho et al. (2024) Hyundong Cho, Nicolaas Jedema, Leonardo F. R. Ribeiro, Karishma Sharma, Pedro Szekely, Alessandro Moschitti, Ruben Janssen, and Jonathan May. 2024. Speechworthy instruction-tuned language models.",
+    "Dutt et al. (2022) Ritam Dutt, Kasturi Bhattacharjee, Rashmi Gangadharaiah, Dan Roth, and Carolyn Rose. 2022. PerKGQA: Question answering over personalized knowledge graphs. In Findings of the Association for Computational Linguistics: NAACL 2022, pages 253–268, Seattle, United States. Association for Computational Linguistics.",
+    "Firsich and Rios (2024) Todd Firsich and Anthony Rios. 2024. Can GPT4 detect euphemisms across multiple languages? In Proceedings of the 4th Workshop on Figurative Language Processing (FigLang 2024), pages 65–72, Mexico City, Mexico (Hybrid). Association for Computational Linguistics.",
+    "Flesch (1948) Rudolph Flesch. 1948. A new readability yardstick. Journal of applied psychology, 32(3):221.",
+    "Goldstein et al. (2008) Jade Goldstein, Kerri Goodwin, Roberta Sabin, and Ransom Winder. 2008. Creating and using a correlated corpus to glean communicative commonalities. In Proceedings of the Sixth International Conference on Language Resources and Evaluation (LREC’08).",
+    "Gulcehre et al. (2023) Caglar Gulcehre, Tom Le Paine, Srivatsan Srinivasan, Ksenia Konyushkova, Lotte Weerts, Abhishek Sharma, Aditya Siddhant, Alex Ahern, Miaosen Wang, Chenjie Gu, et al. 2023. Reinforced self-training (rest) for language modeling. arXiv preprint arXiv:2308.08998.",
+    "Hallinan et al. (2023) Skyler Hallinan, Faeze Brahman, Ximing Lu, Jaehun Jung, Sean Welleck, and Yejin Choi. 2023. STEER: Unified style transfer with expert reinforcement. In Findings of the Association for Computational Linguistics: EMNLP 2023, pages 7546–7562, Singapore. Association for Computational Linguistics.",
+    "Horvitz et al. (2024) Zachary Horvitz, Ajay Patel, Kanishk Singh, Chris Callison-Burch, Kathleen McKeown, and Zhou Yu. 2024. TinyStyler: Efficient few-shot text style transfer with authorship embeddings. In Findings of the Association for Computational Linguistics: EMNLP 2024, pages 13376–13390, Miami, Florida, USA. Association for Computational Linguistics.",
+    "Jang et al. (2023) Joel Jang, Seungone Kim, Bill Yuchen Lin, Yizhong Wang, Jack Hessel, Luke Zettlemoyer, Hannaneh Hajishirzi, Yejin Choi, and Prithviraj Ammanabrolu. 2023. Personalized soups: Personalized large language model alignment via post-hoc parameter merging. arXiv preprint arXiv:2310.11564.",
+    "Jiang et al. (2023) Albert Q Jiang, Alexandre Sablayrolles, Arthur Mensch, Chris Bamford, Devendra Singh Chaplot, Diego de las Casas, Florian Bressand, Gianna Lengyel, Guillaume Lample, Lucile Saulnier, et al. 2023. Mistral 7b. arXiv preprint arXiv:2310.06825.",
+    "Khattab et al. (2023) Omar Khattab, Arnav Singhvi, Paridhi Maheshwari, Zhiyuan Zhang, Keshav Santhanam, Sri Vardhamanan, Saiful Haq, Ashutosh Sharma, Thomas T Joshi, Hanna Moazam, et al. 2023. Dspy: Compiling declarative language model calls into self-improving pipelines. arXiv preprint arXiv:2310.03714.",
+    "Kim and Yang (2024) Jaehyung Kim and Yiming Yang. 2024. Few-shot personalization of llms with mis-aligned responses.",
+    "Kim et al. (2023) Seungone Kim, Jamin Shin, Yejin Cho, Joel Jang, Shayne Longpre, Hwaran Lee, Sangdoo Yun, Seongjin Shin, Sungdong Kim, James Thorne, et al. 2023. Prometheus: Inducing fine-grained evaluation capability in language models. In The Twelfth International Conference on Learning Representations.",
+    "Kojima et al. (2022) Takeshi Kojima, Shixiang Shane Gu, Machel Reid, Yutaka Matsuo, and Yusuke Iwasawa. 2022. Large language models are zero-shot reasoners. Advances in neural information processing systems, 35:22199–22213.",
+    "Krishna et al. (2020) Kalpesh Krishna, John Wieting, and Mohit Iyyer. 2020. Reformulating unsupervised style transfer as paraphrase generation. In Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing (EMNLP), pages 737–762, Online. Association for Computational Linguistics.",
+    "Kumar et al. (2024) Ishita Kumar, Snigdha Viswanathan, Sushrita Yerra, Alireza Salemi, Ryan A. Rossi, Franck Dernoncourt, Hanieh Deilamsalehy, Xiang Chen, Ruiyi Zhang, Shubham Agarwal, Nedim Lipka, Chein Van Nguyen, Thien Huu Nguyen, and Hamed Zamani. 2024. Longlamp: A benchmark for personalized long-form text generation.",
+    "Kwon et al. (2023) Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph E. Gonzalez, Hao Zhang, and Ion Stoica. 2023. Efficient memory management for large language model serving with pagedattention. In Proceedings of the ACM SIGOPS 29th Symposium on Operating Systems Principles.",
+    "Lee et al. (2023) Harrison Lee, Samrat Phatale, Hassan Mansoor, Thomas Mesnard, Johan Ferret, Kellie Lu, Colton Bishop, Ethan Hall, Victor Carbune, Abhinav Rastogi, et al. 2023. Rlaif: Scaling reinforcement learning from human feedback with ai feedback. arXiv preprint arXiv:2309.00267.",
+    "Lewis et al. (2004) David D Lewis, Yiming Yang, Tony Russell-Rose, and Fan Li. 2004. Rcv1: A new benchmark collection for text categorization research. Journal of machine learning research, 5(Apr):361–397.",
+    "Li et al. (2024) Cheng Li, Mingyang Zhang, Qiaozhu Mei, Weize Kong, and Michael Bendersky. 2024. Learning to rewrite prompts for personalized text generation. In Proceedings of the ACM on Web Conference 2024, pages 3367–3378.",
+    "Li et al. (2023) Cheng Li, Mingyang Zhang, Qiaozhu Mei, Yaqing Wang, Spurthi Amba Hombaiah, Yi Liang, and Michael Bendersky. 2023. Teach llms to personalize–an approach inspired by writing education. arXiv preprint arXiv:2308.07968.",
+    "Li et al. (2016) Jiwei Li, Michel Galley, Chris Brockett, Jianfeng Gao, and Bill Dolan. 2016. A diversity-promoting objective function for neural conversation models. In Proceedings of the 2016 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, pages 110–119, San Diego, California. Association for Computational Linguistics.",
+    "Liu et al. (2024) Shuai Liu, Shantanu Agarwal, and Jonathan May. 2024. Authorship style transfer with policy optimization.",
+    "Liu et al. (2023) Shuai Liu, Hyundong Cho, Marjorie Freedman, Xuezhe Ma, and Jonathan May. 2023. RECAP: Retrieval-enhanced context-aware prefix encoder for personalized dialogue response generation. In Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 8404–8419, Toronto, Canada. Association for Computational Linguistics.",
+    "Liu and May (2024) Shuai Liu and Jonathan May. 2024. Style transfer with multi-iteration preference optimization.",
+    "Ma et al. (2024) Ruotian Ma, Xiaolei Wang, Xin Zhou, Jian Li, Nan Du, Tao Gui, Qi Zhang, and Xuanjing Huang. 2024. Are large language models good prompt optimizers?",
+    "Monroe et al. (2008) Burt L Monroe, Michael P Colaresi, and Kevin M Quinn. 2008. Fightin’ words: Lexical feature selection and evaluation for identifying the content of political conflict. Political Analysis, 16(4):372–403.",
+    "Mysore et al. (2023) Sheshera Mysore, Zhuoran Lu, Mengting Wan, Longqi Yang, Steve Menezes, Tina Baghaee, Emmanuel Barajas Gonzalez, Jennifer Neville, and Tara Safavi. 2023. Pearl: Personalizing large language model writing assistants with generation-calibrated retrievers. arXiv preprint arXiv:2311.09180.",
+    "Padmakumar and He (2024) Vishakh Padmakumar and He He. 2024. Does writing with language models reduce content diversity? In The Twelfth International Conference on Learning Representations.",
+    "Patel et al. (2023) Ajay Patel, Nicholas Andrews, and Chris Callison-Burch. 2023. Low-resource authorship style transfer: Can non-famous authors be imitated?",
+    "Plant et al. (2022) Richard Plant, Valerio Giuffrida, and Dimitra Gkatzia. 2022. You are what you write: Preserving privacy in the era of large language models. arXiv preprint arXiv:2204.09391.",
+    "Rafailov et al. (2024) Rafael Rafailov, Archit Sharma, Eric Mitchell, Christopher D Manning, Stefano Ermon, and Chelsea Finn. 2024. Direct preference optimization: Your language model is secretly a reward model. Advances in Neural Information Processing Systems, 36.",
+    "Reimers and Gurevych (2019) Nils Reimers and Iryna Gurevych. 2019. Sentence-BERT: Sentence embeddings using Siamese BERT-networks. In Proceedings of the 2019 Conference on Empirical Methods in Natural Language Processing and the 9th International Joint Conference on Natural Language Processing (EMNLP-IJCNLP), pages 3982–3992, Hong Kong, China. Association for Computational Linguistics.",
+    "Rivera-Soto et al. (2021) Rafael A. Rivera-Soto, Olivia Elizabeth Miano, Juanita Ordonez, Barry Y. Chen, Aleem Khan, Marcus Bishop, and Nicholas Andrews. 2021. Learning universal authorship representations. In Proceedings of the 2021 Conference on Empirical Methods in Natural Language Processing, pages 913–919, Online and Punta Cana, Dominican Republic. Association for Computational Linguistics.",
+    "Saha et al. (2024) Swarnadeep Saha, Omer Levy, Asli Celikyilmaz, Mohit Bansal, Jason Weston, and Xian Li. 2024. Branch-solve-merge improves large language model evaluation and generation. In Proceedings of the 2024 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers), pages 8352–8370, Mexico City, Mexico. Association for Computational Linguistics.",
+    "Salemi et al. (2023) Alireza Salemi, Sheshera Mysore, Michael Bendersky, and Hamed Zamani. 2023. Lamp: When large language models meet personalization. arXiv preprint arXiv:2304.11406.",
+    "Shaikh et al. (2024) Omar Shaikh, Michelle Lam, Joey Hejna, Yijia Shao, Michael Bernstein, and Diyi Yang. 2024. Show, don’t tell: Aligning language models with demonstrated feedback. arXiv preprint arXiv:2406.00888.",
+    "Shin et al. (2020) Taylor Shin, Yasaman Razeghi, Robert L. Logan IV, Eric Wallace, and Sameer Singh. 2020. AutoPrompt: Eliciting Knowledge from Language Models with Automatically Generated Prompts. In Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing (EMNLP), pages 4222–4235, Online. Association for Computational Linguistics.",
+    "Shinn et al. (2024) Noah Shinn, Federico Cassano, Ashwin Gopinath, Karthik Narasimhan, and Shunyu Yao. 2024. Reflexion: Language agents with verbal reinforcement learning. Advances in Neural Information Processing Systems, 36.",
+    "Song et al. (2024) Yifan Song, Da Yin, Xiang Yue, Jie Huang, Sujian Li, and Bill Yuchen Lin. 2024. Trial and error: Exploration-based trajectory optimization of LLM agents. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 7584–7600, Bangkok, Thailand. Association for Computational Linguistics.",
+    "Sumers et al. (2024) Theodore Sumers, Shunyu Yao, Karthik Narasimhan, and Thomas Griffiths. 2024. Cognitive architectures for language agents. Transactions on Machine Learning Research. Survey Certification.",
+    "Tétard and Collan (2009) Franck Tétard and Mikael Collan. 2009. Lazy user theory: A dynamic model to understand user selection of products and services. In 2009 42nd Hawaii International Conference on System Sciences, pages 1–9. IEEE.",
+    "Touvron et al. (2023) Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, et al. 2023. Llama 2: Open foundation and fine-tuned chat models. arXiv preprint arXiv:2307.09288.",
+    "Wang et al. (2016) Lin Wang, Bin Wu, Juan Yang, and Shuang Peng. 2016. Personalized recommendation for new questions in community question answering. In 2016 IEEE/ACM International Conference on Advances in Social Networks Analysis and Mining (ASONAM), pages 901–908. IEEE.",
+    "Wang et al. (2022) Xuezhi Wang, Jason Wei, Dale Schuurmans, Quoc Le, Ed Chi, and Denny Zhou. 2022. Rationale-augmented ensembles in language models. arXiv preprint arXiv:2207.00747.",
+    "Wang et al. (2023) Yizhong Wang, Yeganeh Kordi, Swaroop Mishra, Alisa Liu, Noah A. Smith, Daniel Khashabi, and Hannaneh Hajishirzi. 2023. Self-instruct: Aligning language models with self-generated instructions. In Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 13484–13508, Toronto, Canada. Association for Computational Linguistics.",
+    "Wegmann et al. (2022) Anna Wegmann, Marijn Schraagen, and Dong Nguyen. 2022. Same author or just same topic? towards content-independent style representations. In Proceedings of the 7th Workshop on Representation Learning for NLP, pages 249–268, Dublin, Ireland. Association for Computational Linguistics.",
+    "Wei et al. (2022) Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Fei Xia, Ed Chi, Quoc V Le, Denny Zhou, et al. 2022. Chain-of-thought prompting elicits reasoning in large language models. Advances in neural information processing systems, 35:24824–24837.",
+    "Yang et al. (2024) Chengrun Yang, Xuezhi Wang, Yifeng Lu, Hanxiao Liu, Quoc V Le, Denny Zhou, and Xinyun Chen. 2024. Large language models as optimizers. In The Twelfth International Conference on Learning Representations.",
+    "Yao et al. (2023) Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik Narasimhan, and Yuan Cao. 2023. React: Synergizing reasoning and acting in language models. In International Conference on Learning Representations (ICLR).",
+    "Ye et al. (2024) Qinyuan Ye, Mohamed Ahmed, Reid Pryzant, and Fereshte Khani. 2024. Prompt engineering a prompt engineer. In Findings of the Association for Computational Linguistics ACL 2024, pages 355–385, Bangkok, Thailand and virtual meeting. Association for Computational Linguistics.",
+    "Yuksekgonul et al. (2024) Mert Yuksekgonul, Federico Bianchi, Joseph Boen, Sheng Liu, Zhi Huang, Carlos Guestrin, and James Zou. 2024. Textgrad: Automatic\" differentiation\" via text. arXiv preprint arXiv:2406.07496.",
+    "Zhang et al. (2021) Hugh Zhang, Daniel Duckworth, Daphne Ippolito, and Arvind Neelakantan. 2021. Trading off diversity and quality in natural language generation. In Proceedings of the Workshop on Human Evaluation of NLP Systems (HumEval), pages 25–33, Online. Association for Computational Linguistics.",
+    "Zhang et al. (2020) Zhipeng Zhang, Yasuo Kudo, Tetsuya Murai, and Yonggong Ren. 2020. Improved covering-based collaborative filtering for new users’ personalized recommendations. Knowledge and Information Systems, 62:3133–3154.",
+    "Zheng et al. (2023) Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan Zhuang, Zhanghao Wu, Yonghao Zhuang, Zi Lin, Zhuohan Li, Dacheng Li13, Eric P Xing35, et al. 2023. Judging llm-as-a-judge with mt-bench and chatbot arena. arXiv preprint arXiv:2306.05685.",
+    "Zhou et al. (2022) Pei Zhou, Hyundong Cho, Pegah Jandaghi, Dong-Ho Lee, Bill Yuchen Lin, Jay Pujara, and Xiang Ren. 2022. Reflect, not reflex: Inference-based common ground improves dialogue response quality. In Proceedings of the 2022 Conference on Empirical Methods in Natural Language Processing, pages 10450–10468, Abu Dhabi, United Arab Emirates. Association for Computational Linguistics.",
+    "Zhou et al. (2023) Yongchao Zhou, Andrei Ioan Muresanu, Ziwen Han, Keiran Paster, Silviu Pitis, Harris Chan, and Jimmy Ba. 2023. Large language models are human-level prompt engineers. In The Eleventh International Conference on Learning Representations.",
+    "Zhuang et al. (2024) Yuchen Zhuang, Haotian Sun, Yue Yu, Rushi Qiang, Qifan Wang, Chao Zhang, and Bo Dai. 2024. Hydra: Model factorization framework for black-box llm personalization."
+  ]
+}

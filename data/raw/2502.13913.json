@@ -1,0 +1,507 @@
+{
+  "title": "How Do LLMs Perform Two-Hop Reasoning in Context?",
+  "authors": "Tianyu Guo∗Hanlin Zhu∗Ruiqi ZhangJiantao JiaoSong MeiMichael I. JordanStuart Russell",
+  "abstract": "“Socrates is human. All humans are mortal. Therefore, Socrates is mortal.” This classical example demonstrates two-hop reasoning, where a conclusion logically follows from two connected premises. While transformer-based Large Language Models (LLMs) can make two-hop reasoning , they tend to collapse to random guessing when faced with distracting premises . To understand the underlying mechanism, we train a three-layer transformer on synthetic two-hop reasoning tasks. The training dynamics show two stages: a slow learning phase, where the 3-layer transformer performs random guessing like LLMs, followed by an abrupt phase transitions, where the 3-layer transformer suddenly reaches 100%100\\% accuracy. Through reverse engineering, we explain the inner mechanisms for how models learn to randomly guess between distractions initially, and how they learn to ignore distractions eventually. We further propose a three-parameter model that supports the causal claims for the mechanisms to the training dynamics of the transformer. Finally, experiments on LLMs suggest that the discovered mechanisms generalize across scales. Our methodologies provide new perspectives for scientific understandings of LLMs and our findings provide new insights into how reasoning emerges during training.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Transformer-based large language models (LLMs) show great capability in solving complex reasoning tasks (Reynolds and McDonell, 2021; Kojima et al., 2022; Brown et al., 2020; Wei et al., 2022; Wang et al., 2022b; Nye et al., 2021; Cobbe et al., 2021; Zelikman et al., 2022). Arguably, the in-context two-hop reasoning, which requires a model to derive a conclusion (e.g., [A] is the grandfather of [C]) from two assumed premises (e.g., [A] is the father of [B] and [B] is the father of [C]) given in the prompt, is one of the most fundamental components of many reasoning problems. However, this seemingly the simplest reasoning task can fail real-world large language models, e.g., as shown in Figure˜1, although LLMs can solve an in-context two-hop reasoning task correctly without distraction in the prompt, it simply collapses to random guessing when there is additional distracting information (i.e., [D] is the father of [E] and [E] is the father of [F]) in the context (see more details in Section˜4.1). Similar phenomena have been discovered in the GSM-IC benchmark (Shi et al., ). This failure mode suggests that LLMs might adopt some undesired internal mechanisms to perform reasoning tasks.",
+        "To investigate why LLMs would struggle with the two-hop reasoning in the presence of distracting information, a common approach is circuit discovery (e.g., Conmy et al. (2023)), which aims to identify the underlying mechanisms at the level of attention heads. However, the validity of circuits remains a topic of debate (e.g., Shi et al. (2024); Hase et al. (2024)). Irrespective of this concern, circuits related to two-hop reasoning would involve a large number of attention heads interconnected through complex computational graphs, making it challenging to extract meaningful insights.",
+        "To circumvent these difficulties, we adopt an alternative approach. Specifically, we design a synthetic task which replicates key structures in two-hop reasoning with distractions, and train a small transformer on this task. At the beginning of the training, the small model is affected by distractions, recapulating the behaviour of LLMs observed in Figure˜1. As the training continues, the small model goes through a phase transition and learns to ignore the distractions. By fully reverse-engineering the smaller model, we unveil the mechanism for random guessing. By further reducing the small model to a 3-parameter model (Section˜3.2), we unveil that a sudden realization of the sequential query mechanism drives the transformer to solve the two-hop reasoning with distractions. Leveraging the aware of sequential query mechanism, we predict that LLMs finetuned on two-hop reasoning task with single distraction have length generalization and subsequently test them on larger models. The consistency of our results across different scales provides strong empirical evidence supporting the validity and generalizability of our findings (Section˜4).",
+        "Figure˜2 provides an overview of the workflow of our paper. We summarize our main results and the workflow as follows:",
+        "• We build a dataset covering two-hop reasonings under various real-world contexts. We show that LLMs (including Llama2-7B-Base (Touvron et al., 2023), Llama3.1-8B-Base (Dubey et al., 2024), Qwen2.5-7B-Base (Yang et al., 2024a)) fail to solve the in-context two-hop reasoning task when exposed to distracting information in the prompt (Section˜4.1).",
+        "• To better understand the underlying mechanism, we design synthetic tasks with symbolic prompts (Figure˜3). The trained three-layer transformer exhibits similar behavior to LLMs when presented with distracting information. (Section˜3.1). By analyzing the training dynamics and fully reverse-engineering the three-layer transformer, we identified two mechanisms that the three-layer transformer used for prediction on the two-hop reasoning task: a uniform guessing mechanism learned in the early stage and a sequential query mechanism after a sharp phase transition.",
+        "• We conducted a more careful analysis of a three-parameter model (Section˜3.2) to study why the transformer tends to learn the sequential query mechanism instead of a theoretically more efficient mechanism posited by previous literature.",
+        "• To test whether the mechanism discovered from small-scale three-layer transformers is also adopted in large language models, we conduct further experiments on LLMs (Section˜4), which provides strong evidence that the original pretrained model performs a uniform guessing mechanism, while very few steps of fine-tuning enable the model to learn a correct mechanism to solve two-hop reasoning tasks in the presence of distracting information."
+      ],
+      "subsections": [
+        {
+          "title": "1.1 Related works",
+          "paragraphs": [
+            "Multi-hop reasoning is a common evaluation task for LLMs that requires composing several factual associations together (Zhong et al., 2023). Mechanistic interpretability studies have found that LLMs perform multi-hop reasoning by serially recalling intermediate hops (Biran et al., 2024; Yang et al., 2024b; Wang et al., 2024a; Feng et al., 2024). This work studies an in-context multi-hop reasoning task, where the knowledge is extracted from context, in contrast to these in-weight multi-hop reasoning studies.",
+            "Earlier work introduced the induction-head mechanism for in-context learning in LLMs (Elhage et al., 2021; Olsson et al., 2022). Recent theoretical and empirical analyses have extensively studied induction-head mechanisms in small transformers (Bietti et al., 2023; Nichani et al., 2024; Wang et al., 2024b; Chen et al., 2024), demonstrating that a two-layer transformer is required to perform induction-head tasks (Sanford et al., 2024a). The in-context two-hop reasoning task generalizes the induction-head task, as first proposed in Sanford et al. (2024b), where it was shown that a log⁡k\\log k-layers transformer is necessary and sufficient for performing in-context kk-hop reasoning tasks.",
+            "Mechanistic interpretability is a growing field focused on investigating the internal mechanisms of language models (Elhage et al., 2021; Geva et al., 2023; Meng et al., 2022; Nanda et al., 2023; Olsson et al., 2022; Bietti et al., 2024; Wang et al., 2022a; Feng and Steinhardt, 2023; Todd et al., 2023). Examples include mechanisms such as the induction head and function vector for in-context learning (Elhage et al., 2021; Olsson et al., 2022; Todd et al., 2023; Bietti et al., 2024), the binding ID mechanism for binding tasks (Feng and Steinhardt, 2023), association-storage mechanisms for factual identification tasks (Meng et al., 2022), and a complete circuit for indirect object identification Wang et al. (2022a). Additionally, several studies have leveraged synthetic tasks to investigate neural network mechanisms Charton (2022); Liu et al. (2022); Nanda et al. (2023); Allen-Zhu and Li (2023); Zhu and Li (2023); Guo et al. (2023); Zhang et al. (2022); Lin et al. (2023); Guo et al. (2024).",
+            "The dynamics of transformers have been explored under various simplifications, including linear attention structures (Zhang et al., 2024a; Ahn et al., 2024), reparametrizations (Tian et al., 2023b; Zhu et al., 2024), and NTK (Deora et al., 2023). Much of this work focuses on in-context linear regression (Ahn et al., 2023; Wu et al., 2023; Zhang et al., 2024b) and structured sequence learning (Bietti et al., 2024; Nichani et al., 2024; Tian et al., 2023a; Guo et al., 2024). Notably, Zhang et al. (2024a); Huang et al. (2023); Kim et al. (2024) show that a one-layer attention head trained via gradient descent converges to a model capable of performing in-context regression. Bietti et al. (2024) highlights the rapid emergence of bigram memorization and the slower development of in-context learning abilities. Meanwhile, Reddy (2023) simplifies the structure of the induction head, revealing how sharp transitions in in-context learning dynamics arise from the nested nonlinearities of multi-layer operations."
+          ]
+        }
+      ]
+    },
+    "2 Preliminaries": {
+      "paragraphs": [
+        "We define the key terminologies used, primarily focusing on the hidden states (or activations) during the forward pass."
+      ],
+      "subsections": [
+        {
+          "title": "Components in an attention layer.",
+          "paragraphs": [
+            "We denote Res as the residual stream. We denote Val as Value (states), Qry as Query (states), and Key as Key (states) in one attention head. The Attn-Logit represents the value before the softmax operation and can be understood as the inner product between Qry and Key. We use Attn to denote the attention weights of applying the SoftMax function to Attn-Logit, and “attention map” to describe the visualization of the heat map of the attention weights. When referring to the Attn-Logit from “B” to “A”, we indicate the inner product ⟨Qry​(B),Key​(A)⟩\\langle\\textsc{Qry}(\\texttt{B}),\\textsc{Key}(\\texttt{A})\\rangle, specifically the entry in the “B” row and “A” column of the attention map."
+          ]
+        },
+        {
+          "title": "Logit lens.",
+          "paragraphs": [
+            "We use the method of “Logit Lens” to interpret the hidden states and value states (Belrose et al., 2023). We use Logit to denote pre-SoftMax values of the next-token prediction for LLMs. Denote ReadOut as the linear operator after the last layer of transformers that maps the hidden states to the Logit. The logit lens is defined as applying the readout matrix to residual or value states in middle layers. Through the logit lens, the transformed hidden states can be interpreted as their direct effect on the logits for next-token prediction."
+          ]
+        },
+        {
+          "title": "Terminologies in two-hop reasoning.",
+          "paragraphs": [
+            "We refer to an input like “Source→\\toBrg1, Brg2→\\toEnd” as a two-hop reasoning chain, or simply a chain. The source entity Source serves as the starting point or origin of the reasoning. The end entity End represents the endpoint or destination of the reasoning chain. The bridge entity Bridge connects the source and end entities within the reasoning chain. We distinguish between two occurrences of Bridge: the bridge in the first premise is called Brg1, while the bridge in the second premise that connects to End is called Brg2. Additionally, for any premise “A→B\\texttt{A}\\to\\texttt{B}”, we define A as the parent node and B as the child node. Furthermore, if at the end of the sequence, the query token is “A”, we define the chain “A→B\\texttt{A}\\to\\texttt{B}, B→C\\texttt{B}\\to\\texttt{C}” as the Target Chain, while all other chains present in the context are referred to as distraction chains. Figure 3 provides an illustration of the terminologies."
+          ]
+        },
+        {
+          "title": "Input format.",
+          "paragraphs": [
+            "Motivated by two-hop reasoning in real contexts, we consider input in the format ⟨bos⟩,context information,Qry,Ans\\langle\\texttt{bos}\\rangle,\\text{context information},\\textsc{Qry},\\textsc{Ans}. A transformer model is trained to predict the correct Ans given the query Qry and the context information. The context compromises of K=5K=5 disjoint two-hop chains, each appearing once and containing two premises. Within the same chain, the relative order of two premises is fixed so that Source→\\toBrg1 always precedes Brg2→\\toEnd. The orders of chains are randomly generated, and chains may interleave with each other. The labels for the entities are re-shuffled for every sequence, choosing from a vocabulary size V=30V=30. Given the ⟨bos⟩\\langle\\texttt{bos}\\rangle token, K=5K=5 two-hop chains, Qry, and the Ans tokens, the total context length is N=23N=23. Figure 3 also illustrates the data format."
+          ]
+        },
+        {
+          "title": "Model structure and training.",
+          "paragraphs": [
+            "We pre-train a three-layer transformer with a single head per layer. Unless otherwise specified, the model is trained using Adam for 10,00010,000 steps, achieving near-optimal prediction accuracy. Details are relegated to Appendix A."
+          ]
+        }
+      ]
+    },
+    "3 Toy models": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "3.1 Details of the mechanism of in-context two-hop reasoning",
+          "paragraphs": [
+            "In this section, we discuss the internal mechanism of a three-layer transformer to perform two-hop reasoning. For better visualization, we use illustrative attention maps and defer the empirical evidence to Appendix C.",
+            "We conducted ablation studies on the effect of MLP layers. Figure˜4 shows that even if we skip all MLP layers during inference, the model’s performance on the validation set during different training stages remains nearly the same. This suggests that the MLP layers did not develop meaningful functionality during training, effectively rendering them redundant. Therefore, we focus our analysis on attention heads.",
+            "According to Figure˜5, the model mainly experienced two different phases during training. In the slow learning phase (e.g., training step 0 to around 400400), the model has a slow learning phase. It learned to predict an end token randomly (in Figure˜5, we take average prediction probabilities over all the end tokens in distracting chains, so in the slow learning phase, the prediction probability for the target end and average non-target end are roughly equal). After an abrupt phase transition after more than 800800 training steps, the model learns to predict the correct answer perfectly. We call the interim mechanism that the model learned during the slow learning phase random guessing mechanism, and observed that the final mechanism the model learned to make the perfect prediction is a sequential query mechanism. Besides, previous literature (Sanford et al., 2024b) posited that the transformer performs in-context two-hop reasoning by a mechanism they theoretically constructed, which we called double induction head mechanism. Below, we explain the random guessing mechanism and the sequential query mechanism layer by layer in detail, along with experiments supporting the existence of such mechanisms. The details of the double induction head mechanism are deferred to Appendix˜C.",
+            "For both the random guessing mechanism and the sequential query mechanism, the first layer is a copy layer. In the attention map, each child token pays all attention to its parent token by positional encoding and then copies its parent token to its buffer space to be used in subsequent layers. This is pictorially illustrated in Figure˜6.",
+            "During the slow learning phase (e.g., around 400 steps), the model learns to randomly pick an end token by distinguishing between the end and bridge tokens among all child tokens. The underlying mechanism we observed is as follows. In the second layer, as shown in Figure˜7, each child token will attend equally to all previous parent tokens and copy (the superposition of) them to its buffer. The buffer space will later be used in the last layer, where the query entity (i.e., the last token in the input sequence) will attend equally to all child tokens as shown in Figure˜8. Thanks to the information on the buffer space collected in the second layer, the value state of each copied child token through the logit lens contains not only itself but also all parent tokens before that child token with a negative sign in the corresponding coordinate (Figure˜9). By aggregating the value states of all child tokens in the last layer, the query entity can distinguish the end token from the bridge token since the positive value of the bridge token due to Brg1, a child token, is canceled out by the negative value caused by Brg2, a parent token, in the same corresponding coordinate. As a result, this interim mechanism learned in the slow learning phase can randomly guess an end entity as its prediction.",
+            "After the phase transition during training, the model achieves nearly perfect accuracy, and we observed a sequential query mechanism during that stage. After copying parent entities in the first layer (Figure˜6), in the second layer, the query entity will pay attention to the bridge entity whose corresponding source entity in the buffer space matches the query entity. Then, it copies this bridge entity to the query entity’s buffer space (Figure˜10). In the last layer, the query entity uses the collected bridge entity from the last layer to do the query again and obtains the corresponding end entity, which is exactly the expected answer (Figure˜11). Note that in a kk-hop reasoning setting, the above sequential query mechanism performs one hop per layer and thus requires (k+1)(k+1) layers.",
+            "Although the double induction head mechanism is theoretically optimal in terms of the number of layers required to perform multi-hop reasoning tasks (see Appendix˜C for details), even for the simplest two-hop reasoning, the model tends to learn the sequential query mechanism according to our observations."
+          ]
+        },
+        {
+          "title": "MLP layers are negligible.",
+          "paragraphs": [
+            "We conducted ablation studies on the effect of MLP layers. Figure˜4 shows that even if we skip all MLP layers during inference, the model’s performance on the validation set during different training stages remains nearly the same. This suggests that the MLP layers did not develop meaningful functionality during training, effectively rendering them redundant. Therefore, we focus our analysis on attention heads."
+          ]
+        },
+        {
+          "title": "The slow learning phase and abrupt learning during training.",
+          "paragraphs": [
+            "According to Figure˜5, the model mainly experienced two different phases during training. In the slow learning phase (e.g., training step 0 to around 400400), the model has a slow learning phase. It learned to predict an end token randomly (in Figure˜5, we take average prediction probabilities over all the end tokens in distracting chains, so in the slow learning phase, the prediction probability for the target end and average non-target end are roughly equal). After an abrupt phase transition after more than 800800 training steps, the model learns to predict the correct answer perfectly. We call the interim mechanism that the model learned during the slow learning phase random guessing mechanism, and observed that the final mechanism the model learned to make the perfect prediction is a sequential query mechanism. Besides, previous literature (Sanford et al., 2024b) posited that the transformer performs in-context two-hop reasoning by a mechanism they theoretically constructed, which we called double induction head mechanism. Below, we explain the random guessing mechanism and the sequential query mechanism layer by layer in detail, along with experiments supporting the existence of such mechanisms. The details of the double induction head mechanism are deferred to Appendix˜C."
+          ]
+        },
+        {
+          "title": "The first layer.",
+          "paragraphs": [
+            "For both the random guessing mechanism and the sequential query mechanism, the first layer is a copy layer. In the attention map, each child token pays all attention to its parent token by positional encoding and then copies its parent token to its buffer space to be used in subsequent layers. This is pictorially illustrated in Figure˜6."
+          ]
+        },
+        {
+          "title": "The interim mechanism in slow learning phase: random guessing.",
+          "paragraphs": [
+            "During the slow learning phase (e.g., around 400 steps), the model learns to randomly pick an end token by distinguishing between the end and bridge tokens among all child tokens. The underlying mechanism we observed is as follows. In the second layer, as shown in Figure˜7, each child token will attend equally to all previous parent tokens and copy (the superposition of) them to its buffer. The buffer space will later be used in the last layer, where the query entity (i.e., the last token in the input sequence) will attend equally to all child tokens as shown in Figure˜8. Thanks to the information on the buffer space collected in the second layer, the value state of each copied child token through the logit lens contains not only itself but also all parent tokens before that child token with a negative sign in the corresponding coordinate (Figure˜9). By aggregating the value states of all child tokens in the last layer, the query entity can distinguish the end token from the bridge token since the positive value of the bridge token due to Brg1, a child token, is canceled out by the negative value caused by Brg2, a parent token, in the same corresponding coordinate. As a result, this interim mechanism learned in the slow learning phase can randomly guess an end entity as its prediction."
+          ]
+        },
+        {
+          "title": "The (observed) sequential query mechanism after phase transition.",
+          "paragraphs": [
+            "After the phase transition during training, the model achieves nearly perfect accuracy, and we observed a sequential query mechanism during that stage. After copying parent entities in the first layer (Figure˜6), in the second layer, the query entity will pay attention to the bridge entity whose corresponding source entity in the buffer space matches the query entity. Then, it copies this bridge entity to the query entity’s buffer space (Figure˜10). In the last layer, the query entity uses the collected bridge entity from the last layer to do the query again and obtains the corresponding end entity, which is exactly the expected answer (Figure˜11). Note that in a kk-hop reasoning setting, the above sequential query mechanism performs one hop per layer and thus requires (k+1)(k+1) layers."
+          ]
+        },
+        {
+          "title": "The model is prone to learn the sequential query mechanism.",
+          "paragraphs": [
+            "Although the double induction head mechanism is theoretically optimal in terms of the number of layers required to perform multi-hop reasoning tasks (see Appendix˜C for details), even for the simplest two-hop reasoning, the model tends to learn the sequential query mechanism according to our observations."
+          ]
+        },
+        {
+          "title": "3.2 Building causal relationships between mechanisms and training dynamics using a three-parameter model",
+          "paragraphs": [
+            "In the last section, we observed two stages along the training dynamics of the three-layer transformer. In this section, we aim to build a “causal” relationship between the observed mechanisms and the training dynamics. The two “causal” hypotheses are:",
+            "The formation of the random guessing mechanism causes the slow learning phase (0-400 steps).",
+            "The formation of the sequential query mechanism causes the abrupt phase transition (800 steps).",
+            "We need to implement “causal interventions” to validate the hypotheses. Following the approach of Reddy (2023), we propose studying a three-parameter dynamical system, which simulates only the dynamics of the sequential query mechanism, removing the random guessing mechanism.",
+            "Since the random guessing mechanism is removed and the sequential query mechanism is kept, we anticipate that",
+            "1. ˜3.1 holds if the three-parameter model loses the slow learning phase in the training dynamics.",
+            "2. ˜3.2 holds if the three-parameter model preserves the abrupt phase transition in the training dynamics.",
+            "˜3.1 holds if the three-parameter model loses the slow learning phase in the training dynamics.",
+            "˜3.2 holds if the three-parameter model preserves the abrupt phase transition in the training dynamics.",
+            "For convenience, we define the approximate SoftMax operator as:",
+            "Intuitively, the approximate SoftMax gives the probability of an item with logit uu where the remaining MM logits are all zero. Given a residual state uu, we use cont​(u)\\textsc{cont}(u), buf1​(u)\\textsc{buf}_{1}(u), buf2​(u)\\textsc{buf}_{2}(u) to denote the original content (i.e., the token embedding and the positional embedding) of token uu, the buffer space of uu in the first layer, and the buffer space of uu in the second layer, respectively. Since the tokens are not semantically related, we assume that ⟨cont​(a),cont​(b)⟩=𝟙​{a=b}\\langle\\textsc{cont}(a),\\textsc{cont}(b)\\rangle=\\mathbbm{1}\\{a=b\\} for any two tokens aa and bb, which means that {cont​(⋅)}\\{\\textsc{cont}(\\cdot)\\} is an orthonormal basis.",
+            "The sequential query mechanism consists of a copy layer in the first layer (Figure˜6), Qry to Brg in the second layer (Figure˜10), and Qry to End in the third layer (Figure˜11). We use parameters α\\alpha, β\\beta, and γ\\gamma to represent the progressive measure of their functionalities.",
+            "where",
+            "Note that when we set α→∞\\alpha\\to\\infty, β→∞\\beta\\to\\infty, and γ→∞\\gamma\\to\\infty, Loss→0\\text{Loss}\\to 0, corresponding to the three-layer transformer trained after 1000010000 steps. When we set α=β=γ=0\\alpha=\\beta=\\gamma=0, the loss is close to a uniform guess in the vocabulary, corresponding to an untrained three-layer transformer.",
+            "We present that how we simplify a full transoformer block to get Equations (1) and (2). As previously discussed, we can ignore the MLP block and focus on the attention block. As illustrated in Figure˜6, the first attention block relies on the positional information to copy parent tokens to the buffer spaces of child tokens. The attention logits are given by",
+            "where Q(1)Q^{(1)}, K(1)K^{(1)} are weight matrices in the first layer. We assume that Posi⊤​Q(1)⊤​K(1)​Posi−1=α\\text{Pos}_{i}^{\\top}Q^{(1)\\top}K^{(1)}\\text{Pos}_{i-1}=\\alpha for any ii. Since we reshuffle the positions for Brg1 and End for each sequence, following Reddy (2023), we approximate the attention weights to parent tokens by 𝒮~​(α,N)\\widetilde{\\mathcal{S}}(\\alpha,N), where NN comes from taking the average from 2​N2N positions. This gives Equations (1) and (2).",
+            "Similarly, as illustrated in Figure˜10, the buf2​(Qry)\\textsc{buf}_{2}(\\textsc{Qry}) is proportional to the attention from the Qry token to Brg1 in the second layer. The Qry token uses its cont​(Qry)\\textsc{cont}(\\textsc{Qry}) to fit the buf1​(Brg1)\\textsc{buf}_{1}(\\textsc{Brg${}_{1}$}), copying cont​(Brg)\\textsc{cont}(\\textsc{Brg}) to the residual stream. Therefore,",
+            "where the last line could be viewed as a re-parametrization of Q(2)⊤​K(2)Q^{(2)\\top}K^{(2)}, with β∝‖Q(2)⊤​K(2)‖2\\beta\\propto\\|Q^{(2)\\top}K^{(2)}\\|_{2}. Moreover, we fix the attention logits from Qry token to all other tokens to be zero, removing mechanisms other than the sequential query. The attention weight from the Qry token to the Brg1 becomes 𝒮~​(Attn-Logit​(Qry→Brg1),2​N)\\widetilde{\\mathcal{S}}(\\texttt{Attn-Logit}(\\textsc{Qry}\\to\\textsc{Brg${}_{1}$}),2N). This gives Equation (3).",
+            "As illustrated in Figure˜11, the Qry token increasingly concentrates on the Tgt-End token along the training dynamics. With the same manner of Equation (3), we set that",
+            "We focus on Attn-Logit​(Qry→Tgt−End)\\texttt{Attn-Logit}(\\textsc{Qry}\\to\\textsc{Tgt}-\\textsc{End}) and set all other Attn-Logit to be zero. The attention weight from the query to the Tgt-End becomes 𝒮~​(Attn-Logit​(Qry→Tgt−End),2​N)\\widetilde{\\mathcal{S}}(\\texttt{Attn-Logit}(\\textsc{Qry}\\to\\textsc{Tgt}-\\textsc{End}),2N). We first consider the output Logit on the query token. Through the logit lens, as illustrated in Table˜1, the value states of End tokens have large logits on itself. Therefore, we assume that ReadOut​[Val​(Tgt−End)]=ξ⋅𝒆End∈ℝV\\texttt{ReadOut}[\\textsc{Val}(\\textsc{Tgt}-\\textsc{End})]=\\xi\\cdot\\bm{e}_{\\textsc{End}}\\in\\mathbb{R}^{V}, with ξ>0\\xi>0 and 𝒆End\\bm{e}_{\\textsc{End}} being a one-hot vector in ℝV\\mathbb{R}^{V} that is non-zero on the index of End. In our simulation, we fix ξ=30\\xi=30. The loss can therefore be approximated through Equation (5).",
+            "We optimize the loss function Equation˜5 by running gradient descent with learning rate 0.10.1. Figure˜12 presents the training dynamics of the 3-layer transoformer and the 3-parameter model. Since the model does not incorporate the random guessing mechanism, the loss remains unchanged during the first 10001000 steps, validating ˜3.1. Both the parameters and the loss function go through a sudden phase transition around step 10001000, suggesting that the emergence of the sequential query mechanism is the driving force behind the abrupt drop in loss. This validates ˜3.2."
+          ]
+        },
+        {
+          "title": "“Causal” hypotheses based on observations.",
+          "paragraphs": [
+            "In the last section, we observed two stages along the training dynamics of the three-layer transformer. In this section, we aim to build a “causal” relationship between the observed mechanisms and the training dynamics. The two “causal” hypotheses are:",
+            "The formation of the random guessing mechanism causes the slow learning phase (0-400 steps).",
+            "The formation of the sequential query mechanism causes the abrupt phase transition (800 steps).",
+            "We need to implement “causal interventions” to validate the hypotheses. Following the approach of Reddy (2023), we propose studying a three-parameter dynamical system, which simulates only the dynamics of the sequential query mechanism, removing the random guessing mechanism."
+          ]
+        },
+        {
+          "title": "Comparing the training dynamics of the three-parameter model with the training dynamics of transformers to validate the causal hypotheses",
+          "paragraphs": [
+            "Since the random guessing mechanism is removed and the sequential query mechanism is kept, we anticipate that",
+            "1. ˜3.1 holds if the three-parameter model loses the slow learning phase in the training dynamics.",
+            "2. ˜3.2 holds if the three-parameter model preserves the abrupt phase transition in the training dynamics.",
+            "˜3.1 holds if the three-parameter model loses the slow learning phase in the training dynamics.",
+            "˜3.2 holds if the three-parameter model preserves the abrupt phase transition in the training dynamics."
+          ]
+        },
+        {
+          "title": "Approximate SoftMax operator and notations for content and buffer spaces.",
+          "paragraphs": [
+            "For convenience, we define the approximate SoftMax operator as:",
+            "Intuitively, the approximate SoftMax gives the probability of an item with logit uu where the remaining MM logits are all zero. Given a residual state uu, we use cont​(u)\\textsc{cont}(u), buf1​(u)\\textsc{buf}_{1}(u), buf2​(u)\\textsc{buf}_{2}(u) to denote the original content (i.e., the token embedding and the positional embedding) of token uu, the buffer space of uu in the first layer, and the buffer space of uu in the second layer, respectively. Since the tokens are not semantically related, we assume that ⟨cont​(a),cont​(b)⟩=𝟙​{a=b}\\langle\\textsc{cont}(a),\\textsc{cont}(b)\\rangle=\\mathbbm{1}\\{a=b\\} for any two tokens aa and bb, which means that {cont​(⋅)}\\{\\textsc{cont}(\\cdot)\\} is an orthonormal basis."
+          ]
+        },
+        {
+          "title": "The meaning of three parameters.",
+          "paragraphs": [
+            "The sequential query mechanism consists of a copy layer in the first layer (Figure˜6), Qry to Brg in the second layer (Figure˜10), and Qry to End in the third layer (Figure˜11). We use parameters α\\alpha, β\\beta, and γ\\gamma to represent the progressive measure of their functionalities.",
+            "where",
+            "Note that when we set α→∞\\alpha\\to\\infty, β→∞\\beta\\to\\infty, and γ→∞\\gamma\\to\\infty, Loss→0\\text{Loss}\\to 0, corresponding to the three-layer transformer trained after 1000010000 steps. When we set α=β=γ=0\\alpha=\\beta=\\gamma=0, the loss is close to a uniform guess in the vocabulary, corresponding to an untrained three-layer transformer."
+          ]
+        },
+        {
+          "title": "The derivation of Equations (1) and (2).",
+          "paragraphs": [
+            "We present that how we simplify a full transoformer block to get Equations (1) and (2). As previously discussed, we can ignore the MLP block and focus on the attention block. As illustrated in Figure˜6, the first attention block relies on the positional information to copy parent tokens to the buffer spaces of child tokens. The attention logits are given by",
+            "where Q(1)Q^{(1)}, K(1)K^{(1)} are weight matrices in the first layer. We assume that Posi⊤​Q(1)⊤​K(1)​Posi−1=α\\text{Pos}_{i}^{\\top}Q^{(1)\\top}K^{(1)}\\text{Pos}_{i-1}=\\alpha for any ii. Since we reshuffle the positions for Brg1 and End for each sequence, following Reddy (2023), we approximate the attention weights to parent tokens by 𝒮~​(α,N)\\widetilde{\\mathcal{S}}(\\alpha,N), where NN comes from taking the average from 2​N2N positions. This gives Equations (1) and (2)."
+          ]
+        },
+        {
+          "title": "The derivation of Equation (3).",
+          "paragraphs": [
+            "Similarly, as illustrated in Figure˜10, the buf2​(Qry)\\textsc{buf}_{2}(\\textsc{Qry}) is proportional to the attention from the Qry token to Brg1 in the second layer. The Qry token uses its cont​(Qry)\\textsc{cont}(\\textsc{Qry}) to fit the buf1​(Brg1)\\textsc{buf}_{1}(\\textsc{Brg${}_{1}$}), copying cont​(Brg)\\textsc{cont}(\\textsc{Brg}) to the residual stream. Therefore,",
+            "where the last line could be viewed as a re-parametrization of Q(2)⊤​K(2)Q^{(2)\\top}K^{(2)}, with β∝‖Q(2)⊤​K(2)‖2\\beta\\propto\\|Q^{(2)\\top}K^{(2)}\\|_{2}. Moreover, we fix the attention logits from Qry token to all other tokens to be zero, removing mechanisms other than the sequential query. The attention weight from the Qry token to the Brg1 becomes 𝒮~​(Attn-Logit​(Qry→Brg1),2​N)\\widetilde{\\mathcal{S}}(\\texttt{Attn-Logit}(\\textsc{Qry}\\to\\textsc{Brg${}_{1}$}),2N). This gives Equation (3)."
+          ]
+        },
+        {
+          "title": "The derivation of Equation (4) and (5).",
+          "paragraphs": [
+            "As illustrated in Figure˜11, the Qry token increasingly concentrates on the Tgt-End token along the training dynamics. With the same manner of Equation (3), we set that",
+            "We focus on Attn-Logit​(Qry→Tgt−End)\\texttt{Attn-Logit}(\\textsc{Qry}\\to\\textsc{Tgt}-\\textsc{End}) and set all other Attn-Logit to be zero. The attention weight from the query to the Tgt-End becomes 𝒮~​(Attn-Logit​(Qry→Tgt−End),2​N)\\widetilde{\\mathcal{S}}(\\texttt{Attn-Logit}(\\textsc{Qry}\\to\\textsc{Tgt}-\\textsc{End}),2N). We first consider the output Logit on the query token. Through the logit lens, as illustrated in Table˜1, the value states of End tokens have large logits on itself. Therefore, we assume that ReadOut​[Val​(Tgt−End)]=ξ⋅𝒆End∈ℝV\\texttt{ReadOut}[\\textsc{Val}(\\textsc{Tgt}-\\textsc{End})]=\\xi\\cdot\\bm{e}_{\\textsc{End}}\\in\\mathbb{R}^{V}, with ξ>0\\xi>0 and 𝒆End\\bm{e}_{\\textsc{End}} being a one-hot vector in ℝV\\mathbb{R}^{V} that is non-zero on the index of End. In our simulation, we fix ξ=30\\xi=30. The loss can therefore be approximated through Equation (5)."
+          ]
+        },
+        {
+          "title": "Simulations on three-parameter model validate Hypotheses3.1and3.2.",
+          "paragraphs": [
+            "We optimize the loss function Equation˜5 by running gradient descent with learning rate 0.10.1. Figure˜12 presents the training dynamics of the 3-layer transoformer and the 3-parameter model. Since the model does not incorporate the random guessing mechanism, the loss remains unchanged during the first 10001000 steps, validating ˜3.1. Both the parameters and the loss function go through a sudden phase transition around step 10001000, suggesting that the emergence of the sequential query mechanism is the driving force behind the abrupt drop in loss. This validates ˜3.2."
+          ]
+        }
+      ]
+    },
+    "4 Implications for Large Language Models": {
+      "paragraphs": [
+        "In this section, we discuss the implications of the mechanisms discovered from three-layer transformers in large language models. We use Llama2-7B-base, a widely used pre-trained language model, for all the experiments in this section. We relegate the details of experiments on Llama3.1-8B, Qwen2.5-7B to Appendix D."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Evaluation on two-hop reasoning with distraction",
+          "paragraphs": [
+            "We evaluate the in-context two-hop reasoning performance of LLaMA2-7B when there are distractions. To this end, we design fixed templates for in-context reasoning chains that cover various topics. For example, a template related to biology: ”[A] is a species in the genus [B]. The genus [B] belongs to the family [C].” Given multiple two-hop chains, we randomly order premises of two-hop chains according to the data generation procedure illustrated in Figure˜3. We then append a query sentence, such as “Therefore, [A] is classified under the family,” after the context. Finally, we randomly sample from a set of artificial names to replace placeholders [A], [B], and so on. We perform a forward pass on the entire sequence and compute the next-token probability for the last token—in this example, “family.” Further details on the dataset are provided in AppendixB.",
+            "We set the number of two-hop chains to K=2K=2 and compute the next-token probability. We track the probability corresponding to the target End, which is the correct answer. When End consists of multiple tokens, we consider only the first token. Figure˜13 compares the probability of LLaMA2-7B predicting the correct answer with and without distracting information. The results indicate a consistent reduction in probability by half across different template topics of the two-hop reasoning."
+          ]
+        },
+        {
+          "title": "Evaluation dataset.",
+          "paragraphs": [
+            "We evaluate the in-context two-hop reasoning performance of LLaMA2-7B when there are distractions. To this end, we design fixed templates for in-context reasoning chains that cover various topics. For example, a template related to biology: ”[A] is a species in the genus [B]. The genus [B] belongs to the family [C].” Given multiple two-hop chains, we randomly order premises of two-hop chains according to the data generation procedure illustrated in Figure˜3. We then append a query sentence, such as “Therefore, [A] is classified under the family,” after the context. Finally, we randomly sample from a set of artificial names to replace placeholders [A], [B], and so on. We perform a forward pass on the entire sequence and compute the next-token probability for the last token—in this example, “family.” Further details on the dataset are provided in AppendixB."
+          ]
+        },
+        {
+          "title": "Distraction significantly reduces the two-hop reasoning accuracy of LLMs.",
+          "paragraphs": [
+            "We set the number of two-hop chains to K=2K=2 and compute the next-token probability. We track the probability corresponding to the target End, which is the correct answer. When End consists of multiple tokens, we consider only the first token. Figure˜13 compares the probability of LLaMA2-7B predicting the correct answer with and without distracting information. The results indicate a consistent reduction in probability by half across different template topics of the two-hop reasoning."
+          ]
+        },
+        {
+          "title": "4.2 Length generalization",
+          "paragraphs": [
+            "The evaluation results indicate that Llama2-7B employs a random guessing mechanism for two-hop reasoning, which is affected by distractions significantly. According to the training dynamics of three-layer transformers, Llama2-7B stays at a stage right before the abrupt phase transition. Therefore, we predict that LLMs will switch to sequential query mechanism through an abrupt phase transition when finetuned on two-hop reasoning task. Moreover, since the sequential query mechanism can generalize to arbitrary number of distractions. As a result, we have the following verifiable prediction for LLMs:",
+            "Even finetuned on two-hop reasoning with one distraction, LLMs can generalize to two-hop reasoning with multiple distractions.",
+            "We finetune Llama2-7B on 10001000 prompts, each consist of one target two-hop reasoning chain and one distraction chain. The details are relegate to Appendix B. Figure˜14 shows the model’s performance on in-context two-hop reasoning with different numbers of distracting chains in the prompt, both before and after fine-tuning.",
+            "For the original pre-trained Llama2-7B model without fine-tuning, although it can make correct predictions when there is no distracting chain, its performance drops drastically as long as there exist distracting chains. Moreover, the probability of the model predicting the target end is close to the average probability of predicting any specific distracting end, which shows that the model adopts nearly uniform random guessing. In contrast, after fine-tuning, the model robustly makes the correct prediction. The most remarkable phenomenon is that although the model is fine-tuned on data with only two two-hop reasoning chains (one target chain and one distracting chain), the model still makes correct predictions with high probability, even if the number of chains in the prompt is as large as five. Compared to the original model, it is salient that the original model performs random guessing while the fine-tuned model learns the correct mechanism to solve the in-context two-hop reasoning problem according to its ability on length generalization. This validates the conclusion in Section˜3."
+          ]
+        },
+        {
+          "title": "Experimental details.",
+          "paragraphs": [
+            "We finetune Llama2-7B on 10001000 prompts, each consist of one target two-hop reasoning chain and one distraction chain. The details are relegate to Appendix B. Figure˜14 shows the model’s performance on in-context two-hop reasoning with different numbers of distracting chains in the prompt, both before and after fine-tuning."
+          ]
+        },
+        {
+          "title": "Finetuning on prompts with one distraction generalizes to multiple distractions.",
+          "paragraphs": [
+            "For the original pre-trained Llama2-7B model without fine-tuning, although it can make correct predictions when there is no distracting chain, its performance drops drastically as long as there exist distracting chains. Moreover, the probability of the model predicting the target end is close to the average probability of predicting any specific distracting end, which shows that the model adopts nearly uniform random guessing. In contrast, after fine-tuning, the model robustly makes the correct prediction. The most remarkable phenomenon is that although the model is fine-tuned on data with only two two-hop reasoning chains (one target chain and one distracting chain), the model still makes correct predictions with high probability, even if the number of chains in the prompt is as large as five. Compared to the original model, it is salient that the original model performs random guessing while the fine-tuned model learns the correct mechanism to solve the in-context two-hop reasoning problem according to its ability on length generalization. This validates the conclusion in Section˜3."
+          ]
+        }
+      ]
+    },
+    "5 Conclusions": {
+      "paragraphs": [
+        "In this paper, we study the underlying mechanism that transformer-based LLMs use to solve in-context two-hop reasoning tasks, especially in the presence of distracting information. By carefully analyzing the training dynamics and fully reverse-engineering a three-layer transformer, we identified an interim uniform guessing mechanism during the early training stages and a sequential query mechanism after a sharp phase transition. Then, we analyzed a three-parameter dynamical system to provide further evidence and a more in-depth understanding of the phase transition in the form of the sequential query mechanism. Finally, our extensive experimental results on Llama2-7B-Base provide strong evidence that the original pre-trained model performs the uniform guessing mechanism on the two-hop reasoning task, and very few steps of fine-tuning suffice to teach the model to learn a correct mechanism."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Additional Training Details": {
+      "paragraphs": [
+        "The transformers are trained with positional embeddings, pre-layer normalization, 𝒮\\mathcal{S} activation in attn, and ReLU activation in MLP. Optimization is performed using Adam with a fixed learning rate of 0.0003, β1=0.9\\beta_{1}=0.9, β2=0.99\\beta_{2}=0.99, ϵ=10−8\\epsilon=10^{-8}, and a weight decay of 0.01. For SGD in the simulation of the 3-parameter model, we use a learning rate of 0.1. At each training step, data is resampled from the BB task with a batch size of B=512B=512 and sequence length N=23N=23. Unless stated otherwise, the model is trained for 10,00010,000 steps, with results remaining consistent across different random seeds.",
+        "When fine-tuning Llama2-7B on the two-hop reasoning task, we use Adam with a learning rate of 0.00010.0001, β1=0.9\\beta_{1}=0.9, β2=0.99\\beta_{2}=0.99, ϵ=10−8\\epsilon=10^{-8}, weight decay=0.01=0.01, and train for 1,0001,000 steps. The model is evaluated on the validation set containing 10001000 samples. We use a batch size of B=4B=4."
+      ],
+      "subsections": []
+    },
+    "Appendix B Dataset Details": {
+      "paragraphs": [
+        "We construct a diverse set of six two-hop reasoning templates that span different semantic domains. To ensure controlled experimentation, we carefully curate the vocabulary: for personal names, we select common English given names with balanced gender representation; for locations and biological taxonomies, we use synthetic names generated via prompting deepseek-R1 [Guo et al., 2025] to reduce the influence of real-world knowledge. The templates and associated vocabulary are as follows:",
+        "The attention maps at step 400 (Figure˜15) illustrate the random guessing mechanism during the slow learning phase. In layer 0, we observe uniform attention where each token attends to all previous tokens, establishing the initial information gathering phase. Moving to layer 1, the attention pattern shows child tokens attending equally to all previous parent tokens, effectively copying their information into a buffer space for subsequent processing. Finally, in layer 2, the query entity (the last token in the sequence) demonstrates uniform attention to all child tokens. This final attention pattern is crucial as it enables the model to distinguish between end and bridge tokens through the aggregation of value states, where the positive values of bridge tokens from child positions are canceled out by their negative values from parent positions. This mechanism ultimately allows the model to randomly select an end token as its prediction.",
+        "The attention maps at step 10000 (Figure˜16) demonstrate the sequential query mechanism that emerges after the phase transition. In layer 0, each child token shows attention concentrated to its parent token, implementing a copying mechanism that stores parent information. In layer 1, we observe a highly selective attention pattern where the query entity attends only to the bridge entity whose corresponding source entity matches the query entity. This targeted attention allows the model to copy the relevant bridge entity to the query entity’s buffer space. Finally, in layer 2, the query entity uses the bridge entity information collected from the previous layer to attend precisely to the corresponding end entity, which represents the correct answer. This sequential querying process, performing one hop per layer, enables the model to achieve perfect accuracy in the two-hop reasoning task.",
+        "We analyze the semantic content of value states across different layers using the logit lens technique. To quantify how well value states encode token identity, we develop a measure of self-prediction strength. Our analysis begins by generating a batch of 512 input sequences. For each token tt and layer ll, we aggregate the corresponding value states across all sequences and compute their average. This averaged representation is then passed through the final layer normalization and readout matrix to obtain logits. By applying softmax, we calculate the probability of the value state predicting its corresponding token tt. This probability serves as a measure of how strongly the value state encodes information about its token identity. We average these probabilities across all tokens and track their dynamics during training. As shown in Figure˜17(a), the value states quickly develop a strong capacity for self-prediction, indicating they quickly learn to preserve token identity information.",
+        "We further investigate the relationship between value states and embeddings to provide evidence for the buffer spaces. We compute the cosine similarity between the value states and embeddings of each token at different layers. Since the we use hidden dimension D=256D=256, the baselin similarity between two random vectors is 1/D1/\\sqrt{D}. As shown in Figure˜17(b), the similarity between value states and embeddings is lower than the baseline, indicating that the value states reside in an orthogonal space from the embeddings. This suggests that the value states serve as buffer spaces that store and process information independently from the embeddings. The buffer spaces enable the network to copy and manipulate information across different tokens.",
+        "Contrary to our observation, previous literature [Sanford et al., 2024b] studies in-context multi-hop reasoning theoretically and constructed a hypothetical mechanism, which we call the double induction head mechanism when specialized to our two-hop reasoning settings. After copying the parent node in the first layer (Figure˜6), the second layer performs another copy operation, where each end token pays attention to its corresponding Brg1 token by using the Brg2 token in its buffer space as the query, and copies the corresponding source token from the buffer space of Brg1 to its own buffer space (Figure˜18(a)). Finally, in the last layer, the query entity manages to pick the target end entity by querying its buffer space and matching the target source entity in the buffer (Figure˜18(b)). Note that when generalizing to kk-hop reasoning, the target end entity can copy the target source entity to its buffer space using O​(log⁡k)O(\\log k) layers by repeatedly applying induction heads for O​(log⁡k)O(\\log k) times, each per layer.",
+        "We present the evaluation results for more LLMs. We use Llama3.1-8B [Dubey et al., 2024], OLMo-7B [Groeneveld et al., 2024], and Qwen2.5-7B [Yang et al., 2024a] as base models and evaluate them on 10001000 synthetic two-hop reasoning samples. The results are shown in Figures 19, 20, and 21. We present the prediction probabilities for the target and distraction when there are two reasoning chains (This is different from Figure 13, where we compare between one and two reasoning chains). We observe that the prediciton probabilities of these models are similar to those of Llama2-7B when there is one distraction. However, Llama3.1-8B and Qwen2.5-7B show a higher probability for the target when there are more distractions, while OLMo-7B shows a lower probability for the target when there are more distractions. This suggests that the stronger models Llama3.1-8B and Qwen2.5-7B are close to the phase transition phase in the training dynamics.",
+        "[Figure: (a) Attention maps of layer 0, step 400]",
+        "[Figure: (a) Attention maps of layer 0, step 400]",
+        "[Figure: (b) Attention maps of layer 1, step 400]",
+        "[Figure: (c) Attention maps of layer 2, step 400]",
+        "[Figure: (a) Attention maps of layer 0, step 10000]",
+        "[Figure: (a) Attention maps of layer 0, step 10000]",
+        "[Figure: (b) Attention maps of layer 1, step 10000]",
+        "[Figure: (c) Attention maps of layer 2, step 10000]",
+        "[Figure: (a) Dynamics of token self-prediction probabilities derived from value states using the logit lens technique.]",
+        "[Figure: (a) Dynamics of token self-prediction probabilities derived from value states using the logit lens technique.]",
+        "[Figure: (b) Cosine similarity between value states and embeddings]",
+        "[Figure: (a) Double induction head mechanism in the second layer. The end entity pays attention to its corresponding Brg1entity.]",
+        "[Figure: (a) Double induction head mechanism in the second layer. The end entity pays attention to its corresponding Brg1entity.]",
+        "[Figure: (b) Double induction head mechanism in the third layer.]",
+        "[Figure: (a) Llama3.1-8B predictions in categories]",
+        "[Figure: (a) Llama3.1-8B predictions in categories]",
+        "[Figure: (b) Llama3.1-8B predictions with increasing number of distractions]",
+        "[Figure: (a) OLMo predictions in categories]",
+        "[Figure: (a) OLMo predictions in categories]",
+        "[Figure: (b) OLMo predictions with increasing number of distractions]",
+        "[Figure: (a) Qwen predictions in categories]",
+        "[Figure: (a) Qwen predictions in categories]",
+        "[Figure: (b) Qwen predictions with increasing number of distractions]"
+      ],
+      "subsections": [
+        {
+          "title": "C.1 Real attention maps",
+          "paragraphs": [
+            "The attention maps at step 400 (Figure˜15) illustrate the random guessing mechanism during the slow learning phase. In layer 0, we observe uniform attention where each token attends to all previous tokens, establishing the initial information gathering phase. Moving to layer 1, the attention pattern shows child tokens attending equally to all previous parent tokens, effectively copying their information into a buffer space for subsequent processing. Finally, in layer 2, the query entity (the last token in the sequence) demonstrates uniform attention to all child tokens. This final attention pattern is crucial as it enables the model to distinguish between end and bridge tokens through the aggregation of value states, where the positive values of bridge tokens from child positions are canceled out by their negative values from parent positions. This mechanism ultimately allows the model to randomly select an end token as its prediction.",
+            "The attention maps at step 10000 (Figure˜16) demonstrate the sequential query mechanism that emerges after the phase transition. In layer 0, each child token shows attention concentrated to its parent token, implementing a copying mechanism that stores parent information. In layer 1, we observe a highly selective attention pattern where the query entity attends only to the bridge entity whose corresponding source entity matches the query entity. This targeted attention allows the model to copy the relevant bridge entity to the query entity’s buffer space. Finally, in layer 2, the query entity uses the bridge entity information collected from the previous layer to attend precisely to the corresponding end entity, which represents the correct answer. This sequential querying process, performing one hop per layer, enables the model to achieve perfect accuracy in the two-hop reasoning task.",
+            "[Figure: (a) Attention maps of layer 0, step 400]",
+            "[Figure: (a) Attention maps of layer 0, step 400]",
+            "[Figure: (b) Attention maps of layer 1, step 400]",
+            "[Figure: (c) Attention maps of layer 2, step 400]",
+            "[Figure: (a) Attention maps of layer 0, step 10000]",
+            "[Figure: (a) Attention maps of layer 0, step 10000]",
+            "[Figure: (b) Attention maps of layer 1, step 10000]",
+            "[Figure: (c) Attention maps of layer 2, step 10000]"
+          ]
+        },
+        {
+          "title": "C.2 The evidence for the meaning of value states and buffer spaces",
+          "paragraphs": [
+            "We analyze the semantic content of value states across different layers using the logit lens technique. To quantify how well value states encode token identity, we develop a measure of self-prediction strength. Our analysis begins by generating a batch of 512 input sequences. For each token tt and layer ll, we aggregate the corresponding value states across all sequences and compute their average. This averaged representation is then passed through the final layer normalization and readout matrix to obtain logits. By applying softmax, we calculate the probability of the value state predicting its corresponding token tt. This probability serves as a measure of how strongly the value state encodes information about its token identity. We average these probabilities across all tokens and track their dynamics during training. As shown in Figure˜17(a), the value states quickly develop a strong capacity for self-prediction, indicating they quickly learn to preserve token identity information.",
+            "We further investigate the relationship between value states and embeddings to provide evidence for the buffer spaces. We compute the cosine similarity between the value states and embeddings of each token at different layers. Since the we use hidden dimension D=256D=256, the baselin similarity between two random vectors is 1/D1/\\sqrt{D}. As shown in Figure˜17(b), the similarity between value states and embeddings is lower than the baseline, indicating that the value states reside in an orthogonal space from the embeddings. This suggests that the value states serve as buffer spaces that store and process information independently from the embeddings. The buffer spaces enable the network to copy and manipulate information across different tokens.",
+            "[Figure: (a) Dynamics of token self-prediction probabilities derived from value states using the logit lens technique.]",
+            "[Figure: (a) Dynamics of token self-prediction probabilities derived from value states using the logit lens technique.]",
+            "[Figure: (b) Cosine similarity between value states and embeddings]"
+          ]
+        },
+        {
+          "title": "Value states through logit lens.",
+          "paragraphs": [
+            "We analyze the semantic content of value states across different layers using the logit lens technique. To quantify how well value states encode token identity, we develop a measure of self-prediction strength. Our analysis begins by generating a batch of 512 input sequences. For each token tt and layer ll, we aggregate the corresponding value states across all sequences and compute their average. This averaged representation is then passed through the final layer normalization and readout matrix to obtain logits. By applying softmax, we calculate the probability of the value state predicting its corresponding token tt. This probability serves as a measure of how strongly the value state encodes information about its token identity. We average these probabilities across all tokens and track their dynamics during training. As shown in Figure˜17(a), the value states quickly develop a strong capacity for self-prediction, indicating they quickly learn to preserve token identity information."
+          ]
+        },
+        {
+          "title": "Buffer spaces: value states are in the orthogonal space with respect to embeddings.",
+          "paragraphs": [
+            "We further investigate the relationship between value states and embeddings to provide evidence for the buffer spaces. We compute the cosine similarity between the value states and embeddings of each token at different layers. Since the we use hidden dimension D=256D=256, the baselin similarity between two random vectors is 1/D1/\\sqrt{D}. As shown in Figure˜17(b), the similarity between value states and embeddings is lower than the baseline, indicating that the value states reside in an orthogonal space from the embeddings. This suggests that the value states serve as buffer spaces that store and process information independently from the embeddings. The buffer spaces enable the network to copy and manipulate information across different tokens.",
+            "[Figure: (a) Dynamics of token self-prediction probabilities derived from value states using the logit lens technique.]",
+            "[Figure: (a) Dynamics of token self-prediction probabilities derived from value states using the logit lens technique.]",
+            "[Figure: (b) Cosine similarity between value states and embeddings]"
+          ]
+        },
+        {
+          "title": "C.3 The (hypothetical) double induction head mechanism.",
+          "paragraphs": [
+            "Contrary to our observation, previous literature [Sanford et al., 2024b] studies in-context multi-hop reasoning theoretically and constructed a hypothetical mechanism, which we call the double induction head mechanism when specialized to our two-hop reasoning settings. After copying the parent node in the first layer (Figure˜6), the second layer performs another copy operation, where each end token pays attention to its corresponding Brg1 token by using the Brg2 token in its buffer space as the query, and copies the corresponding source token from the buffer space of Brg1 to its own buffer space (Figure˜18(a)). Finally, in the last layer, the query entity manages to pick the target end entity by querying its buffer space and matching the target source entity in the buffer (Figure˜18(b)). Note that when generalizing to kk-hop reasoning, the target end entity can copy the target source entity to its buffer space using O​(log⁡k)O(\\log k) layers by repeatedly applying induction heads for O​(log⁡k)O(\\log k) times, each per layer.",
+            "[Figure: (a) Double induction head mechanism in the second layer. The end entity pays attention to its corresponding Brg1entity.]",
+            "[Figure: (a) Double induction head mechanism in the second layer. The end entity pays attention to its corresponding Brg1entity.]",
+            "[Figure: (b) Double induction head mechanism in the third layer.]"
+          ]
+        }
+      ]
+    },
+    "Appendix C Additional Details on Mechanisms": {
+      "paragraphs": [
+        "[Figure: (a) Attention maps of layer 0, step 400]",
+        "[Figure: (a) Attention maps of layer 0, step 400]",
+        "[Figure: (b) Attention maps of layer 1, step 400]",
+        "[Figure: (c) Attention maps of layer 2, step 400]",
+        "[Figure: (a) Attention maps of layer 0, step 10000]",
+        "[Figure: (a) Attention maps of layer 0, step 10000]",
+        "[Figure: (b) Attention maps of layer 1, step 10000]",
+        "[Figure: (c) Attention maps of layer 2, step 10000]",
+        "[Figure: (a) Dynamics of token self-prediction probabilities derived from value states using the logit lens technique.]",
+        "[Figure: (a) Dynamics of token self-prediction probabilities derived from value states using the logit lens technique.]",
+        "[Figure: (b) Cosine similarity between value states and embeddings]",
+        "[Figure: (a) Double induction head mechanism in the second layer. The end entity pays attention to its corresponding Brg1entity.]",
+        "[Figure: (a) Double induction head mechanism in the second layer. The end entity pays attention to its corresponding Brg1entity.]",
+        "[Figure: (b) Double induction head mechanism in the third layer.]",
+        "[Figure: (a) Llama3.1-8B predictions in categories]",
+        "[Figure: (a) Llama3.1-8B predictions in categories]",
+        "[Figure: (b) Llama3.1-8B predictions with increasing number of distractions]",
+        "[Figure: (a) OLMo predictions in categories]",
+        "[Figure: (a) OLMo predictions in categories]",
+        "[Figure: (b) OLMo predictions with increasing number of distractions]",
+        "[Figure: (a) Qwen predictions in categories]",
+        "[Figure: (a) Qwen predictions in categories]",
+        "[Figure: (b) Qwen predictions with increasing number of distractions]"
+      ],
+      "subsections": [
+        {
+          "title": "Real attention maps",
+          "paragraphs": [
+            "The attention maps at step 400 (Figure˜15) illustrate the random guessing mechanism during the slow learning phase. In layer 0, we observe uniform attention where each token attends to all previous tokens, establishing the initial information gathering phase. Moving to layer 1, the attention pattern shows child tokens attending equally to all previous parent tokens, effectively copying their information into a buffer space for subsequent processing. Finally, in layer 2, the query entity (the last token in the sequence) demonstrates uniform attention to all child tokens. This final attention pattern is crucial as it enables the model to distinguish between end and bridge tokens through the aggregation of value states, where the positive values of bridge tokens from child positions are canceled out by their negative values from parent positions. This mechanism ultimately allows the model to randomly select an end token as its prediction.",
+            "The attention maps at step 10000 (Figure˜16) demonstrate the sequential query mechanism that emerges after the phase transition. In layer 0, each child token shows attention concentrated to its parent token, implementing a copying mechanism that stores parent information. In layer 1, we observe a highly selective attention pattern where the query entity attends only to the bridge entity whose corresponding source entity matches the query entity. This targeted attention allows the model to copy the relevant bridge entity to the query entity’s buffer space. Finally, in layer 2, the query entity uses the bridge entity information collected from the previous layer to attend precisely to the corresponding end entity, which represents the correct answer. This sequential querying process, performing one hop per layer, enables the model to achieve perfect accuracy in the two-hop reasoning task.",
+            "[Figure: (a) Attention maps of layer 0, step 400]",
+            "[Figure: (a) Attention maps of layer 0, step 400]",
+            "[Figure: (b) Attention maps of layer 1, step 400]",
+            "[Figure: (c) Attention maps of layer 2, step 400]",
+            "[Figure: (a) Attention maps of layer 0, step 10000]",
+            "[Figure: (a) Attention maps of layer 0, step 10000]",
+            "[Figure: (b) Attention maps of layer 1, step 10000]",
+            "[Figure: (c) Attention maps of layer 2, step 10000]"
+          ]
+        },
+        {
+          "title": "The evidence for the meaning of value states and buffer spaces",
+          "paragraphs": [
+            "We analyze the semantic content of value states across different layers using the logit lens technique. To quantify how well value states encode token identity, we develop a measure of self-prediction strength. Our analysis begins by generating a batch of 512 input sequences. For each token tt and layer ll, we aggregate the corresponding value states across all sequences and compute their average. This averaged representation is then passed through the final layer normalization and readout matrix to obtain logits. By applying softmax, we calculate the probability of the value state predicting its corresponding token tt. This probability serves as a measure of how strongly the value state encodes information about its token identity. We average these probabilities across all tokens and track their dynamics during training. As shown in Figure˜17(a), the value states quickly develop a strong capacity for self-prediction, indicating they quickly learn to preserve token identity information.",
+            "We further investigate the relationship between value states and embeddings to provide evidence for the buffer spaces. We compute the cosine similarity between the value states and embeddings of each token at different layers. Since the we use hidden dimension D=256D=256, the baselin similarity between two random vectors is 1/D1/\\sqrt{D}. As shown in Figure˜17(b), the similarity between value states and embeddings is lower than the baseline, indicating that the value states reside in an orthogonal space from the embeddings. This suggests that the value states serve as buffer spaces that store and process information independently from the embeddings. The buffer spaces enable the network to copy and manipulate information across different tokens.",
+            "[Figure: (a) Dynamics of token self-prediction probabilities derived from value states using the logit lens technique.]",
+            "[Figure: (a) Dynamics of token self-prediction probabilities derived from value states using the logit lens technique.]",
+            "[Figure: (b) Cosine similarity between value states and embeddings]"
+          ]
+        },
+        {
+          "title": "Value states through logit lens.",
+          "paragraphs": [
+            "We analyze the semantic content of value states across different layers using the logit lens technique. To quantify how well value states encode token identity, we develop a measure of self-prediction strength. Our analysis begins by generating a batch of 512 input sequences. For each token tt and layer ll, we aggregate the corresponding value states across all sequences and compute their average. This averaged representation is then passed through the final layer normalization and readout matrix to obtain logits. By applying softmax, we calculate the probability of the value state predicting its corresponding token tt. This probability serves as a measure of how strongly the value state encodes information about its token identity. We average these probabilities across all tokens and track their dynamics during training. As shown in Figure˜17(a), the value states quickly develop a strong capacity for self-prediction, indicating they quickly learn to preserve token identity information."
+          ]
+        },
+        {
+          "title": "Buffer spaces: value states are in the orthogonal space with respect to embeddings.",
+          "paragraphs": [
+            "We further investigate the relationship between value states and embeddings to provide evidence for the buffer spaces. We compute the cosine similarity between the value states and embeddings of each token at different layers. Since the we use hidden dimension D=256D=256, the baselin similarity between two random vectors is 1/D1/\\sqrt{D}. As shown in Figure˜17(b), the similarity between value states and embeddings is lower than the baseline, indicating that the value states reside in an orthogonal space from the embeddings. This suggests that the value states serve as buffer spaces that store and process information independently from the embeddings. The buffer spaces enable the network to copy and manipulate information across different tokens.",
+            "[Figure: (a) Dynamics of token self-prediction probabilities derived from value states using the logit lens technique.]",
+            "[Figure: (a) Dynamics of token self-prediction probabilities derived from value states using the logit lens technique.]",
+            "[Figure: (b) Cosine similarity between value states and embeddings]"
+          ]
+        },
+        {
+          "title": "The (hypothetical) double induction head mechanism.",
+          "paragraphs": [
+            "Contrary to our observation, previous literature [Sanford et al., 2024b] studies in-context multi-hop reasoning theoretically and constructed a hypothetical mechanism, which we call the double induction head mechanism when specialized to our two-hop reasoning settings. After copying the parent node in the first layer (Figure˜6), the second layer performs another copy operation, where each end token pays attention to its corresponding Brg1 token by using the Brg2 token in its buffer space as the query, and copies the corresponding source token from the buffer space of Brg1 to its own buffer space (Figure˜18(a)). Finally, in the last layer, the query entity manages to pick the target end entity by querying its buffer space and matching the target source entity in the buffer (Figure˜18(b)). Note that when generalizing to kk-hop reasoning, the target end entity can copy the target source entity to its buffer space using O​(log⁡k)O(\\log k) layers by repeatedly applying induction heads for O​(log⁡k)O(\\log k) times, each per layer.",
+            "[Figure: (a) Double induction head mechanism in the second layer. The end entity pays attention to its corresponding Brg1entity.]",
+            "[Figure: (a) Double induction head mechanism in the second layer. The end entity pays attention to its corresponding Brg1entity.]",
+            "[Figure: (b) Double induction head mechanism in the third layer.]"
+          ]
+        }
+      ]
+    },
+    "Appendix D Experiment Results on More Models": {
+      "paragraphs": [
+        "We present the evaluation results for more LLMs. We use Llama3.1-8B [Dubey et al., 2024], OLMo-7B [Groeneveld et al., 2024], and Qwen2.5-7B [Yang et al., 2024a] as base models and evaluate them on 10001000 synthetic two-hop reasoning samples. The results are shown in Figures 19, 20, and 21. We present the prediction probabilities for the target and distraction when there are two reasoning chains (This is different from Figure 13, where we compare between one and two reasoning chains). We observe that the prediciton probabilities of these models are similar to those of Llama2-7B when there is one distraction. However, Llama3.1-8B and Qwen2.5-7B show a higher probability for the target when there are more distractions, while OLMo-7B shows a lower probability for the target when there are more distractions. This suggests that the stronger models Llama3.1-8B and Qwen2.5-7B are close to the phase transition phase in the training dynamics.",
+        "[Figure: (a) Llama3.1-8B predictions in categories]",
+        "[Figure: (a) Llama3.1-8B predictions in categories]",
+        "[Figure: (b) Llama3.1-8B predictions with increasing number of distractions]",
+        "[Figure: (a) OLMo predictions in categories]",
+        "[Figure: (a) OLMo predictions in categories]",
+        "[Figure: (b) OLMo predictions with increasing number of distractions]",
+        "[Figure: (a) Qwen predictions in categories]",
+        "[Figure: (a) Qwen predictions in categories]",
+        "[Figure: (b) Qwen predictions with increasing number of distractions]"
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "Ahn et al. [2023] Kwangjun Ahn, Xiang Cheng, Minhak Song, Chulhee Yun, Ali Jadbabaie, and Suvrit Sra. Linear attention is (maybe) all you need (to understand transformer optimization). arXiv preprint arXiv:2310.01082, 2023.",
+    "Ahn et al. [2024] Kwangjun Ahn, Xiang Cheng, Hadi Daneshmand, and Suvrit Sra. Transformers learn to implement preconditioned gradient descent for in-context learning. Advances in Neural Information Processing Systems, 36, 2024.",
+    "Allen-Zhu and Li [2023] Zeyuan Allen-Zhu and Yuanzhi Li. Physics of language models: Part 1, context-free grammar. arXiv preprint arXiv:2305.13673, 2023.",
+    "Belrose et al. [2023] Nora Belrose, Zach Furman, Logan Smith, Danny Halawi, Igor Ostrovsky, Lev McKinney, Stella Biderman, and Jacob Steinhardt. Eliciting latent predictions from transformers with the tuned lens. arXiv preprint arXiv:2303.08112, 2023.",
+    "Bietti et al. [2023] Alberto Bietti, Vivien Cabannes, Diane Bouchacourt, Hervé Jégou, and Léon Bottou. Birth of a transformer: A memory viewpoint, 2023. URL https://arxiv.org/abs/2306.00802.",
+    "Bietti et al. [2024] Alberto Bietti, Vivien Cabannes, Diane Bouchacourt, Herve Jegou, and Leon Bottou. Birth of a transformer: A memory viewpoint. Advances in Neural Information Processing Systems, 36, 2024.",
+    "Biran et al. [2024] Eden Biran, Daniela Gottesman, Sohee Yang, Mor Geva, and Amir Globerson. Hopping too late: Exploring the limitations of large language models on multi-hop queries. arXiv preprint arXiv:2406.12775, 2024.",
+    "Brown et al. [2020] Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, et al. Language models are few-shot learners. Advances in neural information processing systems, 33:1877–1901, 2020.",
+    "Charton [2022] François Charton. What is my math transformer doing? Three results on interpretability and generalization. arXiv preprint arXiv:2211.00170, 2022.",
+    "Chen et al. [2024] Siyu Chen, Heejune Sheen, Tianhao Wang, and Zhuoran Yang. Unveiling induction heads: Provable training dynamics and feature learning in transformers. arXiv preprint arXiv:2409.10559, 2024.",
+    "Cobbe et al. [2021] Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark Chen, Heewoo Jun, Lukasz Kaiser, Matthias Plappert, Jerry Tworek, Jacob Hilton, Reiichiro Nakano, et al. Training verifiers to solve math word problems. arXiv preprint arXiv:2110.14168, 2021.",
+    "Conmy et al. [2023] Arthur Conmy, Augustine Mavor-Parker, Aengus Lynch, Stefan Heimersheim, and Adrià Garriga-Alonso. Towards automated circuit discovery for mechanistic interpretability. Advances in Neural Information Processing Systems, 36:16318–16352, 2023.",
+    "Deora et al. [2023] Puneesh Deora, Rouzbeh Ghaderi, Hossein Taheri, and Christos Thrampoulidis. On the optimization and generalization of multi-head attention. arXiv preprint arXiv:2310.12680, 2023.",
+    "Dubey et al. [2024] Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Amy Yang, Angela Fan, et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783, 2024.",
+    "Elhage et al. [2021] Nelson Elhage, Neel Nanda, Catherine Olsson, Tom Henighan, Nicholas Joseph, Ben Mann, Amanda Askell, Yuntao Bai, Anna Chen, Tom Conerly, Nova DasSarma, Dawn Drain, Deep Ganguli, Zac Hatfield-Dodds, Danny Hernandez, Andy Jones, Jackson Kernion, Liane Lovitt, Kamal Ndousse, Dario Amodei, Tom Brown, Jack Clark, Jared Kaplan, Sam McCandlish, and Chris Olah. A mathematical framework for transformer circuits, 2021. URL https://transformer-circuits.pub/2021/framework/index.html.",
+    "Feng and Steinhardt [2023] Jiahai Feng and Jacob Steinhardt. How do language models bind entities in context? arXiv preprint arXiv:2310.17191, 2023.",
+    "Feng et al. [2024] Jiahai Feng, Stuart Russell, and Jacob Steinhardt. Extractive structures learned in pretraining enable generalization on finetuned facts, 2024. URL https://arxiv.org/abs/2412.04614.",
+    "Geva et al. [2023] Mor Geva, Jasmijn Bastings, Katja Filippova, and Amir Globerson. Dissecting recall of factual associations in auto-regressive language models. arXiv preprint arXiv:2304.14767, 2023.",
+    "Groeneveld et al. [2024] Dirk Groeneveld, Iz Beltagy, Pete Walsh, Akshita Bhagia, Rodney Kinney, Oyvind Tafjord, Ananya Harsh Jha, Hamish Ivison, Ian Magnusson, Yizhong Wang, Shane Arora, David Atkinson, Russell Authur, Khyathi Chandu, Arman Cohan, Jennifer Dumas, Yanai Elazar, Yuling Gu, Jack Hessel, Tushar Khot, William Merrill, Jacob Morrison, Niklas Muennighoff, Aakanksha Naik, Crystal Nam, Matthew E. Peters, Valentina Pyatkin, Abhilasha Ravichander, Dustin Schwenk, Saurabh Shah, Will Smith, Nishant Subramani, Mitchell Wortsman, Pradeep Dasigi, Nathan Lambert, Kyle Richardson, Jesse Dodge, Kyle Lo, Luca Soldaini, Noah A. Smith, and Hannaneh Hajishirzi. Olmo: Accelerating the science of language models. Preprint, 2024.",
+    "Guo et al. [2025] Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Ruoyu Zhang, Runxin Xu, Qihao Zhu, Shirong Ma, Peiyi Wang, Xiao Bi, et al. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning. arXiv preprint arXiv:2501.12948, 2025.",
+    "Guo et al. [2023] Tianyu Guo, Wei Hu, Song Mei, Huan Wang, Caiming Xiong, Silvio Savarese, and Yu Bai. How do transformers learn in-context beyond simple functions? a case study on learning with representations. arXiv preprint arXiv:2310.10616, 2023.",
+    "Guo et al. [2024] Tianyu Guo, Druv Pai, Yu Bai, Jiantao Jiao, Michael I Jordan, and Song Mei. Active-dormant attention heads: Mechanistically demystifying extreme-token phenomena in llms. arXiv preprint arXiv:2410.13835, 2024.",
+    "Hase et al. [2024] Peter Hase, Mohit Bansal, Been Kim, and Asma Ghandeharioun. Does localization inform editing? surprising differences in causality-based localization vs. knowledge editing in language models. Advances in Neural Information Processing Systems, 36, 2024.",
+    "Huang et al. [2023] Yu Huang, Yuan Cheng, and Yingbin Liang. In-context convergence of transformers. arXiv preprint arXiv:2310.05249, 2023.",
+    "Kim et al. [2024] Juno Kim, Tai Nakamaki, and Taiji Suzuki. Transformers are minimax optimal nonparametric in-context learners. arXiv preprint arXiv:2408.12186, 2024.",
+    "Kojima et al. [2022] Takeshi Kojima, Shixiang Shane Gu, Machel Reid, Yutaka Matsuo, and Yusuke Iwasawa. Large language models are zero-shot reasoners. Advances in neural information processing systems, 35:22199–22213, 2022.",
+    "Lin et al. [2023] Licong Lin, Yu Bai, and Song Mei. Transformers as decision makers: Provable in-context reinforcement learning via supervised pretraining. arXiv preprint arXiv:2310.08566, 2023.",
+    "Liu et al. [2022] Ziming Liu, Ouail Kitouni, Niklas S Nolte, Eric Michaud, Max Tegmark, and Mike Williams. Towards understanding grokking: An effective theory of representation learning. Advances in Neural Information Processing Systems, 35:34651–34663, 2022.",
+    "Meng et al. [2022] Kevin Meng, David Bau, Alex Andonian, and Yonatan Belinkov. Locating and editing factual associations in gpt. Advances in Neural Information Processing Systems, 35:17359–17372, 2022.",
+    "Nanda et al. [2023] Neel Nanda, Lawrence Chan, Tom Lieberum, Jess Smith, and Jacob Steinhardt. Progress measures for grokking via mechanistic interpretability. arXiv preprint arXiv:2301.05217, 2023.",
+    "Nichani et al. [2024] Eshaan Nichani, Alex Damian, and Jason D Lee. How transformers learn causal structure with gradient descent. arXiv preprint arXiv:2402.14735, 2024.",
+    "Nye et al. [2021] Maxwell Nye, Anders Johan Andreassen, Guy Gur-Ari, Henryk Michalewski, Jacob Austin, David Bieber, David Dohan, Aitor Lewkowycz, Maarten Bosma, David Luan, et al. Show your work: Scratchpads for intermediate computation with language models. arXiv preprint arXiv:2112.00114, 2021.",
+    "Olsson et al. [2022] Catherine Olsson, Nelson Elhage, Neel Nanda, Nicholas Joseph, Nova DasSarma, Tom Henighan, Ben Mann, Amanda Askell, Yuntao Bai, Anna Chen, et al. In-context learning and induction heads. arXiv preprint arXiv:2209.11895, 2022.",
+    "Reddy [2023] Gautam Reddy. The mechanistic basis of data dependence and abrupt learning in an in-context classification task. In The Twelfth International Conference on Learning Representations, 2023.",
+    "Reynolds and McDonell [2021] Laria Reynolds and Kyle McDonell. Prompt programming for large language models: Beyond the few-shot paradigm. In Extended Abstracts of the 2021 CHI Conference on Human Factors in Computing Systems, pages 1–7, 2021.",
+    "Sanford et al. [2024a] Clayton Sanford, Daniel Hsu, and Matus Telgarsky. One-layer transformers fail to solve the induction heads task. arXiv preprint arXiv:2408.14332, 2024a.",
+    "Sanford et al. [2024b] Clayton Sanford, Daniel Hsu, and Matus Telgarsky. Transformers, parallel computation, and logarithmic depth, 2024b. URL https://arxiv.org/abs/2402.09268.",
+    "Shi et al. [2024] Claudia Shi, Nicolas Beltran-Velez, Achille Nazaret, Carolina Zheng, Adrià Garriga-Alonso, Andrew Jesson, Maggie Makar, and David M Blei. Hypothesis testing the circuit hypothesis in llms. arXiv preprint arXiv:2410.13032, 2024.",
+    "[39] Freda Shi, Xinyun Chen, Kanishka Misra, Nathan Scales, David Dohan, Ed Chi, Nathanael Schärli, and Denny Zhou. Large Language Models Can Be Easily Distracted by Irrelevant Context. URL https://arxiv.org/pdf/2302.00093.",
+    "Tian et al. [2023a] Yuandong Tian, Yiping Wang, Beidi Chen, and Simon S Du. Scan and Snap: Understanding training dynamics and token composition in 1-layer transformer. Advances in Neural Information Processing Systems, 36:71911–71947, 2023a.",
+    "Tian et al. [2023b] Yuandong Tian, Yiping Wang, Zhenyu Zhang, Beidi Chen, and Simon Du. Joma: Demystifying multilayer transformers via joint dynamics of mlp and attention. arXiv preprint arXiv:2310.00535, 2023b.",
+    "Todd et al. [2023] Eric Todd, Millicent L Li, Arnab Sen Sharma, Aaron Mueller, Byron C Wallace, and David Bau. Function vectors in large language models. arXiv preprint arXiv:2310.15213, 2023.",
+    "Touvron et al. [2023] Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, et al. Llama 2: Open foundation and fine-tuned chat models. arXiv preprint arXiv:2307.09288, 2023.",
+    "Wang et al. [2024a] Boshi Wang, Xiang Yue, Yu Su, and Huan Sun. Grokked transformers are implicit reasoners: A mechanistic journey to the edge of generalization. arXiv preprint arXiv:2405.15071, 2024a.",
+    "Wang et al. [2022a] Kevin Wang, Alexandre Variengien, Arthur Conmy, Buck Shlegeris, and Jacob Steinhardt. Interpretability in the wild: a circuit for indirect object identification in GPT-2 small. arXiv preprint arXiv:2211.00593, 2022a.",
+    "Wang et al. [2024b] Mingze Wang, Ruoxi Yu, Weinan E, and Lei Wu. How transformers implement induction heads: Approximation and optimization analysis, 2024b. URL https://arxiv.org/abs/2410.11474.",
+    "Wang et al. [2022b] Xuezhi Wang, Jason Wei, Dale Schuurmans, Quoc Le, Ed Chi, Sharan Narang, Aakanksha Chowdhery, and Denny Zhou. Self-consistency improves chain of thought reasoning in language models. arXiv preprint arXiv:2203.11171, 2022b.",
+    "Wei et al. [2022] Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Fei Xia, Ed Chi, Quoc V Le, Denny Zhou, et al. Chain-of-thought prompting elicits reasoning in large language models. Advances in neural information processing systems, 35:24824–24837, 2022.",
+    "Wu et al. [2023] Jingfeng Wu, Difan Zou, Zixiang Chen, Vladimir Braverman, Quanquan Gu, and Peter L Bartlett. How many pretraining tasks are needed for in-context learning of linear regression? arXiv preprint arXiv:2310.08391, 2023.",
+    "Yang et al. [2024a] An Yang, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chengyuan Li, Dayiheng Liu, Fei Huang, Haoran Wei, et al. Qwen2. 5 technical report. arXiv preprint arXiv:2412.15115, 2024a.",
+    "Yang et al. [2024b] Sohee Yang, Elena Gribovskaya, Nora Kassner, Mor Geva, and Sebastian Riedel. Do large language models latently perform multi-hop reasoning?, 2024b. URL https://arxiv.org/abs/2402.16837.",
+    "Zelikman et al. [2022] Eric Zelikman, Yuhuai Wu, Jesse Mu, and Noah Goodman. Star: Bootstrapping reasoning with reasoning. Advances in Neural Information Processing Systems, 35:15476–15488, 2022.",
+    "Zhang et al. [2024a] Ruiqi Zhang, Spencer Frei, and Peter L Bartlett. Trained transformers learn linear models in-context. Journal of Machine Learning Research, 25(49):1–55, 2024a.",
+    "Zhang et al. [2024b] Ruiqi Zhang, Jingfeng Wu, and Peter L Bartlett. In-context learning of a linear transformer block: Benefits of the MLP component and one-step GD initialization. arXiv preprint arXiv:2402.14951, 2024b.",
+    "Zhang et al. [2022] Yi Zhang, Arturs Backurs, Sébastien Bubeck, Ronen Eldan, Suriya Gunasekar, and Tal Wagner. Unveiling transformers with LEGO: A synthetic reasoning task. arXiv preprint arXiv:2206.04301, 2022.",
+    "Zhong et al. [2023] Zexuan Zhong, Zhengxuan Wu, Christopher D Manning, Christopher Potts, and Danqi Chen. Mquake: Assessing knowledge editing in language models via multi-hop questions. arXiv preprint arXiv:2305.14795, 2023.",
+    "Zhu et al. [2024] Hanlin Zhu, Baihe Huang, Shaolun Zhang, Michael Jordan, Jiantao Jiao, Yuandong Tian, and Stuart Russell. Towards a theoretical understanding of the’reversal curse’via training dynamics. arXiv preprint arXiv:2405.04669, 2024.",
+    "Zhu and Li [2023] Zeyuan Allen Zhu and Yuanzhi Li. Physics of language models: Part 3.1, knowledge storage and extraction. arXiv preprint arXiv:2309.14316, 2023."
+  ]
+}

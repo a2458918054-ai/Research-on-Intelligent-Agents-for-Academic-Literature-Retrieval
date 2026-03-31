@@ -1,0 +1,572 @@
+{
+  "title": "CopySpec: Accelerating LLMs with Speculative Copy-and-PasteWithout Compromising Quality",
+  "authors": "Razvan-Gabriel DumitruMinglai YangVikas YadavMihai Surdeanu",
+  "abstract": "We introduce CopySpec, an innovative technique designed to tackle the inefficiencies LLMs face when generating responses that closely resemble previous outputs. CopySpec identifies repeated sequences in the model’s chat history and speculates that the same tokens will follow, enabling seamless copying without compromising output quality or requiring additional GPU memory. To evaluate the effectiveness of our approach, we conducted experiments using five LLMs and five datasets: MT-Bench, CNN/DM, GSM-8K, HumanEval, and our newly created dataset, MT-Redundant. MT-Redundant, introduced in this paper, transforms the second turn of MT-Bench into a request for variations of the first turn’s answer, simulating real-world scenarios where users request modifications to prior responses. Our results demonstrate significant speed-ups: up to 2.35× on CNN/DM, 3.08× on the second turn of select MT-Redundant categories, and 2.66× on the third turn of GSM-8K’s self-correction tasks. Moreover, we show that CopySpec integrates seamlessly with speculative decoding, yielding an average 49% additional speed-up over speculative decoding for the second turn of MT-Redundant across all eight categories. While LLMs, even with speculative decoding, suffer from slower inference as context sizes grow, CopySpec leverages the expanded context to accelerate inference, making it faster as the context size increases. Our code and dataset are publicly available at https://github.com/RazvanDu/CopySpec.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Large Language Models (LLMs) have revolutionized natural language processing (NLP), enabling great performance across a range of applications, including code generation, machine translation, and question answering. However, the computational demands of LLMs, particularly during inference, pose significant challenges for real-time applications and scalability in resource-constrained environments. Sequential token generation, a core bottleneck in standard decoding, limits throughput and increases latency. Speculative Decoding (Leviathan et al., 2023; Chen & Xu, 2023) has emerged as a promising approach to mitigate this issue by employing a smaller draft model to generate multiple token sequences, which are then verified by the larger target model. Despite its potential, existing speculative decoding methods often fail to fully exploit the inherent redundancies in LLM-generated outputs and require extra GPU memory or modifications to the original LLM, leaving considerable room for improvement.",
+        "In this work, we present CopySpec, a novel speculative decoding framework designed to address these limitations. CopySpec incorporates a learned copying mechanism into the draft process, enabling the model to detect and exploit predictable patterns in token sequences (see Figure 2 for a summary of the approach). By inferring subsequent tokens directly from prior context, CopySpec reduces the computational burden associated with repetitive or predictable outputs. Additionally, CopySpec enhances the sampling-verification process with minimal computational overhead.",
+        "Our experiments on various benchmarks—including HumanEval (Chen et al., 2021), CNN/DM (See et al., 2017), GSM-8K (Cobbe et al., 2021), and MT Bench (Zheng et al., 2023)—demonstrate that CopySpec delivers up to an additional 49% speed-up over speculative decoding, without compromising output quality. This broad performance boost highlights its strong potential for real-world deployments. By combining copying mechanisms with streamlined verification, CopySpec provides a robust and efficient solution for LLM inference, effectively addressing resource constraints in a variety of tasks.",
+        "Key Contributions: 1) CopySpec introduces a novel framework that dynamically identifies and copies repeated token patterns, seamlessly integrating with speculative decoding to improve inference efficiency. By leveraging a rolling hash mechanism, it efficiently speculates on larger token blocks with minimal computational overhead.",
+        "2) Our method achieves significant speedups with minimal overhead, requiring no changes to the LLM architecture or additional GPU memory, making it lightweight and practical for real-world use.",
+        "3) Evaluations across five datasets, including MT-Bench, CNN/DM, GSM-8K, HumanEval, and MT-Redundant, demonstrate CopySpec’s ability to deliver up to a 3.08× speedup in specific MT-Redundant categories and a 49% speed-up on top of speculative decoding, without compromising output quality."
+      ],
+      "subsections": []
+    },
+    "2 Related Work": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "2.1 Speculative Decoding",
+          "paragraphs": [
+            "Speculative decoding is an effective approach for accelerating inference in LLMs by parallelizing token generation and verification. Leviathan et al. (2023) introduced the foundational framework, employing a small draft model to propose multiple tokens that a larger model verifies, significantly reducing inference latency. Medusa (Cai et al., 2024) expanded this idea by leveraging multi-head decoding to enable simultaneous token generation and verification, improving throughput.",
+            "Dynamic verification pipelines balance speed and accuracy by adjusting verification depth based on output quality (Liu et al., 2024). Token tree verification accelerates serving (Miao et al., 2023), while pipelined exact decoding handles compute-latency trade-offs (Yang et al., 2023). Knowledge distillation enhances draft–target model interaction (Zhou et al., 2023), and retrieval-based token validation improves efficiency (He et al., 2023). Speculative decoding has been further optimized in recent works. SpecHub (Sun et al., 2024) uses optimal transport to improve draft token acceptance rates, and SPEED (He & Wang, 2023) leverages early-layer hidden states for parallel token execution.",
+            "While speculative decoding enables efficient token generation, our work addresses a distinct challenge: leveraging predictable token patterns without introducing significant additional computation. CopySpec acts as an intelligent copying mechanism within the speculative decoding framework, reducing redundancy and improving efficiency across various tasks. By identifying and reusing repeated patterns in the context, CopySpec not only accelerates inference but also complements speculative decoding by extending its applicability to scenarios with high redundancy, such as multi-turn interactions and tasks with self-correction. This integration demonstrates the potential of combining these techniques to achieve greater efficiency in large-scale language models."
+          ]
+        },
+        {
+          "title": "2.2 Copying Mechanisms in Language Models",
+          "paragraphs": [
+            "Copying mechanisms are widely adopted in NLP to handle tasks that require replicating predictable patterns or segments. Gu et al. (2016) introduced CopyNet, a method that enables RNN sequence-to-sequence models to predict words based on a mixed probabilistic model of two modes, where one selects words from the source sequence. Similarly, in summarization tasks, Pointer Networks (Vinyals et al., 2015) and Pointer-Generator Networks (See et al., 2017) demonstrated the effectiveness of combining copying and generation to improve output fidelity and handle out-of-vocabulary tokens.",
+            "More recently, McCoy et al. (2023) analyzed the extent to which transformers copy from their training data, providing insights into copying behaviors in modern LLMs. Jelassi et al. (2024) showed that transformers outperform state space models in copying repetitive patterns.",
+            "Lastly, in a different domain, Andronov et al. (2024) introduced a copying mechanism into a transformer-based encoder-decoder that models chemical reactions by observing that portions of the input chemicals often remain unchanged in the output.",
+            "While previous works have emphasized the importance of copying mechanisms in various applications, our work is the first to explore this concept in the specific context of LLM inference. CopySpec integrates a copying mechanism into speculative decoding, effectively reducing redundancy and enhancing efficiency across a wide range of tasks. By leveraging repeated patterns in the model’s context, CopySpec introduces a novel approach to accelerate inference while maintaining high performance."
+          ]
+        },
+        {
+          "title": "2.3 Fill-in-the-Middle (FIM) Techniques",
+          "paragraphs": [
+            "Fill-in-the-Middle (FIM) enables language models to generate text segments within a given context, enhancing flexibility in tasks such as text and code infilling. Bavarian et al. (2022) introduced a data transformation approach for autoregressive models to learn infilling without sacrificing left-to-right generative performance, while Shen et al. (2023) proposed FiLM, enabling flexible generation by masking arbitrary positions.",
+            "In code generation, FIM techniques are crucial for editing and repair tasks. Models like Code Llama (Roziere et al., 2023) and InCoder (Fried et al., 2023), a utilize bidirectional context for structured prompts, achieving state-of-the-art results on benchmarks such as HumanEval. Frameworks such as Self-Infilling (Zheng et al., 2024) and benchmarks like SAFIM further enhance these methods with backward generation and syntax-aware metrics (Wang et al., 2023; Gong et al., 2024). Recent advancements, models like Codestral and CodeGemma, refine FIM techniques to improve alignment (Mistral AI, 2024; Team et al., 2024).",
+            "However, it is important to emphasize the distinct advantages of our method compared to the FIM approach. Unlike FIM, which relies on labeled tokens such as <prefix> and <suffix> to guide the model in fixing a specific section of code bidirectionally. Our method operates label-free, enabling a more flexible and generalizable approach. Additionally, while FIM is constrained to modifying a single code segment (typically the middle), CopySpec extends this capability by allowing modifications in multiple regions, such as quite a few distinct places within the input. Furthermore, we maintain the architectural simplicity of a left-to-right LLM, ensuring that our method remains compatible with existing LLM frameworks while offering significant improvements in efficiency and versatility."
+          ]
+        }
+      ]
+    },
+    "3 Method": {
+      "paragraphs": [
+        "Our method operates on the assumption that if the last γ\\gamma tokens generated by an LLM appear in the context, the tokens that followed them in the input context are likely to follow again in the output. Figures 1 and 2 illustrate this concept, By accurately identifying the start of such a segment, we can generate all tokens within the block in a single pass through the LLM, bypassing the need for a draft model to produce them incrementally. In the following subsections, we detail the implementation of this approach and its integration into a Speculative Decoding framework, demonstrating how it achieves substantial speed-ups."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Identifying the Tokens to Copy",
+          "paragraphs": [
+            "To efficiently detect when the model begins generating a block that has already been produced earlier, we maintain a hash map containing all subsequences of γ\\gamma tokens from the context. During the generation process, we search this hash map for matches to the last γ\\gamma tokens generated. Adding a new tuple of tokens to the hash map and searching for a match after each generated token has a time complexity of O​(γ)O(\\gamma). Since γ\\gamma is typically set to a small value (e.g., 33 or 55), the computational overhead for processing new tokens and finding matches is minimal and independent of the context size. This stands in contrast to alternative approaches that require searching the entire context for the last substring, which can become computationally expensive as the context grows.",
+            "Our technique efficiently leverages larger contexts, allowing inference to become faster as the context size increases. By keeping γ\\gamma fixed, we ensure a balance between efficiency and precision. Additionally, we explored methods to utilize partial outputs without revealing the complete results and investigated how the semantic relationship between the preceding γ\\gamma tokens and the subsequent token can guide the optimal choice of γ\\gamma. Further details are provided in Appendix A."
+          ]
+        },
+        {
+          "title": "3.2 Speculating on the Matched Tokens",
+          "paragraphs": [
+            "After identifying a match of γ\\gamma tokens in the context, we extract the subsequent tokens from the context, as shown in Figure 2. These extracted tokens, which we call Ss​p​e​c​u​l​a​t​eS_{speculate}, essentially simulate the behavior of a draft model where the probability for each token in Ss​p​e​c​u​l​a​t​eS_{speculate} is treated as 100%.111In cases where multiple matches exist for the last γ\\gamma tokens, we simplify the process by selecting the first match, though we acknowledge that alternative strategies could improve efficiency.",
+            "Ss​p​e​c​u​l​a​t​eS_{speculate} is then verified directly by the LLM. Each verification yields τ\\tau tokens that align with the LLM’s ongoing generation, along with one additional guaranteed token. This approach mirrors vanilla speculative decoding (Leviathan et al., 2023), where speculative tokens are appended to the context, and the longest prefix matching the LLM’s output is accepted. In Figure 2, Ss​p​e​c​u​l​a​t​eS_{speculate} is highlighted in blue. The output shows the τ\\tau accepted tokens in green, the extra guaranteed token in gold, and any rejected tokens in red. This process effectively treats the copied tokens as a “perfect prediction,” ensuring efficient token generation when patterns are detected.",
+            "After each newly generated token or copying attempt, we re-evaluate the last γ\\gamma tokens in the context to identify a new match, allowing the model to utilize longer copyable blocks whenever possible. This eliminates the need for manual token generation between copying steps.",
+            "If any tokens in Ss​p​e​c​u​l​a​t​eS_{speculate} fail the verification step, the model generates a new token that diverges from the previously matched tokens. This ensures that the next copying attempt yields a different match, preventing the model from getting stuck in repetitive loops. Furthermore, we always use a temperature of 0 to maintain the original output distribution of the model and ensure that our technique does not introduce any stochasticity into the generation process."
+          ]
+        },
+        {
+          "title": "3.3 Merging with Vanilla Speculative Decoding",
+          "paragraphs": [
+            "To further enhance our technique, we have integrated it within a vanilla Speculative Decoding framework. At each step of the generation process, we attempt to find matches in the context. If a match for the last γ\\gamma tokens is found, we use Ss​p​e​c​u​l​a​t​eS_{speculate} as draft tokens, effectively simulating a draft model with perfect confidence in those tokens. If no match is identified, we rely on a smaller draft model to generate τ2\\tau_{2} draft tokens. This dual approach allows us to dynamically choose between leveraging repetitive patterns through CopySpec and utilizing speculative decoding for efficient token generation in contexts with little or no redundancy.",
+            "This integration provides the best of both worlds: Speculative Decoding accelerates inference when the context size is small or lacks redundancy, while CopySpec builds on this speed-up in subsequent steps by taking advantage of repetitive patterns as the context size increases. As a result, the combined approach significantly enhances model efficiency across diverse scenarios.",
+            "It is also worth noting that when used as a stand-alone method, CopySpec does not require a draft model. This eliminates the need for additional GPU memory or modifications to the model, making it lightweight and easy to deploy. We explore the interplay between these techniques in Section 6, while Appendix B provides a detailed account of the full implementation, including key-value caching."
+          ]
+        }
+      ]
+    },
+    "4 Experiments": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "4.1 Models and Hyperparameters",
+          "paragraphs": [
+            "We evaluated our copying technique on five instruction-tuned LLMs: Qwen2.5-72B, Qwen2.5-32B, Qwen2.5-7B (Qwen et al., 2025), LLaMa3.1-70B, and LLaMa3.1-8B (Grattafiori et al., 2024), using 4 A100 GPUs with a batch size of 1. Unless stated otherwise, we set γ\\gamma to 3, |Ss​p​e​c​u​l​a​t​e||S_{speculate}| to 10, the max generation length to 1024, and the temperature to 0."
+          ]
+        },
+        {
+          "title": "4.2 Evaluation Datasets",
+          "paragraphs": [
+            "We evaluated our technique on five datasets, each targeting specific aspects of model performance: MT-Redundant, CNN/DM, GSM-8K, MT-Bench, and HumanEval. MT-Redundant was designed to emphasize prompts requiring small variations to previous outputs, while CNN/DM focuses on extractive summarization. GSM-8K evaluates the model’s self-correction capabilities, MT-Bench highlights scenarios with minimal copying potential to measure the technique’s overhead, and HumanEval assesses coding capabilities. To accommodate the increased computational demands of GSM-8K and CNN/DM and our limited GPU resources, we restricted these datasets to 100 samples, ensuring they were of comparable size to the other datasets. For HumanEval, we employed the same instruction format as presented in EvalPlus (Liu et al., 2023). Detailed descriptions of all prompts used in our experiments are provided in Appendixes G and F."
+          ]
+        },
+        {
+          "title": "4.3 MT-Redundant",
+          "paragraphs": [
+            "Most existing NLP datasets focus on tasks involving either single-turn interactions or scenarios where the model must entirely change its response in the second turn. These setups fail to capture realistic use cases where a user might request slight variations or refinements to a previous answer. To address this gap and highlight the capabilities of our technique, we introduce a new dataset, MT-Redundant.",
+            "MT-Redundant is derived by modifying the second turn of MT-Bench (Zheng et al., 2023). In our dataset, the second turn replaces the original question with a prompt asking the model to review its previous answer and make specific adjustments or variations. This modification simulates real-world scenarios where incremental refinement or elaboration is required. Example prompts from the dataset are provided in Appendix F. For questions with reference answers, we retained the original reference for the first turn and created a new reference answer for the second turn to align with the revised prompts.",
+            "Our dataset spans a diverse range of practical use cases, categorized into eight groups: Coding, Extraction, Humanities, Math, Reasoning, Roleplay, STEM, and Writing. These categories reflect realistic tasks encountered in various domains. Additionally, we adopted the same evaluation procedure from MT-Bench to ensure consistency and comparability of results.",
+            "By creating MT-Redundant, we aim to bridge the gap between artificial benchmarks and practical applications, providing a more representative evaluation for techniques like CopySpec in multi-turn interactions with reptitive information."
+          ]
+        }
+      ]
+    },
+    "5 Discussion of Results": {
+      "paragraphs": [
+        "We analyze our main results in Table 1, which show the impact of our method on performance and the percentage of tokens copied across five LLMs and datasets. The results are aggregated for all turns in MT-Redundant and MT-Bench (two turns each) and the self-correction process in GSM-8K (three turns). Speedups range from 1.15× on MT-Bench, which has minimal redundancy, using Qwen2.5-72B-Instruct, to 2.35× on CNN/DM with the same model.",
+        "While these results are notable, the key strength of our approach lies in its ability to enhance performance as context size grows. To illustrate this, next we break down scenarios by per-turn performance and analyze the effect of varying hyperparameters on the technique’s effectiveness in a wide range of use-cases."
+      ],
+      "subsections": [
+        {
+          "title": "5.1 Speed-up by Turn and Category",
+          "paragraphs": [
+            "We begin our analysis by examining the speedups achieved on MT-Redundant for both the first and second turns, as summarized in Table 2. The results indicate a substantial average speedup of 2.04×\\times for the second turn, compared to a more modest speedup of 1.08×\\times for the first turn. Notably, the performance in tokens per second (TPS) achieved by the model increases for the second turn, which features a larger context size. In contrast, the baseline model experiences a decline in TPS as the context size increases. Another notable aspect is that the observed speedup is highly dependent on the specific use case. For instance, we observe speedups as low as 1.2×\\times in the Humanities category and as high as 3.08×\\times for Roleplay. However, regardless of the use case, the speedup for the second turn remains consistently positive across all models for both MT-Redundant and MT-Bench.",
+            "The results for all five models on MT-Redundant and MT-Bench are detailed in Appendix C.2 and D.2 respectively. On average, the second round of MT-Redundant achieves a significant 91% speedup across all models, compared to 31% for MT-Bench. Notably, even on MT-Bench, which has less redundancy, the TPS achieved by CopySpec in the second turn is almost always higher than the baseline model’s TPS in the first turn. These findings highlight how our approach effectively leverages increased context sizes to enhance performance, even in less favorable scenarios."
+          ]
+        },
+        {
+          "title": "5.2 The Effect of Gamma (𝜸\\bm{\\gamma})",
+          "paragraphs": [
+            "We begin our analysis with Figure 3, which illustrates the tokens per second as a red line, alongside the percentage of tokens copied out of the total tokens generated, represented by a blue line for the LLaMa3.1-8B model on HumanEval. The numbers adjacent to the dots indicate the number of attempts made to copy tokens. The figure demonstrates that as γ\\gamma decreases, a higher percentage of tokens is accepted, but the number of copying attempts increases exponentially, leading to a significantly larger overhead. This results in a decline in overall TPS performance. A similar pattern is observed for MT-Redundant and MT-Bench, as presented in Figure 6 and Figure 7 in the appendix.",
+            "Empirically, the optimal value of γ\\gamma across datasets is three, with two yielding similar performance. It is also worth noting that all γ\\gamma values ranging from 2 to 10, consistently results in significantly higher overall TPS, even across both turns on MT-Redundant and MT-Bench.",
+            "Furthermore, we examine the effect of γ\\gamma on τ\\tau (the average number of tokens accepted). Figure 4 illustrates the average number of tokens accepted per attempt on HumanEval using the LLaMA3.1-8B model. We observe an interesting pattern: as γ\\gamma increases, the average number of tokens accepted per copying attempt also increases, indicating that each attempt becomes more precise. However, this comes at the cost of fewer overall copying attempts, as demonstrated in Figure 3.",
+            "This finding is particularly relevant for integrating our technique into various speculative decoding frameworks. If a framework already accepts a high number of tokens per attempt, our technique remains advantageous by increasing γ\\gamma, enabling more tokens to be copied with each attempt."
+          ]
+        },
+        {
+          "title": "5.3 Number of Tokens to Copy and Overhead",
+          "paragraphs": [
+            "We evaluate the impact of the number of tokens copied on performance and estimate CopySpec’s overhead by setting the number of copied tokens to zero, isolating the cost of token searching. Results in Table 4 show minimal overhead with differences from the base model nearly within the margin of error. Among the hyperparameters studied, setting |Ss​p​e​c​u​l​a​t​e=10||S_{speculate}=10| delivers the best performance, while larger values, such as 50 or 100, increase overhead and reduce tokens-per-second (TPS) efficiency."
+          ]
+        }
+      ]
+    },
+    "6 Analyses": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "6.1 Orthogonality with Speculative Decoding",
+          "paragraphs": [
+            "We followed the steps outlined in Section 3.3 to integrate our technique into a vanilla speculative decoding framework, as described in (Leviathan et al., 2023). Based on our observations from Section 5.2, we experimented with two different values of γ\\gamma (3 and 5) to analyze their impact on performance when used alongside speculative decoding.",
+            "We integrated CopySpec into a vanilla speculative decoding framework, following the steps in Section 3.3 and the approach described in (Leviathan et al., 2023). Experiments with γ\\gamma values of 3 and 5, summarized in Table 3, show significant efficiency improvements in the second turn of MT-Redundant, with marginal speedups in the first turn. A γ\\gamma value of 5 achieves higher speedups in the first turn, while γ=3\\gamma=3 provides better TPS in the second turn, highlighting the need for task-specific tuning.",
+            "We also evaluated CopySpec with speculative decoding using drafts of 5 tokens instead of 3, with similar experiments conducted on MT-Redundant (Table 10, in Appendix) and with 3 and 5 draft tokens on MT-Bench (Table 16 and Table 17, in Appendix). These results confirm that γ=5\\gamma=5 often outperforms γ=3\\gamma=3 when combined with Spec. Dec., emphasizing the importance of tuning γ\\gamma for optimal performance. The results also show that adding CopySpec to Spec. Dec. almost never leads to a decrease in performance even if there is little redundancy in the data, as seen in MT-Bench.",
+            "CopySpec is also compatible with newer speculative decoding frameworks (Cai et al., 2024; Li et al., 2024), where tuning γ\\gamma ensures copying occurs when confidence is high, showing the method’s adaptability to various scenarios."
+          ]
+        },
+        {
+          "title": "6.2 Effect on Reasoning",
+          "paragraphs": [
+            "An important aspect of our analysis is evaluating the impact of our technique on the efficiency of self-correction. To this end, we implemented a self-refine framework, where the model generates Python code and iteratively refines it in two steps, following a process similar to (Madaan et al., 2023). Details of the prompts and example outputs used in our experiments are provided in Appendix G.1. Table 5 presents the results of combining self-correction with copying and Speculative Decoding (SD).",
+            "Our technique becomes more effective in later turns as the model iterates over its prior reasoning, allowing progressively more tokens to be copied. This is reflected in a significant rise in the percentage of copied tokens, tokens per second (TPS), and τ1\\tau_{1}, the average number of tokens accepted. Each copying attempt also becomes more precise as the model refines its reasoning and the context grows.",
+            "When combined with SD using γ=5\\gamma=5, our approach achieves better results across all three turns, as shown in the table. The first turn benefits most from SD due to minimal copying, while later turns gain greater advantages from copying. This highlights the complementary nature of the two techniques and their combined effectiveness in improving efficiency and performance. Notably, while the TPS of the base model decreases by 0.85×\\times as context size grows, our technique reverses this trend, increasing the TPS in the last turn by 2.52×\\times , showcasing its ability to leverage larger contexts for enhanced efficiency.",
+            "We also extended our analysis to cases where the draft model generates 5 tokens at a time, as shown in Table 18 in the appendix. Additionally, Table 19 confirms that the tested models improve their final accuracy, validating the effectiveness of our self-correction implementation. Note that accuracy is not reported for the second round, as it focuses solely on critiquing the model’s prior implementation. Across the entire self-correction process, we achieve TPS improvements of 63%, 52%, and 54% for the Qwen2.5-7B, Qwen2.5-32B, and Qwen2.5-72B instruct models, respectively."
+          ]
+        }
+      ]
+    },
+    "7 Conclusion": {
+      "paragraphs": [
+        "We introduced CopySpec, a method that identifies repeated token sequences in a growing context and copies them efficiently without additional GPU memory or significant cost. Using a rolling hash for γ\\gamma tokens, CopySpec speculates on larger token blocks to reduce redundant computation.",
+        "Results across five LLMs and datasets, including MT-Redundant, show up to a 3.08×\\times speed-up in second-turn inference and a 49% boost when combined with speculative decoding, without altering output quality. Future work includes dynamically tuning γ\\gamma, refining match selection, and integrating CopySpec with parallel decoding frameworks."
+      ],
+      "subsections": []
+    },
+    "Impact Statement": {
+      "paragraphs": [
+        "This work introduces a method to accelerate large language model (LLM) inference, thereby reducing the computational resources and costs associated with producing lengthy outputs. By improving efficiency, CopySpec can lower the barriers to using LLMs across various applications, ranging from education and research to industry-scale deployments.",
+        "On the positive side, faster inference decreases energy consumption per token, which can help mitigate the environmental impact of large-scale model serving. It also makes multi-turn interactions more accessible, potentially benefiting users with limited computational resources.",
+        "However, increased efficiency may lead to the more frequent use of LLMs in contexts like spam generation or disinformation at scale. As with any generative method, careful deployment and robust content moderation remain necessary to reduce potential harm. CopySpec itself does not solve issues of model bias, misuse, or misinformation; rather, it highlights the need for responsible governance of rapidly evolving LLM capabilities."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Gamma (γ\\gamma) and Semantic Implications": {
+      "paragraphs": [
+        "In our framework, the generation speed of CopySpec is intricately tied to the choice of γ\\gamma, which governs the length of the left context used to identify repeated sequences. The selection of an optimal γ\\gamma is critical, as it directly impacts the model’s ability to efficiently reuse tokens from the context, thereby accelerating generation. A carefully chosen γ\\gamma strikes a balance between providing sufficient contextual information for accurate copying and avoiding unnecessary computational overhead.",
+        "If γ\\gamma is too small (e.g., γ\\gamma = 1), the context provides insufficient information to reliably identify repetitions, resulting in missed reuse opportunities and slower generation. Conversely, when γ\\gamma is too large, the excessive context introduces redundancy and dilutes the immediate semantic relevance. While the acceptance rate may increase, the total number of tokens generated per second decreases because the model spends more time processing generate tokens itself and fewer tokens are copied in practice.",
+        "The challenge, therefore, lies in finding an optimal γ\\gamma that maximizes copying attempts while minimizing computational overhead. A well-chosen γ\\gamma ensures that the context is both semantically focused and computationally efficient, enabling the Copy mechanism to fully exploit repeated patterns in the generation process. This tradeoff underscores the importance of systematically tuning γ\\gamma to achieve the best performance across datasets.",
+        "To measure the semantic alignment between a token ww and its left-γ\\gamma token context, we fine-tuned the token embeddings using a left-γ\\gamma skip-gram model, a modification of the traditional skip-gram approach. Unlike the standard skip-gram model, which maximizes the probability of a target word given a symmetric context window, our approach considers only the preceding γ\\gamma tokens as context.",
+        "Formally, instead of maximizing the probability ∏(w,C)∈DP​(w|C)\\prod_{(w,C)\\in D}P(w|C), where CC represents a symmetric context window around the word ww, our left-γ\\gamma skip-gram model is trained to maximize ∏(t,Cleft ​γ)∈DP​(t|Cleft ​γ)\\prod_{(t,C_{\\text{left }\\gamma})\\in D}P(t|C_{\\text{left }\\gamma}), where Cleft ​γC_{\\text{left }\\gamma} consists only of the last γ\\gamma tokens in the sequence to predict the next token tt. This ensures that the learned embeddings capture dependencies in a unidirectional manner, aligning with the way generative models process text.",
+        "By structuring the model in this way, we aim to quantify how much semantic meaning from the left-γ\\gamma tokens contributes to predicting the next token. Cosine Similarity is particularly well-suited for evaluating the semantic alignment between the left-γ\\gamma token context and the next token because it captures the directional similarity between their vector representations, regardless of magnitude. Since word embeddings encode semantic meaning in a high-dimensional space, CS provides a robust way to measure how well the left context conveys predictive information about the next token. Unlike Euclidean Distance, CS ensures that we focus solely on semantic coherence rather than raw frequency effects. This is crucial for CopySpec, as effective token reuse depends on the ability to recognize when a sequence of past tokens is not just lexically repeated but also semantically relevant to the next token. By analyzing trends in CS across different γ\\gamma-values, we can assess whether increasing the context length improves meaningful copying or merely introduces redundant information, thereby helping us fine-tune γ\\gamma for optimal efficiency.",
+        "The cosine similarity (CS) is computed as:",
+        "Here, v→Cleft ​γ=1γ​∑i=1γv→ti\\vec{v}_{C_{\\text{left }\\gamma}}=\\frac{1}{\\gamma}\\sum_{i=1}^{\\gamma}\\vec{v}_{t_{i}} represents the average embedding of the most recent γ\\gamma tokens, where {ti}i=1γ\\{t_{i}\\}_{i=1}^{\\gamma} are the embeddings of the last γ\\gamma tokens in the context.",
+        "To validate our intuitions, we conducted experiments to analyze the relationship between γ\\gamma (context length) and semantic alignment. Figure 5 illustrates the trends in Cosine Similarity and generation speed (TPS) as γ\\gamma varies.",
+        "By measuring Cosine Similarity and generation speed across varying γ\\gamma-token contexts, we provide empirical evidence that fine-tuning left-γ\\gamma skip-gram model for the best γ\\gamma is essential for maximizing efficiency. Future work can explore adaptive strategies that dynamically adjust γ\\gamma in the same hashmap based on context complexity, further optimizing the balance between copying effectiveness and computational cost.",
+        "[Figure: Figure 5: We use Qwen2.5-7B on both MT-Bench and MT-Redundant dataset. Cosine Similarity and Tokens per Second trends as a function of γ\\gamma. The blue line indicates the Cosine Similarity, showing semantic alignment across varying γ\\gamma-token contexts. The red line illustrates the Tokens per Second, reflecting generation speed. γ\\gamma denotes the number of tokens considered in the context for each measurement. The left plot shows MT-Bench, and the right plot shows MT-Redundant.]"
+      ],
+      "subsections": []
+    },
+    "Appendix B Copying and Speculative Decoding with Truncated KV States": {
+      "paragraphs": [
+        "This appendix describes how our framework integrates a copying mechanism with speculative decoding, including details on partial acceptance, key-value (KV) cache truncation."
+      ],
+      "subsections": [
+        {
+          "title": "B.1 Notation and Variables",
+          "paragraphs": [
+            "Let X1:tX_{1:t} be the currently accepted sequence of tt tokens. Generating a new token moves us to position t+1t+1.",
+            "𝒟\\mathcal{D} records repeated γ\\gamma-length substrings and their earlier occurrences. If Xt−γ+1:tX_{t-\\gamma+1:t} appears in 𝒟\\mathcal{D}, we may copy subsequent tokens from that match.",
+            "We use γ\\gamma tokens to detect repeats. That is, the last γ\\gamma tokens, s=Xt−γ+1:ts=X_{t-\\gamma+1:t}, determine if a copy event is possible.",
+            "If 𝒟\\mathcal{D} indicates Xt−γ+1:tX_{t-\\gamma+1:t} appears at position pp, we attempt to copy tokens starting from p+γp+\\gamma.",
+            "When a match is found, we form a copied chunk",
+            "If copying is not used, we let the draft model propose up to δ\\delta tokens:",
+            "The target model ptarget(⋅∣X1:n)p_{\\mathrm{target}}(\\cdot\\mid X_{1:n}) decides whether each new token is accepted, while the draft model pdraft​(Xt∣X1:n)p_{\\mathrm{draft}}(X_{t}\\mid X_{1:n}) only proposes tokens that must still pass ptargetp_{\\mathrm{target}}’s acceptance criterion.",
+            "In both copying and drafting, we iterate over newly proposed tokens with an index i∈{1,…,m}i\\in\\{1,\\dots,m\\} or i∈{1,…,δ}.i\\in\\{1,\\dots,\\delta\\}.",
+            "Out of the mm (copied) or δ\\delta (drafted) tokens, only k≤mk\\leq m or k≤δk\\leq\\delta may be accepted under ptargetp_{\\mathrm{target}}. Rejected tokens are removed, and the key-value states are truncated to retain only X1:t+k.X_{1:t+k}."
+          ]
+        },
+        {
+          "title": "SequenceX1:tX_{1:t}.",
+          "paragraphs": [
+            "Let X1:tX_{1:t} be the currently accepted sequence of tt tokens. Generating a new token moves us to position t+1t+1."
+          ]
+        },
+        {
+          "title": "Dictionary𝒟\\mathcal{D}.",
+          "paragraphs": [
+            "𝒟\\mathcal{D} records repeated γ\\gamma-length substrings and their earlier occurrences. If Xt−γ+1:tX_{t-\\gamma+1:t} appears in 𝒟\\mathcal{D}, we may copy subsequent tokens from that match."
+          ]
+        },
+        {
+          "title": "Subsequence lengthγ\\gamma.",
+          "paragraphs": [
+            "We use γ\\gamma tokens to detect repeats. That is, the last γ\\gamma tokens, s=Xt−γ+1:ts=X_{t-\\gamma+1:t}, determine if a copy event is possible."
+          ]
+        },
+        {
+          "title": "Match locationpp.",
+          "paragraphs": [
+            "If 𝒟\\mathcal{D} indicates Xt−γ+1:tX_{t-\\gamma+1:t} appears at position pp, we attempt to copy tokens starting from p+γp+\\gamma."
+          ]
+        },
+        {
+          "title": "Chunk sizemm(copying).",
+          "paragraphs": [
+            "When a match is found, we form a copied chunk"
+          ]
+        },
+        {
+          "title": "Draft limitδ\\delta(speculative).",
+          "paragraphs": [
+            "If copying is not used, we let the draft model propose up to δ\\delta tokens:"
+          ]
+        },
+        {
+          "title": "Acceptance and Draft Models.",
+          "paragraphs": [
+            "The target model ptarget(⋅∣X1:n)p_{\\mathrm{target}}(\\cdot\\mid X_{1:n}) decides whether each new token is accepted, while the draft model pdraft​(Xt∣X1:n)p_{\\mathrm{draft}}(X_{t}\\mid X_{1:n}) only proposes tokens that must still pass ptargetp_{\\mathrm{target}}’s acceptance criterion."
+          ]
+        },
+        {
+          "title": "Indexii.",
+          "paragraphs": [
+            "In both copying and drafting, we iterate over newly proposed tokens with an index i∈{1,…,m}i\\in\\{1,\\dots,m\\} or i∈{1,…,δ}.i\\in\\{1,\\dots,\\delta\\}."
+          ]
+        },
+        {
+          "title": "Accepted countkk.",
+          "paragraphs": [
+            "Out of the mm (copied) or δ\\delta (drafted) tokens, only k≤mk\\leq m or k≤δk\\leq\\delta may be accepted under ptargetp_{\\mathrm{target}}. Rejected tokens are removed, and the key-value states are truncated to retain only X1:t+k.X_{1:t+k}."
+          ]
+        },
+        {
+          "title": "B.2 Acceptance Criterion and KV Truncation",
+          "paragraphs": [
+            "Any new token xt+ix_{t+i} must pass an acceptance criterion under ptargetp_{\\mathrm{target}}; for example, at temperature 0, we only accept it if it is the argmax of the target model’s conditional distribution. If the token fails, we reject it (and all subsequent tokens in the same chunk) and roll back to X1:t+i−1X_{1:t+i-1}.",
+            "Each layer ℓ\\ell of the target model stores key-value tensors (𝐊ℓ,𝐕ℓ)(\\mathbf{K}_{\\ell},\\mathbf{V}_{\\ell}) up to the final accepted token. If k<i−1k<i-1 tokens in a chunk are accepted, we truncate (𝐊ℓ,𝐕ℓ)(\\mathbf{K}_{\\ell},\\mathbf{V}_{\\ell}) to t+kt+k positions, ensuring the model remains consistent with the final accepted sequence."
+          ]
+        },
+        {
+          "title": "B.3 Integrated Generation Procedure",
+          "paragraphs": [
+            "Below is a single pseudocode listing that combines both copying and speculative decoding.",
+            "1. Check for a Copy Opportunity: Let s=Xt−γ+1:ts=X_{t-\\gamma+1:t} be the most recent γ\\gamma tokens of the accepted sequence X1:tX_{1:t}. Check if ss is in 𝒟\\mathcal{D} (the dictionary of repeats). If no match exists, go to Step 3. Otherwise, let pp be the first occurrence in 𝒟​(s)\\mathcal{D}(s) satisfying p+γ−1<t−γ+1p+\\gamma-1<t-\\gamma+1 (ensuring no overlap). Form a candidate chunk of length mm: Initialize k=0k=0, which tracks how many tokens from X~1:m\\widetilde{X}_{1:m} are ultimately accepted.",
+            "(a) Let s=Xt−γ+1:ts=X_{t-\\gamma+1:t} be the most recent γ\\gamma tokens of the accepted sequence X1:tX_{1:t}.",
+            "(b) Check if ss is in 𝒟\\mathcal{D} (the dictionary of repeats). If no match exists, go to Step 3.",
+            "• If no match exists, go to Step 3.",
+            "(c) Otherwise, let pp be the first occurrence in 𝒟​(s)\\mathcal{D}(s) satisfying p+γ−1<t−γ+1p+\\gamma-1<t-\\gamma+1 (ensuring no overlap).",
+            "(d) Form a candidate chunk of length mm:",
+            "(e) Initialize k=0k=0, which tracks how many tokens from X~1:m\\widetilde{X}_{1:m} are ultimately accepted.",
+            "2. Attempt to Copy: For i=1i=1 to mm: Evaluate x~i\\widetilde{x}_{i} (from X~1:m\\widetilde{X}_{1:m}) with the target model: If x~i\\widetilde{x}_{i} passes the acceptance criterion (e.g. it is the argmax if temperature = 0), set k←k+1k\\leftarrow k+1; otherwise, reject x~i\\widetilde{x}_{i} and break out of this loop. If k<mk<m: The final sequence is now X1:t+kX_{1:t+k}, which means only the first kk tokens from X~1:m\\widetilde{X}_{1:m} (i.e. x~1,…,x~k\\widetilde{x}_{1},\\dots,\\widetilde{x}_{k}) are accepted. Truncate the target model’s KV Cache states for all layers to length t+kt+k to discard any rejected tokens beyond position t+kt+k. Otherwise, if k=mk=m, then all mm copied tokens are fully accepted, making X1:t+mX_{1:t+m} the new final sequence. Update 𝒟\\mathcal{D} with any newly formed γ\\gamma-subsequences ending at positions t+jt+j for 1≤j≤k1\\leq j\\leq k.",
+            "(a) For i=1i=1 to mm: Evaluate x~i\\widetilde{x}_{i} (from X~1:m\\widetilde{X}_{1:m}) with the target model: If x~i\\widetilde{x}_{i} passes the acceptance criterion (e.g. it is the argmax if temperature = 0), set k←k+1k\\leftarrow k+1; otherwise, reject x~i\\widetilde{x}_{i} and break out of this loop.",
+            "• Evaluate x~i\\widetilde{x}_{i} (from X~1:m\\widetilde{X}_{1:m}) with the target model:",
+            "• If x~i\\widetilde{x}_{i} passes the acceptance criterion (e.g. it is the argmax if temperature = 0), set k←k+1k\\leftarrow k+1; otherwise, reject x~i\\widetilde{x}_{i} and break out of this loop.",
+            "(b) If k<mk<m: The final sequence is now X1:t+kX_{1:t+k}, which means only the first kk tokens from X~1:m\\widetilde{X}_{1:m} (i.e. x~1,…,x~k\\widetilde{x}_{1},\\dots,\\widetilde{x}_{k}) are accepted. Truncate the target model’s KV Cache states for all layers to length t+kt+k to discard any rejected tokens beyond position t+kt+k.",
+            "• The final sequence is now X1:t+kX_{1:t+k}, which means only the first kk tokens from X~1:m\\widetilde{X}_{1:m} (i.e. x~1,…,x~k\\widetilde{x}_{1},\\dots,\\widetilde{x}_{k}) are accepted.",
+            "• Truncate the target model’s KV Cache states for all layers to length t+kt+k to discard any rejected tokens beyond position t+kt+k.",
+            "(c) Otherwise, if k=mk=m, then all mm copied tokens are fully accepted, making X1:t+mX_{1:t+m} the new final sequence.",
+            "(d) Update 𝒟\\mathcal{D} with any newly formed γ\\gamma-subsequences ending at positions t+jt+j for 1≤j≤k1\\leq j\\leq k.",
+            "3. Speculative Decoding: If no copying occurred, generate δ\\delta tokens from the draft model: Let k=0k=0. For i=1i=1 to δ\\delta: Evaluate x^i\\widehat{x}_{i} (from X^1:δ\\widehat{X}_{1:\\delta}) using If accepted, increment kk. If rejected, break immediately. If k<δk<\\delta: Only x^1,…,x^k\\widehat{x}_{1},\\dots,\\widehat{x}_{k} are accepted, so the final sequence is X1:t+kX_{1:t+k}. Truncate the target model’s and draft model’s KV Cache states to reflect X1:t+kX_{1:t+k} only. If k=δk=\\delta, the entire draft X^1:δ\\widehat{X}_{1:\\delta} is accepted, making X1:t+δX_{1:t+\\delta} the new final sequence. Update 𝒟\\mathcal{D} with any newly formed γ\\gamma-length subsequences up to position t+kt+k.",
+            "(a) If no copying occurred, generate δ\\delta tokens from the draft model:",
+            "(b) Let k=0k=0. For i=1i=1 to δ\\delta: Evaluate x^i\\widehat{x}_{i} (from X^1:δ\\widehat{X}_{1:\\delta}) using If accepted, increment kk. If rejected, break immediately.",
+            "• Evaluate x^i\\widehat{x}_{i} (from X^1:δ\\widehat{X}_{1:\\delta}) using",
+            "• If accepted, increment kk. If rejected, break immediately.",
+            "(c) If k<δk<\\delta: Only x^1,…,x^k\\widehat{x}_{1},\\dots,\\widehat{x}_{k} are accepted, so the final sequence is X1:t+kX_{1:t+k}. Truncate the target model’s and draft model’s KV Cache states to reflect X1:t+kX_{1:t+k} only.",
+            "• Only x^1,…,x^k\\widehat{x}_{1},\\dots,\\widehat{x}_{k} are accepted, so the final sequence is X1:t+kX_{1:t+k}.",
+            "• Truncate the target model’s and draft model’s KV Cache states to reflect X1:t+kX_{1:t+k} only.",
+            "(d) If k=δk=\\delta, the entire draft X^1:δ\\widehat{X}_{1:\\delta} is accepted, making X1:t+δX_{1:t+\\delta} the new final sequence.",
+            "(e) Update 𝒟\\mathcal{D} with any newly formed γ\\gamma-length subsequences up to position t+kt+k.",
+            "4. Repeat: Increase tt by the number of accepted tokens (either kk, mm, or δ\\delta) in this iteration. Continue until a stopping criterion (e.g. end-of-text token) is encountered.",
+            "(a) Let s=Xt−γ+1:ts=X_{t-\\gamma+1:t} be the most recent γ\\gamma tokens of the accepted sequence X1:tX_{1:t}.",
+            "(b) Check if ss is in 𝒟\\mathcal{D} (the dictionary of repeats). If no match exists, go to Step 3.",
+            "• If no match exists, go to Step 3.",
+            "(c) Otherwise, let pp be the first occurrence in 𝒟​(s)\\mathcal{D}(s) satisfying p+γ−1<t−γ+1p+\\gamma-1<t-\\gamma+1 (ensuring no overlap).",
+            "(d) Form a candidate chunk of length mm:",
+            "(e) Initialize k=0k=0, which tracks how many tokens from X~1:m\\widetilde{X}_{1:m} are ultimately accepted.",
+            "• If no match exists, go to Step 3.",
+            "(a) For i=1i=1 to mm: Evaluate x~i\\widetilde{x}_{i} (from X~1:m\\widetilde{X}_{1:m}) with the target model: If x~i\\widetilde{x}_{i} passes the acceptance criterion (e.g. it is the argmax if temperature = 0), set k←k+1k\\leftarrow k+1; otherwise, reject x~i\\widetilde{x}_{i} and break out of this loop.",
+            "• Evaluate x~i\\widetilde{x}_{i} (from X~1:m\\widetilde{X}_{1:m}) with the target model:",
+            "• If x~i\\widetilde{x}_{i} passes the acceptance criterion (e.g. it is the argmax if temperature = 0), set k←k+1k\\leftarrow k+1; otherwise, reject x~i\\widetilde{x}_{i} and break out of this loop.",
+            "(b) If k<mk<m: The final sequence is now X1:t+kX_{1:t+k}, which means only the first kk tokens from X~1:m\\widetilde{X}_{1:m} (i.e. x~1,…,x~k\\widetilde{x}_{1},\\dots,\\widetilde{x}_{k}) are accepted. Truncate the target model’s KV Cache states for all layers to length t+kt+k to discard any rejected tokens beyond position t+kt+k.",
+            "• The final sequence is now X1:t+kX_{1:t+k}, which means only the first kk tokens from X~1:m\\widetilde{X}_{1:m} (i.e. x~1,…,x~k\\widetilde{x}_{1},\\dots,\\widetilde{x}_{k}) are accepted.",
+            "• Truncate the target model’s KV Cache states for all layers to length t+kt+k to discard any rejected tokens beyond position t+kt+k.",
+            "(c) Otherwise, if k=mk=m, then all mm copied tokens are fully accepted, making X1:t+mX_{1:t+m} the new final sequence.",
+            "(d) Update 𝒟\\mathcal{D} with any newly formed γ\\gamma-subsequences ending at positions t+jt+j for 1≤j≤k1\\leq j\\leq k.",
+            "• Evaluate x~i\\widetilde{x}_{i} (from X~1:m\\widetilde{X}_{1:m}) with the target model:",
+            "• If x~i\\widetilde{x}_{i} passes the acceptance criterion (e.g. it is the argmax if temperature = 0), set k←k+1k\\leftarrow k+1; otherwise, reject x~i\\widetilde{x}_{i} and break out of this loop.",
+            "• The final sequence is now X1:t+kX_{1:t+k}, which means only the first kk tokens from X~1:m\\widetilde{X}_{1:m} (i.e. x~1,…,x~k\\widetilde{x}_{1},\\dots,\\widetilde{x}_{k}) are accepted.",
+            "• Truncate the target model’s KV Cache states for all layers to length t+kt+k to discard any rejected tokens beyond position t+kt+k.",
+            "(a) If no copying occurred, generate δ\\delta tokens from the draft model:",
+            "(b) Let k=0k=0. For i=1i=1 to δ\\delta: Evaluate x^i\\widehat{x}_{i} (from X^1:δ\\widehat{X}_{1:\\delta}) using If accepted, increment kk. If rejected, break immediately.",
+            "• Evaluate x^i\\widehat{x}_{i} (from X^1:δ\\widehat{X}_{1:\\delta}) using",
+            "• If accepted, increment kk. If rejected, break immediately.",
+            "(c) If k<δk<\\delta: Only x^1,…,x^k\\widehat{x}_{1},\\dots,\\widehat{x}_{k} are accepted, so the final sequence is X1:t+kX_{1:t+k}. Truncate the target model’s and draft model’s KV Cache states to reflect X1:t+kX_{1:t+k} only.",
+            "• Only x^1,…,x^k\\widehat{x}_{1},\\dots,\\widehat{x}_{k} are accepted, so the final sequence is X1:t+kX_{1:t+k}.",
+            "• Truncate the target model’s and draft model’s KV Cache states to reflect X1:t+kX_{1:t+k} only.",
+            "(d) If k=δk=\\delta, the entire draft X^1:δ\\widehat{X}_{1:\\delta} is accepted, making X1:t+δX_{1:t+\\delta} the new final sequence.",
+            "(e) Update 𝒟\\mathcal{D} with any newly formed γ\\gamma-length subsequences up to position t+kt+k.",
+            "• Evaluate x^i\\widehat{x}_{i} (from X^1:δ\\widehat{X}_{1:\\delta}) using",
+            "• If accepted, increment kk. If rejected, break immediately.",
+            "• Only x^1,…,x^k\\widehat{x}_{1},\\dots,\\widehat{x}_{k} are accepted, so the final sequence is X1:t+kX_{1:t+k}.",
+            "• Truncate the target model’s and draft model’s KV Cache states to reflect X1:t+kX_{1:t+k} only.",
+            "Check for a Copy Opportunity:",
+            "(a) Let s=Xt−γ+1:ts=X_{t-\\gamma+1:t} be the most recent γ\\gamma tokens of the accepted sequence X1:tX_{1:t}.",
+            "(b) Check if ss is in 𝒟\\mathcal{D} (the dictionary of repeats). If no match exists, go to Step 3.",
+            "• If no match exists, go to Step 3.",
+            "(c) Otherwise, let pp be the first occurrence in 𝒟​(s)\\mathcal{D}(s) satisfying p+γ−1<t−γ+1p+\\gamma-1<t-\\gamma+1 (ensuring no overlap).",
+            "(d) Form a candidate chunk of length mm:",
+            "(e) Initialize k=0k=0, which tracks how many tokens from X~1:m\\widetilde{X}_{1:m} are ultimately accepted.",
+            "• If no match exists, go to Step 3.",
+            "Let s=Xt−γ+1:ts=X_{t-\\gamma+1:t} be the most recent γ\\gamma tokens of the accepted sequence X1:tX_{1:t}.",
+            "Check if ss is in 𝒟\\mathcal{D} (the dictionary of repeats).",
+            "• If no match exists, go to Step 3.",
+            "If no match exists, go to Step 3.",
+            "Otherwise, let pp be the first occurrence in 𝒟​(s)\\mathcal{D}(s) satisfying p+γ−1<t−γ+1p+\\gamma-1<t-\\gamma+1 (ensuring no overlap).",
+            "Form a candidate chunk of length mm:",
+            "Initialize k=0k=0, which tracks how many tokens from X~1:m\\widetilde{X}_{1:m} are ultimately accepted.",
+            "Attempt to Copy:",
+            "(a) For i=1i=1 to mm: Evaluate x~i\\widetilde{x}_{i} (from X~1:m\\widetilde{X}_{1:m}) with the target model: If x~i\\widetilde{x}_{i} passes the acceptance criterion (e.g. it is the argmax if temperature = 0), set k←k+1k\\leftarrow k+1; otherwise, reject x~i\\widetilde{x}_{i} and break out of this loop.",
+            "• Evaluate x~i\\widetilde{x}_{i} (from X~1:m\\widetilde{X}_{1:m}) with the target model:",
+            "• If x~i\\widetilde{x}_{i} passes the acceptance criterion (e.g. it is the argmax if temperature = 0), set k←k+1k\\leftarrow k+1; otherwise, reject x~i\\widetilde{x}_{i} and break out of this loop.",
+            "(b) If k<mk<m: The final sequence is now X1:t+kX_{1:t+k}, which means only the first kk tokens from X~1:m\\widetilde{X}_{1:m} (i.e. x~1,…,x~k\\widetilde{x}_{1},\\dots,\\widetilde{x}_{k}) are accepted. Truncate the target model’s KV Cache states for all layers to length t+kt+k to discard any rejected tokens beyond position t+kt+k.",
+            "• The final sequence is now X1:t+kX_{1:t+k}, which means only the first kk tokens from X~1:m\\widetilde{X}_{1:m} (i.e. x~1,…,x~k\\widetilde{x}_{1},\\dots,\\widetilde{x}_{k}) are accepted.",
+            "• Truncate the target model’s KV Cache states for all layers to length t+kt+k to discard any rejected tokens beyond position t+kt+k.",
+            "(c) Otherwise, if k=mk=m, then all mm copied tokens are fully accepted, making X1:t+mX_{1:t+m} the new final sequence.",
+            "(d) Update 𝒟\\mathcal{D} with any newly formed γ\\gamma-subsequences ending at positions t+jt+j for 1≤j≤k1\\leq j\\leq k.",
+            "• Evaluate x~i\\widetilde{x}_{i} (from X~1:m\\widetilde{X}_{1:m}) with the target model:",
+            "• If x~i\\widetilde{x}_{i} passes the acceptance criterion (e.g. it is the argmax if temperature = 0), set k←k+1k\\leftarrow k+1; otherwise, reject x~i\\widetilde{x}_{i} and break out of this loop.",
+            "• The final sequence is now X1:t+kX_{1:t+k}, which means only the first kk tokens from X~1:m\\widetilde{X}_{1:m} (i.e. x~1,…,x~k\\widetilde{x}_{1},\\dots,\\widetilde{x}_{k}) are accepted.",
+            "• Truncate the target model’s KV Cache states for all layers to length t+kt+k to discard any rejected tokens beyond position t+kt+k.",
+            "For i=1i=1 to mm:",
+            "• Evaluate x~i\\widetilde{x}_{i} (from X~1:m\\widetilde{X}_{1:m}) with the target model:",
+            "• If x~i\\widetilde{x}_{i} passes the acceptance criterion (e.g. it is the argmax if temperature = 0), set k←k+1k\\leftarrow k+1; otherwise, reject x~i\\widetilde{x}_{i} and break out of this loop.",
+            "Evaluate x~i\\widetilde{x}_{i} (from X~1:m\\widetilde{X}_{1:m}) with the target model:",
+            "If x~i\\widetilde{x}_{i} passes the acceptance criterion (e.g. it is the argmax if temperature = 0), set k←k+1k\\leftarrow k+1; otherwise, reject x~i\\widetilde{x}_{i} and break out of this loop.",
+            "If k<mk<m:",
+            "• The final sequence is now X1:t+kX_{1:t+k}, which means only the first kk tokens from X~1:m\\widetilde{X}_{1:m} (i.e. x~1,…,x~k\\widetilde{x}_{1},\\dots,\\widetilde{x}_{k}) are accepted.",
+            "• Truncate the target model’s KV Cache states for all layers to length t+kt+k to discard any rejected tokens beyond position t+kt+k.",
+            "The final sequence is now X1:t+kX_{1:t+k}, which means only the first kk tokens from X~1:m\\widetilde{X}_{1:m} (i.e. x~1,…,x~k\\widetilde{x}_{1},\\dots,\\widetilde{x}_{k}) are accepted.",
+            "Truncate the target model’s KV Cache states for all layers to length t+kt+k to discard any rejected tokens beyond position t+kt+k.",
+            "Otherwise, if k=mk=m, then all mm copied tokens are fully accepted, making X1:t+mX_{1:t+m} the new final sequence.",
+            "Update 𝒟\\mathcal{D} with any newly formed γ\\gamma-subsequences ending at positions t+jt+j for 1≤j≤k1\\leq j\\leq k.",
+            "Speculative Decoding:",
+            "(a) If no copying occurred, generate δ\\delta tokens from the draft model:",
+            "(b) Let k=0k=0. For i=1i=1 to δ\\delta: Evaluate x^i\\widehat{x}_{i} (from X^1:δ\\widehat{X}_{1:\\delta}) using If accepted, increment kk. If rejected, break immediately.",
+            "• Evaluate x^i\\widehat{x}_{i} (from X^1:δ\\widehat{X}_{1:\\delta}) using",
+            "• If accepted, increment kk. If rejected, break immediately.",
+            "(c) If k<δk<\\delta: Only x^1,…,x^k\\widehat{x}_{1},\\dots,\\widehat{x}_{k} are accepted, so the final sequence is X1:t+kX_{1:t+k}. Truncate the target model’s and draft model’s KV Cache states to reflect X1:t+kX_{1:t+k} only.",
+            "• Only x^1,…,x^k\\widehat{x}_{1},\\dots,\\widehat{x}_{k} are accepted, so the final sequence is X1:t+kX_{1:t+k}.",
+            "• Truncate the target model’s and draft model’s KV Cache states to reflect X1:t+kX_{1:t+k} only.",
+            "(d) If k=δk=\\delta, the entire draft X^1:δ\\widehat{X}_{1:\\delta} is accepted, making X1:t+δX_{1:t+\\delta} the new final sequence.",
+            "(e) Update 𝒟\\mathcal{D} with any newly formed γ\\gamma-length subsequences up to position t+kt+k.",
+            "• Evaluate x^i\\widehat{x}_{i} (from X^1:δ\\widehat{X}_{1:\\delta}) using",
+            "• If accepted, increment kk. If rejected, break immediately.",
+            "• Only x^1,…,x^k\\widehat{x}_{1},\\dots,\\widehat{x}_{k} are accepted, so the final sequence is X1:t+kX_{1:t+k}.",
+            "• Truncate the target model’s and draft model’s KV Cache states to reflect X1:t+kX_{1:t+k} only.",
+            "If no copying occurred, generate δ\\delta tokens from the draft model:",
+            "Let k=0k=0. For i=1i=1 to δ\\delta:",
+            "• Evaluate x^i\\widehat{x}_{i} (from X^1:δ\\widehat{X}_{1:\\delta}) using",
+            "• If accepted, increment kk. If rejected, break immediately.",
+            "Evaluate x^i\\widehat{x}_{i} (from X^1:δ\\widehat{X}_{1:\\delta}) using",
+            "If accepted, increment kk. If rejected, break immediately.",
+            "If k<δk<\\delta:",
+            "• Only x^1,…,x^k\\widehat{x}_{1},\\dots,\\widehat{x}_{k} are accepted, so the final sequence is X1:t+kX_{1:t+k}.",
+            "• Truncate the target model’s and draft model’s KV Cache states to reflect X1:t+kX_{1:t+k} only.",
+            "Only x^1,…,x^k\\widehat{x}_{1},\\dots,\\widehat{x}_{k} are accepted, so the final sequence is X1:t+kX_{1:t+k}.",
+            "Truncate the target model’s and draft model’s KV Cache states to reflect X1:t+kX_{1:t+k} only.",
+            "If k=δk=\\delta, the entire draft X^1:δ\\widehat{X}_{1:\\delta} is accepted, making X1:t+δX_{1:t+\\delta} the new final sequence.",
+            "Update 𝒟\\mathcal{D} with any newly formed γ\\gamma-length subsequences up to position t+kt+k.",
+            "Repeat: Increase tt by the number of accepted tokens (either kk, mm, or δ\\delta) in this iteration. Continue until a stopping criterion (e.g. end-of-text token) is encountered.",
+            "Discussion of Truncation: Whenever fewer than mm (in copying) or δ\\delta (in drafting) tokens are accepted, we roll back to the accepted prefix. The target model’s key-value memory is truncated accordingly to reflect X1:t+kX_{1:t+k}. Thus, any rejected tokens do not affect the final context or the KV states."
+          ]
+        }
+      ]
+    },
+    "Appendix C Extra Results on MT-Redundant": {
+      "paragraphs": [
+        "This appendix presents a detailed analysis of the performance improvements achieved by the CopySpec approach compared to baseline methods. The tables provide comprehensive results across various categories and model configurations, highlighting the computational efficiency and speed-ups observed on the MT-Redundant dataset.",
+        "[Figure: Figure 6: This figure illustrates the relationship between the copying parameter γ\\gamma and the model’s performance on the MT-Redundant dataset with the LLaMa3.1-8B-Instruct model. The notations are the same as in Figure 3.]",
+        "[Table: Table 6: Tokens per second on two turns across categories on MT-Redundant using CopySpec and Baseline with Qwen-32B-Instruct (γ=3\\gamma=3). Results follow the same notation as Table 2.]",
+        "[Table: Table 7: Tokens per second on two turns across categories on MT-Redundant using CopySpec and Baseline with Qwen-7B-Instruct (γ=3\\gamma=3). Results follow the same notation as Table 2.]",
+        "[Table: Table 8: Tokens per second on two turns across categories on MT-Redundant using CopySpec and Baseline with LLaMa3.1-70B-Instruct (γ=3\\gamma=3). Results follow the same notation as Table 2.]",
+        "[Table: Table 9: Tokens per second on two turns across categories on MT-Redundant using CopySpec and Baseline with LLaMa3.1-8B-Instruct (γ=3\\gamma=3). Results follow the same notation as Table 2.]",
+        "[Table: Table 10: Tokens-per-second (TPS) performance on the MT-Redundant dataset, using Qwen2.5-32B-Instruct as the target model and Qwen2.5-7B-Instruct as the draft model, where the draft model generates 5 tokens per attempt. Results are presented using the same notation as Table 3 and a γ\\gamma value of 3, highlighting the impact of varying the draft token count on computational efficiency.]"
+      ],
+      "subsections": [
+        {
+          "title": "C.1 Analysis of Gamma (γ\\gamma) on MT-Redundant",
+          "paragraphs": [
+            "The analysis depicted in Figure 6 highlights the impact of the copying parameter γ\\gamma on both computational performance and the model’s ability to reuse tokens effectively. As γ\\gamma increases, there is a notable rise in the percentage of copied tokens, demonstrating the model’s improved ability to exploit repeated patterns within the context. However, this comes at the cost of reduced tokens per second (TPS) for higher γ\\gamma values, due to the increased computational overhead associated with processing larger context windows.",
+            "[Figure: Figure 6: This figure illustrates the relationship between the copying parameter γ\\gamma and the model’s performance on the MT-Redundant dataset with the LLaMa3.1-8B-Instruct model. The notations are the same as in Figure 3.]"
+          ]
+        },
+        {
+          "title": "C.2 Speed-up by Category on MT-Redundant",
+          "paragraphs": [
+            "Table 6 summarizes the tokens-per-second (TPS) performance for the Qwen-32B-Instruct model across two turns. The first turn reflects scenarios with minimal contextual information, while the second turn demonstrates significant gains in speed due to the larger context size and CopySpec’s ability to leverage repeated token patterns effectively. Notably, categories such as Coding and Math exhibit speed-ups exceeding 2× in the second turn.",
+            "In Table 7, we observe a similar trend for the Qwen-7B-Instruct model, with CopySpec consistently improving TPS across both turns. The second turn results show substantial gains in categories like Reasoning and Math, where repetitive patterns in the context are more prominent.",
+            "Table 8 presents the results for the LLaMa3.1-70B-Instruct model. Here, the impact of CopySpec is evident, especially in the second turn, with speed-ups reaching over 2× in categories such as Math. These results highlight the scalability of CopySpec across models of varying sizes.",
+            "The findings for the LLaMa3.1-8B-Instruct model are detailed in Table 9. The speed-ups in this case are slightly lower compared to larger models but still demonstrate consistent improvements across all categories, with notable efficiency gains in the second turn."
+          ]
+        },
+        {
+          "title": "C.3 Merging with Speculative Decoding on MT-Redundant",
+          "paragraphs": [
+            "Finally, Table 10 explores the integration of CopySpec with speculative decoding for the Qwen2.5-32B-Instruct model and Qwen2.5-7B-Instruct as the draft model. The results highlight how combining these approaches can yield even greater computational efficiency. The analysis includes varying γ\\gamma values and draft token counts, showing that optimal parameter tuning further enhances performance, particularly in multi-turn scenarios."
+          ]
+        }
+      ]
+    },
+    "Appendix D Extra Results on MT-Bench": {
+      "paragraphs": [
+        "This appendix presents a comprehensive evaluation of the CopySpec approach on the MT-Bench dataset across various configurations and categories. The results highlight the consistent improvements in tokens-per-second (TPS) performance achieved by CopySpec compared to baseline models, demonstrating its efficiency and scalability.",
+        "[Figure: Figure 7: This figure illustrates the relationship between the copying parameter γ\\gamma and the model’s performance on the MT-Bench dataset with the LLaMa3.1-8B-Instruct model. The notations are the same as in Figure 3.]",
+        "[Table: Table 11: Tokens per second on two turns across categories on MT-Bench using CopySpec and Baseline with Qwen2.5-72B-Chat (γ=3\\gamma=3). Results follow the same notation as Table 2.]",
+        "[Table: Table 12: Tokens per second on two turns across categories on MT-Bench using CopySpec and Baseline with Qwen2.5-32B-Chat (γ=3\\gamma=3). Results follow the same notation as Table 2.]",
+        "[Table: Table 13: Tokens per second on two turns across categories on MT-Bench using CopySpec and Baseline with Qwen2.5-7B-Chat (γ=3\\gamma=3). Results follow the same notation as Table 2.]",
+        "[Table: Table 14: Tokens per second on two turns across categories on MT-Bench using CopySpec and Baseline with LLaMa3.1-70B-Instruct (γ=3\\gamma=3). Results follow the same notation as Table 2.]",
+        "[Table: Table 15: Tokens per second on two turns across categories on MT-Bench using CopySpec and Baseline with LLaMa3.1-8B-Instruct (γ=3\\gamma=3). Results follow the same notation as Table 2.]",
+        "[Table: Table 16: Tokens-per-second (TPS) performance on the MT-Bench dataset, using Qwen2.5-32B-Instruct as the target model and Qwen2.5-7B-Instruct as the draft model, where the draft model generates 3 tokens per attempt. Results are presented using the same notation as Table 3 and a γ\\gamma value of 3, showcasing the improvements in speed and efficiency enabled by CopySpec.]",
+        "[Table: Table 17: Tokens-per-second (TPS) performance on the MT-Bench dataset, using Qwen2.5-32B-Instruct as the target model and Qwen2.5-7B-Instruct as the draft model, where the draft model generates 5 tokens per attempt. Results are presented using the same notation as Table 3 and a γ\\gamma value of 3, illustrating the scalability and efficiency of CopySpec under varied settings.]"
+      ],
+      "subsections": [
+        {
+          "title": "D.1 Analysis of Gamma (γ\\gamma) on MT-Bench",
+          "paragraphs": [
+            "Figure 7 presents a comprehensive visualization of how the copying parameter γ\\gamma affects the performance of the LLaMa3.1-8B-Instruct model on the MT-Redundant dataset. The figure captures the interplay between the percentage of tokens successfully copied, the number of copying attempts, and the resulting tokens per second (TPS).",
+            "[Figure: Figure 7: This figure illustrates the relationship between the copying parameter γ\\gamma and the model’s performance on the MT-Bench dataset with the LLaMa3.1-8B-Instruct model. The notations are the same as in Figure 3.]"
+          ]
+        },
+        {
+          "title": "D.2 Speed-up by Category on MT-Bench",
+          "paragraphs": [
+            "Table 11 provides the TPS performance of Qwen2.5-72B-Chat on two turns. The speed-ups are most notable in categories such as Extraction and Coding, where repetitive patterns allow CopySpec to outperform the baseline consistently. Average speed-ups for both turns reinforce the efficiency gains achieved.",
+            "In Table 12, the performance of Qwen2.5-32B-Chat is evaluated. CopySpec achieves significant speed-ups, particularly in the second turn, where contextual repetition becomes more prevalent. Categories like Math and Writing show marked improvements, underscoring CopySpec’s ability to handle computationally intensive tasks effectively.",
+            "Table 13 highlights the results for Qwen2.5-7B-Chat. While the base model already performs efficiently, CopySpec further enhances TPS, with average speed-ups exceeding 1.3× in the second turn. These results confirm that CopySpec scales well across different model sizes.",
+            "The performance of LLaMa3.1-70B-Instruct is detailed in Table 14. CopySpec achieves consistent improvements across both turns, with substantial gains in computationally intensive categories such as Coding and Extraction. These results demonstrate the robustness of CopySpec when applied to larger models.",
+            "Table 15 evaluates LLaMa3.1-8B-Instruct. While the model size is significantly smaller, CopySpec still yields notable improvements, particularly in the second turn, where repetitive token patterns amplify the efficiency of speculative copying."
+          ]
+        },
+        {
+          "title": "D.3 Merging with Speculative Decoding on MT-Bench",
+          "paragraphs": [
+            "Finally, Table 16 and Table 17 compares different speculative decoding configurations with and without CopySpec, using Qwen2.5-32B-Instruct as the target model and Qwen2.5-7B-Instruct as the draft model. This analysis explores the impact of varying γ\\gamma values and draft token counts, demonstrating that the integration of CopySpec with speculative decoding consistently leads to enhanced performance. The results emphasize the adaptability of CopySpec across diverse operational settings.",
+            "These tables collectively validate the effectiveness of CopySpec in accelerating large language model inference while maintaining high output quality. The findings in this appendix complement those in Appendix C, reinforcing the method’s utility across datasets and configurations."
+          ]
+        }
+      ]
+    },
+    "Appendix E Extra Results on GSM-8K": {
+      "paragraphs": [
+        "This appendix provides an in-depth analysis of the CopySpec approach applied to self-correcting tasks and speculative decoding. The results demonstrate the effectiveness of CopySpec in improving token processing speed, leveraging context repetition, and enhancing self-correction efficiency without compromising model accuracy.",
+        "Table 18 extends the analysis to speculative decoding scenarios, focusing on the performance of CopySpec combined with speculative decoding when the draft model drafts 5 tokens at a time for self-correcting tasks. The table highlights the impact of varying draft model outputs, where CopySpec, combined with speculative decoding (γ=5\\gamma=5), achieves the best overall performance. Metrics such as TPS and τ\\tau show consistent improvements, with the approach accepting a higher average number of tokens per attempt. This configuration effectively balances the benefits of speculative decoding with CopySpec’s ability to handle token repetition efficiently.",
+        "Table 19 compares the performance of CopySpec and baseline models across three turns using the GSM-8K dataset for self-correcting tasks. The metrics include tokens-per-second (TPS), the percentage of tokens copied, and the number of tokens successfully copied (τ\\tau) per attempt. CopySpec consistently achieves significant improvements, particularly in the second and third turns, where a larger context size enables better utilization of repetitive patterns. Notable gains are observed in TPS, with improvements exceeding 2× in some configurations, and the percentage of copied tokens highlights CopySpec’s efficiency in refining self-corrections.",
+        "These results underscore the versatility of CopySpec in enhancing computational efficiency and self-correction capabilities across multiple scenarios. The combination of CopySpec with speculative decoding demonstrates its adaptability to diverse operational settings, paving the way for faster and more accurate large language model inference in tasks requiring iterative refinement.",
+        "[Table: Table 18: Performance comparison for self-correcting tasks when the draft model generates 5 tokens at a time. Qwen2.5-32B-Instruct is the target model, and Qwen2.5-7B-Instruct is the draft model. τ1\\tau_{1} refers to the average tokens accepted by CopySpec, and τ2\\tau_{2} refers to the average number of tokens accepted by the draft model. The accuracy of the model improves by from 92% to 93%. The average TPS is highest for Spec. Dec. + Copy(γ\\gamma = 5) at 15.59 while CopySpec alone achieves 14.84 TPS on average.]",
+        "[Table: Table 19: Performance comparison on the GSM-8K dataset for self-correcting tasks across three turns, using CopySpec and the base model with Qwen2.5-Instruct variants. The table highlights significant improvements in tokens-per-second (TPS), percentage of tokens copied, and the number of tokens successfully copied (τ\\tau) per attempt when attempting to copy 10 tokens, with γ=3\\gamma=3. These results demonstrate the effectiveness of CopySpec in leveraging increased context size and refining self-correction efficiency without compromising accuracy.]"
+      ],
+      "subsections": []
+    },
+    "Appendix F MT-Redundant Dataset Examples": {
+      "paragraphs": [
+        "This appendix provides one illustrative example from each of the eight categories in our new MT-Redundant dataset. MT-Redundant builds upon MT-Bench by modifying the second turn of each conversation into a request for variations or adjustments of the first turn’s response, thus emulating real-world scenarios in which users seek revisions to previous outputs. Specifically, we replace the original second-turn prompt in MT-Bench (Zheng et al., 2023) with one that instructs the model to revisit and refine its previous answer. All assistant responses in this appendix are generated using Qwen2.5-72B-Instruct.",
+        "[Figure: Figure 8: Examples from the Writing category (Slides 81–90). This category focuses on creative and formal writing tasks, such as rephrasing, summarizing, or generating alternative drafts. The second turn typically requests modifications or alternate versions of the initial written piece. ”[…]” represents truncated output that didn’t fit in the image.]",
+        "[Figure: Figure 9: Examples from the Roleplay category (Slides 91–100). Tasks in this category simulate real-world or imaginative scenarios, requiring the model to adjust its responses based on dynamic user requests and context shifts. ”[…]” represents truncated output that didn’t fit in the image.]",
+        "[Figure: Figure 10: Examples from the Reasoning category (Slides 101–110). This category evaluates logical and analytical thinking, with prompts asking models to refine prior explanations or provide additional clarifications in the second turn.]",
+        "[Figure: Figure 11: Examples from the Math category (Slides 111–120). This category challenges the model to revise or elaborate mathematical solutions, often clarifying steps or offering alternative solution paths when asked. ”[…]” represents truncated output that didn’t fit in the image.]",
+        "[Figure: Figure 12: Examples from the Coding category (Slides 121–130). This category covers programming-related tasks such as debugging, refactoring, or implementing variants of a provided code snippet in response to a user’s request. ”[…]” represents truncated output that didn’t fit in the image.]",
+        "[Figure: Figure 13: Examples from the Extraction category (Slides 131–140). This category focuses on pulling specific information from the model’s previous response or restructuring it (e.g., lists, bullet points) according to user specifications. ”[…]” represents truncated output that didn’t fit in the image.]",
+        "[Figure: Figure 14: Examples from the STEM category (Slides 141–150). This category addresses a variety of scientific and technical topics, requiring models to adapt or refine explanations, data, or methodologies in the second turn. ”[…]” represents truncated output that didn’t fit in the image.]",
+        "[Figure: Figure 15: Examples from the Humanities category (Slides 151–160). This category includes topics like literary analysis, historical context, or philosophical discussion, with the second turn often requesting deeper insight or alternate perspectives. ”[…]” represents truncated output that didn’t fit in the image.]"
+      ],
+      "subsections": []
+    },
+    "Appendix G Prompts Used": {
+      "paragraphs": [
+        "[Figure: Figure 16: An example of self-correction in code generation on the GSM-8K dataset using Qwen2.5-72B-Instruct, showcasing iterative refinement to improve accuracy.]",
+        "[Figure: Figure 17: An example of self-correction in code generation on CNN/DM using Qwen2.5-72B-Instruct, demonstrating abstractive summarization.]",
+        "[Figure: Figure 18: Example of code generation on the HumanEval dataset using Qwen2.5-72B-Instruct, demonstrating the model’s ability to produce a self-contained Python solution with function definitions, type hints, and test cases.]"
+      ],
+      "subsections": [
+        {
+          "title": "G.1 Example of Self-Correction on GSM-8K",
+          "paragraphs": [
+            "This appendix presents an example of self-correction in code generation on the GSM-8K dataset. Using Qwen2.5-72B-Instruct, we generate an initial solution and apply multi-round prompting to iteratively refine and correct the generated code.",
+            "To ensure direct answer generation, we prompt the model to explicitly print the computed result, reducing intermediate ambiguities and improving overall accuracy.",
+            "[Figure: Figure 16: An example of self-correction in code generation on the GSM-8K dataset using Qwen2.5-72B-Instruct, showcasing iterative refinement to improve accuracy.]"
+          ]
+        },
+        {
+          "title": "G.2 Example of Extractive Summarization",
+          "paragraphs": [
+            "This appendix provides an example of extractive summarization, where key sentences are selected directly from the original text to form a concise summary. The example, generated using Qwen2.5-72B-Instruct, demonstrates how to extract the most relevant information while preserving the original wording. Notably, the Qwen models show an interesting trend on the CNN/DM dataset, where larger models produce more extractive summaries that achieve slightly lower ROUGE-L scores.",
+            "[Figure: Figure 17: An example of self-correction in code generation on CNN/DM using Qwen2.5-72B-Instruct, demonstrating abstractive summarization.]"
+          ]
+        },
+        {
+          "title": "G.3 Code Generation on HumanEval",
+          "paragraphs": [
+            "This section presents an example of code generation using Qwen2.5-72B-Instruct on the HumanEval dataset. The model generates an initial code implementation based on a given problem description and produces a self-contained Python script that correctly solves the task. The input consists of a problem description specifying the function signature, expected behavior, and an example test case. The generated solution includes function definitions, type hints, and example test cases to ensure correctness.",
+            "[Figure: Figure 18: Example of code generation on the HumanEval dataset using Qwen2.5-72B-Instruct, demonstrating the model’s ability to produce a self-contained Python solution with function definitions, type hints, and test cases.]"
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "Andronov et al. (2024) Andronov, M., Andronova, N., Wand, M., Schmidhuber, J., and Clevert, D.-A. Accelerating the inference of string generation-based chemical reaction models for industrial applications, 2024. URL https://arxiv.org/abs/2407.09685.",
+    "Bavarian et al. (2022) Bavarian, M., Jun, H., Tezak, N., Schulman, J., McLeavey, C., Tworek, J., and Chen, M. Efficient training of language models to fill in the middle. arXiv preprint arXiv:2207.14255, 2022.",
+    "Cai et al. (2024) Cai, Y. et al. Medusa: Multidraft speculative decoding for accelerated inference. arXiv preprint arXiv:2401.10774, 2024.",
+    "Chen & Xu (2023) Chen, J. and Xu, H. Parallel decoding with speculative sampling for large language models. arXiv preprint arXiv:2306.15478, 2023. URL https://arxiv.org/abs/2306.15478.",
+    "Chen et al. (2021) Chen, M., Tworek, J., Jun, H., Yuan, Q., de Oliveira Pinto, H. P., Kaplan, J., Edwards, H., Burda, Y., Joseph, N., Brockman, G., Ray, A., Puri, R., Krueger, G., Petrov, M., Khlaaf, H., Sastry, G., Mishkin, P., Chan, B., Gray, S., Ryder, N., Pavlov, M., Power, A., Kaiser, L., Bavarian, M., Winter, C., Tillet, P., Such, F. P., Cummings, D., Plappert, M., Chantzis, F., Barnes, E., Herbert-Voss, A., Guss, W. H., Nichol, A., Paino, A., Tezak, N., Tang, J., Babuschkin, I., Balaji, S., Jain, S., Saunders, W., Hesse, C., Carr, A. N., Leike, J., Achiam, J., Misra, V., Morikawa, E., Radford, A., Knight, M., Brundage, M., Murati, M., Mayer, K., Welinder, P., McGrew, B., Amodei, D., McCandlish, S., Sutskever, I., and Zaremba, W. Evaluating large language models trained on code, 2021. URL https://arxiv.org/abs/2107.03374.",
+    "Cobbe et al. (2021) Cobbe, K., Kosaraju, V., Bavarian, M., Chen, M., Jun, H., Kaiser, L., Plappert, M., Tworek, J., Hilton, J., Nakano, R., Hesse, C., and Schulman, J. Training verifiers to solve math word problems. arXiv preprint arXiv:2110.14168, 2021.",
+    "Fried et al. (2023) Fried, D., Fu, Y., Shen, T., Smith, N. A., and Klein, D. Incoder: A generative model for code infilling and synthesis. arXiv preprint arXiv:2204.05999, 2023.",
+    "Gong et al. (2024) Gong, L., Wang, S., Elhoushi, M., and Cheung, A. Evaluation of llms on syntax-aware code fill-in-the-middle tasks, 2024. URL https://arxiv.org/abs/2403.04814.",
+    "Grattafiori et al. (2024) Grattafiori, A. et al. The llama 3 herd of models, 2024. URL https://arxiv.org/abs/2407.21783.",
+    "Gu et al. (2016) Gu, J., Lu, Z., Li, H., and Li, V. O. Incorporating copying mechanism in sequence-to-sequence learning. In Proceedings of the 54th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pp. 1631–1640, 2016.",
+    "He & Wang (2023) He, Z. and Wang, X. Speed: Speculative pipelined execution for efficient decoding in large language models. arXiv preprint arXiv:2310.12072, 2023. URL https://arxiv.org/abs/2310.12072.",
+    "He et al. (2023) He, Z. et al. Rest: Retrieval-based speculative decoding. arXiv preprint arXiv:2311.54321, 2023.",
+    "Jelassi et al. (2024) Jelassi, S., Brandfonbrener, D., Kakade, S. M., and Malach, E. Repeat after me: Transformers are better than state space models at copying. arXiv preprint arXiv:2402.01032, 2024.",
+    "Leviathan et al. (2023) Leviathan, Y. et al. Fast inference from transformers via speculative decoding. In Proceedings of the 40th International Conference on Machine Learning, 2023. URL https://proceedings.mlr.press/v202/leviathan23a.html.",
+    "Li et al. (2024) Li, Y., Wei, F., Zhang, C., and Zhang, H. Eagle-2: Faster inference of language models with dynamic draft trees, 2024. URL https://arxiv.org/abs/2406.16858.",
+    "Liu et al. (2023) Liu, J., Xia, C. S., Wang, Y., and Zhang, L. Is your code generated by chatGPT really correct? rigorous evaluation of large language models for code generation. In Thirty-seventh Conference on Neural Information Processing Systems, 2023. URL https://openreview.net/forum?id=1qvx610Cu7.",
+    "Liu et al. (2024) Liu, X., Zhang, Y., Wang, P., Ge, T., Liu, T., Li, Y., and Sui, Z. Adaptive draft-verification for efficient large language model decoding. In Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing, pp. 1234–1245, 2024.",
+    "Madaan et al. (2023) Madaan, A., Tandon, N., Gupta, P., Hallinan, S., Gao, L., Wiegreffe, S., Alon, U., Dziri, N., Prabhumoye, S., Yang, Y., Gupta, S., Majumder, B. P., Hermann, K., Welleck, S., Yazdanbakhsh, A., and Clark, P. Self-refine: Iterative refinement with self-feedback, 2023. URL https://arxiv.org/abs/2303.17651.",
+    "McCoy et al. (2023) McCoy, R. T., Min, S., Linzen, T., and Hajishirzi, H. How much do language models copy from their training data? evaluating linguistic novelty in text generation using raven. Transactions of the Association for Computational Linguistics, 11:727–744, 2023.",
+    "Miao et al. (2023) Miao, X. et al. Specinfer: Accelerating generative llm serving with speculative inference and token tree verification. arXiv preprint arXiv:2305.12345, 2023.",
+    "Mistral AI (2024) Mistral AI. Codestral: Hello, world!, 2024. https://mistral.ai/news/codestral/.",
+    "Qwen et al. (2025) Qwen, :, Yang, A., Yang, B., Zhang, B., Hui, B., Zheng, B., Yu, B., Li, C., Liu, D., Huang, F., Wei, H., Lin, H., Yang, J., Tu, J., Zhang, J., Yang, J., Yang, J., Zhou, J., Lin, J., Dang, K., Lu, K., Bao, K., Yang, K., Yu, L., Li, M., Xue, M., Zhang, P., Zhu, Q., Men, R., Lin, R., Li, T., Tang, T., Xia, T., Ren, X., Ren, X., Fan, Y., Su, Y., Zhang, Y., Wan, Y., Liu, Y., Cui, Z., Zhang, Z., and Qiu, Z. Qwen2.5 technical report, 2025. URL https://arxiv.org/abs/2412.15115.",
+    "Roziere et al. (2023) Roziere, B., Nguyen, H., Robert, T., Li, L. X., Le Scao, T., Tan, Q., Nguyen, T. H., Li, X. L., Pannier, B., Xu, C., Scialom, T., Gao, L., Schick, T., Kocetkov, D., Mallen, L., Qian, Y., Susano Pinto, P., Ruwase, O., Lhoest, Q., Goyal, N., Matuszek, C., Karpukhin, V., Lewis, M., Edunov, S., Grave, E., Ranzato, M., Parikh, A. P., and Fan, A. Code llama: Open foundation models for code. arXiv preprint arXiv:2308.12950, 2023.",
+    "See et al. (2017) See, A., Liu, P. J., and Manning, C. D. Get to the point: Summarization with pointer-generator networks. CoRR, abs/1704.04368, 2017. URL http://arxiv.org/abs/1704.04368.",
+    "Shen et al. (2023) Shen, T., Peng, H., Shen, R., Fu, Y., Harchaoui, Z., and Choi, Y. Film: Fill-in language models for any-order generation. arXiv preprint arXiv:2310.09930, 2023.",
+    "Sun et al. (2024) Sun, R., Zhou, T., Chen, X., and Sun, L. Spechub: Provable acceleration to multi-draft speculative decoding, 2024. URL https://arxiv.org/abs/2411.05289.",
+    "Team et al. (2024) Team, C., Zhao, H., Hui, J., Howland, J., Nguyen, N., Zuo, S., Hu, A., Choquette-Choo, C. A., Shen, J., Kelley, J., Bansal, K., Vilnis, L., Wirth, M., Michel, P., Choy, P., Joshi, P., Kumar, R., Hashmi, S., Agrawal, S., Gong, Z., Fine, J., Warkentin, T., Hartman, A. J., Ni, B., Korevec, K., Schaefer, K., and Huffman, S. Codegemma: Open code models based on gemma, 2024. URL https://arxiv.org/abs/2406.11409.",
+    "Vinyals et al. (2015) Vinyals, O., Fortunato, M., and Jaitly, N. Pointer networks. In Advances in Neural Information Processing Systems, volume 28, pp. 2692–2700, 2015.",
+    "Wang et al. (2023) Wang, Y., Zhang, T., Li, X. L., and Liang, P. Syntax-aware fill-in-the-middle evaluation for code generation. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, 2023.",
+    "Yang et al. (2023) Yang, S. et al. Predictive pipelined decoding: A compute-latency trade-off for exact llm decoding. arXiv preprint arXiv:2308.45678, 2023.",
+    "Zheng et al. (2023) Zheng, L., Chiang, W.-L., Sheng, Y., Zhuang, S., Wu, Z., Zhuang, Y., Lin, Z., Li, Z., Li, D., Xing, E. P., Zhang, H., Gonzalez, J. E., and Stoica, I. Judging llm-as-a-judge with mt-bench and chatbot arena, 2023. URL https://arxiv.org/abs/2306.05685.",
+    "Zheng et al. (2024) Zheng, L., Yuan, J., Zhang, Z., Yang, H., and Kong, L. Self-infilling code generation, 2024. URL https://arxiv.org/abs/2311.17972.",
+    "Zhou et al. (2023) Zhou, Y. et al. Distillspec: Improving speculative decoding via knowledge distillation. arXiv preprint arXiv:2310.98765, 2023."
+  ]
+}

@@ -1,0 +1,348 @@
+{
+  "title": "Heterogeneous Swarms: Jointly Optimizing ModelRoles and Weights for Multi-LLM Systems",
+  "authors": "Shangbin FengZifeng WangPalash GoyalYike WangWeijia ShiHuang XiaHamid PalangiLuke ZettlemoyerYulia TsvetkovChen-Yu LeeTomas Pfister",
+  "abstract": "We propose Heterogeneous Swarms, an algorithm to design multi-LLM systems by jointly optimizing model roles and weights. We represent multi-LLM systems as directed acyclic graphs (DAGs) of LLMs with topological message passing for collaborative generation. Given a pool of LLM experts and a utility function, Heterogeneous Swarms employs two iterative steps: role-step and weight-step. For role-step, we interpret model roles as learning a DAG that specifies the flow of inputs and outputs between LLMs. Starting from a swarm of random continuous adjacency matrices, we decode them into discrete DAGs, call the LLMs in topological order, evaluate on the utility function (e.g. accuracy on a task), and optimize the adjacency matrices with particle swarm optimization based on the utility score. For weight-step, we assess the contribution of individual LLMs in the multi-LLM systems and optimize model weights with swarm intelligence. We propose JFK-score to quantify the individual contribution of each LLM in the best-found DAG of the role-step, then optimize model weights with particle swarm optimization based on the JFK-score. Experiments demonstrate that Heterogeneous Swarms outperforms 15 role- and/or weight-based baselines by 18.5% on average across 12 tasks. Further analysis reveals that Heterogeneous Swarms discovers multi-LLM systems with heterogeneous model roles and substantial collaborative gains, and benefits from the diversity of language models.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Advancing beyond training a single general-purpose large language model (LLM) (Brown et al., 2020; Team et al., 2023), recent research recognizes the importance of multi-LLM collaboration and advances multi-LLM systems, where diverse models serve in a collaborative system to complement each other and expand model capabilities (Liu et al., 2024a; Shen et al., 2024). Models often have different roles in multi-LLM collaboration, governing the subtask and functionality of individual LLMs; adapting the model weights of these LLMs are also identified as important for models to complement each other. Existing methods to develop multi-LLM systems are often fixed-weight and/or fixed-role and could not flexibly adapt to diverse tasks and contexts.",
+        "Fixed-weight systems employ static and often black-box LLMs and contextualize their roles through textual interaction (Du et al., 2024; Zhuge et al., 2024). Despite the diversity of tasks and inputs, these static models are repeated across model roles and contexts, becoming the bottleneck of flexible adaptation. Fixed-role systems usually orchestrate LLMs in a fixed workflow and seed LLMs with different hand-crafted prompts and enable their interaction of message passing based on these prompt-induced roles (Si et al., 2023; Feng et al., 2024b). However, new tasks and domains would require substantial prompt engineering, which heavily depends on prior knowledge of the given task. Hence the static roles become the bottleneck in automating and scaling multi-LLM systems to unseen tasks and contexts (Khattab et al., 2022; Wan et al., 2024; Khattab et al., 2024). As such, a flexible approach that jointly optimizes the weights and roles of multi-LLM systems is crucial for adapting diverse LLM experts for wide-ranging purposes.",
+        "To this end, we propose Heterogeneous Swarms to search for adapted roles and weights guided by a utility function ff (e.g. performance on a task) via swarm intelligence. Inspired by the success of LLMs and particle swarm optimization (PSO) (Kennedy & Eberhart, 1995; Feng et al., 2024c), an algorithm to optimize continuous tensors via collective search, we formulate the optimization of roles and weights in two interleaved steps: role-step and weight-step.",
+        "For role-step, we use the heterogeneous expertise of models for varying roles: we interpret roles as input-output relations in a multi-LLM system. Role optimization is a graph learning problem, where natural language messages are passed between LLMs organized in a directed acyclic graph (DAG). While previous methods considered heuristics-based and hand-crafted structures such as a star or chain (LangGraph, 2024), finding the optimal structure of multi-LLM systems requires task-specific adaptation (Hu et al., 2024b). We use particle swarm optimization to learn LLM DAGs: Given a set of nn LLM experts, we randomly initialize a swarm of continuous adjacency matrices of size n×nn\\times n, indicating the likelihood of having directed edge (i,j)(i,j). We propose G-Decode to decode these continuous adjacency matrices into discrete DAGs of models. We call LLMs in the topological order of the DAG and evaluate their performance: the swarm of adjacency matrices are then optimized based on the performance scores via PSO, where matrices collectively “move” in the matrix search space to adapt to ff.",
+        "For weight-step, we adapt models to the task and roles represented by the multi-LLM network. We propose JFK-score to quantify what individual models can do for the multi-LLM system: randomly assigning the pool of LLMs to positions in the DAG multiple times, run inference, and evaluate different assignments. The JFK-score of one model is the aggregated performance across assignments weighted by their frequency (i.e. number of times it appears in a multi-LLM system). The swarm of LLMs is then optimized based on the JFK-scores via PSO, where models collectively update their weights to adapt to ff.",
+        "Role-step and weight-step are iteratively employed to jointly optimize roles and weights, until the utility ff does not improve or a maximum iteration limit is met. In the end, we obtain a multi-LLM network where the graph structure and model weights are both optimized for utility ff. (Figure 1)",
+        "Heterogeneous Swarms outperforms 15 role/weight-based approaches by 18.5% on average across 12 tasks spanning knowledge, reasoning, and agent contexts. Heterogeneous Swarms also enables inference-time scaling (Snell et al., 2024; Brown et al., 2024; Wu et al., 2024b) of smaller language models through topological collaborative generation, with a 27.1% improvement on average when scaling the collaboration from two to ten LLMs. (Figure 6) Further analysis reveals that roles and weights could have varying levels of importance for different tasks, Heterogeneous Swarms benefits from the diversity of LLM experts, the optimization could speed up with increased sparsity and “dropout”, and we discover multi-LLM systems with heterogeneous roles and collaborative gains."
+      ],
+      "subsections": []
+    },
+    "2 Preliminary": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "2.1 Multi-LLM Systems",
+          "paragraphs": [
+            "Multi-LLM collaboration could take many forms, featuring information exchange at the API (Hu et al., 2024a), text (Du et al., 2024), logit (Liu et al., 2024a), and weight levels (Yadav et al., 2024a). In this work, we define multi-LLM systems as directed acyclic graphs (DAG) of LLMs and a multi-LLM system is represented by two variables: a set of LLMs 𝒳=[𝐱1,⋯,𝐱n]\\mathcal{X}=[\\mathbf{x}_{1},\\cdots,\\mathbf{x}_{n}] and adjacency matrix 𝒜={ai​j}n×n\\mathcal{A}=\\{a_{ij}\\}_{n\\times n}, where ai​j∈{0,1}a_{ij}\\in\\{0,1\\} and ai​j=1a_{ij}=1 indicates that the output of model 𝐱i\\mathbf{x}_{i} becomes part of the input of model 𝐱j\\mathbf{x}_{j} with nn models in total. 𝒜∣𝒳\\mathcal{A}\\mid\\mathcal{X} then denotes a multi-LLM system, where 𝒜\\mathcal{A} defines the structure of the DAG and each position in the graph is instantiated by an LLM in 𝒳\\mathcal{X}. Given an input, models in 𝒳\\mathcal{X} are called in the topological order of 𝒜\\mathcal{A} to interact and collaborate with each other. As such, optimizing roles and input-output relations becomes optimizing the graph structure 𝒜\\mathcal{A}, and optimizing weights becomes optimizing the weights of models in 𝒳\\mathcal{X}."
+          ]
+        },
+        {
+          "title": "2.2 Swarm Intelligence",
+          "paragraphs": [
+            "Particle swarm optimization (PSO) is an optimization algorithm based on the collective behavior of individual systems for non-differentiable contexts (Kennedy & Eberhart, 1995). Guided by its initial success in LLMs (Feng et al., 2024c), we adapt PSO to optimize swarms of 𝒜\\mathcal{A} and 𝐱\\mathbf{x}.",
+            "The input of PSO is a set of continuous vectors {𝐱i}i=1n\\{\\mathbf{x}_{i}\\}_{i=1}^{n} and a utility function ff giving vectors a scalar score f​(𝐱)f(\\mathbf{x}). Each vector 𝐱i\\mathbf{x}_{i} has two attributes: velocity 𝐯i\\mathbf{v}_{i} of the same dimension, initialized as 𝟎\\mathbf{0}; personal best 𝐩i\\mathbf{p}_{i}, the best-found location of 𝐱i\\mathbf{x}_{i} based on utility function ff in its search history. The collective swarm has two other attributes: global best/worst 𝐠\\mathbf{g} and 𝐠w\\mathbf{g}_{w}, indicating the best/worst-found checkpoint in all of the previous {𝐱i}i=1n\\{\\mathbf{x}_{i}\\}_{i=1}^{n}. These attributes would provide signals for vector 𝐱i\\mathbf{x}_{i} to move in the search space guided by personal/global information.",
+            "One PSO step changes model velocity 𝐯i\\mathbf{v}_{i} and takes a step towards the adjusted velocity direction. Concretely:",
+            "where 𝒞=rv​ϕv+rp​ϕp+rg​ϕg+rw​ϕw\\mathcal{C}=r_{v}\\phi_{v}+r_{p}\\phi_{p}+r_{g}\\phi_{g}+r_{w}\\phi_{w} is a normalization term. The adjusted velocity is the weighted average of four terms: 𝐯i\\mathbf{v}_{i} makes the model keep part of its current velocity (i.e. inertia); (𝐩i−𝐱i)(\\mathbf{p}_{i}-\\mathbf{x}_{i}) draws the model towards its personal best; (𝐠−𝐱i)(\\mathbf{g}-\\mathbf{x}_{i}) draws towards the global best; −(𝐠w−𝐱i)-(\\mathbf{g}_{w}-\\mathbf{x}_{i}), repel from the global worst. ϕv\\phi_{v}, ϕp\\phi_{p}, ϕg\\phi_{g}, ϕw\\phi_{w} are hyperparameters and rv,rp,rg,rw∼𝒰​(0,1)r_{v},r_{p},r_{g},r_{w}\\sim\\mathcal{U}(0,1) are randomness factors, governing how much 𝐱i\\mathbf{x}_{i} is impacted by personal/global information. Vectors then take a step towards the new velocity: 𝐱i←𝐱i+λ​𝐯i\\mathbf{x}_{i}\\leftarrow\\mathbf{x}_{i}+\\lambda\\mathbf{v}_{i}, where λ\\lambda is the step length hyperparameter. New vectors are then evaluated on ff to update personal/global best and worst. We formulate a PSO step in algorithm 1 and will use {𝐱i}i=1n,𝐱best=PSO​({𝐱i}i=1n,{f​(𝐱i)}i=1n)\\{\\mathbf{x}_{i}\\}_{i=1}^{n},\\mathbf{x}_{\\textit{best}}=\\mathrm{PSO}(\\{\\mathbf{x}_{i}\\}_{i=1}^{n},\\{f(\\mathbf{x}_{i})\\}_{i=1}^{n}) to denote a PSO step to optimize {𝐱i}i=1n\\{\\mathbf{x}_{i}\\}_{i=1}^{n} based on their scores {f​(𝐱i)}i=1n\\{f(\\mathbf{x}_{i})\\}_{i=1}^{n}."
+          ]
+        }
+      ]
+    },
+    "3 Methodology": {
+      "paragraphs": [
+        "We propose Heterogeneous Swarms, jointly optimizing model roles and weights for multi-LLM systems. Starting from a pool of LLM experts as input, Heterogeneous Swarms discovers a directed acyclic graph of models representing heterogeneous roles with adapted model weights, iteratively employing role-step and weight-step (Figure 2)."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Role-step",
+          "paragraphs": [
+            "Unlike existing work that often manually specifies model roles through prompt engineering (Feng et al., 2024b; Zhao et al., 2024), we propose to learn a directed acyclic graph of input-output relationships. To this end, Heterogeneous Swarms operationalizes the optimization of model roles as a graph optimization problem: discovering and optimizing directed acyclic graphs (DAGs) of LLMs to call them in the topological order for collaborative generation. We envision swarm intelligence as a viable and flexible tool by letting multiple potential DAGs explore the search space of graphs to adapt to a given task and utility function.",
+            "To make discrete graphs compatible with particle swarm optimization (Sec 2) that optimizes continuous tensors, we first represent graphs by continuous adjacency matrices 𝐀∈ℝn×n\\mathbf{A}\\in\\mathbb{R}^{n\\times n}, where ai​ja_{ij} denotes the likelihood of a directed edge from model 𝐱i\\mathbf{x}_{i} to model 𝐱j\\mathbf{x}_{j}. We propose G−decode\\mathrm{G\\mathchar 45\\relax decode}, an algorithm to decode discrete DAGs out of continuous 𝐀\\mathbf{A}s. We first select an end node kk based on inverse out degrees k=top−p​({1/∑j=1nai​j}i=1n)k=\\mathrm{top\\mathchar 45\\relax p}(\\{1/\\sum_{j=1}^{n}a_{ij}\\}_{i=1}^{n}), where top−p\\mathrm{top\\mathchar 45\\relax p} denotes top-p sampling (Holtzman et al., 2020). We then iteratively select a remaining node based on out degrees u=top−p​({∑j=1nai​j})u=\\mathrm{top\\mathchar 45\\relax p}(\\{\\sum_{j=1}^{n}a_{ij}\\}) and add an edge between uu and any existing node vv with probability exp⁡(au​v)∑i∈ℰexp⁡(au​i)\\frac{\\exp(a_{uv})}{\\sum_{i\\in\\mathcal{E}}\\exp(a_{ui})}, until all nodes are considered. Graphs decoded with G−decode\\mathrm{G\\mathchar 45\\relax decode} are directed since we only add directed edges and they are acyclic since new nodes only connect to existing nodes in the graph. The resulted DAGs define an input-output mapping: given an input, we call LLMs in the topological order of G−decode​(𝐀)\\mathrm{G\\mathchar 45\\relax decode}(\\mathbf{A}), and the output of the end node becomes the output of the multi-LLM system (Algorithm 2).",
+            "We evaluate the utility of the continuous adjacency matrix by decoding it into a DAG, call the models in topological order, and evaluate its performance on the utility function ff. Concretely, we initialize a swarm of NN continuous adjacency matrices {𝐀i}i=1N∼𝒰n×n​(0,1)\\{\\mathbf{A}^{i}\\}_{i=1}^{N}\\sim\\mathcal{U}_{n\\times n}(0,1). For one role-step, we decode and evaluate their utility f​(G−decode​(𝐀i))f(\\mathrm{G\\mathchar 45\\relax decode}(\\mathbf{A}^{i})) and optimize the continuous 𝐀\\mathbf{A}s through swarm intelligence:",
+            "The resulting {𝐀i}i=1N\\{\\mathbf{A}^{i}\\}_{i=1}^{N} after a single PSO step will represent graphs that slightly better adapt to the task ff."
+          ]
+        },
+        {
+          "title": "3.2 Weight-step",
+          "paragraphs": [
+            "While existing work often uses static models across tasks and contexts (Zhuge et al., 2024; Du et al., 2024), we posit that model weights could be optimized to adapt to the task as well as model roles in the DAG. However, it is challenging to quantify the utility of a single LLM in a multi-LLM system, so that model weight optimization is compatible with swarm intelligence. We propose JFK-score222 “Ask not what the multi-LLM system can do for you, ask what you can do for the multi-LLM system.” —– Authors, 2025, an algorithm to evaluate individual contribution in multi-LLM systems.",
+            "Concretely, given the best-found DAG in the role-step 𝐀best\\mathbf{A}_{\\textit{best}} and the pool of LLM experts {𝐱i}i=1n\\{\\mathbf{x}_{i}\\}_{i=1}^{n}, we randomly select an LLM for each position in 𝐀best\\mathbf{A}_{\\textit{best}} to obtain an assignment 𝒳\\mathcal{X}, where 𝐀best∣𝒳\\mathbf{A}_{\\textit{best}}\\mid\\mathcal{X} represents an instantiated multi-LLM system. We repeat assignment MM times to obtain {𝒳i}i=1M\\{\\mathcal{X}^{i}\\}_{i=1}^{M} and evaluate their utility f​(𝒳i)=f​(G−decode​(𝐀i∣𝒳i))f(\\mathcal{X}^{i})=f(\\mathrm{G\\mathchar 45\\relax decode}(\\mathbf{A}^{i}\\mid\\mathcal{X}^{i})). The individual contribution of model 𝐱i\\mathbf{x}_{i} should then be the aggregate of utility weighted by model ii’s frequency: we denote the frequency of 𝐱i\\mathbf{x}_{i} in 𝒳j\\mathcal{X}^{j} as cnti,j=∑k=1n𝟙​(𝒳kj=𝐱i)\\mathrm{cnt}_{i,j}=\\sum_{k=1}^{n}\\mathbbm{1}(\\mathcal{X}^{j}_{k}=\\mathbf{x}_{i}) and the individual contribution score should be:",
+            "In this way, JFK−score​(𝐱i)\\mathrm{JFK\\mathchar 45\\relax score}(\\mathbf{x}_{i}) quantifies the individual contribution of model 𝐱i\\mathbf{x}_{i} across multiple roles and collaboration partners. (Algorithm 3) We optimize model weights guided by their individual contribution with swarm intelligence:",
+            "Heterogeneous Swarms alternates between role-step and weight-step, iteratively optimizing model roles and weights in the multi-LLM system to adapt to the task ff. We present the overall procedure in algorithm 4."
+          ]
+        }
+      ]
+    },
+    "4 Experiment Settings": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Models and Implementation",
+          "paragraphs": [
+            "We implement a prototype of Heterogeneous Swarms with Gemma-7B (google/gemma-7b-it) (Gemma Team et al., 2024) in the main paper and also employ other LLMs such as Mistral-7B in Table 4. We employ the pool of 10 LLM experts in Feng et al. (2024c) for fair comparison, fine-tuned from Gemma-7B using 10 domains in Tulu-v2 (Ivison et al., 2023) spanning reasoning, code, general instruction following, and more: We employ p=0.8p=0.8 for top-p sampling, N=10N=10, M=10M=10, search patience 6, max iteration 20, while running grid search over other hyperparameters and report performance of the best-found multi-LLM systems."
+          ]
+        },
+        {
+          "title": "Baselines",
+          "paragraphs": [
+            "We compare with 15 baselines across 5 categories that focus on optimizing model roles and/or weights.",
+            "• trivial baselines: 1) Best Single expert, essentially arg​max𝐱⁡f​(𝐱)\\operatorname*{arg\\,max}_{\\mathbf{x}}f(\\mathbf{x}) for 𝐱∈{𝐱i}i=1n\\mathbf{x}\\in\\{\\mathbf{x}_{i}\\}_{i=1}^{n}; 2) Prediction Merge, where the predictions of {𝐱i}i=1n\\{\\mathbf{x}_{i}\\}_{i=1}^{n} are ensembled via plurality vote (if applicable).",
+            "• static weight: these approaches conduct model merging independent of the task and utility function ff: Data Merge, Uniform Soup (Wortsman et al., 2022), and Dare-Ties (Yu et al., 2024; Yadav et al., 2024b).",
+            "• dynamic weight: these approaches optimize model weights based on the utility function ff: Greedy Soup (Wortsman et al., 2022), Pack of LLMs (Mavromatis et al., 2024), LoraHub (Huang et al., 2023), and Model Swarms (Feng et al., 2024c).",
+            "• static role: we employ two structures in hand-crafted agent systems (LangGraph, 2024): chain and star.",
+            "• dynamic role: these approaches optimize model roles and connections based on ff: GPT-Swarm (Zhuge et al., 2024), Meta-Agent (Hu et al., 2024b), Agent-Prune (Zhang et al., 2024a), and GNNs (Zhang et al., 2024b).",
+            "trivial baselines: 1) Best Single expert, essentially arg​max𝐱⁡f​(𝐱)\\operatorname*{arg\\,max}_{\\mathbf{x}}f(\\mathbf{x}) for 𝐱∈{𝐱i}i=1n\\mathbf{x}\\in\\{\\mathbf{x}_{i}\\}_{i=1}^{n}; 2) Prediction Merge, where the predictions of {𝐱i}i=1n\\{\\mathbf{x}_{i}\\}_{i=1}^{n} are ensembled via plurality vote (if applicable).",
+            "static weight: these approaches conduct model merging independent of the task and utility function ff: Data Merge, Uniform Soup (Wortsman et al., 2022), and Dare-Ties (Yu et al., 2024; Yadav et al., 2024b).",
+            "dynamic weight: these approaches optimize model weights based on the utility function ff: Greedy Soup (Wortsman et al., 2022), Pack of LLMs (Mavromatis et al., 2024), LoraHub (Huang et al., 2023), and Model Swarms (Feng et al., 2024c).",
+            "static role: we employ two structures in hand-crafted agent systems (LangGraph, 2024): chain and star.",
+            "dynamic role: these approaches optimize model roles and connections based on ff: GPT-Swarm (Zhuge et al., 2024), Meta-Agent (Hu et al., 2024b), Agent-Prune (Zhang et al., 2024a), and GNNs (Zhang et al., 2024b)."
+          ]
+        },
+        {
+          "title": "Data and Evaluation",
+          "paragraphs": [
+            "We compare Heterogeneous Swarms against baselines on 12 datasets spanning 4 categories: 1) knowledge: MMLU-pro (Wang et al., 2024b), Knowledge Crosswords (Ding et al., 2024), and COM2 (Fang et al., 2024); 2) reasoning: GSM8k (Cobbe et al., 2021), NLGraph (Wang et al., 2024a), and Normad (Rao et al., 2024); 3) agent: GAIA-text (Mialon et al., 2024), the knowledge graph and lateral thinking puzzle subtasks of AgentBench (Liu et al., 2024b); 4) miscellaneous: long-context with Qasper (Dasigi et al., 2021), reliability with AbstainQA (Feng et al., 2024b), and LLM-as-a-judge with WoW (Yao et al., 2024)."
+          ]
+        }
+      ]
+    },
+    "5 Results": {
+      "paragraphs": [
+        "We present the performance of Heterogeneous Swarms and baselines on the 12 tasks in Table 1."
+      ],
+      "subsections": [
+        {
+          "title": "Heterogeneous Swarmsconsistently discovers state-of-the-art multi-LLM systems.",
+          "paragraphs": [
+            "Heterogeneous Swarms achieves the best performance on 11 of the 12 datasets, outperforming the second-best approach by 18.5% on average. This indicates that starting from the same pool of initial LLMs, Heterogeneous Swarms could flexibly discover multi-LLM systems that adapt to diverse tasks and contexts spanning knowledge, reasoning, and more."
+          ]
+        },
+        {
+          "title": "Role and weight are disproportionately important for different tasks.",
+          "paragraphs": [
+            "For knowledge tasks, weight baselines (Static Weight and Dynamic Weight) outperform role baselines (Static Role and Dynamic Role) by 4.3% on average. However, for agent tasks, role baselines are 9.2% better. This indicates that role and weight have varying importance in different tasks: by jointly optimizing roles and weights in multi-LLM systems, Heterogeneous Swarms flexibly adapts to both scenarios. We further investigate their importance in Section 6."
+          ]
+        },
+        {
+          "title": "Dynamic adaptation works better than static engineering.",
+          "paragraphs": [
+            "We find that Dynamic Weight approaches outperform Static Weight by 30.1% across tasks, while Dynamic Role outperforms Static Role by up to 8.2%. This indicates that instead of hand-crafted ways to design roles or merge weights, dynamic adaptation approaches guided by utility function ff offer better adaptation. Heterogeneous Swarms employs role-step and weight-step to dynamically adapt both for ff, resulting in flexible multi-LLM systems adapted to diverse tasks and applications."
+          ]
+        }
+      ]
+    },
+    "6 Analysis": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Collaborative Gains",
+          "paragraphs": [
+            "To justify the cost of calling multiple LLMs in topological order, a multi-LLM system should unlock 1+1>21+1>2 effects: the multi-LLM collaboration should produce collaborative gains compared to employing a single LLM. Concretely:",
+            " For problem qq, if p%p\\% of the component LLMs could solve it individually, then the multi-LLM system should have a larger than p%p\\% likelihood of solving it. ",
+            "To quantify this, we group problems in dataset 𝒟\\mathcal{D} by how many component LLMs could solve it individually: problem q∈Bnq\\in B_{n} if nn of the NN component LLMs could solve it. We then calculate the metric Collaborative Gain as:",
+            "where Acc​(Bn)\\mathrm{Acc}(B_{n}) denotes the accuracy of the multi-LLM systems for problems in BnB_{n}, EA​(Bn)\\mathrm{EA}(B_{n}) denotes the Expected Accuracy n/Nn/N, |Bn||B_{n}| and |𝒟||\\mathcal{D}| denote the number of problems in the bucket and the dataset. If a multi-LLM system satisfies the principle, then Acc​(Bn)>EA​(Bn)\\mathrm{Acc}(B_{n})>\\mathrm{EA}(B_{n}) and C−Gain>0\\mathrm{C\\mathchar 45\\relax Gain}>0.",
+            "We present the collaborative gains of Heterogeneous Swarms in Figure 3. Heterogeneous Swarms achieves consistent positive collaborative gains with an average of 0.213. For problems in bucket B0B_{0}, i.e. none of the initial LLMs could solve individually, Heterogeneous Swarms discovers multi-LLM systems that solve 18.1% of them on average. This indicates that Heterogeneous Swarms could find adapted multi-LLM systems with new compositional skills and substantial collaborative gains."
+          ]
+        },
+        {
+          "title": "Importance of Role and Weight through Ablation Study",
+          "paragraphs": [
+            "In section 5, we discover that model roles and weights could be disproportionately important for different tasks based on baseline performance. We compare the trend with our approach, specifically through disabling either the role step or the weight step in Heterogeneous Swarms (w/o Role and w/o Weight). Let BrB_{r} and BwB_{w} denote the average performance of role/weight-based baselines, then the importance of role/weight is consistent when the following logic expression is True:",
+            "We present performance of the ablated settings and the value of the logic expression across 12 datasets in Table 2. Results demonstrate that roles and weights could have varying importance (e.g. weight is more important for knowledge tasks while role is more important for agent) and such importance is consistent in 10 of the 12 tasks. In addition to jointly adapting model roles and weights, Heterogeneous Swarms offers insights into their importance for the task at hand."
+          ]
+        },
+        {
+          "title": "Role Statistics",
+          "paragraphs": [
+            "We first manually examine the input/output of multi-LLM systems, identifying four potential roles of individual models in the multi-LLM system: 1) divide, where the multi-LLM identifies and solves part of the problem; 2) refine, where the LLM proposes a new (sub)answer based on previous steps; 3) feedback, where the LLM provides feedback on previous steps; 4) irrelevant, where the LLM fails to generate relevant text. We employ Gemini-as-a-judge (Team et al., 2023) (gemini-1.5-flash) to automatically identify the role of individual LLMs and conduct three analysis in Figure 4.",
+            "We analyze the variation of model roles across tasks in Fig.4, top left. For the graph reasoning task NLGraph, there is greater divide and conquer to solve part of the problem; for the knowledge tasks such as K-Crosswords, there is greater feedback to identify knowledge gaps in existing answers. Guided by different ffs, Heterogeneous Swarms discover multi-LLM systems with different role distributions.",
+            "We investigate the roles of LLMs in different positions of the DAG on NLGraph in Fig.4, right. We find that individual LLMs do have heterogeneous role distributions given their topological position: for the branching nodes there is often higher divide, while for the converging nodes there is often higher refine and feedback. This indicates that Heterogeneous Swarms successfully discovers multi-LLM systems where individual LLMs play heterogeneous roles.",
+            "We finally plot the change of model roles in the optimization process in Figure 4, bottom left, when adapting to NLGraph. We observe that irrelevant roles gradually decrease while the three other functional roles consistently increase in the course of optimization. This indicates that by integrating weight optimization, Heterogeneous Swarms improves the quality of LLMs to adapt to the task at hand."
+          ]
+        },
+        {
+          "title": "Encouraging Sparsity",
+          "paragraphs": [
+            "We observe that if the network is dense, i.e. when one LLM takes the output of too many LLMs as input, it might lead to irrelevant outputs. In addition, encouraging sparsity in the network would also reduce context lengths and hence inference costs. To this end, we encourage sparsity in the multi-LLM network by two means: 1) by setting a threshold τ∈[0,1]\\tau\\in[0,1] and pruning the continuous adjacency 𝒜\\mathcal{A} with 𝒜′={ai​j⋅𝟙​[max⁡(ai​j−τ,0)]}\\mathcal{A}^{\\prime}=\\{a_{ij}\\cdot\\mathbbm{1}[\\max(a_{ij}-\\tau,0)]\\}; 2) by adding a ℒ1\\mathcal{L}_{1} normalization term to the utility function: f′=f+λ​‖𝒜‖1f^{\\prime}=f+\\lambda\\|\\mathcal{A}\\|_{1}. We employ various values of τ\\tau and λ\\lambda: Table 3 presents the performance and speedup calculated by the percentage of reduced connections in the network. Results demonstrate that ℒ1\\mathcal{L}_{1} better retains performance while thresholding presents a larger reduction in inference cost."
+          ]
+        },
+        {
+          "title": "Diversity Matters",
+          "paragraphs": [
+            "Heterogeneous Swarms operates on the assumption that the multiple large language models would complement each other based on their diverse expertise. To investigate whether this model diversity is crucial, we conduct an controlled experiment where we fix the LLM pool size as 10, but with aa distinct models each repeated bb times. We denote this as a×ba\\times b and employ 1×101\\times 10, 2×52\\times 5, 5×25\\times 2, and 10×110\\times 1 (default setting) with increasing diversity. Figure 5 illustrates that the diversity of initial LLMs does help greatly, with an average relative improvement of 89% from the least to most diverse."
+          ]
+        }
+      ]
+    },
+    "7 Related Work": {
+      "paragraphs": [
+        "A growing line of research work focuses on multi-LLM collaboration, where multiple LLMs collaboate and complement each other. These approaches focus on either roles or weights for multi-LLM collaboration.",
+        "Role-based approaches typically rely on assigning roles to LLMs through prompt engineering (Du et al., 2024; Feng et al., 2024b). Multiple LLMs, or even just a single LLM seeded with different prompts, then collaborate with their prompt-induced roles through exchanging generated texts. For example, specialized LLMs could augment a general-purpose model (Feng et al., 2024a; Shen et al., 2024); LLMs could generate feedback for each other’s responses to collectively self-refine (Feng et al., 2024b; Burns et al., 2024); multi-agent systems could divide and conquer complex problems (Wu et al., 2024a; Guo et al., 2024b); multiple LLMs could debate and compete with each other to find better answers (Liang et al., 2023; Du et al., 2024). These approaches are often hindered by the need for prompt engineering and the effectiveness of prompts for model steerability (Sprague et al., 2024; Sclar et al., 2024), thus Heterogeneous Swarms uniquely interprets model roles as input-output relationships, optimizing directed acyclic graphs of LLMs to learn contextual roles and specialization.",
+        "Weight-based approaches typically focus on adapting the logits/weights of multiple LLMs, notably through mixture-of-experts or model merging (Yadav et al., 2024a). The hidden states or logit distributions of multiple models could be selected, routed, and aggregated based on various MoE mechanisms (Li et al., 2022; Gritsch et al., 2024). In addition, static (Yu et al., 2024; Yadav et al., 2024b; Jang et al., 2024) and dynamic (Mavromatis et al., 2024; Akiba et al., 2024; Huang et al., 2023) model merging approaches incorporate the diverse expertise of heterogeneous LLMs into a single model in zero-shot and adaptation settings. We continue to believe that weight adaptation is crucial for specializing individual LLMs in multi-LLM systems: guided by the first successes of evolutionary algorithms in weight-based collaboration (Feng et al., 2024c) and LLMs in general (Akiba et al., 2024; Fernando et al., 2024; Guo et al., 2024a), Heterogeneous Swarms employs swarm intelligence to optimize model weights guided by each LLM’s individual contribution to the multi-LLM system.",
+        "Heterogeneous Swarms uniquely offers a flexible methodology to jointly optimize the roles and weights of diverse LLMs, discovering and adapting multi-LLM systems for wide-ranging tasks and applications."
+      ],
+      "subsections": []
+    },
+    "8 Conclusion": {
+      "paragraphs": [
+        "We propose Heterogeneous Swarms, an algorithm to jointly optimize model roles and weights for multi-LLM systems and collaborative generation. By rotating between role-step and weight-step to optimize the network of LLMs as well as model weights, Heterogeneous Swarms discovers directed acyclic graphs of LLMs that could be called in topological order to adapt to a given task. Heterogeneous Swarms outperforms 15 role and weight-based baselines on 12 tasks, demonstrating collaborative gains and heterogeneous roles through multi-LLM collaboration."
+      ],
+      "subsections": []
+    },
+    "Impact Statement": {
+      "paragraphs": [
+        "Heterogeneous Swarms by default operates with a pool of LLMs sharing the same model architecture: this is to ensure that models share the same parameter space for weight-step optimization. If the pool of LLMs contain different architectures, then Heterogeneous Swarms could either operate with only the role-step to optimize the multi-LLM network, or employ token-level collaboration for the weight step similar to Liu et al. (2024a) and Feng et al. (2024c).",
+        "Both the optimization and inference process of Heterogeneous Swarms features calling multiple LLMs, increasing its potential cost. We propose various strategies to alleviate this: by encouraging sparsity in the multi-LLM network in Table 3, by analyzing the time complexity in Section A, and by employing Dropout-W/R strategies in Figure 9, we show that Heterogeneous Swarms could speed up with one or multiple strategies used in conjunction.",
+        "While we conduct experiments where all the nodes in the network are neural language models, we highlight several other possibilities we weren’t able to evaluate: employing black-box models in the LLM pool, which is compatible if we skip these models in the weight-step; employing tools and APIs as nodes, as long as they define an input-output relationship.",
+        "We envision two extra steps to take to further expand the expressive power of Heterogeneous Swarms: allowing for cycles in the multi-LLM network in case one model needs to be called multiple times, together with an exit function to decide when to pull out from the cycle; allowing for instance-level changes to the multi-LLM network with a learnable edit function.",
+        "Since multiple LLMs are called in topological order of the multi-LLM system, we envision potential risks when one or several of the component LLMs are unintentionally or intentionally compromised. For example, if one of the LLMs were to exhibit substantial social biases (Kumar et al., 2023) or malicious intent (Zhao et al., 2023), it might pass on to future models in the network and result in cascading effects. We thus argue that Heterogeneous Swarms should be initialized with carefully selected pool of specialized LLMs and envision future work on identifying harmful/malicious components in multi-LLM collaboration."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Analysis (cont.)": {
+      "paragraphs": [
+        "[Figure: Figure 6: Scaling the number of LLM experts from 2 to 10 results in consistent improvements across 4 datasets.]",
+        "[Figure: Figure 7: Optimization time changes with the number of A100 40GB GPUs employed. We employ 1, 2, 5, and 10 GPUs since they could be divided by 10, the amount of LLMs.]",
+        "[Figure: Figure 8: The collaboration of the all-but-top-1 and bottom-half LLMs through Heterogeneous Swarms could beat the top-1 individual LLM.]",
+        "[Figure: Figure 9: By randomly skipping the role-step and weight-step through Drop-R and Drop-W, we could speed up the optimization process.]",
+        "[Table: Table 4: Performance of Heterogeneous Swarms with 10 Mistral-based LLMs.]"
+      ],
+      "subsections": [
+        {
+          "title": "Scaling Multi-LLM Collaboration",
+          "paragraphs": [
+            "Recent research explored the inference-time scaling of a single, often gargantuan, LLM (Snell et al., 2024; Brown et al., 2024; Wu et al., 2024b). However, it is unclear whether inference-time scaling is possible for small language models, while we believe Heterogeneous Swarms offers a way of scaling through topological message passing and collaborative generation. We conduct a scaling study by employing 2, 4, 6, 8, and 10 (default) of initial LLM checkpoints as the starting model swarn and run Heterogeneous Swarms: results in Figure 6 demonstrates that Heterogeneous Swarms indeed offers an inference-time scaling paradigm for smaller language models through multi-LLM collaboration.",
+            "[Figure: Figure 6: Scaling the number of LLM experts from 2 to 10 results in consistent improvements across 4 datasets.]"
+          ]
+        },
+        {
+          "title": "Time Complexity",
+          "paragraphs": [
+            "Given a pool of nn LLMs, we employ a swarm of NN graphs and MM model assignment instances. We measure the complexity by the number of model inferences as they are the main computational cost. At optimization time, the role step calls model inference O​(n​N)O(nN) times and the weight step O​(n​M)O(nM) times, so the overall optimization cost per iteration is O​(n​(N+M)​|f|)O(n(N+M)|f|) where |f||f| denotes the adaptation data size, linear to nn, NN, and MM. At inference time, the cost is O​(n)O(n) where the adapted LLMs are called in topological order of the network. We further illustrate the empirical complexity by plotting the time per iteration given different amount of A100 40GB GPUs in Figure 7.",
+            "[Figure: Figure 7: Optimization time changes with the number of A100 40GB GPUs employed. We employ 1, 2, 5, and 10 GPUs since they could be divided by 10, the amount of LLMs.]"
+          ]
+        },
+        {
+          "title": "HS(weak)>>strong",
+          "paragraphs": [
+            "A successful collaboration of multiple weak models can beat a stronger LLM: we withhold the top-1 LLM in the given task and discover a multi-LLM system out of the remaining 9 models with Heterogeneous Swarms (HS(2-10)). Additionally, we also withhold the top half and evaluate the collaboration of the bottom half (HS(6-10)). Figure 8 demonstrates that Heterogeneous Swarms enables the collaboration of weaker models to outperform the top-1 individual LLM, enabling the weak-to-strong transition through collaborative generation.",
+            "[Figure: Figure 8: The collaboration of the all-but-top-1 and bottom-half LLMs through Heterogeneous Swarms could beat the top-1 individual LLM.]"
+          ]
+        },
+        {
+          "title": "Accelerating with Dropout-R/W",
+          "paragraphs": [
+            "To further speedup the optimization process, we process to randomly skip the role-step or weight-step with dr%d_{r}\\% or dw%d_{w}\\% likelihood. We illustrate the performance with dr,dw∈{0.2,0.5,0.8}d_{r},d_{w}\\in\\{0.2,0.5,0.8\\} in Figure 9. It is illustrated that the acceleration only comes with a minor performance drop, showing the flexibility of Heterogeneous Swarms to adapt to different computational budget.",
+            "[Figure: Figure 9: By randomly skipping the role-step and weight-step through Drop-R and Drop-W, we could speed up the optimization process.]"
+          ]
+        },
+        {
+          "title": "Another LLM",
+          "paragraphs": [
+            "We by default employ Gemma-7B as the component LLMs. We additionally employ Mistral-7B ((mistralai/Mistral-7B-Instruct-v0.3)) (Jiang et al., 2023) for Heterogeneous Swarms and present performance in Table 4. Results show that Heterogeneous Swarms is compatible with Mistral-7B too, outperforming the best single Mistral-based LLM."
+          ]
+        }
+      ]
+    },
+    "Appendix B Experiment Details": {
+      "paragraphs": [
+        "[Figure: Figure 10: Working example one of Heterogeneous Swarms.]",
+        "[Figure: Figure 11: Working example two of Heterogeneous Swarms.]",
+        "[Figure: Figure 12: Illustrating how the utility of the role-step (left) and weight-step (right) changes through time on three datasets, Knowledge Crosswords, NLGraph, and AB-kg. We observe co-improvement in the utility of graphs and model weights.]",
+        "[Table: Table 5: Statistics of employed datasets. *, **, and *** indicates the improvement on this dataset is statistically significant with p<0.1p<0.1, p<0.05p<0.05, and p<0.01p<0.01 with one-tailed z-test.]",
+        "[Table: Table 6: Default LLM instructions in the multi-LLM system.]",
+        "[Table: Table 7: Default Gemini-as-a-judge evaluation prompt.]",
+        "[Table: Table 8: Prompt for Gemini to evaluate the roles of intermediate model outputs in multi-LLM systems.]"
+      ],
+      "subsections": [
+        {
+          "title": "Dataset Details",
+          "paragraphs": [
+            "We employ 12 datasets to evaluate Heterogeneous Swarms and baselines spanning knowledge, reasoning, agent, and miscellaneous capabilities. We filter examples in GAIA to retain examples where the human-provided tool use contexts could support the final answer for GAIA-text. We incorporate each tool use context for the input of one LLM in the multi-LLM network respectively. We truncate the context in Qasper in ten-fold and incorporate each chunk as context for an individual LLM. We by default sample 200 examples for optimization and 1,000 for evaluation, while downsampling if there’s not enough data. We present data statistics in Table 5. MMLU-pro, Knowledge Crosswords, COM2, Normad, AgentBench-KG, AbstainQA, and WoW are evaluated in multiple-choice settings. GSM8k, NLGraph, and GAIA-text are evaluated via exact match. AgentBench-LTP and Qasper are evaluated by Gemini for answer similarity on a scale of 1 to 10, normalized to 0 to 1. We also employ the z-test with the one-tailed hypothesis and present statistical significance test results on the datasets."
+          ]
+        },
+        {
+          "title": "Implementation Details",
+          "paragraphs": [
+            "We employ the 10 LLM experts in Feng et al. (2024c) as the initial swarm of models. We employ the Gemma-based (Gemma Team et al., 2024) versions for experiments in the main paper for a fair comparison and employ the Mistral-based (Jiang et al., 2023) versions for experiments in Table 4. Aside from the hyperparmaters specified in Section 4, we run grid search over other hyperparameters and report the best-found expert based on utility function ff. Specifically, ϕv∈{0.1,0.2,0.3}\\phi_{v}\\in\\{0.1,0.2,0.3\\}, ϕp∈{0.1,0.2,0.3,0.4,0.5}\\phi_{p}\\in\\{0.1,0.2,0.3,0.4,0.5\\}, ϕg∈{0.2,0.3,0.4,0.5,0.6}\\phi_{g}\\in\\{0.2,0.3,0.4,0.5,0.6\\}, ϕw∈{0.01,0.05,0.1}\\phi_{w}\\in\\{0.01,0.05,0.1\\}, λ∈{0.5,0.6,0.7,0.8,0.9,1.0}\\lambda\\in\\{0.5,0.6,0.7,0.8,0.9,1.0\\}. We run up to 50 to 200 runs by randomly choosing over these hyperparameter search settings and report the best-found expert on utility function ff."
+          ]
+        },
+        {
+          "title": "Baseline Details",
+          "paragraphs": [
+            "For best single, prediction merge, data merge, uniform soup, dare-ties, greedy soup, pack of LLMs, lorahub, and model swarms, we follow the settings in Feng et al. (2024c). For chain, we organize the 10 initial LLMs into a chain, randomly permute their assignments for 20 times, and report the best-found chain on ff. For star, we organize them into a 1-8-1 structure, randomly permute their assignments for 20 times, and report the best-found star on ff. For gpt-swarm, we employ its method to optimize the network structure and do not consider prompt optimization for a fair comparison. To make the optimization compatible to our non-differentiable setting, we modify it into interpolation of adjacency matrices based on ff utility values. For meta-agent, we employ Gemini-pro (gemini-pro-1.5-001) with the original prompt to iteratively suggest multi-LLM structures, while representing each individual LLM by a natural language description of their training data and expertise. For agent-prune, we randomly sample multi-LLM structures, conduct pruning and re-evaluate, repeat this process for 20 times and report the best-found structure on ff across runs and pruning degrees. For GNNs, we employ graph attention networks to encode the multi-LLM network with randomly initialized node features, and learn a link prediction task based on whether adding this edge between two LLMs would lead to a performance increase on ff or not. At inference-time, the GNN conducts link prediction for n×nn\\times n edges to obtain a multi-LLM network."
+          ]
+        },
+        {
+          "title": "Prompts",
+          "paragraphs": [
+            "We present the prompts employed in various contexts in Tables 6, 7, and 8. We make dataset-specific changes to the general prompt format if necessary."
+          ]
+        },
+        {
+          "title": "Qualitative Examples",
+          "paragraphs": [
+            "We present two working examples of the multi-LLM systems in Heterogeneous Swarms, on Knowledge Crosswords (Ding et al., 2024) and NLGraph (Wang et al., 2024a) datasets in Figures 10 and 11. These examples demonstrate that Heterogeneous Swarms discovers multi-LLM systems to adapt to the task and play heterogeneous roles through collaborative generation."
+          ]
+        },
+        {
+          "title": "Illustrating the Optimization",
+          "paragraphs": [
+            "We illustrate the changes in the best ff utility values for the swarm of graphs and swarm of LLMs in Figure 12: it is illustrated that there is co-improvement of roles and weights thanks to the alternating optimization algorithm.",
+            "[Figure: Figure 10: Working example one of Heterogeneous Swarms.]",
+            "[Figure: Figure 11: Working example two of Heterogeneous Swarms.]",
+            "[Figure: Figure 12: Illustrating how the utility of the role-step (left) and weight-step (right) changes through time on three datasets, Knowledge Crosswords, NLGraph, and AB-kg. We observe co-improvement in the utility of graphs and model weights.]"
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "Akiba et al. (2024) Akiba, T., Shing, M., Tang, Y., Sun, Q., and Ha, D. Evolutionary optimization of model merging recipes. arXiv preprint arXiv:2403.13187, 2024.",
+    "Brown et al. (2024) Brown, B., Juravsky, J., Ehrlich, R., Clark, R., Le, Q. V., Ré, C., and Mirhoseini, A. Large language monkeys: Scaling inference compute with repeated sampling. arXiv preprint arXiv:2407.21787, 2024.",
+    "Brown et al. (2020) Brown, T., Mann, B., Ryder, N., Subbiah, M., Kaplan, J. D., Dhariwal, P., Neelakantan, A., Shyam, P., Sastry, G., Askell, A., et al. Language models are few-shot learners. Advances in neural information processing systems, 33:1877–1901, 2020.",
+    "Burns et al. (2024) Burns, C., Izmailov, P., Kirchner, J. H., Baker, B., Gao, L., Aschenbrenner, L., Chen, Y., Ecoffet, A., Joglekar, M., Leike, J., et al. Weak-to-strong generalization: Eliciting strong capabilities with weak supervision. In Forty-first International Conference on Machine Learning, 2024.",
+    "Cobbe et al. (2021) Cobbe, K., Kosaraju, V., Bavarian, M., Chen, M., Jun, H., Kaiser, L., Plappert, M., Tworek, J., Hilton, J., Nakano, R., et al. Training verifiers to solve math word problems. arXiv preprint arXiv:2110.14168, 2021.",
+    "Dasigi et al. (2021) Dasigi, P., Lo, K., Beltagy, I., Cohan, A., Smith, N. A., and Gardner, M. A dataset of information-seeking questions and answers anchored in research papers. In Proceedings of the 2021 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, pp. 4599–4610, 2021.",
+    "Ding et al. (2024) Ding, W., Feng, S., Liu, Y., Tan, Z., Balachandran, V., He, T., and Tsvetkov, Y. Knowledge crosswords: Geometric knowledge reasoning with large language models. In Findings of the Association for Computational Linguistics ACL 2024, 2024.",
+    "Du et al. (2024) Du, Y., Li, S., Torralba, A., Tenenbaum, J. B., and Mordatch, I. Improving factuality and reasoning in language models through multiagent debate. In Forty-first International Conference on Machine Learning, 2024.",
+    "Fang et al. (2024) Fang, T., Chen, Z., Song, Y., and Bosselut, A. Complex reasoning over logical queries on commonsense knowledge graphs. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), August 2024.",
+    "Feng et al. (2024a) Feng, S., Shi, W., Bai, Y., Balachandran, V., He, T., and Tsvetkov, Y. Knowledge card: Filling llms’ knowledge gaps with plug-in specialized language models. In The Twelfth International Conference on Learning Representations, 2024a.",
+    "Feng et al. (2024b) Feng, S., Shi, W., Wang, Y., Ding, W., Balachandran, V., and Tsvetkov, Y. Don’t hallucinate, abstain: Identifying LLM knowledge gaps via multi-LLM collaboration. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), 2024b.",
+    "Feng et al. (2024c) Feng, S., Wang, Z., Wang, Y., Ebrahimi, S., Palangi, H., Miculicich, L., Kulshrestha, A., Rauschmayr, N., Choi, Y., Tsvetkov, Y., et al. Model swarms: Collaborative search to adapt llm experts via swarm intelligence. arXiv preprint arXiv:2410.11163, 2024c.",
+    "Fernando et al. (2024) Fernando, C., Banarse, D. S., Michalewski, H., Osindero, S., and Rocktäschel, T. Promptbreeder: Self-referential self-improvement via prompt evolution. In Forty-first International Conference on Machine Learning, 2024.",
+    "Gemma Team et al. (2024) Gemma Team, G., Mesnard, T., Hardin, C., Dadashi, R., Bhupatiraju, S., Pathak, S., Sifre, L., Rivière, M., Kale, M. S., Love, J., et al. Gemma: Open models based on gemini research and technology. arXiv preprint arXiv:2403.08295, 2024.",
+    "Gritsch et al. (2024) Gritsch, N., Zhang, Q., Locatelli, A., Hooker, S., and Üstün, A. Nexus: Specialization meets adaptability for efficiently training mixture of experts. arXiv preprint arXiv:2408.15901, 2024.",
+    "Guo et al. (2024a) Guo, Q., Wang, R., Guo, J., Li, B., Song, K., Tan, X., Liu, G., Bian, J., and Yang, Y. Connecting large language models with evolutionary algorithms yields powerful prompt optimizers. In The Twelfth International Conference on Learning Representations, 2024a.",
+    "Guo et al. (2024b) Guo, T., Chen, X., Wang, Y., Chang, R., Pei, S., Chawla, N. V., Wiest, O., and Zhang, X. Large language model based multi-agents: A survey of progress and challenges. arXiv preprint arXiv:2402.01680, 2024b.",
+    "Holtzman et al. (2020) Holtzman, A., Buys, J., Du, L., Forbes, M., and Choi, Y. The curious case of neural text degeneration. In International Conference on Learning Representations, 2020.",
+    "Hu et al. (2024a) Hu, Q. J., Bieker, J., Li, X., Jiang, N., Keigwin, B., Ranganath, G., Keutzer, K., and Upadhyay, S. K. Routerbench: A benchmark for multi-llm routing system. arXiv preprint arXiv:2403.12031, 2024a.",
+    "Hu et al. (2024b) Hu, S., Lu, C., and Clune, J. Automated design of agentic systems. In NeurIPS 2024 Workshop on Open-World Agents, 2024b.",
+    "Huang et al. (2023) Huang, C., Liu, Q., Lin, B. Y., Pang, T., Du, C., and Lin, M. Lorahub: Efficient cross-task generalization via dynamic lora composition. arXiv preprint arXiv:2307.13269, 2023.",
+    "Ivison et al. (2023) Ivison, H., Wang, Y., Pyatkin, V., Lambert, N., Peters, M., Dasigi, P., Jang, J., Wadden, D., Smith, N. A., Beltagy, I., et al. Camels in a changing climate: Enhancing lm adaptation with tulu 2. arXiv preprint arXiv:2311.10702, 2023.",
+    "Jang et al. (2024) Jang, D.-H., Yun, S., and Han, D. Model stock: All we need is just a few fine-tuned models. arXiv preprint arXiv:2403.19522, 2024.",
+    "Jiang et al. (2023) Jiang, A. Q., Sablayrolles, A., Mensch, A., Bamford, C., Chaplot, D. S., Casas, D. d. l., Bressand, F., Lengyel, G., Lample, G., Saulnier, L., et al. Mistral 7b. arXiv preprint arXiv:2310.06825, 2023.",
+    "Kennedy & Eberhart (1995) Kennedy, J. and Eberhart, R. Particle swarm optimization. In Proceedings of ICNN’95-international conference on neural networks, volume 4, pp. 1942–1948. ieee, 1995.",
+    "Khattab et al. (2022) Khattab, O., Santhanam, K., Li, X. L., Hall, D., Liang, P., Potts, C., and Zaharia, M. Demonstrate-search-predict: Composing retrieval and language models for knowledge-intensive NLP. arXiv preprint arXiv:2212.14024, 2022.",
+    "Khattab et al. (2024) Khattab, O., Singhvi, A., Maheshwari, P., Zhang, Z., Santhanam, K., Vardhamanan, S., Haq, S., Sharma, A., Joshi, T. T., Moazam, H., Miller, H., Zaharia, M., and Potts, C. Dspy: Compiling declarative language model calls into self-improving pipelines. 2024.",
+    "Kumar et al. (2023) Kumar, S., Balachandran, V., Njoo, L., Anastasopoulos, A., and Tsvetkov, Y. Language generation models can cause harm: So what can we do about it? an actionable survey. In Proceedings of the 17th Conference of the European Chapter of the Association for Computational Linguistics, pp. 3299–3321, 2023.",
+    "LangGraph (2024) LangGraph. Langgraph, 2024. URL https://langchain-ai.github.io/langgraph/.",
+    "Li et al. (2022) Li, M., Gururangan, S., Dettmers, T., Lewis, M., Althoff, T., Smith, N. A., and Zettlemoyer, L. Branch-train-merge: Embarrassingly parallel training of expert language models. arXiv preprint arXiv:2208.03306, 2022.",
+    "Liang et al. (2023) Liang, T., He, Z., Jiao, W., Wang, X., Wang, Y., Wang, R., Yang, Y., Shi, S., and Tu, Z. Encouraging divergent thinking in large language models through multi-agent debate. arXiv preprint arXiv:2305.19118, 2023.",
+    "Liu et al. (2024a) Liu, A., Han, X., Wang, Y., Tsvetkov, Y., Choi, Y., and Smith, N. A. Tuning language models by proxy. In First Conference on Language Modeling, 2024a.",
+    "Liu et al. (2024b) Liu, X., Yu, H., Zhang, H., Xu, Y., Lei, X., Lai, H., Gu, Y., Ding, H., Men, K., Yang, K., et al. Agentbench: Evaluating llms as agents. In The Twelfth International Conference on Learning Representations, 2024b.",
+    "Mavromatis et al. (2024) Mavromatis, C., Karypis, P., and Karypis, G. Pack of llms: Model fusion at test-time via perplexity optimization. arXiv preprint arXiv:2404.11531, 2024.",
+    "Mialon et al. (2024) Mialon, G., Fourrier, C., Wolf, T., LeCun, Y., and Scialom, T. Gaia: a benchmark for general ai assistants. In The Twelfth International Conference on Learning Representations, 2024.",
+    "Rao et al. (2024) Rao, A., Yerukola, A., Shah, V., Reinecke, K., and Sap, M. Normad: A benchmark for measuring the cultural adaptability of large language models. arXiv preprint arXiv:2404.12464, 2024.",
+    "Sclar et al. (2024) Sclar, M., Choi, Y., Tsvetkov, Y., and Suhr, A. Quantifying language models’ sensitivity to spurious features in prompt design or: How i learned to start worrying about prompt formatting. In The Twelfth International Conference on Learning Representations, 2024.",
+    "Shen et al. (2024) Shen, Z., Lang, H., Wang, B., Kim, Y., and Sontag, D. Learning to decode collaboratively with multiple language models. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), 2024.",
+    "Si et al. (2023) Si, C., Shi, W., Zhao, C., Zettlemoyer, L., and Boyd-Graber, J. Getting more out of mixture of language model reasoning experts. In Findings of the Association for Computational Linguistics: EMNLP 2023, pp. 8234–8249, 2023.",
+    "Snell et al. (2024) Snell, C., Lee, J., Xu, K., and Kumar, A. Scaling llm test-time compute optimally can be more effective than scaling model parameters. arXiv preprint arXiv:2408.03314, 2024.",
+    "Sprague et al. (2024) Sprague, Z., Yin, F., Rodriguez, J. D., Jiang, D., Wadhwa, M., Singhal, P., Zhao, X., Ye, X., Mahowald, K., and Durrett, G. To cot or not to cot? chain-of-thought helps mainly on math and symbolic reasoning. arXiv preprint arXiv:2409.12183, 2024.",
+    "Team et al. (2023) Team, G., Anil, R., Borgeaud, S., Alayrac, J.-B., Yu, J., Soricut, R., Schalkwyk, J., Dai, A. M., Hauth, A., Millican, K., et al. Gemini: a family of highly capable multimodal models. arXiv preprint arXiv:2312.11805, 2023.",
+    "Wan et al. (2024) Wan, X., Sun, R., Nakhost, H., and Arik, S. O. Teach better or show smarter? on instructions and exemplars in automatic prompt optimization. In The Thirty-eighth Annual Conference on Neural Information Processing Systems, 2024.",
+    "Wang et al. (2024a) Wang, H., Feng, S., He, T., Tan, Z., Han, X., and Tsvetkov, Y. Can language models solve graph problems in natural language? Advances in Neural Information Processing Systems, 36, 2024a.",
+    "Wang et al. (2024b) Wang, Y., Ma, X., Zhang, G., Ni, Y., Chandra, A., Guo, S., Ren, W., Arulraj, A., He, X., Jiang, Z., et al. Mmlu-pro: A more robust and challenging multi-task language understanding benchmark. arXiv preprint arXiv:2406.01574, 2024b.",
+    "Wortsman et al. (2022) Wortsman, M., Ilharco, G., Gadre, S. Y., Roelofs, R., Gontijo-Lopes, R., Morcos, A. S., Namkoong, H., Farhadi, A., Carmon, Y., Kornblith, S., et al. Model soups: averaging weights of multiple fine-tuned models improves accuracy without increasing inference time. In International conference on machine learning, pp. 23965–23998. PMLR, 2022.",
+    "Wu et al. (2024a) Wu, Q., Bansal, G., Zhang, J., Wu, Y., Li, B., Zhu, E., Jiang, L., Zhang, X., Zhang, S., Liu, J., et al. Autogen: Enabling next-gen llm applications via multi-agent conversation. In ICLR 2024 Workshop on Large Language Model (LLM) Agents, 2024a.",
+    "Wu et al. (2024b) Wu, Y., Sun, Z., Li, S., Welleck, S., and Yang, Y. Inference scaling laws: An empirical analysis of compute-optimal inference for problem-solving with language models. arXiv preprint arXiv:2408.00724, 2024b.",
+    "Yadav et al. (2024a) Yadav, P., Raffel, C., Muqeeth, M., Caccia, L., Liu, H., Chen, T., Bansal, M., Choshen, L., and Sordoni, A. A survey on model moerging: Recycling and routing among specialized experts for collaborative learning. arXiv preprint arXiv:2408.07057, 2024a.",
+    "Yadav et al. (2024b) Yadav, P., Tam, D., Choshen, L., Raffel, C. A., and Bansal, M. Ties-merging: Resolving interference when merging models. Advances in Neural Information Processing Systems, 36, 2024b.",
+    "Yao et al. (2024) Yao, J., Ding, W., Feng, S., Wang, L. L., and Tsvetkov, Y. Varying shades of wrong: Aligning llms with wrong answers only. arXiv preprint arXiv:2410.11055, 2024.",
+    "Yu et al. (2024) Yu, L., Yu, B., Yu, H., Huang, F., and Li, Y. Language models are super mario: Absorbing abilities from homologous models as a free lunch. In Forty-first International Conference on Machine Learning, 2024.",
+    "Zhang et al. (2024a) Zhang, G., Yue, Y., Li, Z., Yun, S., Wan, G., Wang, K., Cheng, D., Yu, J. X., and Chen, T. Cut the crap: An economical communication pipeline for llm-based multi-agent systems. arXiv preprint arXiv:2410.02506, 2024a.",
+    "Zhang et al. (2024b) Zhang, G., Yue, Y., Sun, X., Wan, G., Yu, M., Fang, J., Wang, K., and Cheng, D. G-designer: Architecting multi-agent communication topologies via graph neural networks. arXiv preprint arXiv:2410.11782, 2024b.",
+    "Zhao et al. (2024) Zhao, Q., Wang, J., Zhang, Y., Jin, Y., Zhu, K., Chen, H., and Xie, X. Competeai: Understanding the competition dynamics of large language model-based agents. In Forty-first International Conference on Machine Learning, 2024.",
+    "Zhao et al. (2023) Zhao, Y., Xiang, Z., Yin, S., Pang, X., Chen, S., and Wang, Y. Malicious agent detection for robust multi-agent collaborative perception. arXiv preprint arXiv:2310.11901, 2023.",
+    "Zhuge et al. (2024) Zhuge, M., Wang, W., Kirsch, L., Faccio, F., Khizbullin, D., and Schmidhuber, J. GPTSwarm: Language agents as optimizable graphs. In Proceedings of the 41st International Conference on Machine Learning, 2024."
+  ]
+}

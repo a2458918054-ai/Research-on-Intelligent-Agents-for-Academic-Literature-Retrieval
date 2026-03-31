@@ -1,0 +1,345 @@
+{
+  "title": "Token Cleaning: Fine-Grained Data Selection for LLM Supervised Fine-Tuning",
+  "authors": "Jinlong PangUniversity of California, Santa Cruz&Na DiNortheastern University&Zhaowei ZhuDocta.ai&Jiaheng WeiHKUST (Guangzhou)&Hao ChengHKBU&Chen QianUniversity of California, Santa Cruz&Yang LiuUniversity of California, Santa CruzCorresponding to Yang Liu <yangliu@ucsc.edu>.",
+  "abstract": "Recent studies show that in supervised fine-tuning (SFT) of large language models (LLMs), data quality matters more than quantity. While most data cleaning methods concentrate on filtering entire samples, the quality of individual tokens within a sample can vary significantly. After pre-training, even in high-quality samples, patterns or phrases that are not task-related can be redundant or uninformative. Continuing to fine-tune on these patterns may offer limited benefit and even degrade downstream task performance. In this paper, we investigate token quality from a noisy-label perspective and propose a generic token cleaning pipeline for SFT tasks. Our method filters out uninformative tokens while preserving those carrying key task-specific information. Specifically, we first evaluate token quality by examining the influence of model updates on each token, then apply a threshold-based separation. The token influence can be measured in a single pass with a fixed reference model or iteratively with self-evolving reference models. The benefits and limitations of both methods are analyzed theoretically by error upper bounds. Extensive experiments show that our framework consistently improves performance across multiple downstream tasks.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Supervised fine-tuning (SFT) has served as a widely adopted approach and a fundamental step in aligning large language models (LLMs) with human expectations. This process ensures that LLMs can accurately understand human instructions and produce relevant responses. In practice, SFT involves fine-tuning pre-trained models using annotated instructional data (Touvron et al., 2023). Following general data scaling laws (Zhang et al., 2024), significant efforts have been dedicated to collecting large-scale instructional data containing millions of examples (Wang et al., 2022; Chung et al., 2024; Longpre et al., 2023).",
+        "Recent studies on the SFT have widely agreed that data quality matters far more than quantity (Zhou et al., 2024; Chen et al., 2023; Pang et al., 2024a; Liu et al., 2023). That is, a small, well-curated dataset can often deliver effective or even superior performance on downstream tasks, highlighting the critical role of data cleaning or selection. Existing data cleaning approaches primarily emphasize identifying high-quality samples in large dataset pools via some metrics, including perplexity (Cao et al., 2024), completion length (Zhao et al., 2024), confidence scores (Chen and Mueller, 2024)), LLM-generated quality ratings (Chen et al., 2023; Pang et al., 2024a; Liu et al., 2023) or even costly human annotations (Zhou et al., 2024). Although these methods have proven effective, focusing solely on sample-level cleaning may overlook complexities within each sample.",
+        "In practice, each sample typically contains hundreds of tokens, some of which occur frequently regardless of the sample’s quality. These common tokens/patterns can overshadow task-specific words that are crucial for model performance during training. Moreover, during interference, if the model continually outputs these frequent tokens, it may neglect more informative ones, producing outputs that appear correct yet fail to address specific tasks. Thus, even well-curated samples can contain token-level noise that dilutes essential signals. Addressing these token-level issues by removing or down-weighting uninformative tokens can help the model prioritize important content and improve downstream results.",
+        "In this paper, we go beyond traditional sample-level data cleaning by proposing a generic token cleaning pipeline and an analytical framework for LLM SFT tasks. Specifically, we filter out uninformative tokens while retaining those with meaningful task-specific information. This is achieved by first assessing token quality using an influence-guided scoring mechanism, followed by threshold-based separation.",
+        "Figure 1 illustrates two scoring strategies supported by our token cleaning pipeline. The high-level idea is to evaluate the influence of model updates on each token, which can be calculated by the loss disparity between a base model and a reference model. We introduce two implementations:",
+        "∙\\bullet Fix-Model Cleaning. In this strategy, both the base model and the reference model remain fixed, and a one-shot token cleaning is applied to the entire SFT dataset. The base model is then fine-tuned on the cleaned tokens, producing the final model output. This strategy is similar to the latest token selection method for pre-trained data Lin et al. (2024). We defer detailed comparisons to Section 4.3.1 (analytical) and Section 6 (experimental).",
+        "∙\\bullet Self-Evolving Cleaning. In this strategy, the base model remains fixed while the reference model is updated iteratively. The data is divided into multiple parts, with each iteration cleaning one part. The reference model is then updated sequentially using the cleaned results from each part. Unlike the fix-model cleaning, the final model output is the reference model obtained in the last iteration.",
+        "Our main contributions can be summarized as follows.",
+        "∙\\bullet Generic Token Cleaning Pipeline. We formulate the problem from the perspective of noisy labels and present a novel influence-guided token cleaning pipeline that scores and filters out uninformative tokens, enhancing downstream task performance by focusing model training on the most relevant tokens. The pipeline not only encompasses existing approaches but also inspires new implementations.",
+        "∙\\bullet Self-Envolving Cleaning. Beyond merely calculating the influence scores with a pair of fixed models, we propose to update the reference model iteratively, which could progressively enhance the quality of supervision signals, leading to better downstream performance.",
+        "∙\\bullet Analytical Framework. We provide rigorous analyses to demonstrate when and why SFT with the cleaned token outperforms the full tokens. Specifically, we establish an upper bound on the error incurred when learning with full tokens (Theorem 5.1), offering theoretical insights into the trade-offs of different cleaning strategies. Our analysis explains why fix-model cleaning yields stable but limited improvements, while self-evolving cleaning shows greater potential but requires careful implementation.",
+        "∙\\bullet Comprehensive Experiments. We conduct extensive experiments across multiple tasks, demonstrating that our token cleaning pipeline consistently boosts performance over baselines and validates the practical merits of our work."
+      ],
+      "subsections": []
+    },
+    "2 Related Work": {
+      "paragraphs": [],
+      "subsections": []
+    },
+    "3 Preliminary": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "3.1 Next-Token Prediction",
+          "paragraphs": [
+            "Consider a data pool comprising NN samples, denoted as {𝒙i}i=1N\\{\\bm{x}_{i}\\}_{i=1}^{N}. Each sample 𝒙i\\bm{x}_{i} represents a sequence of tokens (including the prompt and the response) defined as 𝒙i:={xi,j}j=1Li\\bm{x}_{i}:=\\{x_{i,j}\\}_{j=1}^{L_{i}}, where LiL_{i} denotes the token length for the ii-th sample. The training of LLMs can be framed as minimizing the negative log-likelihood of the observed tokens in the dataset. The model predicts the conditional probability ℙ​(xi,j|𝒙i,:j;θ)\\mathbb{P}(x_{i,j}|\\bm{x}_{i,:j};\\theta) for each token xi,jx_{i,j} given its preceding context, where θ\\theta represents the model parameters, and 𝒙i,:j\\bm{x}_{i,:j} denotes the first j−1j-1 tokens, i.e., {xi,1,⋯,xi,j−1}\\{x_{i,1},\\cdots,x_{i,j-1}\\}. Denote by",
+            "where",
+            "The loss function for the dataset can be expressed as:",
+            "where ℓ​(xi,j|𝒙i,:j;θ):=−log⁡ℙ​(xi,j|𝒙i,:j;θ)\\ell(x_{i,j}|\\bm{x}_{i,:j};\\theta):=-\\log\\mathbb{P}(x_{i,j}|\\bm{x}_{i,:j};\\theta), and yi,j∈{0,1}y_{i,j}\\in\\{0,1\\} is a binary (ground-truth) label indicating whether the token xi,jx_{i,j} is a valid target or not. By iteratively updating θ\\theta, the model learns to assign higher probabilities to the correct tokens while disregarding irrelevant ones."
+          ]
+        },
+        {
+          "title": "3.2 Token-Level Labels",
+          "paragraphs": [
+            "Token-level labels yi,j∈{0,1}y_{i,j}\\in\\{0,1\\} play a crucial role in determining which tokens contribute to the loss calculation. However, its ground-truth value is often unknown. Denote y~i,j\\tilde{y}_{i,j} by the (noisy) token label that we use in practice, which may or may not be identical to yi,jy_{i,j}. During different training phases, the criteria for setting y~i,j\\tilde{y}_{i,j} may vary:",
+            "• Model Pretraining: When training on general text data without explicit distinction between prompts and responses, all tokens are typically considered valid targets (y~i,j=1\\tilde{y}_{i,j}=1), unless specific tokens are identified as irrelevant or redundant (Lin et al., 2024).",
+            "• Supervised Fine-tuning (SFT): In this phase, the tokens corresponding to the prompt part are ignored, as they do not represent the model’s predictions. Therefore, for prompt tokens, y~i,j=0\\tilde{y}_{i,j}=0, and for response tokens, y~i,j=1\\tilde{y}_{i,j}=1.",
+            "Model Pretraining: When training on general text data without explicit distinction between prompts and responses, all tokens are typically considered valid targets (y~i,j=1\\tilde{y}_{i,j}=1), unless specific tokens are identified as irrelevant or redundant (Lin et al., 2024).",
+            "Supervised Fine-tuning (SFT): In this phase, the tokens corresponding to the prompt part are ignored, as they do not represent the model’s predictions. Therefore, for prompt tokens, y~i,j=0\\tilde{y}_{i,j}=0, and for response tokens, y~i,j=1\\tilde{y}_{i,j}=1."
+          ]
+        }
+      ]
+    },
+    "4 Token Cleaning: A Noisy Label Perspective": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "4.1 Intuition",
+          "paragraphs": [
+            "In the phase of SFT, some tokens are deemed uninformative or redundant since most of the knowledge has been obtained in the pretraining phase, e.g., common patterns and structures, high-frequency phrases. In practice, the SFT phase assigns a label of 11 to every token in the response, resulting in noisy token labels, where irrelevant tokens are incorrectly labeled as important (y~i,j=1\\tilde{y}_{i,j}=1). Such noise can hinder the model’s optimization process by introducing misleading gradients, reducing the signal-to-noise ratio by hiding informative tokens, and potentially leading to suboptimal performance.",
+            "To address this issue, it is essential to perform fine-grained token label cleaning. This involves identifying and filtering out uninformative tokens while preserving the tokens that carry valuable task-specific information. As suggested by the noisy label literature Zhu et al. (2022, 2024), the cleaning process typically involves two key components: a scoring function to assess the quality of each token and a threshold to distinguish between informative and uninformative tokens, which will be detailed in the next subsection."
+          ]
+        },
+        {
+          "title": "4.2 Token Cleaning Pipeline",
+          "paragraphs": [
+            "In this section, we will introduce the main components of the token-cleaning pipeline, including the scoring function and a simple yet effective threshold.",
+            "We deliver our intuition when designing score functions using the following example. Suppose that the model is improved from θ\\theta to θ′\\theta^{\\prime} by fine-tuning it on some data. According to Koh and Liang (2017); Pang et al. (2024b), the model update influences the prediction accuracy of each token, which can be written as Intuitively, a more negative Infl ​(xi,j|𝒙i,:j;θ,θ′)\\textsf{Infl}_{\\textsf{\\ }}(x_{i,j}|\\bm{x}_{i,:j};\\theta,\\theta^{\\prime}) indicates a higher confidence improvement on predicting xi,jx_{i,j} given 𝒙i,:j\\bm{x}_{i,:j}. The equation can be explained from two perspectives:",
+            "• Assume Token Quality: As demonstrated by Pang et al. (2024b), if we believe that token xi,jx_{i,j} is the best choice given context xi,:jx_{i,:j}, the above influence can be used to evaluate the quality of data that brings the model from θ\\theta to θ′\\theta^{\\prime} on this specific task, i.e, a more negative Infl ​(xi,j|𝒙i,:j;θ,θ′)\\textsf{Infl}_{\\textsf{\\ }}(x_{i,j}|\\bm{x}_{i,:j};\\theta,\\theta^{\\prime}) indicates a higher data quality.",
+            "• Assume Model Quality: From another perspective, if we believe the model θ′\\theta^{\\prime} performs better on θ\\theta on this specific task, the above influence can be used to evaluate the quality of token xi,jx_{i,j} since a good and underfitted choice of xi,jx_{i,j} tends to have a negative Infl ​(xi,j|𝒙i,:j;θ,θ′)\\textsf{Infl}_{\\textsf{\\ }}(x_{i,j}|\\bm{x}_{i,:j};\\theta,\\theta^{\\prime}).",
+            "Assume Token Quality: As demonstrated by Pang et al. (2024b), if we believe that token xi,jx_{i,j} is the best choice given context xi,:jx_{i,:j}, the above influence can be used to evaluate the quality of data that brings the model from θ\\theta to θ′\\theta^{\\prime} on this specific task, i.e, a more negative Infl ​(xi,j|𝒙i,:j;θ,θ′)\\textsf{Infl}_{\\textsf{\\ }}(x_{i,j}|\\bm{x}_{i,:j};\\theta,\\theta^{\\prime}) indicates a higher data quality.",
+            "Assume Model Quality: From another perspective, if we believe the model θ′\\theta^{\\prime} performs better on θ\\theta on this specific task, the above influence can be used to evaluate the quality of token xi,jx_{i,j} since a good and underfitted choice of xi,jx_{i,j} tends to have a negative Infl ​(xi,j|𝒙i,:j;θ,θ′)\\textsf{Infl}_{\\textsf{\\ }}(x_{i,j}|\\bm{x}_{i,:j};\\theta,\\theta^{\\prime}).",
+            "In this paper, we assume the model quality and use the negative of the influence defined in Eq. (2) to evaluate the quality of tokens, i.e.,",
+            "where a higher score indicates a higher token quality.",
+            "Extending from the current use of influences Koh and Liang (2017); Pang et al. (2024b), we notice that θ\\theta and θ′\\theta^{\\prime} are not necessarily to be the same model structure, as long as they share the same tokenizer. We will discuss potential choices of θ\\theta and θ′\\theta^{\\prime} in Section 4.3.",
+            "After computing token scores, a threshold is applied to filter out corrupted or uninformative tokens. The threshold separates the tokens that significantly improve the model performance from those that do not. An ideal approach is to use algorithms to estimate the ratio of the corrupted and then select the informative tokens according to the ratio. However, although there are lots of trials in the literature on noisy labels, most works focus on cleaning the image labels Lad and Mueller (2023) or sample-level text labels Zhu et al. (2024); Pang et al. (2024a). To the best of our knowledge, a feasible algorithm for estimating the noise ratio of token labels is unclear, which is beyond the scope of our paper and left for future explorations. In this paper, we use a fixed ratio (i.e., selected token proportion) k%k\\% to separate between information and uninformative tokens. Denote by y^i,j\\hat{y}_{i,j} the token label after cleaning. We have"
+          ]
+        },
+        {
+          "title": "4.3 Selection ofθ\\thetaandθ′\\theta^{\\prime}",
+          "paragraphs": [
+            "We discuss two feasible strategies for selecting θ\\theta and θ′\\theta^{\\prime}.",
+            "Following the analyses in Section 4.2.1, we can assume the access to a model θ′\\theta^{\\prime} that outperforms θ\\theta. For example, a moderately performing Llama model can be considered as θ\\theta, while a well-performing Llama model can be considered as θ′\\theta^{\\prime} Mindermann et al. (2022); Lin et al. (2024). Specifically, given the warm-up model θ′\\theta^{\\prime} and the base model θ\\theta, we compute the token scores for the entire dataset D~\\widetilde{D} according to Eq. (3) and use a fixed threshold kfixedk_{\\text{fixed}} to assign token labels y~i,j\\tilde{y}_{i,j} according to Eq. (4). Note that token cleaning is performed globally, meaning that some samples may be entirely removed if they contain no positive tokens. This differs from Lin et al. (2024), where each sample retains a fixed proportion of positive tokens. The benefits and limitations of this strategy will be discussed theoretically in Section 5.2.",
+            "Inspired by the success of semi-supervised learning (SSL), we propose to do token cleaning iteratively. Specifically, in the tt-th iteration, we fix the base model θ\\theta and adopt θ′=θt\\theta^{\\prime}=\\theta_{t}, then fine-tune θt\\theta_{t} with the selected tokens after cleaning. See Algorithm 1 for more details.",
+            "The overall procedure is outlined in Algorithm 1. First, we evenly partition the dataset D~\\widetilde{D} into a series of subsets, denoted as {D~0,D~1,…,D~T}\\{\\widetilde{D}_{0},\\widetilde{D}_{1},\\dots,\\widetilde{D}_{T}\\}. Next, the base model θ\\theta is fine-tuned on the initial subset D~0\\widetilde{D}_{0} to produce a warm-up model θ0\\theta_{0}, which serves as the initial reference model. Rather than relying solely on θ0\\theta_{0} as a fixed reference model, a self-evolving mechanism is introduced in Lines 4-8. Specifically, for each subsequent subset D~t\\widetilde{D}_{t}, we keep the base model fixed and utilize the latest updated model as the reference model, i.e., θ=θ0\\theta=\\theta_{0} and θ′=θt\\theta^{\\prime}=\\theta_{t}, to compute token scores. By applying a threshold kself-evolk_{\\text{self-evol}} to these scores, we obtain the cleaned labels y^i,j\\hat{y}_{i,j}. The updated model θt\\theta_{t} is then fine-tuned on the cleaned subset D^t\\widehat{D}_{t}, producing the reference model for the next iteration. This process continues iteratively, and the final reference model is used as the output of the algorithm."
+          ]
+        }
+      ]
+    },
+    "5 Theoretical Analyses": {
+      "paragraphs": [
+        "Let 𝟙​{⋅}\\mathds{1}\\{\\cdot\\} be the indicator function taking value 11 when the specified condition is satisfied and 0 otherwise. Define the 0-1 loss as 𝟙​(θ​(𝑿prev),Xnext):=𝟙​{θ​(𝑿prev)≠Xnext}\\mathds{1}{(\\theta(\\bm{X}_{\\text{prev}}),X_{\\text{next}})}:=\\mathds{1}\\{\\theta(\\bm{X}_{\\text{prev}})\\neq X_{\\text{next}}\\}, where XnextX_{\\text{next}} is the random variable for the next token, XprevX_{\\text{prev}} is the random variable for tokens before the next token, and θ​(𝑿prev)\\theta(\\bm{X}_{\\text{prev}}) stands for the prediction of next token for model θ\\theta given 𝑿prev\\bm{X}_{\\text{prev}} as input. Without loss of generality, we consider the ideal case where all the training instances for next-token prediction are i.i.d. and minimize 0-1 loss in the following analyses. The loss can be generalized to bounded loss ℓ​(⋅)\\ell(\\cdot) and finite function space ℱ\\mathcal{F} following the generalization bounds that can be introduced using Rademacher complexity (Bartlett and Mendelson, 2002)."
+      ],
+      "subsections": [
+        {
+          "title": "5.1 Exceed the Performance of Full Tokens",
+          "paragraphs": [
+            "Denote by D~:={(xi,j,𝒙i,:j,y~i,j),∀i,j}\\widetilde{D}:=\\{(x_{i,j},\\bm{x}_{i,:j},\\tilde{y}_{i,j}),\\forall i,j\\} the full-token dataset. By minimizing the noisy loss",
+            "we can get model θ^D~:=arg​minθ⁡ℒ^D~​(θ)\\hat{\\theta}_{\\widetilde{D}}:=\\operatorname*{arg\\,min}_{\\theta}~\\widehat{\\mathcal{L}}_{\\widetilde{D}}(\\theta). Denote by Y~\\widetilde{Y}, YY the random variables for y~i,j\\tilde{y}_{i,j} and the corresponding ground-truth label yi,jy_{i,j}. The expected loss of training with full tokens can be denoted by",
+            "where 𝒟~\\widetilde{\\mathcal{D}} is the distribution of D~\\widetilde{D}. Denote by",
+            "the noise rate of full tokens. Theorem 5.1 shows the error upper bound of learning with full tokens. See Appendix 9 for the proof.",
+            "With probability at least 1−δ1-\\delta, the generalization error of learning with full tokens is upper-bounded by",
+            "where M:=∑i=1NLiM:=\\sum_{i=1}^{N}L_{i} denotes the number of tokens.",
+            "Theorem 5.1 shows that the error of learning with full tokens depends on two factors:",
+            "∙\\bullet Data Quality: η​(D~)\\eta(\\widetilde{D}) denotes the noise rates of learning with full tokens, where a higher noise rate leads to a larger error, i.e., a worse performance. The negative impact of wrong token labels may not be canceled by increasing the number of tokens.",
+            "∙\\bullet Data Quantity: When the number of tokens MM increases, the generalization could be smaller, showing that the token cleaning result cannot merely return a small set of high-quality tokens, i.e., the precision and recall of the token cleaning algorithm are both important.",
+            "Data Quality: η​(D~)\\eta(\\widetilde{D}) denotes the noise rates of learning with full tokens, where a higher noise rate leads to a larger error, i.e., a worse performance. The negative impact of wrong token labels may not be canceled by increasing the number of tokens.",
+            "Data Quantity: When the number of tokens MM increases, the generalization could be smaller, showing that the token cleaning result cannot merely return a small set of high-quality tokens, i.e., the precision and recall of the token cleaning algorithm are both important.",
+            "Denote by Y^\\widehat{Y} the random variable of token labels after cleaning. We show the superiority of token cleaning compared to the full-token case in the following corollary.",
+            "With probability as least 1−2​δ1-2\\delta, token cleaning performs better than full-tokens in terms of the error upper bound when",
+            "where η^:=ℙ​(Y^≠Y)\\hat{\\eta}:=\\mathbb{P}(\\widehat{Y}\\neq Y) denotes the noise rates of cleaned labels and r^:=ℙ​(Y^=1)\\hat{r}:=\\mathbb{P}(\\widehat{Y}=1) denotes the ratio of positive tokens after token cleaning.",
+            "Corollary 5.1.1 shows token cleaning is preferred when the positive impact of reducing noise rate outweighs the negative impact of reducing the number of feasible tokens. For example, when MM is larger (a larger dataset), the inequality in Corollary 5.1.1 is more likely to hold since the right-hand side is smaller."
+          ]
+        },
+        {
+          "title": "5.2 Fixed-Model Cleaning: Stable But Limited Improvement",
+          "paragraphs": [
+            "We now analyze the benefits and limitations based on Theorem 5.1 and Corollary 5.1.1. By selecting an appropriate model θ′\\theta^{\\prime}, we can take a one-shot token cleaning on all the tokens in the candidate data pool. In this case: Therefore, under this strategy, as long as the reference model θ′\\theta^{\\prime} is sufficiently good to reduce the noise rate from η​(D~)\\eta(\\widetilde{D}) to a lower rate η^\\hat{\\eta}, the model’s performance can be improved by fine-tuning with additional i.i.d. cleaned tokens, demonstrating the advantage on stability. However, even as M→∞M\\rightarrow\\infty, the total error does not go to zero due to imperfect data quality, showing the limitations on final performance.",
+            "∙\\bullet Data Quality: The noise rate of cleaned tokens is fixed, i.e., the data quality term in Eq. (5) is fixed. By carefully selecting the threshold kfixedk_{\\text{fixed}}, there exists a token cleaning result whose noise rate η^\\hat{\\eta} is less than η​(D~)\\eta(\\widetilde{D}).",
+            "∙\\bullet Data Quantity: With more tokens being cleaned, MM is increasing. Then the total generalization error can be consistently reduced.",
+            "Data Quality: The noise rate of cleaned tokens is fixed, i.e., the data quality term in Eq. (5) is fixed. By carefully selecting the threshold kfixedk_{\\text{fixed}}, there exists a token cleaning result whose noise rate η^\\hat{\\eta} is less than η​(D~)\\eta(\\widetilde{D}).",
+            "Data Quantity: With more tokens being cleaned, MM is increasing. Then the total generalization error can be consistently reduced."
+          ]
+        },
+        {
+          "title": "5.3 Self-Evolving Cleaning: Potential Matthew Effect",
+          "paragraphs": [
+            "For ease of presentation, we divide the data into three groups according to their task difficulty and number of i.i.d. clean tokens in the training dataset: Note that the definition of groups only applies to the theoretical analyses, which does not mean we need to explicitly know the group attribute of each data. In fact, it is challenging to know this information. Theoretically, there are three observations during SFT.",
+            "∙\\bullet G1G_{1} (Rich Group): Characterized by lower noise rates after token cleaning and a higher proportion of effective tokens. This group typically experiences significant performance gains during warmup (Line 3, Algorithm 1) and has a great number of relevant tokens.",
+            "∙\\bullet G2G_{2} (Poor Group): Marked by higher noise rates after token cleaning and fewer effective tokens. This group often exhibits limited or even degraded performance during warmup and has a scarce number of relevant tokens.",
+            "∙\\bullet G3G_{3} (Intermediate Group): Falling between the rich and poor groups in terms of data quality and quantity. While it generally sees reasonable performance improvement during warmup, its convergence tends to be unstable due to a limited number of effective tokens.",
+            "G1G_{1} (Rich Group): Characterized by lower noise rates after token cleaning and a higher proportion of effective tokens. This group typically experiences significant performance gains during warmup (Line 3, Algorithm 1) and has a great number of relevant tokens.",
+            "G2G_{2} (Poor Group): Marked by higher noise rates after token cleaning and fewer effective tokens. This group often exhibits limited or even degraded performance during warmup and has a scarce number of relevant tokens.",
+            "G3G_{3} (Intermediate Group): Falling between the rich and poor groups in terms of data quality and quantity. While it generally sees reasonable performance improvement during warmup, its convergence tends to be unstable due to a limited number of effective tokens.",
+            "∙\\bullet Observation 1: The rich get richer (G1G_{1}). When η^<η​(D~)\\hat{\\eta}<\\eta({\\widetilde{D}}) and r^⋅M\\hat{r}\\cdot M is sufficiently large, according to Corollary 5.1.1, fine-tuning on D^1\\widehat{D}_{1} benefits from lower token noise rates and a higher number of effective tokens, thereby reducing the error upper bound and resulting in a better model θ2\\theta_{2}. With a better reference model and a similar number of effective tokens, the model in the next iteration can be further improved, i.e., the rich get richer.",
+            "∙\\bullet Observation 2: The poor get poorer (G2G_{2}). When the model θ1\\theta_{1} underperforms compared to θ0\\theta_{0}, η1\\eta_{1} increases significantly and may even exceed 0.50.5. According to Corollary 5.1.1, continued fine-tuning on tokens with such high noise rates can further degrade performance, exemplifying a “the poor get poorer\" effect.",
+            "∙\\bullet Observation 3: Unstable convergence (G3G_{3}). If η^\\hat{\\eta} is comparable to η​(D~)\\eta({\\widetilde{D}}) and r^⋅M\\hat{r}\\cdot M is only marginally sufficient, fine-tuning on D^3\\widehat{D}_{3} may yield moderate improvements but suffers from instability due to the limited number of effective tokens. According to Corollary 5.1.1, the model’s error upper bound may not decrease consistently, leading to unstable convergence.",
+            "Observation 1: The rich get richer (G1G_{1}). When η^<η​(D~)\\hat{\\eta}<\\eta({\\widetilde{D}}) and r^⋅M\\hat{r}\\cdot M is sufficiently large, according to Corollary 5.1.1, fine-tuning on D^1\\widehat{D}_{1} benefits from lower token noise rates and a higher number of effective tokens, thereby reducing the error upper bound and resulting in a better model θ2\\theta_{2}. With a better reference model and a similar number of effective tokens, the model in the next iteration can be further improved, i.e., the rich get richer.",
+            "Observation 2: The poor get poorer (G2G_{2}). When the model θ1\\theta_{1} underperforms compared to θ0\\theta_{0}, η1\\eta_{1} increases significantly and may even exceed 0.50.5. According to Corollary 5.1.1, continued fine-tuning on tokens with such high noise rates can further degrade performance, exemplifying a “the poor get poorer\" effect.",
+            "Observation 3: Unstable convergence (G3G_{3}). If η^\\hat{\\eta} is comparable to η​(D~)\\eta({\\widetilde{D}}) and r^⋅M\\hat{r}\\cdot M is only marginally sufficient, fine-tuning on D^3\\widehat{D}_{3} may yield moderate improvements but suffers from instability due to the limited number of effective tokens. According to Corollary 5.1.1, the model’s error upper bound may not decrease consistently, leading to unstable convergence.",
+            "From the above analyses, we know that self-evolving models are more adaptive and aggressive compared to fixed models. The theoretical insights further highlight strategies for achieving better performance."
+          ]
+        }
+      ]
+    },
+    "6 Experiments": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "6.1 Experiments Setup",
+          "paragraphs": [
+            "We utilize a high-quality data pool with 50k sample size from five popular SFT datasets (300k in total): Flan_v2 (Longpre et al., 2023), Open Assistant 1 (Köpf et al., 2024), Stanford Alpaca (Taori et al., 2023), Dolly (Databricks, 2023), and WizardLM (Xu et al., 2023). The data pool is constructed based on a new powerful data curation pipeline proposed by (Pang et al., 2024a), which involves selecting data samples using quality rating scores generated by LLMs. More dataset statistical information including token length can be found in Appendix 10.1. For the self-evolving cleaning strategy, we heuristically divide the data pool into five equally sized subsets (10k samples).",
+            "In this paper, we select three popular open-source LLMs as our base models, including LLaMA-3.2-3B, LLaMA-3.1-8B (Dubey et al., 2024) and Mistral-7B-v0.3 (Jiang et al., 2023). These base models will be fine-tuned using samples from our data pool.",
+            "There are several baselines for performance comparisons: 1) Base denotes the used base model; 2) DS2 Pang et al. (2024a) fine-tunes base model on 10k selected high-quality samples (with full tokens) from the entire data pool (50k); 3) Full Tokens utilizes all tokens to fine-tune the base model; 4) Uniform Random randomly selects k%k\\% tokens from the 50k data pool without replacement; 5) Rho (Mindermann et al., 2022; Lin et al., 2024) directly computes the excess loss for all tokens between the base and reference model and then selects top-k%k\\% tokens. Recall that kk is the pre-defined threshold for token cleaning.",
+            "We warmup by fine-tuning the base model on subset D~0\\widetilde{D}_{0} with full tokens, and make it the (initial) reference model for Rho, our Fixed-Model Cleaning, and Self-Evolving Cleaning. The warmup model is equivalent to the DS2 baseline (Pang et al., 2024a).",
+            "To comprehensively evaluate the efficacy of token cleaning methods, we adopt seven OpenLLM Leaderboard tasks, including MMLU (Hendrycks et al., 2020), TruthfulQA (Lin et al., 2021), TydiQA (Clark et al., 2020), HellaSwag (Zellers et al., 2019), ARC-Challenge (Clark et al., 2018), BoolQ (Clark et al., 2019) and LogiQA (Liu et al., 2020). These datasets are sufficiently diverse to thoroughly assess the fine-tuned model across various aspects, including factual accuracy, reasoning, and multilingual capability. The task performances are evaluated on the lm-eval-hareness111https://github.com/EleutherAI/lm-evaluation-harness repository. More evaluation and training details can be found in Appendix 10.2."
+          ]
+        },
+        {
+          "title": "6.2 Main Empirical Results",
+          "paragraphs": [
+            "As shown in Table 1, our proposed strategies consistently outperform baselines across three base models on seven evaluation benchmarks. Notably, compared to using full tokens, our self-evolving cleaning has achieved the average performance improvement of 6.3% on the 3B model and 2.0%/4.4% on the 7B/8B models.",
+            "Compared to RHO, which ranks token scores locally within individual samples and removes the same proportion of tokens per sample, our fixed-model cleaning method globally ranks token scores across the entire dataset. As shown in Table 1, the local-ranking method (Rho) yields lower average performance than the global-ranking method (Fixed-Model Cleaning), e.g., 51.4651.46 vs. 51.9851.98 for LLaMA-3.2-3B and 53.6053.60 vs. 55.2055.20 for Mistral-7B-v0.3, demonstrating that global ranking leads to more stable performance improvements. One possible explanation is that local ranking is constrained by the quality of individual samples. For example, in SFT, a low-quality sample may not contain any useful tokens, while almost all tokens in a high-quality sample may be useful. Since local ranking removes the same proportion of tokens from both samples, it inevitably retains uninformative tokens from low-quality samples while discarding informative ones from high-quality samples. This limitation can be mitigated through global token ranking, as employed in our fixed-model cleaning approach.",
+            "Table 2 presents the model’s performance across different training iterations (checkpoints), illustrating three phenomena arising from the Matthew effect, as discussed in Section 5.3. Specifically, performance on TruthfulQA, TydiQA, and LogiQA steadily improves over iterations, representing Observation 1: the rich get richer. In contrast, MMLU which focuses on factual knowledge, exhibits a slight performance decline, illustrating Observation 2: the poor get poorer. Meanwhile, for the remaining tasks (HellaSwag, ARC-C, and BoolQ), performance improvements are observed but exhibit fluctuations, aligning with Observation 3: unstable convergence."
+          ]
+        },
+        {
+          "title": "6.3 Ablation Study",
+          "paragraphs": [
+            "Here, we investigate the impact of selected token proportion for our pipeline using a series of token proportion values including {0.3,0.4,⋯,0.9}\\{0.3,0.4,\\cdots,0.9\\}. As presented in Figure 2, the best results are achieved when the selected token proportion is approximately 50% to 70%. Beyond this range, the overall performance declines, which may be attributed to uninformative tokens. One valuable empirical finding is that the performance gains in SFT tasks largely rely on a small number of highly informative tokens. This observation supports the prevailing view that data quality is more crucial than mere volume. Full results can be referred to in Appendix 11 (Table 7).",
+            "To assess the impact of the reference model on performance, we run Rho and our fixed-model cleaning approach using LLaMA-3.1-8B-Instruct as the new reference model and compare the results with our previous reference model (DS2 as the warmup). As shown in Table 3, a more powerful reference model generally leads to greater performance improvements in datasets such as TydiQA and ARC-C. However, some counterintuitive results emerge: in MMLU and BoolQ, despite the 8B reference model significantly outperforming the warmup model, it fails to yield further improvements through token cleaning. A possible explanation for this phenomenon is the distribution shift. If we divide the evaluation task distribution into two parts: an in-distribution segment aligned with our data pool and an out-of-distribution segment, LLaMA-3.1-8B-Instruct, while achieving high overall performance, may not necessarily surpass the warmup model in the in-distribution subset. Investigating this hypothesis and validating this assumption are promising directions for future research. More detailed results can be found in Appendix 11."
+          ]
+        }
+      ]
+    },
+    "7 Conclusion": {
+      "paragraphs": [
+        "This work has demonstrated the effectiveness and importance of token cleaning, introducing a generic token cleaning pipeline that removes uninformative tokens while preserving task-relevant information. Our theoretical analysis has revealed the strengths and limitations of two scoring strategies: fixed-model cleaning, which provides stability but limited improvements, and self-evolving cleaning, which has shown the potential for greater performance gains but requires more careful implementation. Empirically, we have found that filtering out approximately 30%–40% of tokens consistently enhances performance across both strategies, achieving an average 6.3% improvement over the full-token baseline at the 3B model scale."
+      ],
+      "subsections": []
+    },
+    "Organization of the Appendix": {
+      "paragraphs": [
+        "The Appendix is organized as follows.",
+        "∙\\bullet Section 8 discusses the potential limitations of our work.",
+        "∙\\bullet Section 9 provides a full proof for Theorems shown in Section 5.",
+        "∙\\bullet Section 10 illustrates the experimental details including data pool, evaluation benchmarks, and training details.",
+        "∙\\bullet Section 11 demonstrates detailed omitted performance results.",
+        "∙\\bullet Section 12 provides several samples with tokens selected by the self-evolving cleaning pipeline."
+      ],
+      "subsections": []
+    },
+    "8 Limitations": {
+      "paragraphs": [
+        "While the proposed token cleaning pipelines demonstrate competitive performance compared to other baselines, we acknowledge that there are still potential limitations:",
+        "• Base Model Scale. Our experiments are primarily conducted on a base model with a 3B-8B scale. It remains uncertain how well the pipeline would perform on larger-scale base models.",
+        "• Data Pool Scale. Due to cost considerations, our data pool is limited to 50k samples. The performance of the proposed pipeline on a larger-scale data pool remains uncertain."
+      ],
+      "subsections": []
+    },
+    "9 Proof for Theorem5.1": {
+      "paragraphs": [
+        "We first reproduce the definitions as follows.",
+        "Denote by D~:={(xi,j,𝒙i,:j,y~i,j),∀i,j}\\widetilde{D}:=\\{(x_{i,j},\\bm{x}_{i,:j},\\tilde{y}_{i,j}),\\forall i,j\\} the full-token dataset. By minimizing the noisy loss",
+        "where S:={(i,j)|i∈[N],j∈[Li]}S:=\\{(i,j)|i\\in[N],j\\in[L_{i}]\\}, [N]:={1,2,⋯,N}[N]:=\\{1,2,\\cdots,N\\}. we can get model θ^D~:=arg​minθ⁡ℒ^D~​(θ)\\hat{\\theta}_{\\widetilde{D}}:=\\operatorname*{arg\\,min}_{\\theta}~\\widehat{\\mathcal{L}}_{\\widetilde{D}}(\\theta). When train with full tokens, we have y~i,j=1,∀i,j\\tilde{y}_{i,j}=1,\\forall i,j. The corresponding expected loss can be denoted by",
+        "where 𝒟~\\widetilde{\\mathcal{D}} is the distribution of D~\\widetilde{D}. Denote by Y~\\widetilde{Y} the random variable for noisy token label y~i,j\\tilde{y}_{i,j}, and YY the random variable for the ground-truth token label yi,jy_{i,j}. Accordingly, with ground-truth token labels, the expected loss is",
+        "Decomposition With the above definitions, the generalization error of model θ^D~\\hat{\\theta}_{\\widetilde{D}} on the clean distribution could be decomposed as",
+        "where Term-1 transforms the evaluation of θ^D~\\hat{\\theta}_{\\widetilde{D}} from clean distribution 𝒟\\mathcal{D} to the noisy distribution 𝒟~\\widetilde{\\mathcal{D}}. Term-2 is the generalization error but the model is trained and evaluated on noisy distribution 𝒟~\\widetilde{\\mathcal{D}}. Both terms are analyzed as follows."
+      ],
+      "subsections": [
+        {
+          "title": "9.1 Term-1 Upper Bound",
+          "paragraphs": [
+            "For a certain model θ\\theta, there always exist a random variable X~next\\widetilde{X}_{\\text{next}} such that when Y=1Y=1, Xnext=X~nextX_{\\text{next}}=\\widetilde{X}_{\\text{next}} and when Y=0Y=0,",
+            "Then we have",
+            "where in equality (a), given model θ\\theta and previous tokens, we can treat X~next​(𝑿prev;θ)\\widetilde{X}_{\\text{next}}(\\bm{X}_{\\text{prev}};\\theta) as a Bernoulli random variable such that",
+            "Then according to the definition of total variation of two distributions, i.e.,",
+            "we can summarize the integrand as the total variation between X~next​(𝑿prev;θ)\\widetilde{X}_{\\text{next}}(\\bm{X}_{\\text{prev}};\\theta) and Xnext​(𝑿prev;θ){X}_{\\text{next}}(\\bm{X}_{\\text{prev}};\\theta).",
+            "Inequality (b) holds due to the data processing inequality since the probabilities [ℙ​(X~next=θ​(𝑿prev)),ℙ​(X~next≠θ​(𝑿prev))][\\mathbb{P}(\\widetilde{X}_{\\text{next}}=\\theta(\\bm{X}_{\\text{prev}})),\\mathbb{P}(\\widetilde{X}_{\\text{next}}\\neq\\theta(\\bm{X}_{\\text{prev}}))] are generated by [ℙ​(X~next=i),∀i∈[K]][\\mathbb{P}(\\widetilde{X}_{\\text{next}}=i),\\forall i\\in[K]], and the probabilities [ℙ​(Xnext=θ​(𝑿prev)),ℙ​(Xnext≠θ​(𝑿prev))][\\mathbb{P}(X_{\\text{next}}=\\theta(\\bm{X}_{\\text{prev}})),\\mathbb{P}(X_{\\text{next}}\\neq\\theta(\\bm{X}_{\\text{prev}}))] are generated by [ℙ​(Xnext=k),∀k∈[K]][\\mathbb{P}(X_{\\text{next}}=k),\\forall k\\in[K]].",
+            "The results also hold for an arbitrary Y~\\widetilde{Y}. To prove it, we need to split the loss into two part: 1) Y~=1\\widetilde{Y}=1 and 2) Y~=0\\widetilde{Y}=0. The first part follows the previous proof, yields an upper bound of ℙ​(Y~=1,Y=0)\\mathbb{P}(\\widetilde{Y}=1,Y=0). The second part leads to an upper bound of ℙ​(Y~=0,Y=1)\\mathbb{P}(\\widetilde{Y}=0,Y=1). By summing up two bounds, we still have the same result, i.e., an upper bound of ℙ​(Y≠Y~)\\mathbb{P}(Y\\neq\\widetilde{Y})."
+          ]
+        },
+        {
+          "title": "9.2 Term-2 Upper Bound",
+          "paragraphs": [
+            "Recall that",
+            "Let θ^D~\\hat{\\theta}_{\\widetilde{D}} denote the model trained by minimizing 0-1 loss with noisy dataset D~{\\widetilde{D}}, i.e.,",
+            "Recall that the expected error of model θ\\theta on distribution 𝒟~\\mathcal{\\widetilde{D}} is",
+            "The optimal classifier is denoted by",
+            "Denote by M:=∑i=1NLiM:=\\sum_{i=1}^{N}L_{i} the number of toekns. With probability at least 1−δ1-\\delta, we have:",
+            "where inequality (a) holds since 1) ℒ^D~​(θ^D~)\\hat{\\mathcal{L}}_{\\widetilde{D}}(\\hat{\\theta}_{\\widetilde{D}}) achieves the minimum empirical risk according to its definition, thus ℒ^D~​(θ^D~)−ℒ^D~​(θ𝒟~)≤0\\hat{\\mathcal{L}}_{\\widetilde{D}}(\\hat{\\theta}_{\\widetilde{D}})-\\hat{\\mathcal{L}}_{\\widetilde{D}}(\\theta_{\\mathcal{\\widetilde{D}}})\\leq 0; 2) each of the following two terms will be no greater than the corresponding gap |ℒ^D~​(θ)−ℒ𝒟~​(θ)||\\hat{\\mathcal{L}}_{\\widetilde{D}}(\\theta)-{\\mathcal{L}}_{\\mathcal{\\widetilde{D}}}(\\theta)|. Specifically, inequality (b) holds due to the Hoeffding’s inequality, i.e., given any classifier θ^D~\\hat{\\theta}_{\\widetilde{D}}, and θ𝒟~\\theta_{\\mathcal{\\widetilde{D}}}, with probability at least 1−δ/21-\\delta/2, we have the following bounds independently:",
+            "By the union bound, we have inequality (b) with probability at least 1−δ1-\\delta.",
+            "Supposing a unique next token for given previous tokens in distribution 𝒟~\\mathcal{\\widetilde{D}}, we have ℒ𝒟~​(θ𝒟~)=0{\\mathcal{L}}_{\\mathcal{\\widetilde{D}}}(\\theta_{\\mathcal{\\widetilde{D}}})=0."
+          ]
+        }
+      ]
+    },
+    "10 Experimental Details": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "10.1 Data Pool",
+          "paragraphs": [
+            "The data pool used in this work is primarily composed of five widely used SFT datasets, derived either from human annotations or generated by advanced LLMs. Further details on these datasets can be found in Table 4. Notably, these datasets differ in format, quality, prompt length, and target tasks, highlighting the diversity of our foundational data pool. For consistency, we adopt the “Tulu\" template format proposed by Wang et al. [2023] to standardize these datasets. The “Tulu\" template includes two primary tags, <|User|> and <|Assistant|>, which denote the roles of the user and the assistant, respectively."
+          ]
+        },
+        {
+          "title": "10.2 Evaluation Benchmarks",
+          "paragraphs": [
+            "For MMLU, TruthfulQA, LogiQA, ARC-C, BoolQ, and HellaSwag datasets, we directly use accuracy as the performance metric. In particular, for the TruthfulQA dataset (a multiple-choice question benchmark), we utilize the MC2 metric, which evaluates only the answer assigned the highest probability by the model (i.e., the model’s most confident choice). For the TydiQA dataset, we consider using the 1-shot F1 score. One can double-check these performance metrics in the lm-evaluation-harness repository. By default, we use all benchmark samples to conduct evaluation."
+          ]
+        },
+        {
+          "title": "10.3 Training Details",
+          "paragraphs": [
+            "Following the experimental setup [Wang et al., 2023], we apply a Lora technique with a rank-size of 64 and a scaling factor of 16. The overall batch size is 48, with the learning rate at 1e-4 as well as 1 training epoch. By default, the maximum input length is 2048. All experiments are conducted on eight NVIDIA L40S GPUs. Fine-tuning 7B or 8B models on a dataset of 50k samples typically takes approximately 3 hours."
+          ]
+        }
+      ]
+    },
+    "11 Additional Experimental Results": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "11.1 Empirical Results Still Follows the Observation of the Matthew Effort",
+          "paragraphs": [
+            "Here, we also provide the empirical results of the self-evolving cleaning strategy on the other two base models. As shown in Table 5, the performance results over iterations also align with the theoretical observation, as discussed in Section 5.3."
+          ]
+        },
+        {
+          "title": "11.2 Impact of Selected Token Proportion",
+          "paragraphs": [
+            "This section provides more experimental results to explicitly demonstrate the impact of the selected token proportion across iterations. Here, Table 6 and Table 7 show the full performance results of the self-evolving cleaning pipeline."
+          ]
+        },
+        {
+          "title": "11.3 Impact of Reference Model",
+          "paragraphs": [
+            "Here, we provide the full performance results under different reference models, as shown in Table 8. Here, we select LLaMA-3.1-8B-Instruct222https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct. as our reference model."
+          ]
+        }
+      ]
+    },
+    "12 Illustrative Examples with Selected Tokens": {
+      "paragraphs": [
+        "Intuitively, those common tokens are less likely to be selected by our proposed strategies. Here, we provide several samples with tokens selected by the proposed self-evolving cleaning strategy. The selected tokens are highlighted in blue."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {},
+  "references": [
+    "Touvron et al. [2023] Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, et al. Llama 2: Open foundation and fine-tuned chat models. arXiv preprint arXiv:2307.09288, 2023.",
+    "Zhang et al. [2024] Biao Zhang, Zhongtao Liu, Colin Cherry, and Orhan Firat. When scaling meets llm finetuning: The effect of data, model and finetuning method. arXiv preprint arXiv:2402.17193, 2024.",
+    "Wang et al. [2022] Yizhong Wang, Yeganeh Kordi, Swaroop Mishra, Alisa Liu, Noah A Smith, Daniel Khashabi, and Hannaneh Hajishirzi. Self-instruct: Aligning language models with self-generated instructions. arXiv preprint arXiv:2212.10560, 2022.",
+    "Chung et al. [2024] Hyung Won Chung, Le Hou, Shayne Longpre, Barret Zoph, Yi Tay, William Fedus, Yunxuan Li, Xuezhi Wang, Mostafa Dehghani, Siddhartha Brahma, et al. Scaling instruction-finetuned language models. Journal of Machine Learning Research, 25(70):1–53, 2024.",
+    "Longpre et al. [2023] Shayne Longpre, Le Hou, Tu Vu, Albert Webson, Hyung Won Chung, Yi Tay, Denny Zhou, Quoc V Le, Barret Zoph, Jason Wei, et al. The flan collection: Designing data and methods for effective instruction tuning. In International Conference on Machine Learning, pages 22631–22648. PMLR, 2023.",
+    "Zhou et al. [2024] Chunting Zhou, Pengfei Liu, Puxin Xu, Srinivasan Iyer, Jiao Sun, Yuning Mao, Xuezhe Ma, Avia Efrat, Ping Yu, Lili Yu, et al. Lima: Less is more for alignment. Advances in Neural Information Processing Systems, 36, 2024.",
+    "Chen et al. [2023] Lichang Chen, Shiyang Li, Jun Yan, Hai Wang, Kalpa Gunaratna, Vikas Yadav, Zheng Tang, Vijay Srinivasan, Tianyi Zhou, Heng Huang, et al. Alpagasus: Training a better alpaca with fewer data. arXiv preprint arXiv:2307.08701, 2023.",
+    "Pang et al. [2024a] Jinlong Pang, Jiaheng Wei, Ankit Parag Shah, Zhaowei Zhu, Yaxuan Wang, Chen Qian, Yang Liu, Yujia Bao, and Wei Wei. Improving data efficiency via curating llm-driven rating systems. arXiv preprint arXiv:2410.10877, 2024a.",
+    "Liu et al. [2023] Wei Liu, Weihao Zeng, Keqing He, Yong Jiang, and Junxian He. What makes good data for alignment? a comprehensive study of automatic data selection in instruction tuning. arXiv preprint arXiv:2312.15685, 2023.",
+    "Cao et al. [2024] Yihan Cao, Yanbin Kang, Chi Wang, and Lichao Sun. Instruction mining: Instruction data selection for tuning large language models. In First Conference on Language Modeling, 2024. URL https://openreview.net/forum?id=wF6k0aWjAu.",
+    "Zhao et al. [2024] Hao Zhao, Maksym Andriushchenko, Francesco Croce, and Nicolas Flammarion. Long is more for alignment: A simple but tough-to-beat baseline for instruction fine-tuning. arXiv preprint arXiv:2402.04833, 2024.",
+    "Chen and Mueller [2024] Jiuhai Chen and Jonas Mueller. Automated data curation for robust language model fine-tuning. arXiv preprint arXiv:2403.12776, 2024.",
+    "Lin et al. [2024] Zhenghao Lin, Zhibin Gou, Yeyun Gong, Xiao Liu, Ruochen Xu, Chen Lin, Yujiu Yang, Jian Jiao, Nan Duan, Weizhu Chen, et al. Not all tokens are what you need for pretraining. In The Thirty-eighth Annual Conference on Neural Information Processing Systems, 2024.",
+    "Gou and Nguyen [2024] Qi Gou and Cam-Tu Nguyen. Mixed preference optimization: Reinforcement learning with data selection and better reference model. arXiv preprint arXiv:2403.19443, 2024.",
+    "Li et al. [2023] Ming Li, Yong Zhang, Zhitao Li, Jiuhai Chen, Lichang Chen, Ning Cheng, Jianzong Wang, Tianyi Zhou, and Jing Xiao. From quantity to quality: Boosting llm performance with self-guided data selection for instruction tuning. arXiv preprint arXiv:2308.12032, 2023.",
+    "Zhou et al. [2023] Daquan Zhou, Kai Wang, Jianyang Gu, Xiangyu Peng, Dongze Lian, Yifan Zhang, Yang You, and Jiashi Feng. Dataset quantization. In Proceedings of the IEEE/CVF International Conference on Computer Vision, pages 17205–17216, 2023.",
+    "Xia et al. [2024] Mengzhou Xia, Sadhika Malladi, Suchin Gururangan, Sanjeev Arora, and Danqi Chen. Less: Selecting influential data for targeted instruction tuning. arXiv preprint arXiv:2402.04333, 2024.",
+    "Lu et al. [2023] Keming Lu, Hongyi Yuan, Zheng Yuan, Runji Lin, Junyang Lin, Chuanqi Tan, Chang Zhou, and Jingren Zhou. # instag: Instruction tagging for analyzing supervised fine-tuning of large language models. In The Twelfth International Conference on Learning Representations, 2023.",
+    "Vahdat [2017] Arash Vahdat. Toward robustness against label noise in training deep discriminative neural networks. In Advances in Neural Information Processing Systems, pages 5596–5605, 2017.",
+    "Veit et al. [2017] Andreas Veit, Neil Alldrin, Gal Chechik, Ivan Krasin, Abhinav Gupta, and Serge Belongie. Learning from noisy large-scale datasets with minimal supervision. In Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition, pages 839–847, 2017.",
+    "Li et al. [2017] Yuncheng Li, Jianchao Yang, Yale Song, Liangliang Cao, Jiebo Luo, and Li-Jia Li. Learning from noisy labels with distillation. In Proceedings of the IEEE International Conference on Computer Vision, pages 1910–1918, 2017.",
+    "Liu and Wang [2021] Yang Liu and Jialu Wang. Can less be more? when increasing-to-balancing label noise rates considered beneficial. In M. Ranzato, A. Beygelzimer, Y. Dauphin, P.S. Liang, and J. Wortman Vaughan, editors, Advances in Neural Information Processing Systems, volume 34, pages 17467–17479. Curran Associates, Inc., 2021. URL https://proceedings.neurips.cc/paper/2021/file/91e50fe1e39af2869d3336eaaeebdb43-Paper.pdf.",
+    "Yuan et al. [2024] Suqin Yuan, Lei Feng, and Tongliang Liu. Early stopping against label noise without validation data. In The Twelfth International Conference on Learning Representations, 2024. URL https://openreview.net/forum?id=CMzF2aOfqp.",
+    "Natarajan et al. [2013] Nagarajan Natarajan, Inderjit S Dhillon, Pradeep K Ravikumar, and Ambuj Tewari. Learning with noisy labels. In Advances in neural information processing systems, pages 1196–1204, 2013.",
+    "Reed et al. [2014] Scott Reed, Honglak Lee, Dragomir Anguelov, Christian Szegedy, Dumitru Erhan, and Andrew Rabinovich. Training deep neural networks on noisy labels with bootstrapping. arXiv preprint arXiv:1412.6596, 2014.",
+    "Zhu et al. [2021] Zhaowei Zhu, Tongliang Liu, and Yang Liu. A second-order approach to learning with instance-dependent label noise. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 10113–10123, 2021.",
+    "Northcutt et al. [2021] Curtis Northcutt, Lu Jiang, and Isaac Chuang. Confident learning: Estimating uncertainty in dataset labels. Journal of Artificial Intelligence Research, 70:1373–1411, 2021.",
+    "Northcutt et al. [2017] Curtis G. Northcutt, Tailin Wu, and Isaac L. Chuang. Learning with confident examples: Rank pruning for robust classification with noisy labels. In Proceedings of the Thirty-Third Conference on Uncertainty in Artificial Intelligence, UAI’17. AUAI Press, 2017. URL http://auai.org/uai2017/proceedings/papers/35.pdf.",
+    "Cheng et al. [2021] Hao Cheng, Zhaowei Zhu, Xingyu Li, Yifei Gong, Xing Sun, and Yang Liu. Learning with instance-dependent label noise: A sample sieve approach. In International Conference on Learning Representations, 2021. URL https://openreview.net/forum?id=2VXyy9mIyU3.",
+    "Zhu et al. [2022] Zhaowei Zhu, Zihao Dong, and Yang Liu. Detecting corrupted labels without training a model to predict. In International Conference on Machine Learning, pages 27412–27427. PMLR, 2022.",
+    "Chong et al. [2022] Derek Chong, Jenny Hong, and Christopher Manning. Detecting label errors by using pre-trained language models. In Proceedings of the 2022 Conference on Empirical Methods in Natural Language Processing, pages 9074–9091, Abu Dhabi, United Arab Emirates, December 2022. Association for Computational Linguistics. doi: 10.18653/v1/2022.emnlp-main.618. URL https://aclanthology.org/2022.emnlp-main.618.",
+    "Zhu et al. [2024] Zhaowei Zhu, Jialu Wang, Hao Cheng, and Yang Liu. Unmasking and improving data credibility: A study with datasets for training harmless language models. In The Twelfth International Conference on Learning Representations, 2024. URL https://openreview.net/forum?id=6bcAD6g688.",
+    "[33] Eric Mitchell. A note on dpo with noisy preferences and relationship to ipo, 2023. URL https://ericmitchell. ai/cdpo. pdf.",
+    "Chowdhury et al. [2024] Sayak Ray Chowdhury, Anush Kini, and Nagarajan Natarajan. Provably robust dpo: Aligning language models with noisy feedback. arXiv preprint arXiv:2403.00409, 2024.",
+    "[35] Keyi Kong, Xilie Xu, Di Wang, Jingfeng Zhang, and Mohan Kankanhalli. Perplexity-aware correction for robust alignment with noisy preferences. In The Thirty-eighth Annual Conference on Neural Information Processing Systems.",
+    "Koh and Liang [2017] Pang Wei Koh and Percy Liang. Understanding black-box predictions via influence functions. In International conference on machine learning, pages 1885–1894. PMLR, 2017.",
+    "Pang et al. [2024b] Jinlong Pang, Jialu Wang, Zhaowei Zhu, Yuanshun Yao, Chen Qian, and Yang Liu. Fairness without harm: An influence-guided active sampling approach. In The Thirty-eighth Annual Conference on Neural Information Processing Systems, 2024b. URL https://openreview.net/forum?id=YYJojVBCcd.",
+    "Lad and Mueller [2023] Vedang Lad and Jonas Mueller. Estimating label quality and errors in semantic segmentation data via any model. arXiv preprint arXiv:2307.05080, 2023.",
+    "Mindermann et al. [2022] Sören Mindermann, Jan M Brauner, Muhammed T Razzak, Mrinank Sharma, Andreas Kirsch, Winnie Xu, Benedikt Höltgen, Aidan N Gomez, Adrien Morisot, Sebastian Farquhar, et al. Prioritized training on points that are learnable, worth learning, and not yet learnt. In International Conference on Machine Learning, pages 15630–15649. PMLR, 2022.",
+    "Bartlett and Mendelson [2002] Peter L Bartlett and Shahar Mendelson. Rademacher and gaussian complexities: Risk bounds and structural results. Journal of Machine Learning Research, 3(Nov):463–482, 2002.",
+    "Köpf et al. [2024] Andreas Köpf, Yannic Kilcher, Dimitri von Rütte, Sotiris Anagnostidis, Zhi Rui Tam, Keith Stevens, Abdullah Barhoum, Duc Nguyen, Oliver Stanley, Richárd Nagyfi, et al. Openassistant conversations-democratizing large language model alignment. Advances in Neural Information Processing Systems, 36, 2024.",
+    "Taori et al. [2023] Rohun Taori, Ishaan Gulrajani, Ting Zhang, Yann Dubois, Xiaodan Li, Carlos Guestrin, Percy Liang, and Tatsunori B. Hashimoto. Stanford alpaca: An instruction-following llama model. https://github.com/tatsu-lab/stanford_alpaca, 2023. GitHub repository.",
+    "Databricks [2023] Databricks. Free dolly: Introducing the world’s first truly open instruction-tuned llm. https://www.databricks.com/blog/2023/04/12/dolly-first-open-commercially-viable-instruction-tuned-llm, 2023.",
+    "Xu et al. [2023] Can Xu, Qingfeng Sun, Kai Zheng, Xiubo Geng, Pu Zhao, Jiazhan Feng, Chongyang Tao, and Daxin Jiang. Wizardlm: Empowering large language models to follow complex instructions. arXiv preprint arXiv:2304.12244, 2023.",
+    "Dubey et al. [2024] Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Amy Yang, Angela Fan, et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783, 2024.",
+    "Jiang et al. [2023] Albert Q Jiang, Alexandre Sablayrolles, Arthur Mensch, Chris Bamford, Devendra Singh Chaplot, Diego de las Casas, Florian Bressand, Gianna Lengyel, Guillaume Lample, Lucile Saulnier, et al. Mistral 7b. arXiv preprint arXiv:2310.06825, 2023.",
+    "Hendrycks et al. [2020] Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou, Mantas Mazeika, Dawn Song, and Jacob Steinhardt. Measuring massive multitask language understanding. arXiv preprint arXiv:2009.03300, 2020.",
+    "Lin et al. [2021] Stephanie Lin, Jacob Hilton, and Owain Evans. Truthfulqa: Measuring how models mimic human falsehoods. arXiv preprint arXiv:2109.07958, 2021.",
+    "Clark et al. [2020] Jonathan H Clark, Eunsol Choi, Michael Collins, Dan Garrette, Tom Kwiatkowski, Vitaly Nikolaev, and Jennimaria Palomaki. Tydi qa: A benchmark for information-seeking question answering in ty pologically di verse languages. Transactions of the Association for Computational Linguistics, 8:454–470, 2020.",
+    "Zellers et al. [2019] Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin Choi. Hellaswag: Can a machine really finish your sentence? arXiv preprint arXiv:1905.07830, 2019.",
+    "Clark et al. [2018] Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa Schoenick, and Oyvind Tafjord. Think you have solved question answering? try arc, the ai2 reasoning challenge. arXiv preprint arXiv:1803.05457, 2018.",
+    "Clark et al. [2019] Christopher Clark, Kenton Lee, Ming-Wei Chang, Tom Kwiatkowski, Michael Collins, and Kristina Toutanova. Boolq: Exploring the surprising difficulty of natural yes/no questions. arXiv preprint arXiv:1905.10044, 2019.",
+    "Liu et al. [2020] Jian Liu, Leyang Cui, Hanmeng Liu, Dandan Huang, Yile Wang, and Yue Zhang. Logiqa: A challenge dataset for machine reading comprehension with logical reasoning, 2020.",
+    "Wang et al. [2023] Yizhong Wang, Hamish Ivison, Pradeep Dasigi, Jack Hessel, Tushar Khot, Khyathi Raghavi Chandu, David Wadden, Kelsey MacMillan, Noah A. Smith, Iz Beltagy, and Hannaneh Hajishirzi. How far can camels go? exploring the state of instruction tuning on open resources, 2023."
+  ]
+}

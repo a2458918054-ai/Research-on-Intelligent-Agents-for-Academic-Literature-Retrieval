@@ -1,0 +1,391 @@
+{
+  "title": "SPEX: Scaling Feature Interaction Explanations for LLMs",
+  "authors": "Justin Singh KangLandon ButlerAbhineet AgarwalYigit Efe ErginbasRamtin PedarsaniKannan RamchandranBin Yu",
+  "abstract": "Large language models (LLMs) have revolutionized machine learning due to their ability to capture complex interactions between input features. Popular post-hoc explanation methods like SHAP provide marginal feature attributions, while their extensions to interaction importances only scale to small input lengths (≈20\\approx 20). We propose Spectral Explainer (SPEX), a model-agnostic interaction attribution algorithm that efficiently scales to large input lengths (≈1000)\\approx 1000). SPEX exploits underlying natural sparsity among interactions—common in real-world data—and applies a sparse Fourier transform using a channel decoding algorithm to efficiently identify important interactions. We perform experiments across three difficult long-context datasets that require LLMs to utilize interactions between inputs to complete the task. For large inputs, SPEX outperforms marginal attribution methods by up to 20% in terms of faithfully reconstructing LLM outputs. Further, SPEX successfully identifies key features and interactions that strongly influence model output. For one of our datasets, HotpotQA, SPEX provides interactions that align with human annotations. Finally, we use our model-agnostic approach to generate explanations to demonstrate abstract reasoning in closed-source LLMs (GPT-4o mini) and compositional reasoning in vision-language models.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Large language models (LLMs) perform remarkably well across many domains by modeling complex interactions among features111LLM features refer to inputs at any granularity, e.g, tokens, sentences in a prompt or image patches in vision-language models.. Interactions are critical for complex tasks like protein design, drug discovery, or medical diagnosis, which require examining combinations of hundreds of features. As LLMs are increasingly used in such high-stakes applications, they require trustworthy explanations to aid in responsible decision-making. Moreover, LLM explanations enable debugging and can drive development through improved understanding (Zhang et al., 2023a).",
+        "Current post-hoc explainability approaches for LLMs fall into two categories: (i) methods like Shapley values (Lundberg & Lee, 2017) and LIME (Ribeiro et al., 2016) compute marginal feature attribution but do not consider interactions. As a running example, consider a sentiment analysis task (see Fig. 1(a)) where the LLM classifies a review containing the sentence “Her acting never fails to impress”. Marginal attribution methods miss this interaction, and instead attribute positive sentiment to “never” and “fails” (see Fig. 1(a)). (ii) Interaction indices such as Faith-Shap (Tsai et al., 2023) attribute interactions up to a given order dd. That is, for nn input features, they compute attributions by considering all O​(nd)O(n^{d}) interactions. This becomes infeasible for small nn and dd. This motivates the central question of this paper:",
+        "Can we perform interaction attribution at scale for a large input space nn with reasonable computational complexity? ",
+        "We answer this question affirmatively with Spectral Explainer (SPEX) by leveraging information-theoretic tools to efficiently identify important interactions at LLM scale. The scale of SPEX is enabled by the observation that LLM outputs are often driven by a small number of sparse interactions between inputs (Tsui & Aghazadeh, 2024; Ren et al., 2024a). See Fig. 1 for examples of sparsity in various tasks. SPEX discovers important interactions by using a sparse Fourier transform to construct a surrogate explanation function. This sparse Fourier transform searches for interactions via a channel decoding algorithm, thereby avoiding the exhaustive search used in existing approaches.",
+        "Our experiments show we can identify a small set of interactions that effectively and concisely reconstruct LLM outputs with n≈1000n\\approx 1000. This scale is far beyond what current interaction attribution benchmarks consider, e.g., SHAP-IQ (Muschalik et al., 2024) only considers datasets with no more than 20 features. This is summarized in Fig 2; marginal attribution methods scale to large nn but ignore crucial interactions. On the other hand, existing interaction indices do not scale with nn. SPEX both captures interactions and scales to large nn. For an ss sparse Fourier transform containing interactions of at most degree dd, SPEX has computational complexity at most O~​(s​d​n)\\tilde{O}(sdn). In contrast, popular interaction attribution approaches scale as Ω​(nd)\\Omega(n^{d}).",
+        "Evaluation Overview. We compare SPEX to popular feature and interaction indices across three standard datasets. Algorithms and experiments are made publicly available222https://github.com/basics-lab/spectral-explain.",
+        "• Faithfulness. SPEX more faithfully reconstructs (≈\\approx 20% improvement) outputs of LLMs as compared to other methods across datasets. Moreover, it learns more faithful reconstructions with fewer model inferences.",
+        "• Identifying Interactions. SPEX identifies a small number of influential interactions that significantly change model output. For one of our datasets, HotpotQA, SPEX provides interactions that align with human annotations.",
+        "• Case Studies. We demonstrate how one might use SPEX to identify and debug reasoning errors made by closed-source LLMs (GPT-4o mini) and for compositional reasoning in a large multi-modal model."
+      ],
+      "subsections": []
+    },
+    "2 Related Work": {
+      "paragraphs": [
+        "LLMs are capable of generating rationalizations for their outputs, but such rationalizations are another form of model output, susceptible to the same limitations (Sarkar, 2024). In contrast, this work focuses on explanations in the form of feature attributions that are grounded in the model’s inputs and outputs, and can be applied to any ML model. i.e., model-agnostic methods. Moreover, model-agnostic methods can be applied to LLMs incapable of explaining their own output such as protein language models as well as encoder-only models (see experiments in Sec. 6)"
+      ],
+      "subsections": []
+    },
+    "3 Overview: Fourier Transform Formulation": {
+      "paragraphs": [
+        "We review background on the Fourier transform for SPEX."
+      ],
+      "subsections": []
+    },
+    "4 Problem Statement": {
+      "paragraphs": [
+        "Our goal is to compute an approximate surrogate f^\\hat{f}. SPEX finds a small set of 𝐤\\mathbf{k} with |𝐤|≪n\\left\\lvert\\mathbf{k}\\right\\rvert\\ll n denoted 𝒦\\mathcal{K}, and F^​(𝐤)\\hat{F}(\\mathbf{k}) for each 𝐤∈𝒦\\mathbf{k}\\in\\mathcal{K} such that",
+        "This goal is motivated by the Fourier sparsity that commonly occurs in real-world data and models. Some current interaction indices (Tsai et al., 2023) determine 𝒦\\mathcal{K} by formulating it as a LASSO problem, and solving it via ℓ1\\ell_{1}-penalized regression (Tibshirani, 1996),",
+        "For given order dd, this approach requires enumeration of all O​(nd)O(n^{d}) interactions. This leads to an explosion in computational complexity as nn grows, as confirmed by our experiments (see Fig 4(a)). To resolve this problem, we need to find an efficient way to search the space of interactions."
+      ],
+      "subsections": []
+    },
+    "5 SPEX: Algorithm Overview": {
+      "paragraphs": [
+        "We now provide a brief overview of SPEX (see Fig. 3). A complete overview is provided in Appendix A. The high-level description consists of three parts:",
+        "• Step 1: Determine a minimal set of masking patterns 𝐦\\mathbf{m} to use for model inference, and query f​(𝐦)f(\\mathbf{m}) for each 𝐦\\mathbf{m}.",
+        "• Step 2: Efficiently learn the surrogate function f^\\hat{f} from the set of collected samples f​(𝐦)f(\\mathbf{m}).",
+        "• Step 3: Use f^\\hat{f} and its transform F^\\hat{F} to identify important interactions for attribution."
+      ],
+      "subsections": [
+        {
+          "title": "5.1 Masking Pattern Design: Exploiting Structure",
+          "paragraphs": [
+            "We first highlight two important properties of Fourier transform related to masking design structure.",
+            "Aliasing (Coefficient Collapse) Property: For b≤nb\\leq n and 𝐌∈𝔽2b×n\\mathbf{M}\\in\\mathbb{F}_{2}^{b\\times n}, let u:𝔽2b→ℝu:\\mathbb{F}_{2}^{b}\\rightarrow\\mathbb{R} denote a subsampled version of ff. Then uu has Fourier transform UU:",
+            "Shift Property: For any function f:𝔽2n→ℝf:\\mathbb{F}_{2}^{n}\\rightarrow\\mathbb{R}, if we shift the input by some vector 𝐩∈𝔽2n\\mathbf{p}\\in\\mathbb{F}_{2}^{n}, the Fourier transform changes as follows:",
+            "Designing Aliasing The aliasing property (4) dictates that when sampling according to 𝐌∈𝔽2b×n\\mathbf{M}\\in\\mathbb{F}_{2}^{b\\times n}, all F​(𝐤)F(\\mathbf{k}) with image 𝐣=𝐌𝐤\\mathbf{j}=\\mathbf{M}\\mathbf{k} are added together. If only one dominant F​(𝐤)F(\\mathbf{k}) satisfies 𝐌𝐤=𝐣\\mathbf{M}\\mathbf{k}=\\mathbf{j}, which can happen due to sparsity, we call it a singleton. We want 𝐌\\mathbf{M} to maximize the number of singletons, since we ultimately use singletons to recover the dominant coefficients and estimate F^\\hat{F}. SPEX uses 𝐌\\mathbf{M} with elements chosen uniformly from 𝔽2\\mathbb{F}_{2}. Such 𝐌\\mathbf{M} has favorable properties regarding generating singletons.",
+            "Designing Shifts Once we create singletons, we need to identify them, extract the dominant index 𝐤\\mathbf{k}, and estimate F^​(𝐤)\\hat{F}(\\mathbf{k}). The shift property (5) is critical for this task since the sign of the dominant F​(𝐤)F(\\mathbf{k}) changes depending on ⟨𝐩,𝐤⟩\\langle\\mathbf{p},\\mathbf{k}\\rangle. Thus, each time we apply a shift vector, we gather (potentially noisy) information about the dominant 𝐤\\mathbf{k}. Finding 𝐤\\mathbf{k} and estimating F^​(𝐤)\\hat{F}(\\mathbf{k}) can be modeled as communicating information over a noisy channel (Shannon, 1948), where the communication protocol is controlled by the shift vectors. We use the aforementioned BCH channel code, which requires only ≈t​log⁡(n)\\approx t\\log(n) shifts to recover 𝐤\\mathbf{k}. The parameter tt controls the robustness of the decoding procedure. Generally, if the maximum degree is |𝐤|=d\\left\\lvert\\mathbf{k}\\right\\rvert=d, we choose t≥dt\\geq d. If t−|𝐤|>0t-\\left\\lvert\\mathbf{k}\\right\\rvert>0, we use the additional shifts to improve the estimation of F^​(𝐤)\\hat{F}(\\mathbf{k}). Since most of the time |𝐤|\\left\\lvert\\mathbf{k}\\right\\rvert is less than 55, we fix t=5t=5 for experiments in this paper.",
+            "Combined Masking Combining ideas from above, we construct C=3C=3 independently sampled 𝐌c\\mathbf{M}_{c} and pp shifting vectors 𝐩i\\mathbf{p}_{i}, which come from rows of a BCH parity matrix. Then, for c∈[C]c\\in[C] and i∈[p]i\\in[p], we entirely sample the function uc,i​(ℓ)=f​(𝐌c⊤​ℓ+𝐩i)u_{c,i}(\\boldsymbol{\\ell})=f(\\mathbf{M}_{c}^{\\top}\\boldsymbol{\\ell}+\\mathbf{p}_{i}). The total number of samples is ≈C​2b​t​log⁡(n)\\approx C2^{b}t\\log(n). We note that all model inference informed by our masking pattern can be conducted in parallel. The Fourier transform of each uc,iu_{c,i}, denoted Uc,iU_{c,i}, is connected to the transform of the original function via"
+          ]
+        },
+        {
+          "title": "5.2 Computing the Surrogate Function",
+          "paragraphs": [
+            "Once we have the samples, we use an iterative message passing algorithm to estimate F^​(𝐤)\\hat{F}(\\mathbf{k}) for a small (a-priori unknown) set of 𝐤∈𝒦\\mathbf{k}\\in\\mathcal{K}.",
+            "We construct a bipartite graph depicted in Fig. 5. The observations 𝐔c​(𝐣)=(Uc,0​(𝐣),…,Uc,p​(𝐣))\\mathbf{U}_{c}(\\mathbf{j})=(U_{c,0}(\\mathbf{j}),\\dotsc,U_{c,p}(\\mathbf{j})) are factor nodes, while the values F^​(𝐤)\\hat{F}(\\mathbf{k}) correspond to variable nodes. F^​(𝐤)\\hat{F}(\\mathbf{k}) is connected to 𝐔c​(𝐣)\\mathbf{U}_{c}(\\mathbf{j}) if 𝐌c​𝐤=𝐣\\mathbf{M}_{c}\\mathbf{k}=\\mathbf{j}.",
+            "The messages from factor to variable are computed by attempting to decode a singleton via the Berlekamp-Massey algorithm. If a 𝐤\\mathbf{k} is successfully decoded, 𝐤\\mathbf{k} is added to 𝒦\\mathcal{K} and F​(𝐤)F(\\mathbf{k}) is estimated and sent to factor node F^​(𝐤)\\hat{F}(\\mathbf{k}). The variable nodes send back the average of their received messages to all connected factor nodes. The factor nodes then update their estimates of F^\\hat{F}, and attempt decoding again. The process repeats until convergence. Once complete the surrogate function is constructed from 𝒦\\mathcal{K} and F^​(𝐤)\\hat{F}(\\mathbf{k}) according to (2). Complete step-by-step details are in Appendix A, Algorithm 4."
+          ]
+        }
+      ]
+    },
+    "6 Experiments": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "6.1 Metrics",
+          "paragraphs": [
+            "We compare SPEX to other methods across a variety of well-established metrics to assess performance.",
+            "Faithfulness: To characterize how well the surrogate function f^\\hat{f} approximates the true function, we define faithfulness (Zhang et al., 2023b):",
+            "where ‖f‖2=∑𝐦∈𝔽2nf​(𝐦)2\\left\\lVert f\\right\\rVert^{2}=\\sum_{\\mathbf{m}\\in\\mathbb{F}_{2}^{n}}f(\\mathbf{m})^{2} and f¯=12n​∑𝐦∈𝔽2nf​(𝐦)\\bar{f}=\\frac{1}{2^{n}}\\sum_{\\mathbf{m}\\in\\mathbb{F}_{2}^{n}}f(\\mathbf{m}).",
+            "Faithfulness measures the ability of different explanation methods to predict model output when masking random inputs. We measure faithfulness over 10,000 random test masks per-sample, and report average R2R^{2} across samples.",
+            "Top-rr Removal: We measure the ability of methods to identify the top rr influential features to model output:",
+            "Recovery Rate@rr: Each question in HotpotQA contains human-labeled annotations for the sentences required to correctly answer the question. We measure the ability of interaction indices to recover these human-labeled annotations. Let Sr∗⊆[n]S_{r^{*}}\\subseteq[n] denote human-annotated sentence indices. Let SiS_{i} denote feature indices of the ithi^{\\text{th}} most important interaction for a given interaction index. Define the recovery ability at rr for each method as follows",
+            "Intuitively, (9) measures how well interaction indices capture features that align with human-labels."
+          ]
+        },
+        {
+          "title": "6.2 Faithfulness and Runtime",
+          "paragraphs": [
+            "Fig. 4 shows the faithfulness of SPEX compared to other methods. We also plot the runtime of all approaches for the Sentiment dataset for different values of nn. All attribution methods are learned over a fixed number of training masks.",
+            "Comparison to Interaction Indices SPEX maintains competitive performance with the best-performing interaction indices across datasets. Recall these indices enumerate all possible interactions, whereas SPEX does not. This difference is reflected in the runtimes of Fig. 4(a). The runtime of other interaction indices explodes as nn increases while SPEX does not suffer any increase in runtime.",
+            "Comparison to Marginal Attributions For input lengths nn too large to run interaction indices, SPEX is significantly more faithful than marginal attribution approaches across all three datasets.",
+            "Varying number of training masks Results in Appendix B show that SPEX continues to out-perform other approaches as we vary the number of training masks.",
+            "Sparsity of SPEX Surrogate Function Results in Appendix B, Table 3 show surrogate functions learned by SPEX have Fourier representations where only ∼10−100\\sim 10^{-100} percent of coefficients are non-zero."
+          ]
+        },
+        {
+          "title": "6.3 Removal",
+          "paragraphs": [
+            "Fig. 6 plots the change in model output as we mask the top rr features for different regimes of nn.",
+            "Small nn SPEX is competitive with other interaction indices for Sentiment, and out-performs them for HotpotQA and DROP. Performance of SPEX in this task is particularly notable since Shapley-based methods are designed to identify a small set of influential features. On the other hand, SPEX does not optimize for this metric, but instead learns the function f​(⋅)f(\\cdot) over all possible 2n2^{n} masks.",
+            "Large nn SPEX out-performs all marginal approaches, indicating the utility of considering interactions."
+          ]
+        },
+        {
+          "title": "6.4 Recovery Rate of Human-Labeled Interactions",
+          "paragraphs": [
+            "We compare the recovery rate (9) for r=10r=10 of SPEX against third order Faith-Banzhaf and Faith-Shap interaction indices. We choose third order interaction indices because all examples are answerable with information from at most three sentences, i.e., maximum degree d=3d=3. Recovery rate is measured as we vary the number of training masks.",
+            "Results are shown in Fig. 7(a), where SPEX has the highest recovery rate of all interaction indices across all sample sizes. Further, SPEX achieves close to its maximum performance with few samples, other approaches require many more samples to approach the recovery rate of SPEX.",
+            "Example of Learned Interaction by SPEX Fig. 7(b) displays a long-context example (128 sentences) from HotpotQA whose answer is contained in the three highlighted sentences. SPEX identifies the three human-labeled sentences as the most important third order interaction while ignoring unimportant contextual information. Other third order methods are not computable at this length."
+          ]
+        }
+      ]
+    },
+    "7 Case Studies": {
+      "paragraphs": [
+        "In this section, we apply SPEX to two case studies: debugging incorrect responses and visual question answering. Refer to Appendix B for further details on implementation."
+      ],
+      "subsections": [
+        {
+          "title": "7.1 Debugging Incorrect LLM Responses",
+          "paragraphs": [
+            "LLMs often struggle to correctly answer modified versions of popular puzzle questions, even when these alterations trivialize the problem (Williams & Huckle, 2024). In this spirit, we consider a variant of the classic trolley problem:",
+            "A runaway trolley is heading away from five people who are tied to the track and cannot move. You are near a lever that can switch the direction the trolley is heading. Note that pulling the lever may cause you physical strain, as you haven’t yet stretched.",
+            "True or False: You should not pull the lever.",
+            "GPT-4o mini (OpenAI, 2024) incorrectly selects the answer false 92.1% of the time. To understand the response, we run SHAP and SPEX over a value function that measures the logit associated to the output true.",
+            "Fig. 8 presents the results of these methods: words and interactions highlighted in green contribute positively to producing the correct output, while those in red lead the model toward an incorrect response. SHAP indicates that both instances of the word trolley have the most significant negative impact, while the last sentence appears to aid the model in answering correctly. A more comprehensive understanding is provided by the top interactions learned via SPEX. These interactions indicate a negative fourth order interaction involving the two instances of trolley, as well as the words pulling and lever. This negative interaction is emblematic of the original problem’s formulation, indicating that the model may be over-fit."
+          ]
+        },
+        {
+          "title": "7.2 Visual Question Answering",
+          "paragraphs": [
+            "VQA involves answering questions based on an image. Petsiuk et al. (2018); Frank et al. (2021); Parcalabescu & Frank (2023) consider model-agnostic methods for attributing the marginal contributions of image regions to the generated response. In many compositional reasoning tasks, interactions are key and marginal attributions are insufficient. We illustrate this using an image of a dog playing with a basketball and prompting the LLaVA-NeXT-Mistral-7B model (Liu et al., 2023) with “What is shown in this image?”. This yields the response “A dog playing with a basketball.”.",
+            "In Fig. 8, SHAP indicates that image patches containing the ball and the dog are important, but does not capture their interactions. Positive interactions obtained via SPEX reveal that the presence of both the dog and the basketball together contributes significantly more to the response than the sum of their individual contributions. This suggests that the model not only recognizes the dog and the basketball as separate objects but also understands their interaction—dog playing with the ball—as crucial for forming the correct response. Negative interactions between different parts of the dog indicate redundancy, implying that the total effect of these regions is less than the sum of their marginal contributions."
+          ]
+        }
+      ]
+    },
+    "8 Conclusion": {
+      "paragraphs": [
+        "Identifying feature interactions is a critical problem in machine learning. We have proposed SPEX, the first interaction based model-agnostic post-hoc explanation algorithm that is able to scale to over 10001000 features. SPEX achieves this by making a powerful connection to the field of channel coding. This enables SPEX to avoid the O​(nd)O(n^{d}) complexity that existing feature interaction attribution algorithms suffer from. Our experiments show SPEX is able to significantly outperform other methods across the Sentiment, Drop and HotpotQA datasets in terms of faithfulness, feature removal, and interaction recovery rate."
+      ],
+      "subsections": []
+    },
+    "Impact Statement": {
+      "paragraphs": [
+        "Getting insights into the decisions of deep learning models offers significant advantages, including increased trust in model outputs. By reasoning about the rationale behind a model’s decisions with the help of SPEX, we can develop greater confidence in its output, and use it to aid in our own reasoning. When using analysis tools like SPEX, it’s crucial to avoid over-interpretation of results."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Algorithm Details": {
+      "paragraphs": [
+        "[Table: Table 1: Popular attribution scores in terms of Fourier coefficients]"
+      ],
+      "subsections": [
+        {
+          "title": "A.1 Introduction",
+          "paragraphs": [
+            "This section provides the algorithmic details behind SPEX. The algorithm is derived from the sparse Fourier (Hadamard) transformation described in Li et al. (2014). Many modifications have been made to improve the algorithm and make it suitable for use in this application. Application of the original algorithm proposed in Li et al. (2014) fails for all problems we consider in this paper. In this work, we focus on applications of SPEX and defer theoretical analysis to future work.",
+            "This work develops the literature on sparse Fourier transforms. The first of such works are (Hassanieh et al., 2012; Stobbe & Krause, 2012; Pawar & Ramchandran, 2013). The most relevant literature is that of the sparse Boolean Fourier (Hadamard) transform (Li et al., 2014; Amrollahi et al., 2019). Despite the promise of many of these algorithms, their application has remained relatively limited, being used in only a handful of prior applications. Our code base is forked from that of (Erginbas et al., 2023). In this work we introduce a series of major optimizations which specifically target properties of explanation functions. By doing so, our algorithm is made significantly more practical and robust than any prior work.",
+            "The Fourier transform does more than just impart critical algebraic structure. The orthonormality of the Fourier transform means that small noisy variations in ff remain small in the Fourier domain. In contrast, AND interactions, which operate under the non-orthogonal Möbius transform (Kang et al., 2024), can amplify small noisy variations, which limits practicality. Fortunately, this is not problematic, as it is straightforward to generate AND interactions from the surrogate function f^\\hat{f}. Many popular interaction indices have simple definitions in terms of FF. Table 1 highlights some key relationships, and Appendix C provides a comprehensive list."
+          ]
+        },
+        {
+          "title": "A.2 Directly Solving the LASSO",
+          "paragraphs": [
+            "Before we proceed, we remark that in cases where nn is not too large, and we expect the degree of nonzero |𝐤|≤d\\left\\lvert\\mathbf{k}\\right\\rvert\\leq d to be reasonably small, enumeration is actually not infeasible. In such cases, we can set up the LASSO problem directly:",
+            "Note that this is distinct from the Faith-Banzhaf and Faith-Shapley solution methods because those perform regression over the AND, Möbius basis. We observe that the formulation above typically outperforms these other approaches in terms of faithfulness, likely due to the properties of the Fourier transform.",
+            "Most popular solvers use coordinate descent to solve (10), but there is a long line of research towards efficiently solving this problem. In our code, we also include an implementation of Approximate Message Passing (AMP) (Maleki, 2010), which can be much faster in many cases. Much like the final phase of SPEX, AMP is a low complexity message passing algorithm where messages are iteratively passed between factor nodes (observations) and variable nodes.",
+            "A more refined version of SPEX, would likely examine the parameters nn and the maximum degree dd and determine whether or not to directly solve the LASSO, or to apply the full SPEX, as we describe in the following sections."
+          ]
+        },
+        {
+          "title": "A.3 Masking Pattern Design and Model Inference",
+          "paragraphs": [
+            "The first part of the algorithm is to determine which samples we collect. All steps of this part of the algorithm are outlined in Algorithm 1. This is governed by two structures: the random linear codes 𝐌c\\mathbf{M}_{c} and the BCH parity matrix 𝐏\\mathbf{P}. Random linear codes have been well studied as central objects in error correction and cryptography. They have previously been considered for sparse transforms in (Amrollahi et al., 2019). They are suitable for this application because they roughly uniformly hash 𝐤\\mathbf{k} with low hamming weight.",
+            "The use of the 𝐏∈𝔽2p×n\\mathbf{P}\\in\\mathbb{F}_{2}^{p\\times n}, the parity matrix of a binary BCH code is novel. These codes are well studied for the applications in error correction (Lin & Costello, 1999), and they were once the preeminent form of error correction in digital communications. A primitive, narrow-sense BCH code is characterized by its length, denoted ncn_{c}, dimension, denoted kck_{c} (which we want to be equal to our input dimension nn) and its error correcting capability tc=2​d+1t_{c}=2d+1, where dd is the minimum distance of the code. For some integer m>3m>3 and tc<2m−1t_{c}<2^{m-1}, the parameters satisfy the following equations:",
+            "Note that the above says we can bounds p≤t​⌈log2⁡(nc)⌉p\\leq t\\left\\lceil\\log_{2}(n_{c})\\right\\rceil, and it is easy to solve for pp given n=kcn=k_{c} and tt, however, explicitly bounding pp in terms of nn and tt is difficult, so for the purpose of discussion, we simply write p≈t​log⁡(n)p\\approx{t\\log(n)}, since nc=p+nn_{c}=p+n, and we expect n≫pn\\gg p in nearly all cases of interest.",
+            "We use the software package galois (Hostetter, 2020) to construct a generator matrix, 𝐆∈𝔽2nc×kc\\mathbf{G}\\in\\mathbb{F}_{2}^{n_{c}\\times k_{c}} in systematic form:",
+            "Note that according to (13) 𝐏∈𝔽2p×kc\\mathbf{P}\\in\\mathbb{F}_{2}^{p\\times k_{c}}. In cases where kc>nk_{c}>n, we consider only the first nn rows of 𝐏\\mathbf{P}. This is a process known as shortening. Our application of this BCH code in our application is rather unique. Instead of the typical use of a BCH code as channel correction code, we use it as a joint source channel code.",
+            "Let 𝐩0=𝟎\\mathbf{p}_{0}=\\boldsymbol{0}, and let 𝐩i,i=1,…,p\\mathbf{p}_{i},\\;i=1,\\dotsc,p correspond to the rows of 𝐏\\mathbf{P}. We collect samples written as:",
+            "Note that the total number of unique samples can be upper bounded by C​(p+1)​2bC(p+1)2^{b}. For large nn this upper bound is nearly always very close to the true number of unique samples collected. After collecting each sample, we compute the boolean Fourier transform. The forward and inverse transforms as we consider in this work are defined below.",
+            "When samples are collected according to (14), after applying the transform in (15), the transform of uc,iu_{c,i} can be written as:",
+            "To ease notation, we write 𝐔c=[Uc,1,…,Uc,p]T\\mathbf{U}_{c}=[U_{c,1},\\dotsc,U_{c,p}]^{T}. Then we can write",
+            "where we have used the notation (−1)𝐏𝐤=[(−1)⟨𝐩0,𝐤⟩,…,(−1)⟨𝐩p,𝐤⟩]T(-1)^{\\mathbf{P}\\mathbf{k}}=[(-1)^{\\langle\\mathbf{p}_{0},\\mathbf{k}\\rangle},\\dots,(-1)^{\\langle\\mathbf{p}_{p},\\mathbf{k}\\rangle}]^{T}. We call the (−1)𝐏𝐤(-1)^{\\mathbf{P}\\mathbf{k}} the signature of 𝐤\\mathbf{k}. This signature helps to identify the index of the largest interactions 𝐤\\mathbf{k}, and is central to the next part of the algorithm. Note that we also keep track of Uc,0​(𝐣)U_{c,0}(\\mathbf{j}), which is equal to the unmodulated sum Uc,0​(𝐣)=∑𝐤:𝐌c​𝐤=𝐣F​(𝐤)U_{c,0}(\\mathbf{j})=\\sum_{\\mathbf{k}\\;:\\;\\mathbf{M}_{c}\\mathbf{k}=\\mathbf{j}}F(\\mathbf{k})."
+          ]
+        },
+        {
+          "title": "A.4 Message Passing for Fourier Transform Recovery",
+          "paragraphs": [
+            "Using the samples (17), we aim to recover the largest Fourier coefficients F​(𝐤)F(\\mathbf{k}). To recover these samples we apply a message passing algorithm, described in detail in Algorithm 4. The factor nodes are comprised of the C​2bC2^{b} vectors 𝐔c​(𝐣)​∀𝐣∈𝔽2b\\mathbf{U}_{c}(\\mathbf{j})\\;\\forall\\mathbf{j}\\in\\mathbb{F}_{2}^{b}. Each of these factor nodes are connected to all values 𝐤\\mathbf{k} that are comprise their sum, i.e., {𝐤∣𝐌c​𝐤=𝐣}\\{\\mathbf{k}\\mid\\mathbf{M}_{c}\\mathbf{k}=\\mathbf{j}\\}. Since the number of variable nodes is too great, we initialize the value of each variable node, which we call F^​(𝐤)\\hat{F}(\\mathbf{k}) to zero implicitly. The values F^​(𝐤)\\hat{F}(\\mathbf{k}) for each variable node indexed by 𝐤\\mathbf{k} represent our estimate of the Fourier coefficients.",
+            "Consider an arbitrary factor node 𝐔c​(𝐣)\\mathbf{U}_{c}(\\mathbf{j}) initialized according to (17). We want to understand if there are any large terms F​(𝐤)F(\\mathbf{k}) involved in the sum in (17). To do this, we can utilize the signature sequences (−1)𝐏𝐤(-1)^{\\mathbf{P}\\mathbf{k}}. If 𝐔c​(𝐣)\\mathbf{U}_{c}(\\mathbf{j}) is strongly correlated with the signature sequence of a given 𝐤\\mathbf{k}, i.e., if |⟨(−1)𝐏𝐤,𝐔c​(𝐣)⟩|\\left\\lvert\\langle(-1)^{\\mathbf{P}\\mathbf{k}},\\mathbf{U}_{c}(\\mathbf{j})\\rangle\\right\\rvert is large, and 𝐌c​𝐤=𝐣\\mathbf{M}_{c}\\mathbf{k}=\\mathbf{j}, from the perspective of 𝐔c​(𝐣)\\mathbf{U}_{c}(\\mathbf{j}), it is likely that F​(𝐤)F(\\mathbf{k}) is large. Searching through all 𝐌c​𝐤=𝐣\\mathbf{M}_{c}\\mathbf{k}=\\mathbf{j}, which, for a full rank 𝐌c\\mathbf{M}_{c} contains 2n−b2^{n-b} different 𝐤\\mathbf{k} is intractable, and likely to identify many spurious correlations. Instead, we rely on the structure of the BCH code from which 𝐏\\mathbf{P} is derived to solve this problem.",
+            "The BCH decoding procedure is based on an idea known generally in signal processing as “treating interference as noise”. For the purpose of explanation, assume that there is some 𝐤∗\\mathbf{k}^{*} with large F​(𝐤∗)F(\\mathbf{k}^{*}), and all other 𝐤\\mathbf{k} such that 𝐌c​𝐤=𝐣\\mathbf{M}_{c}\\mathbf{k}=\\mathbf{j} correspond to small F​(𝐤)F(\\mathbf{k}). For brevity let 𝒜c​(𝐣)={𝐤∣𝐌c​𝐤=𝐣}\\mathcal{A}_{c}(\\mathbf{j})=\\{\\mathbf{k}\\mid\\mathbf{M}_{c}\\mathbf{k}=\\mathbf{j}\\}. We can write:",
+            "After we normalize with respect to Uc,0​(𝐣)U_{c,0}(\\mathbf{j}) this yields:",
+            "As we can see, the ratio (20) is a noise-corrupted version of the signature sequence of 𝐤∗\\mathbf{k}^{*}. To estimate 𝐏𝐤\\mathbf{P}\\mathbf{k} we apply a nearest-neighbor estimation rule outlined in Algorithm 2. In words, if the iith coordinate of the vector (20) is closer to −1-1 we estimate that the corresponding element of 𝐏𝐤\\mathbf{P}\\mathbf{k} to be 11, conversely, if the iith coordinate is closer to 11 we estimate the corresponding entry to be 0. This process effectively converts the multiplicative noise AA and additive noise 𝐰\\mathbf{w} to a noise vector in 𝔽2\\mathbb{F}_{2}. We can write this as 𝐏𝐤∗+𝐧\\mathbf{P}\\mathbf{k}^{*}+\\mathbf{n}. According to the Lemma A.1 if the hamming weight 𝐧\\mathbf{n} is not too large, we can recover 𝐤∗\\mathbf{k}^{*}.",
+            "If |𝐧|+|𝐤∗|≤t\\left\\lvert\\mathbf{n}\\right\\rvert+\\left\\lvert\\mathbf{k}^{*}\\right\\rvert\\leq t, where 𝐧\\mathbf{n} is the additive noise in 𝔽2\\mathbb{F}_{2} induced by the noisy process in (20) and the estimation procedure in Algorithm 2, then we can recover 𝐤∗\\mathbf{k}^{*}.",
+            "Observe that the generator matrix of the BCH code is given by (13). Thus, there exists a codeword of the form",
+            "Now construct the “received codeword” as in Algorithm 2:",
+            "Thus |𝐜−𝐫|=|𝐧|+|𝐤∗|\\left\\lvert\\mathbf{c}-\\mathbf{r}\\right\\rvert=\\left\\lvert\\mathbf{n}\\right\\rvert+\\left\\lvert\\mathbf{k}^{*}\\right\\rvert. Since the BCH code was designed to be tt error correcting, Decoding the code will recover 𝐜\\mathbf{c}, which contains 𝐤∗\\mathbf{k}^{*}. ∎",
+            "For decoding we use the implementation in the python package galois (Hostetter, 2020). It implements the standard procedure of the Berlekamp-Massey Algorithm followed by the Chien Search algorithm for BCH decoding.",
+            "In practice the conversion of the real-valued noisy observations (20) to noisy elements in 𝔽2\\mathbb{F}_{2} is a process that destroys valuable information. In coding theory, this is known as hard input decoding, which is typically suboptimal. For example, certain coordinates will have values Uc,i​(𝐣)Uc,0​(𝐣)≈0\\frac{U_{c,i}(\\mathbf{j})}{U_{c,0}(\\mathbf{j})}\\approx 0. For such coordinates, we have low confidence about the corresponding value of (−1)⟨𝐩i,𝐤∗⟩(-1)^{\\langle\\mathbf{p}_{i},\\mathbf{k}^{*}\\rangle}, since it is equally close to +1+1 and −1-1. This uncertainty information is lost in the process of producing a hard input. With this so-called soft information it is possible to recover 𝐤∗\\mathbf{k}^{*} even in cases where there are more than tt errors in the hard decoding case. We use a simple soft decoding algorithm for BCH decoding known as a chase decoder. The main idea behind a chase decoder is to perform hard decoding on the dchased_{\\text{chase}} most likely hard inputs, and return the decoder output of the most likely hard input that successfully decoded. In practical setting like the ones we consider in this work, we don’t have an understanding of the noise in (20). A practical heuristic is to simply look at the margin of estimation. In other words, if |Uc,i​(𝐣)Uc,0​(𝐣)|\\left\\lvert\\frac{U_{c,i}(\\mathbf{j})}{U_{c,0}(\\mathbf{j})}\\right\\rvert is large, we assume it has high confidence, while if it is small, we assume the confidence is low. Interestingly, if we assume A​(𝐣)=1A(\\mathbf{j})=1 and 𝐰​(𝐣)∼𝒩​(0,σ2)\\mathbf{w}(\\mathbf{j})\\sim\\mathcal{N}(0,\\sigma^{2}) in (20), then the ratio corresponds exactly to the logarithm of the likelihood ratio (LLR) log⁡(Pr​(⟨𝐩i,𝐤∗⟩=0)Pr​(⟨𝐩i,𝐤∗⟩=1))\\log\\left(\\frac{\\mathrm{Pr}\\left(\\langle\\mathbf{p}_{i},\\mathbf{k}^{*}\\rangle=0\\right)}{\\mathrm{Pr}\\left(\\langle\\mathbf{p}_{i},\\mathbf{k}^{*}\\rangle=1\\right)}\\right). For the purposes of soft decoding we interpret these ratios as LLRs. Pseudocode can be found in Algorithm 3.",
+            "Remark: BCH soft decoding is a well-studied topic with a vast literature. Though we put significant effort into building a strong implementation of SPEX, we have used the simple Chase Decoder (described in Algorithm 3 below) as a soft decoder. The computational complexity of Chase Decoding scales as 2dchase2^{d_{\\text{chase}}}, but other methods exist with much lower computational complexity and comparable performance.",
+            "If we successfully decode some 𝐤\\mathbf{k} from the BCH decoding process via the bin 𝐔c​(𝐣)\\mathbf{U}_{c}(\\mathbf{j}), we construct a message to the corresponding variable node. Before we do this, we verify that the 𝐤\\mathbf{k} term satisfies 𝐌c​𝐤=𝐣\\mathbf{M}_{c}\\mathbf{k}=\\mathbf{j}. This acts as a final check to increase our confidence in the output of 𝐤\\mathbf{k}. The message we construct is of the following form:",
+            "To understand the structure of this message. This message can be seen as an estimate of the Fourier coefficient. Let’s assume we are computing this message for some 𝐤∗\\mathbf{k}^{*}:",
+            "The inner product serves to reduce the noise from the other coefficients in the sum.",
+            "The message from factor to variable is comparatively simple. The variable node takes the average of all the messages it receives, adding the result to its state, and then sends that average back to all connected factor nodes. These factor nodes then subtract this value from their state and then the process repeats."
+          ]
+        },
+        {
+          "title": "A.5 Computational Complexity",
+          "paragraphs": [
+            "Constructing each masking pattern requires n​2bn2^{b} for each 𝐌c\\mathbf{M}_{c}. The algorithm for computing it efficiently involves a gray iteratively adding to an nn bit vector and keeping track of the output in a Gray code. Doing this for all CC, and then adding all pp additional shifting vectors makes the cost O​(C​p​n​2b)O(Cpn2^{b}).",
+            "For each uc,iu_{c,i} we take the Fast Fourier transform in b​2bb2^{b} time, with a total of O​(C​p​b​2b)O(Cpb2^{b}). This is dominated by the previous complexity since, b≤nb\\leq n",
+            "One round of BCH hard decoding is O​(nc​t+t2)O(n_{c}t+t^{2}). For soft decoding, this cost is multiplied by 2dchase2^{d_{\\text{chase}}}, which we is a constant. Computing the correlation vector is O​(n​p)O(np), dominated by the computation of 𝐏𝐤\\mathbf{P}\\mathbf{k}. In the worst case, we must do this for all C​2bC2^{b} vectors 𝐔c​(𝐣)\\mathbf{U}_{c}(\\mathbf{j}). We also check that 𝐌𝐤=𝐣\\mathbf{M}\\mathbf{k}=\\mathbf{j} before sending the message, which costs O​(n​b)O(nb). Thus, processing all the factor nodes costs O​(C​2b​(nc​t+t2+n​(p+b)))O(C2^{b}(n_{c}t+t^{2}+n(p+b))). The number of active (with messages to send) variable nodes is at most C​2bC2^{b}, and computing their factors is at most CC. Thus, computing factor messages is at most C2​2bC^{2}2^{b} messages. Finally, factor nodes are updated with at most C​2bC2^{b} variable messages sending messages to at most CC factor nodes each, each with a cost of O​(n​p)O(np). Thus, the total cost of processing all variable nodes is O​(C2​2b+C2​2b​n​p)O(C^{2}2^{b}+C^{2}2^{b}np). The total cost of message is dominated by processing the factors.",
+            "The total complexity is then O(2b(nct+t2+n(p+b))O(2^{b}(n_{c}t+t^{2}+n(p+b)). Note that p=nc−n=t​log⁡(nc)p=n_{c}-n=t\\log(n_{c}). Due to the structure of the code and the relationship between n,pn,p and ncn_{c}, one could stop here, and it would be best to if we want to consider very large tt. For the purposes of exposition, we will assume that t≪nt\\ll n, which implies n>pn>p, and thus p≈t​log⁡(n)p\\approx t\\log(n). In this case, we can write:",
+            "To arrive at the stated equation in Section 1, we take 2b=O​(s)2^{b}=O(s). Under the low degree assumption, we have s=O​(d​log⁡(n))s=O(d\\log(n)). Then assuming we take t=O​(d)t=O(d), we arrive at a complexity of O​(s​d​n​log⁡(n))O(sdn\\log(n))."
+          ]
+        }
+      ]
+    },
+    "Appendix B Experiment Details": {
+      "paragraphs": [
+        "[Figure: (a) Sentiment n∈[16,31]n\\in[16,31]]",
+        "[Figure: (a) Sentiment n∈[16,31]n\\in[16,31]]",
+        "[Figure: (b) DROP n∈[32,63]n\\in[32,63]]",
+        "[Figure: (c) HotpotQA n∈[16,31]n\\in[16,31]]",
+        "[Figure: (a) SHAP values]",
+        "[Figure: (a) SHAP values]",
+        "[Figure: (b) Interactions computed via SPEX]",
+        "[Table: Table 2: Number of samples needed for each bb and nn.]",
+        "[Table: Table 3: Faithfulness across all baseline methods for fixed b=8b=8. The average recovered sparsity and the average ratio between sparsity and total possible interactions is also reported.]"
+      ],
+      "subsections": [
+        {
+          "title": "B.1 Implementation Details",
+          "paragraphs": [
+            "Experiments are run on a server using Nvidia L40S GPUs and A100 GPUs. When splitting text into words or sentences, we make use of the default word and sentence tokenizer from nltk (Bird et al., 2009). To fit regressions, we use the scikit-learn (Pedregosa et al., 2011) implementations of LinearRegression and RidgeCV."
+          ]
+        },
+        {
+          "title": "B.2 Datasets and Models",
+          "paragraphs": [
+            "152 movie reviews were used from the Large Movie Review Dataset (Maas et al., 2011), supplemented with 8 movie reviews from the Stanford Sentiment Treebank dataset (Socher et al., 2013). These 160 reviews were categorized using their word counts into 8 groups ([8-15, 16-32, …, 1024-2047]), with 20 reviews in each group.",
+            "To measure the sentiment of each movie review, we utilize a DistilBERT model (Sanh et al., 2019) fine-tuned for sentiment analysis (Odabasi, 2025). When masking, we replace the word with the [UNK] token. We construct an value function over the output logit associated with the positive class.",
+            "We consider 100100 examples from the HotpotQA(Yang et al., 2018) dataset. These examples were categorized using the number of sentences into four groups ([8-15, 16-32, 32-64, 64-127]). We use a Llama-3.2-3B-Instruct model with 88-bit quantization. When masking, we replace with the [UNK] token, and measure the log-perplexity of generating the original output. Since HotpotQA is a multi-document dataset, we use the following prompt format.",
+            "We consider 100100 examples from the DROP (Yang et al., 2018) dataset. These examples were categorized using the number of words into six groups ([8-15, 16-32, 32-64, 64-127, 128-256, 512-1024]). We use the same model as HotpotQA and mask in a similar fashion. We use the following prompt format.",
+            "The simplified trolley problem was inspired by the one provided in (Williams & Huckle, 2024). When masking, the [UNK] token was used to replace words. The following prompt was given to gpt-4o-mini-2024-07-18:",
+            "A value function was created by finding the difference between the model’s logprob associated with the “True” token minus the logprob of the “False” token.",
+            "The base image was partitioned into a 6×86\\times 8 grid. To mask, Gaussian blur was applied to the masked cells. The masked image was input into LLaVA-NeXT-Mistral-7B, a large multimodal model, with the following prompt:",
+            "The original output to the unmasked image is “A dog playing with a basketball.” Using the masked images, we build a value function that measures the probability of generating the original output sequence (log probability).",
+            "[SVG Content: Title: {title_1} Content: {document_1} … Title: {title_m} Content: {document_m} Query: {question}. Keep your answers as short as possible.]",
+            "[SVG Content: Context: {context} Query: {question}. Keep your answers as short as possible.]",
+            "[SVG Content: System: Answer with the one word True or False only. Any other answer will be marked incorrect. User: {Masked Input} True or False: You should not pull the lever.]",
+            "[SVG Content: Context: {masked image} Query: What is shown in this image?]"
+          ]
+        },
+        {
+          "title": "B.3 Baselines",
+          "paragraphs": [
+            "The following marginal feature attribution baselines were run: Furthermore, we compared against the following interaction attribution methods:",
+            "1. LIME: LIME (Local Interpretable Model-agnostic Explanations) (Ribeiro et al., 2016) uses LASSO to build a sparse linear approximation of the value function. The approximation is weighted to be local, using an exponential kernel to fit the function better closer to the original input (less maskings).",
+            "2. SHAP: Implemented using KernelSHAP (Lundberg & Lee, 2017), SHAP interprets the value function as a cooperative game and attributes credit to each of the features according to the Shapley value. KernelSHAP approximates the Shapley values of this game through solving a weighted least squares problem, where the weighting function is informed by the Shapley kernel, promoting samples where very either very few or most inputs are masked.",
+            "3. Banzhaf: Similar to Shapley values, Banzhaf values (Banzhaf III, 1964) represent another credit attribution concept from cooperative game theory. We compute the Banzhaf values by fitting a ridge regression to uniformly drawn samples, selecting the regularization parameter through cross-validation.",
+            "4. Faith-Banzhaf: The Faith-Banzhaf Interaction Index (Tsai et al., 2023), up to degree tt, provides the most faithful ttth order polynomial approximation of the value function under a uniform kernel. We obtain this approximation using cross-validated ridge regression on uniformly drawn samples.",
+            "5. Faith-Shap: Similarly, the Faith-Shapley Interaction Index (Tsai et al., 2023), up to degree tt, provides the most faithful tt order polynomial approximation of the value function under a Shapley kernel. As described in (Tsai et al., 2023), the indices can be estimated through solving a weighted least squares problem. We use the implementation provided in SHAP-IQ (Muschalik et al., 2024).",
+            "6. Shapley-Taylor: The Shapley-Taylor Interaction Index (Sundararajan et al., 2020), up to degree tt, provides another interaction definition based on the Taylor Series of the Möbius transform of the value function. To estimate the interaction indices, we leverage the sample-efficient estimator SVARM-IQ (Kolpaczki et al., 2024), as implemented in SHAP-IQ (Muschalik et al., 2024).",
+            "LIME: LIME (Local Interpretable Model-agnostic Explanations) (Ribeiro et al., 2016) uses LASSO to build a sparse linear approximation of the value function. The approximation is weighted to be local, using an exponential kernel to fit the function better closer to the original input (less maskings).",
+            "SHAP: Implemented using KernelSHAP (Lundberg & Lee, 2017), SHAP interprets the value function as a cooperative game and attributes credit to each of the features according to the Shapley value. KernelSHAP approximates the Shapley values of this game through solving a weighted least squares problem, where the weighting function is informed by the Shapley kernel, promoting samples where very either very few or most inputs are masked.",
+            "Banzhaf: Similar to Shapley values, Banzhaf values (Banzhaf III, 1964) represent another credit attribution concept from cooperative game theory. We compute the Banzhaf values by fitting a ridge regression to uniformly drawn samples, selecting the regularization parameter through cross-validation.",
+            "Faith-Banzhaf: The Faith-Banzhaf Interaction Index (Tsai et al., 2023), up to degree tt, provides the most faithful ttth order polynomial approximation of the value function under a uniform kernel. We obtain this approximation using cross-validated ridge regression on uniformly drawn samples.",
+            "Faith-Shap: Similarly, the Faith-Shapley Interaction Index (Tsai et al., 2023), up to degree tt, provides the most faithful tt order polynomial approximation of the value function under a Shapley kernel. As described in (Tsai et al., 2023), the indices can be estimated through solving a weighted least squares problem. We use the implementation provided in SHAP-IQ (Muschalik et al., 2024).",
+            "Shapley-Taylor: The Shapley-Taylor Interaction Index (Sundararajan et al., 2020), up to degree tt, provides another interaction definition based on the Taylor Series of the Möbius transform of the value function. To estimate the interaction indices, we leverage the sample-efficient estimator SVARM-IQ (Kolpaczki et al., 2024), as implemented in SHAP-IQ (Muschalik et al., 2024)."
+          ]
+        },
+        {
+          "title": "B.4 Sample Complexity",
+          "paragraphs": [
+            "The total number of samples needed for SPEX is ≈C​2b​t​log⁡(n)\\approx C2^{b}t\\log(n). We fix C=3C=3 and t=5t=5. The table below presents the number of samples used in our experiments for various choices of sparsity parameter bb and different input sizes nn:"
+          ]
+        },
+        {
+          "title": "B.5 Additional Results",
+          "paragraphs": [
+            "We first measure the faithfulness by scaling the number of samples logarithmically with nn. The exact number of samples used can be found in Table 2.",
+            "In Table 3, we showcase the average faithfulness of every runnable method across every group of examples for the Sentiment, DROP, and HotpotQA datasets. Among marginal attribution methods, LIME and Banzhaf achieve the best faithfulness. SHAP’s faithfulness worsens as nn grows, though this is unsurprising, as Shapley values are only efficient (intended to sum to the unmasked output), not faithful.",
+            "Comparing to interaction methods, SPEX is comparable to the highest order Faith-Banzhaf that can feasible be run at every size of nn. However, due to poor computation complexity scaling of this, and other interaction methods, these methods are only able to be used for small nn. In particular, we found Shapley-Taylor difficult to run for the DROP and HotpotQA tasks, unable to finish within thirty minutes.",
+            "We also report the average sparsity and the average sparsity ratio (sparsity over total interactions) discovered by SPEX for each of the groups. For Sentiment, once reaching the n∈[128−255]n\\in[128-255] group, the average sparsity is found to be less than the number of inputs! Yet, SPEX is still able to achieve high faithfulness and significantly outperform linear methods like LIME and Banzhaf.",
+            "b=8b=8 may not be the sparsity parameter that achieves the best trade-off between samples and faithfulness. For instance, with complex generative models, the cost or time per instance may necessitate taking fewer samples.",
+            "In Fig. 9, we showcase the faithfulness results for SPEX and all baseline methods when bb is 4,6,84,6,8. Since the samples taken by the algorithm grows with 2b2^{b}, b=8b=8 takes 16 times more samples than b=4b=4. Even in the low-sample regime, SPEX achieves high faithfulness, often surpassing linear models and second order models. At this scale, we find that third and fourth order models often do not have enough samples to provide a good fit.",
+            "We also evaluated the performance of Llama 3.2 3B-Instruct (Grattafiori et al., 2024) on the modified trolley problem. As a reminder, the modified problem is presented below:",
+            "A runaway trolley is heading away from five people who are tied to the track and cannot move. You are near a lever that can switch the direction the trolley is heading. Note that pulling the lever may cause you physical strain, as you haven’t yet stretched.",
+            "True or False: You should not pull the lever.",
+            "Across 1,000 evaluations, the model achieves an accuracy of just 11.8%. Despite a similar accuracy to GPT-4o mini, the SHAP and SPEX-computed interactions indicate that the two models are lead astray by different parts of the problem.",
+            "The most negative SHAP values of Llama 3.2 3B-Instruct appear for later terms such as pulling and lever, with surrounding words having positive SHAP values. The SPEX-computed interactions tell a different story; many of the words in the last sentence have a negative first order value, with a significant third order interaction between you haven’t yet. Furthermore, the first word A possesses a strong negative second order interaction with trolley. Although counterintuitive—since the fact about stretching should only enhance the likelihood of a correct answer—removing the non-critical final sentence unexpectedly boosts the model’s accuracy to 20.8%, a 9% improvement.",
+            "[Figure: (a) Sentiment n∈[16,31]n\\in[16,31]]",
+            "[Figure: (a) Sentiment n∈[16,31]n\\in[16,31]]",
+            "[Figure: (b) DROP n∈[32,63]n\\in[32,63]]",
+            "[Figure: (c) HotpotQA n∈[16,31]n\\in[16,31]]",
+            "[Figure: (a) SHAP values]",
+            "[Figure: (a) SHAP values]",
+            "[Figure: (b) Interactions computed via SPEX]"
+          ]
+        }
+      ]
+    },
+    "Appendix C Relationships between Fourier and Interaction Concepts": {
+      "paragraphs": [
+        "Fourier to Möbius Coefficients: The Möbius Coefficients, also referred to as the Harsanyi dividends, can be recovered through (Grabisch, 2016):",
+        "Fourier to Banzhaf Interaction Indices: Banzhaf Interactions Indices (Roubens, 1996) have a close relationship to Fourier coefficients. As shown in (Grabisch et al., 2000):",
+        "Using the relationship from Eq. 26,",
+        "where the last line follows due to ∑S⊆T⊆R(−1)|T|\\sum_{S\\subseteq T\\subseteq R}(-1)^{|T|} evaluating to 0 unless R=SR=S.",
+        "When SS is a singleton, we recover the relationship between Fourier Coefficients and the Banzhaf Value B​V​(i)BV(i):",
+        "Fourier to Shapley Interaction Indices: Shapley Interaction Indices (Grabisch, 1997) are a generalization of Shapley values to interactions. Using the following relationship to Möbius Coefficients (Grabisch et al., 2000):",
+        "Consider the following integral and an application of the binomial theorem:",
+        "Evaluating at t=−2t=-2:",
+        "As a result, we find the relationship between Shapley Interaction Indices and Fourier Coefficients:",
+        "When SS is a singleton, we recover the relationship between Fourier Coefficients and the Shapley Value S​V​(i)SV(i):",
+        "Fourier to Faith-Banzhaf Interaction Indices: Faith-Banzhaf Interaction Indices (Tsai et al., 2023) of up to degree ℓ\\ell are the unique minimizer to the following regression objective:",
+        "Let g​(S)g(S) be the XOR polynomial up to degree ℓ\\ell that minimizes the regression objective. Appealing to Parseval’s identity,",
+        "which is minimized when G​(S)=F​(S)G(S)=F(S) for |S|≤ℓ|S|\\leq\\ell. Using Eq. 26, it can be seen that the Faith-Banzhaf Interaction Indices correspond to the Möbius Coefficients of the function f​(S)f(S) truncated up to degree ℓ\\ell:",
+        "Fourier to Faith-Shapley Interaction Indices: Faith-Shapley Interaction Indices (Tsai et al., 2023) of up to degree ℓ\\ell have the following relationship to Möbius Coefficients:",
+        "Fourier to Shapley-Taylor Interaction Indices: Shapley-Taylor Interactions Indices (Sundararajan et al., 2020) of up to degree ℓ\\ell are related to Möbius Coefficients in the following way:",
+        "From an application of Eq. 26,",
+        "Simplifying the sum in the |S|=ℓ|S|=\\ell case:",
+        "Hence,"
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "Amrollahi et al. (2019) Amrollahi, A., Zandieh, A., Kapralov, M., and Krause, A. Efficiently learning fourier sparse set functions. Advances in Neural Information Processing Systems, 32, 2019.",
+    "Banzhaf III (1964) Banzhaf III, J. F. Weighted voting doesn’t work: A mathematical analysis. Rutgers L. Rev., 19:317, 1964.",
+    "Binder et al. (2016) Binder, A., Montavon, G., Bach, S., Müller, K.-R., and Samek, W. Layer-wise relevance propagation for neural networks with local renormalization layers, 2016. URL https://arxiv.org/abs/1604.00825.",
+    "Bird et al. (2009) Bird, S., Klein, E., and Loper, E. Natural language processing with Python: analyzing text with the natural language toolkit. ” O’Reilly Media, Inc.”, 2009.",
+    "Chen et al. (2021) Chen, B., Dao, T., Winsor, E., Song, Z., Rudra, A., and Ré, C. Scatterbrain: Unifying sparse and low-rank attention. Advances in Neural Information Processing Systems, 34:17413–17426, 2021.",
+    "Chen et al. (2018) Chen, J., Song, L., Wainwright, M., and Jordan, M. Learning to explain: An information-theoretic perspective on model interpretation. In International conference on machine learning, pp. 883–892. PMLR, 2018.",
+    "Cohen-Wang et al. (2024) Cohen-Wang, B., Shah, H., Georgiev, K., and Madry, A. Contextcite: Attributing model generation to context, 2024. URL https://arxiv.org/abs/2409.00729.",
+    "Dua et al. (2019) Dua, D., Wang, Y., Dasigi, S., Singh, S., Gardner, M., and Kwiatkowski, T. Drop: A reading comprehension benchmark requiring discrete reasoning over paragraphs. In Proceedings of the 2019 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, Volume 1 (Long and Short Papers), pp. 2368–2378, 2019.",
+    "Enouen et al. (2023) Enouen, J., Nakhost, H., Ebrahimi, S., Arik, S. O., Liu, Y., and Pfister, T. TextGenSHAP: Scalable post-hoc explanations in text generation with long documents, 2023. URL https://arxiv.org/pdf/2312.01279.",
+    "Erginbas et al. (2023) Erginbas, Y. E., Kang, J., Aghazadeh, A., and Ramchandran, K. Efficiently computing sparse fourier transforms of q-ary functions. In IEEE International Symposium on Information Theory (ISIT), pp. 513–518, 2023. doi: 10.1109/ISIT54713.2023.10206686.",
+    "Frank et al. (2021) Frank, S., Bugliarello, E., and Elliott, D. Vision-and-language or vision-for-language? on cross-modal influence in multimodal transformers. In Proceedings of the 2021 Conference on Empirical Methods in Natural Language Processing, pp. 9847–9857, 2021.",
+    "Fumagalli et al. (2023) Fumagalli, F., Muschalik, M., Kolpaczki, P., Hüllermeier, E., and Hammer, B. E. SHAP-IQ: Unified approximation of any-order shapley interactions. In Conference on Neural Information Processing Systems, 2023. URL https://openreview.net/forum?id=IEMLNF4gK4.",
+    "Grabisch (1997) Grabisch, M. k-order additive discrete fuzzy measures and their representation. Fuzzy Sets and Systems, 92(2):167–189, 1997. ISSN 0165-0114. doi: https://doi.org/10.1016/S0165-0114(97)00168-1. URL https://www.sciencedirect.com/science/article/pii/S0165011497001681. Fuzzy Measures and Integrals.",
+    "Grabisch (2016) Grabisch, M. Bases and Transforms of Set Functions. In Saminger-Platz, S. and Mesiar, R. (eds.), On Logical, Algebraic, and Probabilistic Aspects of Fuzzy Set Theory, volume 336, pp. 215–231. Springer International Publishing, Cham, 2016. ISBN 978-3-319-28807-9 978-3-319-28808-6. doi: 10.1007/978-3-319-28808-6˙13. URL http://link.springer.com/10.1007/978-3-319-28808-6_13. Series Title: Studies in Fuzziness and Soft Computing.",
+    "Grabisch et al. (2000) Grabisch, M., Marichal, J.-L., and Roubens, M. Equivalent representations of set functions. Mathematics of Operations Research, 25(2):157–178, 2000.",
+    "Grattafiori et al. (2024) Grattafiori, A. et al. The llama 3 herd of models, 2024. URL https://arxiv.org/abs/2407.21783.",
+    "Harsanyi (1958) Harsanyi, J. C. A bargaining model for the cooperative nn-person game. PhD thesis, Department of Economics, Stanford University, Stanford, CA, USA, 1958.",
+    "Hassanieh et al. (2012) Hassanieh, H., Indyk, P., Katabi, D., and Price, E. Simple and practical algorithm for sparse Fourier transform. In SIAM Symposium on Discrete Algorithms (SODA), pp. 1183–1194, 2012. doi: 10.1137/1.9781611973099.93. URL https://epubs.siam.org/doi/abs/10.1137/1.9781611973099.93.",
+    "Hostetter (2020) Hostetter, M. Galois: A performant NumPy extension for Galois fields, November 2020. URL https://github.com/mhostetter/galois.",
+    "Hsu et al. (2024) Hsu, A. R., Zhou, G., Cherapanamjeri, Y., Huang, Y., Odisho, A. Y., Carroll, P. R., and Yu, B. Efficient automated circuit discovery in transformers using contextual decomposition, 2024. URL https://arxiv.org/abs/2407.00886.",
+    "Kang et al. (2024) Kang, J. S., Erginbas, Y. E., Butler, L., Pedarsani, R., and Ramchandran, K. Learning to understand: Identifying interactions via the mobius transform. arXiv preprint arXiv:2402.02631, 2024.",
+    "Kolpaczki et al. (2024) Kolpaczki, P., Muschalik, M., Fumagalli, F., Hammer, B., and Hüllermeier, E. Svarm-iq: Efficient approximation of any-order shapley interactions through stratification. arXiv preprint arXiv:2401.13371, 2024.",
+    "Li et al. (2014) Li, X., Bradley, J. K., Pawar, S., and Ramchandran, K. The SPRIGHT algorithm for robust sparse Hadamard Transforms. In IEEE International Symposium on Information Theory (ISIT), pp. 1857–1861, 2014. doi: 10.1109/ISIT.2014.6875155.",
+    "Lin & Costello (1999) Lin, S. and Costello, D. J. Error control coding. Pearson, Upper Saddle River, NJ, 2 edition, December 1999.",
+    "Liu et al. (2023) Liu, H., Li, C., Li, Y., and Lee, Y. J. Improved baselines with visual instruction tuning, 2023.",
+    "Lundberg & Lee (2017) Lundberg, S. M. and Lee, S.-I. A unified approach to interpreting model predictions. In Proceedings of the 31st International Conference on Neural Information Processing Systems, NIPS’17, pp. 4768–4777, Red Hook, NY, USA, 2017. Curran Associates Inc. ISBN 9781510860964.",
+    "Maas et al. (2011) Maas, A. L., Daly, R. E., Pham, P. T., Huang, D., Ng, A. Y., and Potts, C. Learning word vectors for sentiment analysis. In Annual Meeting of the Association for Computational Linguistics: Human Language Technologies, pp. 142–150, Portland, Oregon, USA, June 2011. Association for Computational Linguistics. URL http://www.aclweb.org/anthology/P11-1015.",
+    "Maleki (2010) Maleki, A. Approximate message passing algorithms for compressed sensing. PhD thesis, Stanford University, 2010.",
+    "Massey (1969) Massey, J. Shift-register synthesis and bch decoding. IEEE Transactions on Information Theory, 15(1):122–127, 1969. doi: 10.1109/TIT.1969.1054260.",
+    "Muschalik et al. (2024) Muschalik, M., Baniecki, H., Fumagalli, F., Kolpaczki, P., Hammer, B., and Hüllermeier, E. shapiq: Shapley interactions for machine learning. In The Thirty-eight Conference on Neural Information Processing Systems Datasets and Benchmarks Track, 2024. URL https://openreview.net/forum?id=knxGmi6SJi.",
+    "Odabasi (2025) Odabasi, K. DistilBERT Finetuned Sentiment. Accessed January, 2025. URL https://huggingface.co/lyrisha/distilbert-base-finetuned-sentiment.",
+    "O’Donnell (2014) O’Donnell, R. Analysis of boolean functions. Cambridge University Press, 2014.",
+    "OpenAI (2024) OpenAI. Gpt-4o system card, 2024. URL https://arxiv.org/abs/2410.21276.",
+    "Paes et al. (2024) Paes, L. M., Wei, D., Do, H. J., Strobelt, H., Luss, R., Dhurandhar, A., Nagireddy, M., Ramamurthy, K. N., Sattigeri, P., Geyer, W., et al. Multi-level explanations for generative language models, 2024. URL https://arxiv.org/pdf/2403.14459.",
+    "Parcalabescu & Frank (2023) Parcalabescu, L. and Frank, A. MM-SHAP: A performance-agnostic metric for measuring multimodal contributions in vision and language models & tasks. In Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pp. 4032–4059, 2023.",
+    "Pawar & Ramchandran (2013) Pawar, S. and Ramchandran, K. Computing a kk-sparse nn-length Discrete Fourier Transform using at most 4​k4k samples and O​(k​l​o​g​k)O(klogk) complexity. In IEEE International Symposium on Information Theory (ISIT), pp. 464–468, 2013. doi: 10.1109/ISIT.2013.6620269.",
+    "Pedregosa et al. (2011) Pedregosa, F., Varoquaux, G., Gramfort, A., Michel, V., Thirion, B., Grisel, O., Blondel, M., Prettenhofer, P., Weiss, R., Dubourg, V., Vanderplas, J., Passos, A., Cournapeau, D., Brucher, M., Perrot, M., and Duchesnay, E. Scikit-learn: Machine learning in Python. Journal of Machine Learning Research, 12:2825–2830, 2011.",
+    "Petsiuk et al. (2018) Petsiuk, V., Das, A., and Saenko, K. RISE: Randomized input sampling for explanation of black-box models. In The Twenty-ninth British Machine Vision Conference, 2018. URL https://arxiv.org/pdf/1806.07421.",
+    "Ren et al. (2023) Ren, J., Zhou, Z., Chen, Q., and Zhang, Q. Can we faithfully represent absence states to compute shapley values on a DNN? In International Conference on Learning Representations, 2023. URL https://openreview.net/forum?id=YV8tP7bW6Kt.",
+    "Ren et al. (2024a) Ren, Q., Gao, J., Shen, W., and Zhang, Q. Where we have arrived in proving the emergence of sparse interaction primitives in DNNs. In International Conference on Learning Representations, 2024a. URL https://openreview.net/forum?id=3pWSL8My6B.",
+    "Ren et al. (2024b) Ren, Q., Xu, Y., Zhang, J., Xin, Y., Liu, D., and Zhang, Q. Towards the dynamics of a DNN learning symbolic interactions, 2024b. URL https://arxiv.org/pdf/2407.19198.",
+    "Ribeiro et al. (2016) Ribeiro, M. T., Singh, S., and Guestrin, C. ” why should i trust you?” explaining the predictions of any classifier. In Proceedings of the 22nd ACM SIGKDD international conference on knowledge discovery and data mining, pp. 1135–1144, 2016.",
+    "Roubens (1996) Roubens, M. Interaction between criteria and definition of weights in mcda problems. In 44th Meeting of the European Working Group “Multicriteria Aid for Decisions”, Brussels, Belgium, 1996.",
+    "Sanh et al. (2019) Sanh, V., Debut, L., Chaumond, J., and Wolf, T. Distilbert, a distilled version of bert: smaller, faster, cheaper and lighter. ArXiv, abs/1910.01108, 2019.",
+    "Sarkar (2024) Sarkar, A. Large language models cannot explain themselves. arXiv preprint arXiv:2405.04382, 2024.",
+    "Shannon (1948) Shannon, C. E. A mathematical theory of communication. The Bell System Technical Journal, 27(3):379–423, 1948. doi: 10.1002/j.1538-7305.1948.tb01338.x.",
+    "Socher et al. (2013) Socher, R., Perelygin, A., Wu, J., Chuang, J., Manning, C. D., Ng, A., and Potts, C. Recursive deep models for semantic compositionality over a sentiment treebank. In Proceedings of the 2013 conference on empirical methods in natural language processing, pp. 1631–1642, 2013.",
+    "Stobbe & Krause (2012) Stobbe, P. and Krause, A. Learning Fourier sparse set functions. In International Conference on Artificial Intelligence and Statistics (AISTATS), Proceedings of Machine Learning Research, pp. 1125–1133, La Palma, Canary Islands, Apr 2012. URL https://proceedings.mlr.press/v22/stobbe12.html.",
+    "Sundararajan et al. (2017) Sundararajan, M., Taly, A., and Yan, Q. Axiomatic attribution for deep networks. In International conference on machine learning, pp. 3319–3328. PMLR, 2017.",
+    "Sundararajan et al. (2020) Sundararajan, M., Dhamdhere, K., and Agarwal, A. The Shapley Taylor interaction index. In International Conference on Machine Learning, pp. 9259–9268, Jul 2020. URL https://proceedings.mlr.press/v119/sundararajan20a.html.",
+    "Tibshirani (1996) Tibshirani, R. Regression shrinkage and selection via the lasso. Journal of the Royal Statistical Society Series B: Statistical Methodology, 58(1):267–288, 1996.",
+    "Tsai et al. (2023) Tsai, C.-P., Yeh, C.-K., and Ravikumar, P. Faith-shap: The faithful Shapley interaction index. Journal of Machine Learning Research, 24(94):1–42, 2023.",
+    "Tsui & Aghazadeh (2024) Tsui, D. and Aghazadeh, A. On recovering higher-order interactions from protein language models. In ICLR 2024 Workshop on Generative and Experimental Perspectives for Biomolecular Design, 2024. URL https://openreview.net/forum?id=WfA5oWpYT4.",
+    "Valle-Perez et al. (2018) Valle-Perez, G., Camargo, C. Q., and Louis, A. A. Deep learning generalizes because the parameter-function map is biased towards simple functions. arXiv preprint arXiv:1805.08522, 2018.",
+    "Wang & Jia (2023) Wang, J. T. and Jia, R. Data Banzhaf: A robust data valuation framework for machine learning. In International Conference on Artificial Intelligence and Statistics, volume 206, pp. 6388–6421, 25–27 Apr 2023. URL https://proceedings.mlr.press/v206/wang23e.html.",
+    "Williams & Huckle (2024) Williams, S. and Huckle, J. Easy problems that llms get wrong. arXiv preprint arXiv:2405.19616, 2024.",
+    "Yang & Salman (2019) Yang, G. and Salman, H. A fine-grained spectral perspective on neural networks. arXiv preprint arXiv:1907.10599, 2019.",
+    "Yang et al. (2018) Yang, Z., Qi, P., Zhang, S., Bengio, Y., Cohen, W. W., Salakhutdinov, R., and Manning, C. D. Hotpotqa: A dataset for diverse, explainable multi-hop question answering. arXiv preprint arXiv:1809.09600, 2018.",
+    "Zhang et al. (2023a) Zhang, Q., Singh, C., Liu, L., Liu, X., Yu, B., Gao, J., and Zhao, T. Tell your model where to attend: Post-hoc attention steering for llms. arXiv preprint arXiv:2311.02262, 2023a.",
+    "Zhang et al. (2023b) Zhang, Y., He, H., Tan, Z., and Yuan, Y. Trade-off between efficiency and consistency for removal-based explanations. Advances in Neural Information Processing Systems, 36:25627–25661, 2023b."
+  ]
+}

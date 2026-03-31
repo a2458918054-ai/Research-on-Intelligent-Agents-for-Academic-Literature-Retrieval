@@ -1,0 +1,383 @@
+{
+  "title": "RandLoRA: Full-rank parameter-efficient fine-tuning of large models",
+  "authors": "Paul Albert\n Frederic Z. Zhang\n Hemanth SaratchandranCristian Rodriguez-OpazoAnton van den HengelEhsan AbbasnejadAustralian Institute for Machine Learning  The University of Adelaide{firstname.lastname}@adelaide.edu.auhttps://github.com/PaulAlbert31/RandLoRA",
+  "abstract": "Low-Rank Adaptation (LoRA) and its variants have shown impressive results in reducing the number of trainable parameters and memory requirements of large transformer networks while maintaining fine-tuning performance. However, the low-rank nature of the weight update inherently limits the representation power of fine-tuned models, potentially compromising performance on complex tasks. This raises a critical question: when a performance gap between LoRA and standard fine-tuning is observed, is it due to the reduced number of trainable parameters or the rank deficiency? This paper aims to answer this question by introducing RandLoRA, a parameter-efficient method that performs full-rank updates using a learned linear combinations of low-rank, non-trainable random matrices. Our method limits the number of trainable parameters by restricting optimization to diagonal scaling matrices applied to the fixed random matrices. This allows us to effectively overcome the low-rank limitations while maintaining parameter and memory efficiency during training. Through extensive experimentation across vision, language, and vision-language benchmarks, we systematically evaluate the limitations of LoRA and existing random basis methods. Our findings reveal that full-rank updates are beneficial across vision and language tasks individually, and even more so for vision-language tasks, where RandLoRA significantly reduces—and sometimes eliminates—the performance gap between standard fine-tuning and LoRA, demonstrating its efficacy.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Large pre-trained models that leverage broad data have demonstrated significantly improved generalization capabilities and remarkable versatility across diverse tasks. However, the resultant high parameter count also leads to a significant increase in the computational resources required to fine-tune such models on downstream tasks. To tackle this issue, parameter-efficient fine-tuning (PEFT) approaches such as low-rank adaptation (LoRA) (Hu et al., 2022), draw inspiration from the low intrinsic dimensionality of pre-trained models (Li et al., 2018; Aghajanyan et al., 2021) and characterize the weight updates as the product of two low-rank matrices, substantially reducing the number of trainable parameters and memory requirements during training. This formulation leads to an adaptable number of trainable parameters, as one modifies the rank of the matrices, providing great flexibility under various resource constraints.",
+        "In spite of the strong performance of LoRAs in parameter-efficient settings, our investigation uncovers an accuracy plateau, wherein an increase of rank and thus learnable parameters fail to bridge the accuracy gap with standard fine-tuning. These undesirable scaling properties (Kopiczko et al., 2024) raise questions about the inherent limitations imposed by the low-rank structure, particularly when tackling complex tasks that benefit from larger parameter counts. This issue would ideally be addressed by introducing full-rank updates while maintaining the parameter-efficiency. To this end, we propose RandLoRA, a PEFT method that leverages a set of linearly-independent random bases in the form of non-trainable low-rank matrices. By solely learning scaling coefficients for the linear combination of the random low-rank bases, our method achieves full-rank updates, while maintaining low memory usage. As a result, RandLoRA strikes a balance between parameter efficiency and full-rank updates, allowing for more flexible and effective fine-tuning.",
+        "Through extensive experimentation, we empirically demonstrate the limitations of the low-rank formulation in LoRA, particularly on vision-language tasks, and show how RandLoRA can improve performance under similar parameter budget. Figure 1 summarizes our findings across pure vision (DinoV2), vision-language (CLIP) and commonsense reasoning (LLama3-8B), where increasing LoRA’s parameter count has highly diminishing returns. We find that RandLoRA outperforms LoRA as the parameter budget expands, while remaining parameter efficient thanks to its full-rank update strategy. We conclude our investigation with an insightful discussion on the distinctive characteristics of RandLoRA where our analysis reveals that, in contrast to LoRA, RandLoRA yields activation patterns in deeper layers that closely align with those obtained through full fine-tuning. Furthermore, our visualization of the loss landscape reveals that the local minima reached by RandLoRA is often closer to that reached by standard fine-tuning, and it always leads to a lower loss than LoRA for an equal parameter count. Additionally, we explore the integration of sparse random bases, where initial findings highlight that sparse bases preserves the performance of RandLoRA. This suggests promising avenues to further reduce memory and computational requirements when training large transformer models, without compromising model performance.",
+        "Our contributions are summarized as:",
+        "1. We investigate the interplay between rank and number of trainable parameters when fine-tuning large pre-trained models, highlighting the limitations of LoRA in improving performance when larger ranks are required.",
+        "2. We propose RandLoRA, a novel parameter-efficient fine-tuning (PEFT) strategy based on random basis combinations, enabling full-rank updates without memory overhead over LoRA.",
+        "3. We rigorously assess RandLoRA across diverse pre-trained architectures and tasks, spanning pure vision and vision-language image classification to commonsense reasoning, demonstrating its versatility and effectiveness."
+      ],
+      "subsections": []
+    },
+    "2 Related work": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "2.1 Low Rank Adaptation of Large Models",
+          "paragraphs": [
+            "Low Rank Adaptation (LoRA) of large language models has revolutionized the fine-tuning paradigm, enabling memory-constrained adaptation to specialist tasks and democratizing access to larger models. Initially introduced by (Hu et al., 2022), LoRA leverages the observation that weight updates during fine-tuning can converge to suitable performances without necessitating full rank updates. By factorizing weight updates into the product of two low rank matrices, LoRA achieves a memory-efficient solution for adapting large models. Moreover, once the low rank matrices are merged into the original weight matrix size, no latency is present during inference. Several improvements have been proposed to build upon LoRA’s success. Weight-decomposed LoRAs (DoRA) (Liu et al., 2024) proposes to improve convergence by decomposing LoRA updates into magnitude and direction components. AdaLoRA (Zhang et al., 2023) and AutoLoRA (Zhang et al., 2024c), utilize specialized metrics or meta-learning to propose rank-adapted LoRA formulations that dynamically adjust the rank to suit every layer’s need. Other improvements include initialization strategies for the low rank matrices using the truncated SVD of the pre-trained weights and where the whole decomposition is fine-tuned as in Pissa (Meng et al., 2024) or where only the singular value matrix is as in SVFT (Lingam et al., 2024) or LoRA-XS (Bałazy et al., 2024). Further improvements are proposed in HydraLoRA (Tian et al., 2024) where the scaling-up matrix of the low rank decomposition is split into multiple ones with a routing layer added to select the contribution of each head. This formulation enhances multi-task learning at the cost of losing the merging capabilities of LoRA in the pre-trained weight at test-time. These advancements collectively enhance the efficiency of LoRA, solidifying its position as a cornerstone of large language model fine-tuning."
+          ]
+        },
+        {
+          "title": "2.2 Parameter-Efficient fine-tuning (PEFT) using Random Bases",
+          "paragraphs": [
+            "Recent research has focused on further reducing the trainable parameter count of LoRA, a crucial aspect for low-shot applications where minimizing trainable parameters can prevent overfitting and enhance generalization. A promising direction involves utilizing random bases combinations, where randomly generated matrices are combined using a limited number of trainable parameters to estimate a weight update.",
+            "PRANC (Nooralinejad et al., 2023) pioneered the random base strategy by learning a weighted averaged of random matrices through back-propagation. PRANC’s solution averages multiple full size weight matrices for each layer, leading to high memory consumption. To address this, the authors generate random bases on the fly during forward and backward passes using a fixed seed random number generator, reducing memory usage to that of the largest trained layer in the network at the cost of training latency.",
+            "Building upon PRANC, NOLA (Koohpayegani et al., 2024) introduces an improved algorithm where random bases are estimated as the product of two low-rank random matrices, each weighed using a learnable scalar and summed before matrix multiplication. This approach effectively approximates a rank 1 LoRA with significantly fewer trainable parameters and largely reduces memory consumption during training over PRANC.",
+            "Concurrently, VeRA (Kopiczko et al., 2024) proposed an alternative strategy utilizing a single high-rank random matrix (typically 256 or 1024), instead of summing multiple rank 1 matrices as in NoLA. VeRA also employs a scaling strategy of random bases distinct from NoLA, detailed in section 4, which relates to our approach. Both NOLA and VeRA achieve comparable performance to LoRA in few-shot fine-tuning scenarios while training substantially fewer parameters."
+          ]
+        },
+        {
+          "title": "2.3 Alternative strategies for parameter-efficient fine-tuning",
+          "paragraphs": [
+            "We report here on alternatives to weight tuning for parameter-efficient adaptation, specifically focusing on prompt tuning. Context Optimization (CoOP) (Radford et al., 2021) introduced learnable context vectors for CLIP class names, later generalized to instance-specific prompts in Conditional CoOP (CoCoOP) (Zhou et al., 2022). Recent prompt tuning methods, like DePT (Zhang et al., 2024b) and PromptSRC (Khattak et al., 2023b), emphasize knowledge preservation by isolating shared subspaces or regularizing prompts. While parameter-efficient, prompt tuning can struggle with generalization beyond few-shot settings (Han et al., 2024) and may be less effective than LoRA as data increases (Zanella & Ben Ayed, 2024). We therefore consider prompt tuning orthogonal to weight-tuning for the scope of this paper and exclude it from direct RandLoRA comparisons except for early results found in Appendix B.3."
+          ]
+        }
+      ]
+    },
+    "3 Motivations": {
+      "paragraphs": [
+        "Our literature review reveals that research on improving LoRA is focused on reducing the number of trainable parameters further, either through adaptable ranks or by using fixed or shared low rank projection matrices. When looking at moderate to larger parameter budgets however LoRA remains highly competitive.",
+        "We identify that early research has convincingly demonstrated the promise of random basis combinations as a parameter-efficient strategy for large models, particularly in few-shot scenarios. Two approaches have emerged, each representing a distinct paradigm. VeRA advocates for a unique random base with large rank, while NoLA proposes to average a large number of random bases with small ranks. Both approaches report performance comparable to LoRA in few-shot scenarios while converging on a significantly reduced number of trainable parameters. However, as we will demonstrate, this reduction comes at the cost of limited performance when venturing beyond few-shot learning, limiting the scalability of these algorithms.",
+        "Finally, we report that LoRA is predicated on the assumption that low-rank updates suffice for fine-tuning large models. We aim in this paper to question the universality of this hypothesis, exploring scenarios where full rank alternatives may be necessary. The fundamental question follows: is parameter efficiency achieved through low-rank approximation limited by (1) the low-rank nature of the update or (2) by the low parameter count. Can parameter-efficient full rank updates provide a more accurate solution ? This paper aims to address these questions, exploring the balance between parameter efficiency and low-rank fine-tuning of large transformer models, and shedding light on the limitations of existing approaches."
+      ],
+      "subsections": []
+    },
+    "4 RandLoRA—parameter-efficient fine-tuning with full rank": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "4.1 Weight updates as a sum of low-rank matrices",
+          "paragraphs": [
+            "Let W0∈ℝD×dW_{0}\\in\\mathbb{R}^{D\\times d} be a weight matrix of a large pre-trained model. Fine-tuning aims to find an appropriate Δ​W∈ℝD×d\\Delta W\\in\\mathbb{R}^{D\\times d}, such that the fine-tuned weights W0+Δ​WW_{0}+\\Delta W lead to an adapted model, tailored to a specific downstream task. Without loss of generality, let us assume d<Dd<D. The motivation behind RandLoRA stems from the singular value decomposition (SVD) of Δ​W\\Delta W, i.e., Δ​W=U​Σ​V𝖳\\Delta W=U\\Sigma V^{\\mathsf{T}}, where U∈ℝD×dU\\in\\mathbb{R}^{D\\times d}, Σ∈ℝd×d\\Sigma\\in\\mathbb{R}^{d\\times d}, V∈ℝd×dV\\in\\mathbb{R}^{d\\times d}. This decomposition can be written as the sum of the product of rank-one matrices, as follows",
+            "where 𝐮i\\mathbf{u}_{i} and 𝐯i\\mathbf{v}_{i} denote the columns of UU and VV, respectively. We suggest that in this context, low-rank updates such as LoRAs can be characterized as an approximation of the few largest singular values while the rest of the information in Δ​W\\Delta W being discarded. To better illustrate this point, let us denote the rank of LoRA by rr and for brevity of exposition, assume dd is divisible by rr. We rewrite equation 1 as a sum of the product of rank-rr matrices, as follows",
+            "where Uj​Σj​Vj𝖳=∑i=r​jr​(j+1)𝐮i​σi​𝐯i𝖳U_{j}\\Sigma_{j}V_{j}^{\\mathsf{T}}=\\sum_{i=rj}^{r(j+1)}\\mathbf{u}_{i}\\sigma_{i}\\mathbf{v}_{i}^{\\mathsf{T}} and where n=d/rn=d/r. This formulation reveals how LoRA models the approximates the first low-rank partition U1​Σ1​V1𝖳U_{1}\\Sigma_{1}V_{1}^{\\mathsf{T}}, and implicitly assumes ∑j=2nUj​Σj​Vj𝖳≈0\\sum_{j=2}^{n}U_{j}\\Sigma_{j}V_{j}^{\\mathsf{T}}\\approx 0. We however argue that the remaining n−1n-1 terms can play a crucial role when capturing more complex task-specific variations that require larger deviations from the pre-trained weight W0W_{0}."
+          ]
+        },
+        {
+          "title": "4.2 Parameter-efficient approximation of low-rank matrices",
+          "paragraphs": [
+            "Approximating more terms in the decomposition of Δ​W\\Delta W using LoRA’s formulation quickly becomes parameter inefficient, culminating to D​d+d2Dd+d^{2} parameters for a full rank dd in place of the original D​dDd parameters of Δ​W\\Delta W. To perform full-rank updates while maintaining parameter-efficiency, we propose instead to approximate each term of Δ​W\\Delta W in equation 2 using low-rank random bases where only scaling coefficients are learned,",
+            "where Bj∈ℝD×rB_{j}\\in\\mathbb{R}^{D\\times r} and Aj∈ℝr×dA_{j}\\in\\mathbb{R}^{r\\times d} are non-trainable, random matrices. The two learnable diagonal scaling matrices, Λj∈ℝr×r\\Lambda_{j}\\in\\mathbb{R}^{r\\times r} and Γj∈ℝd×d\\Gamma_{j}\\in\\mathbb{R}^{d\\times d} are unique to each of the nn terms and fulfill complementary roles to improve the approximation. We aim for Aj​ΓjA_{j}\\Gamma_{j} transform the input features into an low-dimensional space (rank-rr), Λj\\Lambda_{j} to scale the compressed features which are then transformed back into the desired output space by BjB_{j}.111The formulation of our method is similar to that of VeRA (Kopiczko et al., 2024), which will be discussed in detail in section 6.5. Since Γj\\Gamma_{j} operates on the column space of AjA_{j} and is unique to each AjA_{j}, we use a unique shared matrix A∈ℝr×dA\\in\\mathbb{R}^{r\\times d} across all nn terms without loss of expressivity but reducing memory consumption. With a shared AA, we formulate the update as",
+            "To achieve a full-rank update, we set n=d/rn=d/r, leading to dr​(d+r)=d2/r+d\\frac{d}{r}(d+r)=d^{2}/r+d learnable parameters. Note that unlike LoRA, the number of learnable parameters is inversely proportional to the rank of the random bases in RandLoRA, as increasing the rank of the bases leads to a reduction in trainable parameters while maintaining full rank. In summary, RandLoRA trades-off approximation accuracy for scope, sacrificing a more precise representation of the individual SVD elements of Δ​W\\Delta W to capture a larger portion of its singular value decomposition."
+          ]
+        },
+        {
+          "title": "4.3 Convergence analysis",
+          "paragraphs": [
+            "In this section, we present a theorem showing that weight updates using RandLoRA is an accurate approximation of general matrices under certain theoretical conditions.",
+            "Let WW be a fixed D×dD\\times d matrix, with D>dD>d and rank​(W)=d\\text{rank}(W)=d. Fix 1≤n≤d1\\leq n\\leq d, such that d=n​rd=nr. The matrix WW can be factorized using SVD as",
+            "where Uj∈ℝD×rU_{j}\\in\\mathbb{R}^{D\\times r}, Vj∈ℝr×dV_{j}\\in\\mathbb{R}^{r\\times d} are partitions of the left and right singular vectors, and Σj∈ℝr×r\\Sigma_{j}\\in\\mathbb{R}^{r\\times r} contains r singular values. For each 1≤j≤n1\\leq j\\leq n, let BjB_{j} denote a random D×rD\\times r matrix whose entries are drawn i.i.d from either a Gaussian or uniform distribution, AjA_{j} denotes an r×dr\\times d matrix whose entries are drawn similarly, Λj\\Lambda_{j} is a diagonal r×rr\\times r matrix and Γj\\Gamma_{j} is a diagonal d×dd\\times d matrix drawn similarly. Assume",
+            "for each 1≤j≤n1\\leq j\\leq n for some 0<ϵ0<\\epsilon. Then we have that with probability 11 that each Bj​Λj​Aj​ΓjB_{j}\\Lambda_{j}A_{j}\\Gamma_{j} has full rank and",
+            "For details on the proof of theorem 4.1 please refer to appendix D.1.",
+            "Theorem 4.1 is premised on Bj​Λj​Aj​ΓjB_{j}\\Lambda_{j}A_{j}\\Gamma_{j} being a good approximation for the rr-truncated singular value of Δ​W\\Delta W, which is shown to be true empirically in VeRA (Kopiczko et al., 2024) for example. We show in this case that Δ​W\\Delta W can be accurately approximated as ∑j=1nBj​Λj​Aj​Γj\\sum_{j=1}^{n}B_{j}\\Lambda_{j}A_{j}\\Gamma_{j}, motivating RandLoRA’s formulation. In contrast, since the best approximation a rank-rr LoRA can achieve is the rr-truncated SVD of WW, then by Eckart-Young-Mirsky theorem, the Frobenius norm of the difference between WW and low-rank adaptation B​ABA is lower bounded as follows",
+            "We conclude that while LoRA’s rank rr approximation is limited by the sum of the last d−r−1d-r-1 squared singular values of WW, RandLoRA does not present this low bound and is only limited by how close (ϵ\\epsilon) can Bj​Λj​Aj​ΓjB_{j}\\Lambda_{j}A_{j}\\Gamma_{j} approximate length-r segments of the SVD of WW."
+          ]
+        }
+      ]
+    },
+    "5 Experiments": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "5.1 Experimental Settings",
+          "paragraphs": [
+            "We conduct a comprehensive comparison with three state-of-the-art approaches: LoRA (Hu et al., 2022), NoLA (Koohpayegani et al., 2024), and VeRA (Kopiczko et al., 2024). We perform a hyper-parameter search to identify optimal settings for LoRA, NoLA, VeRA, and RandLoRA to ensure a fair comparison. More details about the experimental settings can be found in appendix C. Additional experiments on the General Language Understanding Evaluation (GLUE) (Wang et al., 2019) and End-to-end (E2E) Novikova et al. (2017) natural language generation benchmarks as well as further comparison with prompt-tuning algorithms are available in appendix B."
+          ]
+        },
+        {
+          "title": "5.2 Vision: DinoV2 and CLIP’s vision backbone",
+          "paragraphs": [
+            "We evaluate fine-tuning vision backbones for image classification using pre-trained ViT-B/14 DinoV2 (Oquab et al., 2023) and ViT-B/32, ViT-L/14 CLIP (Radford et al., 2021) vision only backbones. We fine-tune on 21 datasets (Appendix C.1, Table 7) and evaluate {1, 2, 4, 16}-shot learning and performance with 50% and 100% training data.",
+            "We compare RandLoRA to LoRA rank 32 where RandLoRA’s rank is adjusted to match LoRA’s parameters, and include VeRA and NoLA as random base alternatives. We fine-tune the vision backbones and learn linear classifiers for DinoV2, or use frozen CLIP language embeddings for classification. Results are displayed in Figure 2 where we also report VRAM usage, detailed results are available in Appendix E.2.",
+            "We find that LoRA exhibits a smaller accuracy gap with standard fine-tuning (FT) on DinoV2 than CLIP. With equal parameters, RandLoRA improves over LoRA, bridging the FT gap in both cases. We believe that LoRA’s success on the DinoV2 backbone is partly explained by its training objective (see Section 6.1). RandLoRA demonstrates LoRA’s rank limitation for CLIP architectures and the benefit of full-rank updates in matching FT performance. VeRA and NoLA are efficient in few-shot settings but become limited with more data."
+          ]
+        },
+        {
+          "title": "5.3 Vision-Language: CLIP",
+          "paragraphs": [
+            "We extend in this section our experimental setting to fine-tuning CLIP-like transformer architectures on classification datasets where contrary to section 5.2 both the language and vision encoders of CLIP are trained. We add ImageNet (Krizhevsky et al., 2012) to the dataset pool to scale up to 22 classification datasets. To assess the effectiveness of RandLoRA compared to LoRA on models of varying sizes, we consider three variants of pre-trained CLIPs from the open-clip repository (Cherti et al., 2023): ViT-B/32 (151M parameters), ViT-L/14 (428M parameters) and ViT-H/14 (1B parameters). We scale the rank of the random bases in RandLoRA in the same way as section 5.2 to maintain a number of parameters comparable to a rank 32 LoRA: RandLoRA-{6,8,10} for ViT-{B/32,L/14,H/14} respectively.",
+            "A summary of results is available in Figure 3 with detailed results being available in appendix E.1. Because fine-tuning vision-language architectures such as CLIP is a harder optimization problem, we observe the existence of a larger performance gap between full fine-tuning and LoRA than for pure vision, which we confirm is not bridged by increasing the rank of LoRA (see Figure 1). This suggests that increasing parameter count is not enough, pointing towards the rank of the update as the possible limit to the performance of LoRA. When running RandLoRA with the same amount of trainable parameters, we observe that the gap with fine-tuning is bridged. When compared with NoLA and VeRA we come to the same conclusions as section 5.2 although VeRA is this time much more competitive for larger data budgets, hinting towards the importance of high ranks for finetuning CLIP-like vision language architectures. We also report that our base sharing strategy allows RandLoRA to decrease VRAM usage over LoRA which can be relevant for large architectures such as ViT-H/14."
+          ]
+        },
+        {
+          "title": "5.4 Commonsense Reasoning",
+          "paragraphs": [
+            "We evaluate RandLoRA for fine-tuning LLMs on eight commonsense reasoning tasks (see Appendix C.4). We fine-tune Qwen2 (0.5B), Phi3 (3B), and Llama3 (8B) models and assess data efficiency by training on both a 170,000-sample full dataset and a 15,000-sample subset, following Hu et al. (2023).",
+            "Table 1 compares RandLoRA to LoRA, VeRA, and NoLA. We test two LoRA ranks: rank-16 (”Efficient”) and rank-32 (”Performant”). We then scale RandLoRA the same or lower amount of parameters to ensure a fair comparison. Detailed results are found in Appendix 15",
+            "RandLoRA performs competitively with, and sometimes surpasses, LoRA. Phi3’s strong zero-shot abilities enable VeRA and NoLA to achieve strong results despite fewer parameters. Conversely, Qwen2 and Llama3 require more adaptation, challenging VeRA and NoLA to match LoRA’s performance. The 15k-sample regime can lead to overfitting when scaling trainable parameters for LoRA and RandLoRA, decreasing performance even with dropout regularization. When training on the full 170k samples, RandLoRA consistently outperforms LoRA. Results comparing with DoRA (Liu et al., 2024) for LLama3 only are available in Table 6 in the appendix where RandLoRA outperforms both DoRA and LoRA for larger parameter budgets, while DoRA and LoRA are competitive at ”Efficient” budgets. We conclude RandLoRA is a compelling alternative to LoRA and DoRA for LLM fine-tuning, especially with larger datasets and parameter budgets."
+          ]
+        }
+      ]
+    },
+    "6 Discussion": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "6.1 Similarities with fine-tuning: activations",
+          "paragraphs": [
+            "We evaluate activation similarity to assess LoRA and RandLoRA’s ability to mimic fine-tuned model activations. Using the Centered Kernel Alignment (CKA) (Kornblith et al., 2019) metric, we measure the similarity between activations of LoRA, RandLoRA, and a fully fine-tuned model. This protocol assesses how well each method captures dataset-specific activation patterns. Figure 4(a) shows CKA scores for self-attention and MLP layers in CLIP and DinoV2 vision backbones, averaged over 5 datasets where RandLoRA imrpoves over LoRA. For CLIP, LoRA’s CKA decreases in deeper layers, losing alignment with fine-tuned activations. RandLoRA, with equal parameters, matches LoRA’s early layer alignment but improves upon it in deeper layers. This CKA drop for LoRA in deeper layers is absent in DinoV2, explaining LoRA’s near-identical accuracy to fine-tuning on DinoV2. This difference likely arises from training objectives: DinoV2’s visual objective creates classification-ready features needing minimal weight adjustments, thus low-rank LoRA suffices. CLIP’s multimodal objective, however, demands higher ranks for effective adaptation to vision tasks."
+          ]
+        },
+        {
+          "title": "6.2 Similarities with fine-tuning: loss landscape",
+          "paragraphs": [
+            "We analyze loss landscape connectivity for models fine-tuned with standard fine-tuning, LoRA, and RandLoRA. We visualize a 2D loss landscape plane by positioning LoRA, RandLoRA, and fine-tuning models at (0,0), (1,0), and (0.5,1) respectively. For each point (x,y)(x,y) on this plane, we interpolate model weights by solving for coefficients αi\\alpha_{i} (where ∑i=13αi=1\\sum_{i=1}^{3}\\alpha_{i}=1) and evaluate the interpolated model’s loss on a 5%5\\% training subset. Figure 4(b) shows that for CLIP, RandLoRA reaches a deeper loss minima than LoRA, often with a low-loss path to the fine-tuning optimum, and despite training the same parameter count. For DinoV2, all optima reside in a shared low-loss basin, with LoRA already close to fine-tuning, reflecting LoRA’s strong performance on this task. These visualizations reinforce LoRA’s low rank it particularly limiting for complex tasks, and demonstrate RandLoRA’s ability to achieve deeper minima than LoRA with equal parameters due to full-rank updates. Appendix A provides 3D visualizations for additional datasets."
+          ]
+        },
+        {
+          "title": "6.3 Further studies on full vs low rank fine-tuning of CLIP",
+          "paragraphs": [
+            "We investigate whether RandLoRA’s CLIP performance advantage over LoRA stems from better SVD approximation or its full-rank capability. We ablate RandLoRA with two rank-controlled variants. RandLoRA-a restricts the update rank to rr by averaging bases before multiplication: Δ​W=(∑i=1NBi​Λi)​(∑i=1NAi​Γi)\\Delta W=\\left(\\sum_{i=1}^{N}B_{i}\\Lambda_{i}\\right)\\left(\\sum_{i=1}^{N}A_{i}\\Gamma_{i}\\right). RandLoRA-b uses half-rank updates by setting N=rank​(Δ​W)/r/2N=\\text{rank}(\\Delta W)/r/2 and adjusting base rank to maintain parameter count parity with RandLoRA-rr. All variants train the same parameters, only update rank varies. Table 3 presents accuracy on 100% of 22 datasets for CLIP ViT-B/32. Results show that higher update rank correlates with better performance, given equal parameter counts. This supports the importance of large rank updates, particularly for CLIP fine-tuning."
+          ]
+        },
+        {
+          "title": "6.4 Sparse random matrices",
+          "paragraphs": [
+            "We propose to investigate using sparse random matrices for improved memory and computational efficiency, drawing inspiration from random projection literature and the Johnson-Lindenstrauss lemma (Lindenstrauss & Johnson, 1984). We adopt the sparse construction from Bingham & Mannila (2001) and Li et al. (2006), where matrix elements are {−1,0,1}\\{-1,0,1\\} with probabilities {1s,1−2s,1s}\\{\\frac{1}{s},1-\\frac{2}{s},\\frac{1}{s}\\} (s∈[2,D]s\\in[2,\\sqrt{D}] for W∈ℝD×dW\\in\\mathbb{R}^{D\\times d}), followed by normalization. Appendix C.6 discusses why this formulation preserves full rank. Table 3 shows experimental results using these sparse bases in RandLoRA. We explore sparsity ratios s∈{2,6,D,100,200}s\\in\\{2,6,\\sqrt{D},100,200\\}, achieving sparsity levels from 6666 to 99%99\\%. Consistent with Li et al. (2006), the recommended sparsity levels (D\\sqrt{D}) yield performance comparable to dense matrices, theoretically reducing memory and compute. However, higher sparsity can degrade accuracy, suggesting potential for optimized RandLoRA variants using compute-optimized sparse random bases."
+          ]
+        },
+        {
+          "title": "6.5 Summary of differences with related random bases algorithms",
+          "paragraphs": [
+            "Prior work like VeRA (Kopiczko et al., 2024) and NoLA (Koohpayegani et al., 2024) utilizes random bases for parameter-efficient fine-tuning. However, unlike VeRA and NoLA which approximate a low-rank LoRA update, RandLoRA aims to approximate the full-rank weight update. It could be argued that VeRA approximates only the first block in a decomposition of WW, whereas RandLoRA approximates all blocks. Thus, while VeRA and NoLA improve parameter-efficiency while maintaining low-rank updates, RandLoRA addresses cases requiring full-rank updates. Furthermore, Equation equation 4 evidences the flexibility in RandLoRA’s parameter count, ranging from VeRA’s parameter efficiency (r=rank​(W)r=\\text{rank}(W)) to full fine-tuning parameters (r=1r=1) while maintaining full-rank."
+          ]
+        },
+        {
+          "title": "6.6 Limitations",
+          "paragraphs": [
+            "Despite RandLoRA’s effectiveness, we identify three key limitations for future research.",
+            "First, RandLoRA introduces computational overhead in weight update calculations, increasing training time for larger models (Appendix C.6.1). We however evidence room for improvement using ternary sparse bases in Section 6.4. Future work should explore matmul-free matrix combinations using these ternary sparse bases. Efficient implementations could replace costly matrix products with simple aggregations, eliminating floating-point arithmetic (Li et al., 2006), and accelerating RandLoRA training time pending the development of optimized CUDA kernels (Zhu et al., 2024).",
+            "Second, exploring non-random, optimal bases BiB_{i} and AA could improve convergence and efficiency by further reducing ϵ\\epsilon in equation equation 6. Discovering such bases, potentially through experiments or decomposition of pre-trained weights (Bałazy et al., 2024; Meng et al., 2024), is a promising research direction to enhance RandLoRA.",
+            "Third, hybrid approaches combining LoRA and RandLoRA warrant investigation. LoRA could estimate the dominant SVD components of WW, while RandLoRA captures the remaining spectral information efficiently. Despite challenges in harmonizing training objectives, a starting point would use RandLoRA to refine a LoRA when convergence is insufficient. Addressing these limitations will further improve RandLoRA’s potential for efficient full-rank fine-tuning."
+          ]
+        }
+      ]
+    },
+    "7 Conclusion": {
+      "paragraphs": [
+        "This paper introduces RandLoRA, a method achieving parameter efficiency and low memory cost while enabling full rank model updates. Our findings underscore the critical importance of full-rank updates when fine-tuning pre-trained architectures and we observe that our approach surpasses LoRA’s performance for an equal parameter count, highlighting the value of full-rank updates in large model fine-tuning. Through extensive experiments across diverse tasks we demonstrated the efficacy of our method. While RandLoRA incurs additional computational overhead due to random basis multiplications, memory consumption remains contained and we provide venues for reducing this compute in practice. As a results, RandLoRA offers a viable alternative to LoRA for fine-tuning large pre-trained models on consumer-grade hardware. Our results have significant implications for efficient and effective model adaptation, prompting for future research in scalable and versatile full-rank fine-tuning techniques."
+      ],
+      "subsections": []
+    },
+    "Acknowledgments": {
+      "paragraphs": [
+        "This research is funded in part by the Australian Government through the Australian Research Council (Project DP240103278), and the Centre of Augmented Reasoning at the Australian Institute for Machine Learning, established by a grant from the Department of Education. This work is also supported by supercomputing resources provided by the Phoenix HPC service at the University of Adelaide."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A 3D visualizations of CLIP’s loss landscape": {
+      "paragraphs": [
+        "We propose here further visualizations of the mode connectivity between LoRA, RandLoRA and standard fine-tuning. To compute the loss value between the minimas reached by LoRA, RandLoRA and fine-tuning, define a 2D plane using 3 equidistant points representing LoRA, standard fine-tuning and RandLoRA and we then solve for interpolation coefficients α1..3\\alpha_{1..3} so that their sum equals 1. The weights of the model we evaluate is then W0+α1​LoRA+α2​FT+α3​RandLoRAW_{0}+\\alpha_{1}\\text{LoRA}+\\alpha_{2}\\text{FT}+\\alpha_{3}\\text{RandLoRA}. The loss is evaluated on a fixed 5%5\\% subset of the training set. Since the process of evaluating the loss at all coordinates on the plane is time consuming, we only perform this study for the CLIP-ViT-B/32 architecture where RandLoRA is especially successful. In all visualizations, the number of trainable parameters for LoRA and RandLoRA are the same. We clamp loss values 20%20\\% above the shallowest minima to improve visualization. 3D representation as well as the associated 2D elevation projection is provided in Figure 5. The interactive 3D figures are provided in the HTML format in the supplementary material.",
+        "[Figure: (a) CIFAR-100]",
+        "[Figure: (a) CIFAR-100]",
+        "[Figure: (b) Food-101]",
+        "[Figure: (c) UCF-101]"
+      ],
+      "subsections": []
+    },
+    "Appendix B Additional results": {
+      "paragraphs": [
+        "KroneckerWe report here further results on the General Language Understanding Evaluation (GLUE) (Wang et al., 2019) and End-to-end (E2E) (Novikova et al., 2017) generation benchmarks. While GLUE is a text classification task, E2E is a natural language generation task. We also report results comparing RandLoRA and LoRA with a prompt tuning baseline (Zhang et al., 2024b) for classification using CLIP’s vision backbone as in section 5.2 in appendix B.3",
+        "[Table: Table 4: Results on GLUE datasets with the RoBERTa-base and RoBERTa-large models.]",
+        "[Table: Table 5: Comparison of LoRA and RandLoRA with a state-of-the-art prompt tuning algorithm. CLIP ViT-B/32.]",
+        "[Table: Table 6: Further comparison with DoRA related methods on LLama3-8b. Results averaged over 8 commonsense reasoning tasks. We bold the best accuracy.]"
+      ],
+      "subsections": [
+        {
+          "title": "B.1 GLUE results",
+          "paragraphs": [
+            "We report results for RandLoRA and compare with LoRA and VeRA on the SST-2, MRPC, COLA, QNLI, RTE and STS-N tasks. We report Matthew’s correlation for CoLA, Pearson correlation for STS-B, and accuracy for the remaining tasks. We report results using the RoBERTa network Liu et al. (2019) in the base and large configurations and perform 5 runs to report average performance and one standard deviation. Results are displayed in Table 4. We find that for the smaller RoBERTa-base architecture (125M parameters), all algorithms reach the same performance. For the larger RoBERTa-large variant (355M parameters), a larger gap is observed where RandLoRA improves over the performance of VeRA and LoRA. These findings are in line with the experiments in the main body of the paper where we find that RandLoRA provided larger improvements for larger models in Figure 3."
+          ]
+        },
+        {
+          "title": "B.2 E2E results",
+          "paragraphs": [
+            "We train RandLoRA and LoRA on the E2E dataset using the GPT-2 medium architecture (Radford et al., 2019) (355M parameters). "
+          ]
+        },
+        {
+          "title": "B.3 Comparison with prompt-tuning",
+          "paragraphs": [
+            "Prompt tuning is a popular alternative for PEFT where learnable tokens are appended to human-designed prompts and optimized on to improve accuracy. We choose to report the Maple Khattak et al. (2023a) + DePT Zhang et al. (2024b) state-of-the-art configuration as it is shown in Zhang et al. (2024b) to be a highly competitive configuration for image classification. Table 5 reports the results for 4 and 16 shots over the 11 datasets used in Zhang et al. (2024b). We train on ViT-B/32 with all algorithms training approximately 3M parameters. We report that although competitive for low shots, prompt tuning struggles to keep up in the 16-shot setting. We note in particular that prompt tuning struggles on datasets that require more adaptation (e.g. FGVCAircraft) whereas LoRA and RandLoRA in particular manage to more largely improve results. We additionally report that Maple + DePT requires a much longer training time and VRAM usage. For example, 16-shots on ImageNet requires 3.5h and 18GB of VRAM for Maple + DePT while it requires 2 minutes and 4.5GB of VRAM for RandLoRA. Because prompt tuning is largely orthogonal to LoRA-type weight updates we suggest that future research should study how to combine these approaches together. "
+          ]
+        },
+        {
+          "title": "B.4 Commonsense reasoning results for DoRA",
+          "paragraphs": [
+            "We compare RandLoRA with DoRA (Liu et al., 2024) for tuning LLama3 in Table 6. We find that RandLoRA outperforms both DoRA and LoRA for larger parameter budgets (rank 32), while DoRA and LoRA are competitive at ”Efficient” budgets (rank 16)."
+          ]
+        }
+      ]
+    },
+    "Appendix C Implementation details": {
+      "paragraphs": [
+        "[Table: Table 7: Vision datasets used for the image classification experiments]",
+        "[Table: Table 8: Hyper-parameters for different algorithms. Multiple values for hyperparameters denote variances accross the ViT-B/32, ViT-L/14 and ViT-H/14 architectures respectively.]",
+        "[Table: Table 9: LLM fine-tuning hyper-parameters for different algorithms. Multiple values for hyper-parameters denote variances accross the Qwen2 -0.5b, Phi3-8b and LLama3-8b architectures respectively.]",
+        "[Table: Table 10: Comparison of training times for LoRA, RandLoRA, and FT on vision-language or language architectures.]"
+      ],
+      "subsections": [
+        {
+          "title": "C.1 Classification datasets",
+          "paragraphs": [
+            "We fine-tune vision architectures on 2222 vision datasets (2121 for pure vision backbones where ImageNet is removed for brevity). We train for 1010 epochs on the few-shot experiments and increase the number of epochs according to dataset constraints for 50%50\\% and 100%100\\% fine-tuning. Table 7 reports details of the 2222 datasets we use as well as the number of epochs used as in (Zhang et al., 2024a)."
+          ]
+        },
+        {
+          "title": "C.2 CLIP",
+          "paragraphs": [
+            "We utilize the pytorch AdamW optimizer with weight decay 0.10.1 and a cosine decaying learning rate schedule. To accommodate the full batch size on a single A100 GPU for the ViT-L/14 and ViT-H/14 CLIP architectures, we accumulate 2 batches of 64. This is excepted for the standard fine-tuning of the ViT-H/14 for standard fine-tuning where we need to accumulate 4 batches of 32 due to increasing memory costs. We acquire the pre-trained weights from the openclip repository (Cherti et al., 2023) where the use the ”openai” weights from ViT-B/32 and ViT-L/14 and the ”laion2b_s32b_b79k” weights for ViT-H/14."
+          ]
+        },
+        {
+          "title": "C.3 Pure vision backbones",
+          "paragraphs": [
+            "For pure vision backbones, we use the same configuration as vision and language fine-tuning of CLIP except that we increase the learning rate to 10−​210^{-}2 for LoRA and RandLoRA. We train RandLoRA-6 for ViT-B/32 and RandLoRA-8 for Dinov2’s ViT-B/14 and CLIP’s ViT-L/14."
+          ]
+        },
+        {
+          "title": "C.4 Commonsense reasoning",
+          "paragraphs": [
+            "Our evaluation protocol assesses the model’s versatility and reasoning capabilities across eight diverse datasets: BoolQ (Clark et al., 2019) (yes/no question answering), PIQA (Bisk et al., 2020) (physics commonsense questions), SIQA (Sap et al., 2019) (social implications reasoning), HellaSwag (Zellers et al., 2019) (multi-choice scenario completion), WinoGrande (Sakaguchi et al., 2021) (binary sentence completion), ARC-c and ARC-e (Clark et al., 2018) (challenging and easy science questions at a grade-school level), and OBQA (Mihaylov et al., 2018) (multi-step reasoning). These datasets collectively pose a wide range of challenges, from natural language understanding and commonsense reasoning to physical and social inference. For further details on these datasets, we refer readers to the survey by Hu et al. (Hu et al., 2023). We train using the hugginface222https://huggingface.co transformers library and follow the implementation333https://github.com/NVlabs/DoRA/tree/main/commonsense_reasoning of Liu et al (Liu et al., 2024). We train for 3 epochs using a learning rate of 1×10−41\\times 10^{-4} and a base scaling coefficient of 22 for the weight update. To prevent overfitting, we add a dropout layer in each of the adapter’s layers with a dropout probability of 0.050.05 and perform early stopping using the same validation set of size 120120, drawn from the training set. We maintain hyper-parameters the same across architectures and algorithms except for the scaling ratio of the weight update for NoLA and RandLoRA which we further multiply by 1/n1/\\sqrt{n} where nn is the number of bases to account for the increasing norm of the sum of random matrices."
+          ]
+        },
+        {
+          "title": "C.5 Training time, memory consumptionand random bases",
+          "paragraphs": [
+            "RandLoRA aims to preserve the memory efficiency and training speed advantages of LoRA. As shown in Section 4, although RandLoRA trains an amount of parameters comparable to LoRA we still have to store NN large random bases for each weight update. We first note that as observed in previous research, (Koohpayegani et al., 2024; Kopiczko et al., 2024) random bases can be shared across layers. In practice, we generate one pair of random matrices Bi∈ℝN×Dm×rB_{i}\\in\\mathbb{R}^{N\\times D_{m}\\times r} and A0∈ℝ×r×dmA_{0}\\in\\mathbb{R}^{\\times r\\times d_{m}}, where DmD_{m} and dmd_{m} represent the largest DD and dd across all network layers. During forward and backward passes on a layer of size D×dD\\times d, we select the first DD rows of BB and dd columns of AA to perform the weight update. This strategy stores only the largest BB and AA matrices, which would have to be fit in memory at some point during training anyways. Note that although we do not study this case, this strategy directly generalizes to having different ranks rr across layers as has been proposed in AutoLoRA (Zhang et al., 2024c) for example. This strategy allows us to avoid increasing memory as network depth increases, meaning that RandLoRA become more efficient when network depth increases.",
+            "We evidence in section 4.2 that the AiA_{i} matrices do not need to be NN dimensional and that a single AA matrix modified by NN Γi\\Gamma_{i} is enough to acheive full rank. We can thus optimize the backward pass when computing the gradient of Λi\\Lambda_{i} and G​a​m​m​aiGamma_{i} so that we only have to store one matrix A∈ℝr×dA\\in\\mathbb{R}^{r\\times d} for the backward pass, further reducing memory consumption.",
+            "We adopt the notations from Section C.5.1 to optimize the matrix multiplication of X∈ℝB×DX\\in\\mathbb{R}^{B\\times D} during the forward and backward passes: X​WXW. Given the pre-trained weight W0∈𝔻×𝕕W_{0}\\in\\mathbb{D\\times d}, LoRA computes Y=X​W0+X​B​AY=XW_{0}+XBA where we compute Y=X​W0+∑i=1N(X​Bi)​(Λi​Ai​Γi)Y=XW_{0}+\\sum_{i=1}^{N}\\left(XB_{i})(\\Lambda_{i}A_{i}\\Gamma_{i}\\right). These equations suggest RandLoRA would be NN times slower to run than LoRA but in practice, the X​W0XW_{0} operation dominates the matmul time and the NN RandLoRA operations are naturally parallelized by the CUDA kernel. In practice we observe a 13%13\\% training time increase for the smaller ViT-B-32 models and up to 100%100\\% in the worst case for larger models with large weight matrices such as LLama3."
+          ]
+        },
+        {
+          "title": "C.6 Sparse random bases",
+          "paragraphs": [
+            "We continue here the discussion on the possible collinearity of sparse bases. We remind here that we construct the random bases BiB_{i} and AiA_{i} by assigning",
+            "where ss an integer in [2,D][2,\\sqrt{D}] for W∈ℝD×dW\\in\\mathbb{R}^{D\\times d}. Because of the ternary nature of these matrices, there is a non-zero probability that two row are collinear across all random matrices, resulting in non full rank. If we can show that is probability is negligible then the full rank constraint will be preserved in practice. We compute that the probability of drawing the same size dd row twice equates to p=2×(s2−4​s+6s2)dp=2\\times(\\frac{s^{2}-4s+6}{s^{2}})^{d}. Taking the example of the ViT-B/32 architectures with W∈ℝ768×768W\\in\\mathbb{R}^{768\\times 768} and for the largest recommended optimal sparsity (s=768s=\\sqrt{768}) we compute p=2×10−49p=2\\times 10^{-49}. The probability of drawing at least two collinear row over NN matrices of is p2=(N+D)​(N+D−1)​pp_{2}=(N+D)(N+D-1)p. In the RandLoRA-6 configuration for ViT-B, N=128N=128 resulting in p2=8×10−44p_{2}=8\\times 10^{-44} meaning these events are negligible in practice even with a large number of sparse bases and that the full rank constraint is preserved.",
+            "We report in Table 10 the relative training time of RandLoRA compared to LoRA and standard fine-tuning on a single RTX4090 GPU (A100 for LLama3 and ViT-H/14). Since we do not have ressources to fully fine-tune LLama3, we report LoRA as the memory baseline. In addition to Table 10 we report up to 212% increase over LoRA-64 training time for the best performing RandLoRA-15 configuration for LLama3-8b. This number should be put in perspective with DoRA leading to a 220% increase in all configurations for LLama3-8b."
+          ]
+        }
+      ]
+    },
+    "Appendix D Mathematical derivations and proofs": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "D.1 Theorem4.1",
+          "paragraphs": [
+            "In this section we would like to give the details of the proof of theorem 4.1 from the main paper. In order to do so we will start by proving a few lemmas.",
+            "Our method consider decompositions similar to those given in equation 1 and equation 2 that are built from random matrices instead of the left and right singular vectors. A key observation is that such decompositions and their sums will yield high rank matrix approximations. The following two lemmas explains why this is the case.",
+            "Let B=[B1,…,Bn]B=[B_{1},\\ldots,B_{n}] denote a matrix where each Bj∈ℝD×rB_{j}\\in\\mathbb{R}^{D\\times r} and let A=[A1,…,An]A=[A_{1},\\ldots,A_{n}] denote a matrix where each Aj∈ℝd×rA_{j}\\in\\mathbb{R}^{d\\times r}. Assume n​r≤min⁡(D,d)nr\\leq\\min(D,d) and assume that the columns of BB are linearly independent and the columns of AA are linearly independent. Define",
+            "Then we must have that r​a​n​k​(C)=n​rrank(C)=nr.",
+            "We first observe that using the inequality r​a​n​k​(X+Y)≤r​a​n​k​(X)+r​a​n​k​(Y)rank(X+Y)\\leq rank(X)+rank(Y) we get that r​a​n​k​(C)≤n​rrank(C)\\leq nr because each term Bj​Aj𝖳B_{j}A_{j}^{\\mathsf{T}} has rank rr, since the columns of AA and BB are linearly independent, and there are nn of them.",
+            "Then observe that we can rewrite CC as",
+            "Using Sylvester’s rank inequality: If X∈ℝD×lX\\in\\mathbb{R}^{D\\times l} and Y∈ℝl×dY\\in\\mathbb{R}^{l\\times d} then",
+            "we have that",
+            "and the proof is complete. ∎",
+            "Let {X1,…,Xn}\\{X_{1},\\ldots,X_{n}\\} denote nn vectors in ℝN\\mathbb{R}^{N} where n≤Nn\\leq N drawn i.i.d from a Gaussian or uniform distribution. Then with probability 11 {X1,…,Xn}\\{X_{1},\\ldots,X_{n}\\} will be linearly independent.",
+            "We first note that any measure defined via a Gaussian or Uniform probability distribution is absolutely continuous with respect to the Lebesgue measure. Meaning they have the same sets of measure zero as the Lebesgue measure.",
+            "We then prove the case that {X1,…,Xn}\\{X_{1},\\ldots,X_{n}\\} are vectors of unit length. Since the vectors were drawn independently, we can first assume we drew X1X_{1}. The probability that this is the zero vector is 0 w.r.t the Lebesgue measure on the closed unit ball BN​(0)B_{N}(0) about the origin in ℝN\\mathbb{R}^{N} and hence any other measure absolutely continuous to it. Then draw X2X_{2} and note that the probability that X2X_{2} lies in s​p​a​n​{X1}∩BN​(0)span\\{X_{1}\\}\\cap B_{N}(0) is also 0 since s​p​a​n​{X1}∩BN​(0)span\\{X_{1}\\}\\cap B_{N}(0) forms a set of 0 Lebesgue measure in BN​(0)B_{N}(0). Continuing in this way we find that {X1,…,Xn}\\{X_{1},\\ldots,X_{n}\\} will be linearly independent with probability 11.",
+            "For the general case where {X1,…,Xn}\\{X_{1},\\ldots,X_{n}\\} are not drawn to have unit length i.e. drawn on the sphere in ℝN\\mathbb{R}^{N}, we simply note that we can draw each one and then divide by its norm producing one of unit length. Since normalizing by the norm doesn’t affect linear independence we get by the above case that {X1,…,Xn}\\{X_{1},\\ldots,X_{n}\\} must be linearly independent with probability 11. ∎",
+            "Lemmas D.1 and D.2 show that if we were to i.i.d draw nn random vectors A1,…,AnA_{1},\\ldots,A_{n} in ℝD\\mathbb{R}^{D} and nn vectors B1,…,BnB_{1},\\ldots,B_{n} using a Gaussian or uniform distribution for n≤min⁡(D,d)n\\leq\\min(D,d). Then the matrix Q=A​BTQ=AB^{T} would have rank nn, where A=[A1,…,An]A=[A_{1},\\ldots,A_{n}] and B=[B1,…,Bn]B=[B_{1},\\ldots,B_{n}].",
+            "We note that lemma D.1 is still true if we were to consider products of the form B​Λ​A​ΓB\\Lambda A\\Gamma, where Λ\\Lambda and Γ\\Gamma are diagonal matrices with non-zero diagonal entries.",
+            "Using the above two lemmas we can now give a proof of theorem 4.1 from the main paper.",
+            "The fact that each Bi​Λi​Ai​ΓiB_{i}\\Lambda_{i}A_{i}\\Gamma_{i} has rank rr with probability 11 follows from lemmas D.1 and D.2. In order to estimate the difference ∥W−∑j=1nBj​Λj​Aj​Γj∥\\lVert W-\\sum_{j=1}^{n}B_{j}\\Lambda_{j}A_{j}\\Gamma_{j}\\rVert, we use equation 2 to write",
+            "We can then estimate",
+            "where the last inequality follows from the assumption equation 6. ∎"
+          ]
+        },
+        {
+          "title": "D.2 LoRA’s low bound",
+          "paragraphs": [
+            "We demonstrate here the short derivation leading to the results of equation equation 8.",
+            "By definition, the forbenius norm of a matrix X∈ℝn×nX\\in\\mathbb{R}^{n\\times n}, ‖X‖F||X||_{F} is invariant under left and right multiplications by any orthogonal matrices P∈ℝn×nP\\in\\mathbb{R}^{n\\times n} and Q∈ℝn×nQ\\in\\mathbb{R}^{n\\times n}, i.e. ‖X‖F=‖P​X​Q‖F||X||_{F}=||PXQ||_{F}. Then, given the k-truncated SVD of M=U​Σk​VTM=U\\Sigma_{k}V^{T} with U,V∈ℝn×nU,V\\in\\mathbb{R}^{n\\times n} and Σk∈ℝn×n\\Sigma_{k}\\in\\mathbb{R}^{n\\times n} diagonal with elements above the kk-th being 0, UU and VV are orthogonal matrices by definition. We then have the following,",
+            "where Σ∈ℝn×n\\Sigma\\in\\mathbb{R}^{n\\times n} is diagonal and contains the nn singular values of XX by decreasing order and σj\\sigma_{j} denotes the jj-th element of Σ\\Sigma.",
+            "Since by the SVD definition, the best rank-kk approximation of WW is MM, given LoRA’s rank-kk approximation of WW by the matrix multiplication B​ABA where B∈ℝn×kB\\in\\mathbb{R}^{n\\times k} and A∈ℝk×nA\\in\\mathbb{R}^{k\\times n} we have",
+            "∎"
+          ]
+        }
+      ]
+    },
+    "Appendix E Detailed results": {
+      "paragraphs": [
+        "[Table: Table 11: Detailed accuracy results per dataset, fine-tuning the vision and language backbones of CLIP-ViT-B/32. Highest performance and those within a range of 0.10.1 in each section are highlighted in bold.]",
+        "[Table: Table 12: Detailed accuracy results per dataset, fine-tuning the vision and language backbones of CLIP-ViT-L/14. Highest performance and those within a range of 0.10.1 in each section are highlighted in bold.]",
+        "[Table: Table 13: Detailed accuracy results per dataset, fine-tuning the vision and language backbones of CLIP-ViT-H/14. Highest performance and those within a range of 0.10.1 in each section are highlighted in bold.]",
+        "[Table: Table 14: Detailed accuracy results per dataset, the DinoV2 ViT-B/14 vision backbone. Highest performance and those within a range of 0.10.1 in each section are highlighted in bold.]",
+        "[Table: Table 15: Comparison of accuracy on commonsense reasoning datasets. We report accuracy delta of RandLoRA with LoRA for comparable amounts of trainable parameters.]"
+      ],
+      "subsections": [
+        {
+          "title": "E.1 Vision language: CLIP",
+          "paragraphs": [
+            "We report per dataset accuracies for NoLA, VeRA, LoRA, standard fine-tuning (FT) and RandLoRA in for the CLIP ViT-B/32 ViT-L/14 and ViT-H/14 architectures on 22 datasets in Tables 11, 12and 13 respectively."
+          ]
+        },
+        {
+          "title": "E.2 Vision only: DinoV2",
+          "paragraphs": [
+            "Table 14 reports detailed results when fine-tuning DinoV2 on 21 datasets. We use the pre-trained ViT-B/14 architecture and train a linear classifier together with the feature extractor. Compared to the CLIP results ImageNet was removed to promote brevity of the experiments."
+          ]
+        },
+        {
+          "title": "E.3 Commonsense reasoning",
+          "paragraphs": [
+            "Table 15 reports detailed accuracy results for the Qwen2, Phi3 and LLama3 language models trained on the commonsense tasks. See C.4 for details on the datasets and the hyper-parameters used."
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "Aghajanyan et al. (2021) Armen Aghajanyan, Sonal Gupta, and Luke Zettlemoyer. Intrinsic dimensionality explains the effectiveness of language model fine-tuning. In Proceedings of the 59th Annual Meeting of the Association for Computational Linguistics and the 11th International Joint Conference on Natural Language Processing, pp. 7319–7328. Association for Computational Linguistics, Aug 2021. URL https://aclanthology.org/2021.acl-long.568.",
+    "Bałazy et al. (2024) Klaudia Bałazy, Mohammadreza Banaei, Karl Aberer, and Jacek Tabor. Lora-xs: Low-rank adaptation with extremely small number of parameters. arXiv preprint arXiv:2405.17604, 2024.",
+    "Bingham & Mannila (2001) Ella Bingham and Heikki Mannila. Random projection in dimensionality reduction: applications to image and text data. In International Conference on Knowledge Discovery and Data mining (ACM SIGKDD), 2001.",
+    "Bisk et al. (2020) Yonatan Bisk, Rowan Zellers, Jianfeng Gao, Yejin Choi, et al. Piqa: Reasoning about physical commonsense in natural language. In Proceedings of the AAAI conference on Artificial Intelligence (AAAI), 2020.",
+    "Cherti et al. (2023) Mehdi Cherti, Romain Beaumont, Ross Wightman, Mitchell Wortsman, Gabriel Ilharco, Cade Gordon, Christoph Schuhmann, Ludwig Schmidt, and Jenia Jitsev. Reproducible scaling laws for contrastive language-image learning. In IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), 2023.",
+    "Clark et al. (2019) Christopher Clark, Kenton Lee, Ming-Wei Chang, Tom Kwiatkowski, Michael Collins, and Kristina Toutanova. BoolQ: Exploring the surprising difficulty of natural yes/no questions. arXiv preprint arXiv:1905.10044, 2019.",
+    "Clark et al. (2018) Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa Schoenick, and Oyvind Tafjord. Think you have solved question answering? try arc, the ai2 reasoning challenge. arXiv preprint arXiv:1803.05457, 2018.",
+    "Han et al. (2024) Zeyu Han, Chao Gao, Jinyang Liu, Jeff Zhang, and Sai Qian Zhang. Parameter-efficient fine-tuning for large models: A comprehensive survey. arXiv preprint arXiv:2403.14608, 2024.",
+    "Hu et al. (2022) Edward J Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and Weizhu Chen. LoRA: Low-Rank Adaptation of Large Language Models. In International Conference on Learning Representations (ICLR), 2022.",
+    "Hu et al. (2023) Zhiqiang Hu, Lei Wang, Yihuai Lan, Wanyu Xu, Ee-Peng Lim, Lidong Bing, Xing Xu, Soujanya Poria, and Roy Ka-Wei Lee. Llm-adapters: An adapter family for parameter-efficient fine-tuning of large language models. arXiv preprint arXiv:2304.01933, 2023.",
+    "Khattak et al. (2023a) Muhammad Uzair Khattak, Hanoona Rasheed, Muhammad Maaz, Salman Khan, and Fahad Shahbaz Khan. Maple: Multi-modal prompt learning. In IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), 2023a.",
+    "Khattak et al. (2023b) Muhammad Uzair Khattak, Syed Talal Wasim, Muzammal Naseer, Salman Khan, Ming-Hsuan Yang, and Fahad Shahbaz Khan. Self-regulating prompts: Foundational model adaptation without forgetting. In IEEE/CVF International Conference on Computer Vision (ICCV), 2023b.",
+    "Koohpayegani et al. (2024) Soroush Abbasi Koohpayegani, KL Navaneet, Parsa Nooralinejad, Soheil Kolouri, and Hamed Pirsiavash. NOLA: Compressing LoRA using Linear Combination of Random Basis. In International Conference on Learning Representations (ICLR), 2024.",
+    "Kopiczko et al. (2024) Dawid Jan Kopiczko, Tijmen Blankevoort, and Yuki Markus Asano. Vera: Vector-based random matrix adaptation. In International Conference on Learning Representations (ICLR), 2024.",
+    "Kornblith et al. (2019) Simon Kornblith, Mohammad Norouzi, Honglak Lee, and Geoffrey Hinton. Similarity of neural network representations revisited. In International Conference on Machine Learning (ICML), 2019.",
+    "Krizhevsky et al. (2012) A. Krizhevsky, I. Sutskever, and G. Hinton. Imagenet classification with deep convolutional neural networks. In Advances in neural information processing systems (NeurIPS), 2012.",
+    "Li et al. (2018) Chunyuan Li, Heerad Farkhoor, Rosanne Liu, and Jason Yosinski. Measuring the instrinsic dimension of objective landscapes. In ICLR, Vancouver, Canada, 30 Apr–3 May 2018. URL https://openreview.net/pdf?id=ryup8-WCW.",
+    "Li et al. (2006) Ping Li, Trevor J Hastie, and Kenneth W Church. Very sparse random projections. In ACM SIGKDD international conference on Knowledge discovery and data mining, 2006.",
+    "Lindenstrauss & Johnson (1984) W Johnson J Lindenstrauss and J Johnson. Extensions of lipschitz maps into a hilbert space. Contemp. Math, 1984.",
+    "Lingam et al. (2024) Vijay Lingam, Atula Tejaswi, Aditya Vavre, Aneesh Shetty, Gautham Krishna Gudur, Joydeep Ghosh, Alex Dimakis, Eunsol Choi, Aleksandar Bojchevski, and Sujay Sanghavi. SVFT: Parameter-Efficient Fine-Tuning with Singular Vectors. In International Conference on Machine Learning Workshops (ICMLW), 2024.",
+    "Liu et al. (2024) Shih-Yang Liu, Chien-Yi Wang, Hongxu Yin, Pavlo Molchanov, Yu-Chiang Frank Wang, Kwang-Ting Cheng, and Min-Hung Chen. Dora: Weight-decomposed low-rank adaptation. In International Conference on Machine Learning (ICML), 2024.",
+    "Liu et al. (2019) Y Liu, M Ott, N Goyal, J Du, M Joshi, D Chen, O Levy, M Lewis, L Zettlemoyer, and V Stoyanov. RoBERTa: A robustly optimized BERT pretraining approach. arXiv:1907.11692, 2019.",
+    "Meng et al. (2024) Fanxu Meng, Zhaohui Wang, and Muhan Zhang. Pissa: Principal singular values and singular vectors adaptation of large language models. Advances in Neural Information Processing Systems (NeurIPS), 2024.",
+    "Mihaylov et al. (2018) Todor Mihaylov, Peter Clark, Tushar Khot, and Ashish Sabharwal. Can a suit of armor conduct electricity? a new dataset for open book question answering. arXiv preprint arXiv:1809.02789, 2018.",
+    "Nooralinejad et al. (2023) Parsa Nooralinejad, Ali Abbasi, Soroush Abbasi Koohpayegani, Kossar Pourahmadi Meibodi, Rana Muhammad Shahroz Khan, Soheil Kolouri, and Hamed Pirsiavash. Pranc: Pseudo random networks for compacting deep models. In IEEE/CVF International Conference on Computer Vision (ICCV), 2023.",
+    "Novikova et al. (2017) Jekaterina Novikova, Ondřej Dušek, and Verena Rieser. The E2E dataset: New challenges for end-to-end generation. In Proceedings of the 18th Annual SIGdial Meeting on Discourse and Dialogue, 2017.",
+    "Oquab et al. (2023) Maxime Oquab, Timothée Darcet, Theo Moutakanni, Huy V. Vo, Marc Szafraniec, Vasil Khalidov, Pierre Fernandez, Daniel Haziza, Francisco Massa, Alaaeldin El-Nouby, Russell Howes, Po-Yao Huang, Hu Xu, Vasu Sharma, Shang-Wen Li, Wojciech Galuba, Mike Rabbat, Mido Assran, Nicolas Ballas, Gabriel Synnaeve, Ishan Misra, Herve Jegou, Julien Mairal, Patrick Labatut, Armand Joulin, and Piotr Bojanowski. DINOv2: Learning Robust Visual Features without Supervision, 2023.",
+    "Radford et al. (2019) Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario Amodei, Ilya Sutskever, et al. Language models are unsupervised multitask learners. OpenAI blog, 2019.",
+    "Radford et al. (2021) Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh, Sandhini Agarwal, Girish Sastry, Amanda Askell, Pamela Mishkin, Jack Clark, et al. Learning transferable visual models from natural language supervision. In International Conference on Machine Learning (ICML), 2021.",
+    "Sakaguchi et al. (2021) Keisuke Sakaguchi, Ronan Le Bras, Chandra Bhagavatula, and Yejin Choi. Winogrande: An adversarial winograd schema challenge at scale. Communications of the ACM, 2021.",
+    "Sap et al. (2019) Maarten Sap, Hannah Rashkin, Derek Chen, Ronan LeBras, and Yejin Choi. Socialiqa: Commonsense reasoning about social interactions. arXiv preprint arXiv:1904.09728, 2019.",
+    "Tian et al. (2024) Chunlin Tian, Zhan Shi, Zhijiang Guo, Li Li, and Chengzhong Xu. HydraLoRA: An Asymmetric LoRA Architecture for Efficient Fine-Tuning. In Advances in Neural Information Processing Systems (NeurIPS), 2024.",
+    "Wang et al. (2019) Alex Wang, Amanpreet Singh, Julian Michael, Felix Hill, Omer Levy, and Samuel R. Bowman. GLUE: multi-task benchmark and analysis platform for natural language understanding. In International Conference on Learning Representations (ICLR), 2019.",
+    "Zanella & Ben Ayed (2024) Maxime Zanella and Ismail Ben Ayed. Low-Rank Few-Shot Adaptation of Vision-Language Models. In IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), 2024.",
+    "Zellers et al. (2019) Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin Choi. Hellaswag: Can a machine really finish your sentence? arXiv preprint arXiv:1905.07830, 2019.",
+    "Zhang et al. (2024a) Frederic Z Zhang, Paul Albert, Cristian Rodriguez-Opazo, Anton van den Hengel, and Ehsan Abbasnejad. Knowledge Composition using Task Vectors with Learned Anisotropic Scaling. In Advances in Neural Information Processing Systems (NeurIPS), 2024a.",
+    "Zhang et al. (2024b) Ji Zhang, Shihan Wu, Lianli Gao, Heng Tao Shen, and Jingkuan Song. Dept: Decoupled prompt tuning. In IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), 2024b.",
+    "Zhang et al. (2023) Qingru Zhang, Minshuo Chen, Alexander Bukharin, Nikos Karampatziakis, Pengcheng He, Yu Cheng, Weizhu Chen, and Tuo Zhao. AdaLoRA: Adaptive budget allocation for parameter-efficient fine-tuning. In International Conference on Learning Representations (ICLR), 2023.",
+    "Zhang et al. (2024c) Ruiyi Zhang, Rushi Qiang, Sai Ashish Somayajula, and Pengtao Xie. AutoLoRA: Automatically Tuning Matrix Ranks in Low-Rank Adaptation Based on Meta Learning. arXiv preprint arXiv:2403.09113, 2024c.",
+    "Zhou et al. (2022) Kaiyang Zhou, Jingkang Yang, Chen Change Loy, and Ziwei Liu. Conditional prompt learning for vision-language models. In IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), 2022.",
+    "Zhu et al. (2024) Rui-Jie Zhu, Yu Zhang, Ethan Sifferman, Tyler Sheaves, Yiqiao Wang, Dustin Richmond, Peng Zhou, and Jason K Eshraghian. Scalable MatMul-free Language Modeling. arXiv preprint arXiv:2406.02528, 2024."
+  ]
+}

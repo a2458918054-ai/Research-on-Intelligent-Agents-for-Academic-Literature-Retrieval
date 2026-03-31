@@ -1,0 +1,439 @@
+{
+  "title": "Trust Me, I’m Wrong: High-Certainty Hallucinations in LLMs",
+  "authors": "Adi Simhi1Itay Itzhak1Fazl Barez2Gabriel Stanovsky3Yonatan Belinkov11Technion – Israel Institute of Technology2University of Oxford3School of Computer Science and Engineering, The Hebrew University of Jerusalem{adi.simhi,itay.itzhak}@campus.technion.ac.il",
+  "abstract": "Large Language Models (LLMs) often generate outputs that lack grounding in real-world facts, a phenomenon known as hallucinations. Prior research has associated hallucinations with model uncertainty, leveraging this relationship for hallucination detection and mitigation. In this paper, we challenge the underlying assumption that all hallucinations are associated with uncertainty. Using knowledge detection and uncertainty measurement methods, we demonstrate that models can hallucinate with high certainty even when they have the correct knowledge. We further show that high-certainty hallucinations are consistent across models and datasets, distinctive enough to be singled out, and challenge existing mitigation methods. Our findings reveal an overlooked aspect of hallucinations, emphasizing the need to understand their origins and improve mitigation strategies to enhance LLM safety.111Code at https://github.com/technion-cs-nlp/Trust_me_Im_wrong",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "LLMs can often hallucinate—generate outputs ungrounded in real-world facts, hindering their reliability (Ji et al., 2023; Sharma et al., 2023; Kalai and Vempala, 2023).",
+        "Numerous studies have focused on identifying hallucinations, with a particular line of research highlighting a strong relationship between hallucinations and a model’s uncertainty (Tjandra et al., 2024; Manakul et al., 2023). These studies demonstrate that uncertainty estimation metrics, such as semantic entropy (Kuhn et al., 2023), sampling (Cole et al., 2023), and probability (Feng et al., 2024a), can be employed to detect and mitigate hallucinations based on an apparent correlation between uncertainty and hallucinations.",
+        "These findings spotlight the potential of uncertainty in addressing hallucinations but leave the nature of their connection unclear, calling for a deeper investigation of their relations. In this work, we aim to investigate the relationship between hallucinations and uncertainty by examining hallucinations generated with certainty.",
+        "Specifically, we focus on a category of hallucinations that occur even when the model possesses the necessary knowledge to generate grounded outputs. By focusing on these hallucinations, we eliminate hallucinations in which the model is certain of an incorrect answer, which it perceives as its true answer, see Figure 1.",
+        "We term these hallucinations CHOKE: Certain Hallucinations Overriding Known Evidence.",
+        "To detect CHOKE, we use the method suggested by Simhi et al. (2024) to identify hallucinations where a model knows the correct answer. Next, we estimate the model’s certainty with three widely used but conceptually different methods: tokens probabilities (Feng et al., 2024a), probability difference between the top two predicted tokens (Huang et al., 2023), and semantic entropy (Kuhn et al., 2023).",
+        "Our findings reveal that such hallucinations can occur in realistic scenarios, demonstrating that a model can hallucinate despite possessing the correct knowledge, and doing so with certainty, as illustrated in Figure 1. We find this phenomenon is broad, existing in two datasets with both pre-trained and instruction-tuned models. Furthermore, we show that CHOKE cannot simply be classified as mere noise by establishing they are consistent across contexts. Finally, we find that this issue can significantly impact the effectiveness of hallucination mitigation techniques, resulting in a non-negligible number of unmitigated hallucinations. These findings highlight the potential of CHOKE for exploring the underlying mechanisms of hallucinations, offering valuable insights that can deepen our understanding and improve LLM safety (Barez et al., 2025).",
+        "Our contributions are three-fold:",
+        "1. We demonstrate that hallucinations can manifest with high certainty, challenging the common belief that links hallucinations primarily to low model certainty.",
+        "2. We provide evidence that certain hallucinations are systematic rather than random noise, showing consistent reproduction of the same hallucinations across different settings.",
+        "3. We evaluate existing mitigation techniques and demonstrate their limited effectiveness in addressing high-certainty hallucinations, underscoring the importance of better understanding this phenomenon."
+      ],
+      "subsections": []
+    },
+    "2 Background": {
+      "paragraphs": [
+        "This section overviews related work on uncertainty in LLMs uncertainty and their tendency to hallucinate, even when the correct answers are known. We rely on these findings throughout our study."
+      ],
+      "subsections": [
+        {
+          "title": "2.1 Uncertainty in LLMs",
+          "paragraphs": [
+            "Predicting the uncertainty of models has been a highly researched topic in NLP and deep learning Guo et al. (2017); Xiao and Wang (2019); Gawlikowski et al. (2023). Recent research has explored the origins of low model certainty in LLMs, identifying factors such as gaps in knowledge, ambiguity in training data or input queries, and competing internal predictions during decoding Hu et al. (2023); Beigi et al. (2024); Baan et al. (2023); Yang et al. (2024).",
+            "One common application of certainty measures in LLMs is using them as a proxy for detecting hallucinations Kossen et al. (2024); Wen et al. (2024). This approach is based on the intuition that hallucinations often occur when a model lacks sufficient knowledge to generate a reliable answer, leading to low certainty in its predictions. Studies have shown that abstaining from answering when certainty is low can reduce hallucinations and improve reliability, with minimal impact on cases where a model can generate accurate responses Feng et al. (2024b); Cole et al. (2023).",
+            "The simplest approach estimates certainty using the probability assigned to an answer token: the higher the probability, the higher the certainty of the model in its answer. Other methods depend on the model’s self-reported certainty in follow-up text generation but are often unreliable Yona et al. (2024); Beigi et al. (2024). More recent advanced methods consider the full token distribution Huang et al. (2023) or incorporate semantic similarities across generated tokens Kuhn et al. (2023)."
+          ]
+        },
+        {
+          "title": "2.2 Hallucination Despite Knowledge",
+          "paragraphs": [
+            "Hallucinations in LLMs have lately become a highly active topic as they impact model reliability (Sharma et al., 2023; Chuang et al., 2023; He et al., 2023; Azaria and Mitchell, 2023; Pacchiardi et al., 2023). Previous work has shown that incorrect or missing knowledge is one of the main reasons for model hallucinations (Béchard and Ayala, 2024; Perković et al., 2024).",
+            "That said, recent work found an intriguing phenomenon: hallucinations that occur despite the model possessing the correct knowledge Simhi et al. (2024); Meng et al. (2024); Bürger et al. (2024). These studies try to differentiate two hallucination types: (1) lack of knowledge, where a model does not encode the correct answer, and (2) hallucination despite having the required knowledge, where a model generates an incorrect response even when it has the needed knowledge. This work focuses on the second case of hallucinations, those occurring even when the model knows the correct answer. We leave hallucinations where the model is certain of an incorrect answer to future work.",
+            "Specifically, the framework proposed by Simhi et al. (2024) systematically analyzes hallucinations despite knowledge using a three-step methodology. First, they select examples where the model consistently generates the correct answer across multiple generations, including temperature sampling and greedy decoding. Second, they introduce subtle input variations, such as ambiguous phrasing or distractors, to challenge the model’s robustness. This input variations approach leverages techniques explored extensively in several studies (Zeng et al., 2024; Li et al., 2024; Xu et al., 2023; Yao et al., 2023; Nardo, 2023; Joshi et al., 2023; Pacchiardi et al., 2023). Finally, they isolate instances where the model hallucinates under greedy decoding, despite its knowledge.",
+            "This work studies the following question: Do language models hallucinate even when they know the correct answer while also being highly certain about their outputs? Such Certain Hallucinations Overriding Known Evidence (CHOKE) would present a distinct challenge, as they imply a deep mismatch between certainty and hallucinations."
+          ]
+        },
+        {
+          "title": "Identification framework.",
+          "paragraphs": [
+            "Specifically, the framework proposed by Simhi et al. (2024) systematically analyzes hallucinations despite knowledge using a three-step methodology. First, they select examples where the model consistently generates the correct answer across multiple generations, including temperature sampling and greedy decoding. Second, they introduce subtle input variations, such as ambiguous phrasing or distractors, to challenge the model’s robustness. This input variations approach leverages techniques explored extensively in several studies (Zeng et al., 2024; Li et al., 2024; Xu et al., 2023; Yao et al., 2023; Nardo, 2023; Joshi et al., 2023; Pacchiardi et al., 2023). Finally, they isolate instances where the model hallucinates under greedy decoding, despite its knowledge.",
+            "This work studies the following question: Do language models hallucinate even when they know the correct answer while also being highly certain about their outputs? Such Certain Hallucinations Overriding Known Evidence (CHOKE) would present a distinct challenge, as they imply a deep mismatch between certainty and hallucinations."
+          ]
+        }
+      ]
+    },
+    "3 Methodology": {
+      "paragraphs": [
+        "To show the phenomenon of CHOKE does exist, we need to identify them and provide evidence that their portion from the total set of hallucinations is not negligible. To identify CHOKE, we first identify hallucinations that occur even when the model possesses the required knowledge (Section 3.1). Next, we use common metrics for measuring model certainty (Section 3.2) and set certainty thresholds to separate certain and uncertain generations (Section 3.3). The overall process of CHOKE detection is depicted in Figure 2. Additional experimental details are provided in Section 3.4."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Identifying Hallucinations Despite Knowledge",
+          "paragraphs": [
+            "To isolate hallucinations where the model knows the answer we follow Simhi et al. (2024). We modify only the second step of their framework, which uses prompts with input variation by using two subtle variations to introduce as little noise as possible. Table 1 shows the Child Setting, which we introduce, featuring a child-like tone to ask the questions, and the Alice-Bob Setting, simulating persuasive students dialogue with small intentional mistakes, as first introduced by Simhi et al. (2024). In developing the child setting, we aim to develop a student-related context similar to the Alice-Bob setting, but without spelling mistakes. Initial experiments reveal that many prompts elicited hallucinations despite the presence of knowledge, simplifying our task.222The prompts were determined prior to experimentation and remained consistent throughout. Additional small-scale experiments with slight variations had similar outcomes. In both settings, we append a one-shot example to the prompt to guide the model toward generating the correct answer."
+          ]
+        },
+        {
+          "title": "3.2 Measuring Certainty",
+          "paragraphs": [
+            "We employ three standard techniques to assess the model’s certainty in its generated answers: token probability, top-tokens probability difference, and semantic entropy. We briefly describe them here and refer to Appendix C for implementation details.",
+            "Following a common approach (Si et al., 2022; Ye and Durrett, 2022; Feng et al., 2024a), we use the probability of the model’s first generated token as a measure of certainty. This straightforward method scores certainty based on the likelihood PP of the first token, where higher probabilities indicate greater certainty.",
+            "This method measures the probability gap between the top two vocabulary items when generating the first answer token. Unlike the direct probability measure, probability difference highlights the relative certainty of the model in its top choice versus alternatives as discussed in previous work Huang et al. (2023).",
+            "First introduced by Kuhn et al. (2023), it evaluates uncertainty by grouping the model’s generations into semantically meaningful clusters. This method aggregates likelihoods within each meaning cluster CC. For a given prompt xx, semantic entropy is computed as:",
+            "Here, p​(ci|x)p(c_{i}|x) represents the likelihood of the ii-th semantic cluster given prompt xx. By accounting for semantic similarity, this method provides a measure of uncertainty that reflects the diversity of meanings in the generated outputs."
+          ]
+        },
+        {
+          "title": "Probability.",
+          "paragraphs": [
+            "Following a common approach (Si et al., 2022; Ye and Durrett, 2022; Feng et al., 2024a), we use the probability of the model’s first generated token as a measure of certainty. This straightforward method scores certainty based on the likelihood PP of the first token, where higher probabilities indicate greater certainty."
+          ]
+        },
+        {
+          "title": "Probability difference.",
+          "paragraphs": [
+            "This method measures the probability gap between the top two vocabulary items when generating the first answer token. Unlike the direct probability measure, probability difference highlights the relative certainty of the model in its top choice versus alternatives as discussed in previous work Huang et al. (2023)."
+          ]
+        },
+        {
+          "title": "Semantic entropy.",
+          "paragraphs": [
+            "First introduced by Kuhn et al. (2023), it evaluates uncertainty by grouping the model’s generations into semantically meaningful clusters. This method aggregates likelihoods within each meaning cluster CC. For a given prompt xx, semantic entropy is computed as:",
+            "Here, p​(ci|x)p(c_{i}|x) represents the likelihood of the ii-th semantic cluster given prompt xx. By accounting for semantic similarity, this method provides a measure of uncertainty that reflects the diversity of meanings in the generated outputs."
+          ]
+        },
+        {
+          "title": "3.3 Certainty Threshold",
+          "paragraphs": [
+            "Since certainty measurements produce continuous values, we define an appropriate threshold to separate certain and uncertain samples.",
+            "Such a threshold aims to minimize the cases of samples with wrong answers (hallucinations set; HH) labeled as certain and correct answers (factually correct outputs set; FF) labeled as uncertain, treating them as misclassifications.",
+            "To achieve this, we adopt the threshold definition from Feng et al. (2024a). The optimal threshold T∗T^{*} is defined as the value that minimizes the sum of these misclassifications:",
+            "where tt is a certainty threshold, and C​(Hi)C(H_{i}) and C​(Fj)C(F_{j}) represent the certainty scores of hallucinations and factually correct samples, respectively. The optimized threshold T∗T^{*} ensures the most accurate distinction between certainty and uncertainty assuming correct answers should be more certain and incorrect ones more uncertain, thereby reducing the cases of certain-hallucinations and uncertain-correct answer.",
+            "To optimize T∗T^{*}, we can sample HH and FF in equal sizes or maintain their natural ratio considering all samples. Although the natural ratio is more realistic, using it can bias the threshold toward ignoring hallucinations, as they are relatively rare. Indeed, initial results indicated that thresholds based on the natural ratio of HH and FF were lower and resulted in fewer uncertain-correct samples but with a larger portion of certain hallucinations (CHOKE). Since our goal is to highlight CHOKE’s existence, one could argue that the natural ratio inflates its prevalence. To challenge this and make the threshold more rigid towards CHOKE, we sample HH and FF in equal sizes. While this increases the number of uncertain correct examples, we prioritize a stricter threshold to better showcase CHOKE."
+          ]
+        },
+        {
+          "title": "BalancingHHandFF.",
+          "paragraphs": [
+            "To optimize T∗T^{*}, we can sample HH and FF in equal sizes or maintain their natural ratio considering all samples. Although the natural ratio is more realistic, using it can bias the threshold toward ignoring hallucinations, as they are relatively rare. Indeed, initial results indicated that thresholds based on the natural ratio of HH and FF were lower and resulted in fewer uncertain-correct samples but with a larger portion of certain hallucinations (CHOKE). Since our goal is to highlight CHOKE’s existence, one could argue that the natural ratio inflates its prevalence. To challenge this and make the threshold more rigid towards CHOKE, we sample HH and FF in equal sizes. While this increases the number of uncertain correct examples, we prioritize a stricter threshold to better showcase CHOKE."
+          ]
+        },
+        {
+          "title": "3.4 Models and Datasets",
+          "paragraphs": [
+            "We evaluate CHOKE prevalence on TriviaQA (Joshi et al., 2017) and Natural Questions (Kwiatkowski et al., 2019), two common English closed-book question-answering datasets. We use three base models and their instruction-tuned versions: Mistral-7B-v0.3, Mistral-7B-Instruct-v0.3 (Jiang et al., 2023), Llama-3.1-8B, Llama-3.1-8B-Instruct (Dubey et al., 2024), Gemma-2-9B, Gemma-2-27B and Gemma-2-9B-it (Team et al., 2024). See Appendix A for details regarding the evaluation of each model and setting-specific dataset."
+          ]
+        }
+      ]
+    },
+    "4 Results": {
+      "paragraphs": [
+        "First, we identify whether CHOKE examples are consistently present across certainty metrics and across different models (Section 4.1). Next, we show that CHOKE examples are consistently present in instruct-tuned and larger models (Section 4.2). Lastly, we show that CHOKE can not be explained as noise (Section 4.3)."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 CHOKE Consistently Exists",
+          "paragraphs": [
+            "As shown in Figure 3, a non-negligible amount of hallucinations occur with high certainty, demonstrating the existence of CHOKE. For example, for the Mistral model with the probability certainty measure on the child setting (upper-left subfigure of Figure 3), approximately 20%20\\% of hallucinations exceed the certainty threshold (T∗=0.5T^{*}=0.5). This means that using 0.50.5 as the certainty threshold, a significant portion of hallucinations would be classified as certain hallucinations. Similar patterns are found in other setups shown in the figure.",
+            "These findings highlight that high-certainty hallucinations are not rare but a common phenomenon in these models. See Appendix B for a qualitative evaluation showing examples of hallucinations that exhibit high probability and low semantic entropy scores, both measures of high certainty.",
+            "The black dashed line in each subfigure represents the optimal certainty threshold (explained in Section 3.3). Our results show that between 10%10\\% and 40%40\\% of hallucinations exceed this threshold, confirming the presence of certain hallucinations. The figure shows that this trend persists across a range of certainty thresholds, not just the optimal one, demonstrating that the results are robust to threshold selection.",
+            "While the correct answers (blue line) are consistently above the hallucinations (red line) across all thresholds, the certainty-correct relationship is not absolute. Many correct answer samples occur with low certainty, indicating that certainty levels vary even for correct predictions while the model knows the answer. See Appendix D for similar results on the Gemma and Llama models. Additionally, results using a temperature of 0.50.5 instead of 11 for semantic entropy generations are provided in Appendix E. For similar results using a variation of the child setting, demonstrating the robustness of the phenomenon, refer to Appendix F.",
+            "As the figure shows, the extent of high-certainty hallucinations varies across the certainty measures (different rows). Nevertheless, across all three measures, we effectively identify CHOKE examples."
+          ]
+        },
+        {
+          "title": "CHOKE is Consistent Across Certainty Thresholds.",
+          "paragraphs": [
+            "The black dashed line in each subfigure represents the optimal certainty threshold (explained in Section 3.3). Our results show that between 10%10\\% and 40%40\\% of hallucinations exceed this threshold, confirming the presence of certain hallucinations. The figure shows that this trend persists across a range of certainty thresholds, not just the optimal one, demonstrating that the results are robust to threshold selection.",
+            "While the correct answers (blue line) are consistently above the hallucinations (red line) across all thresholds, the certainty-correct relationship is not absolute. Many correct answer samples occur with low certainty, indicating that certainty levels vary even for correct predictions while the model knows the answer. See Appendix D for similar results on the Gemma and Llama models. Additionally, results using a temperature of 0.50.5 instead of 11 for semantic entropy generations are provided in Appendix E. For similar results using a variation of the child setting, demonstrating the robustness of the phenomenon, refer to Appendix F."
+          ]
+        },
+        {
+          "title": "CHOKE is Consistent Across Certainty Metrics.",
+          "paragraphs": [
+            "As the figure shows, the extent of high-certainty hallucinations varies across the certainty measures (different rows). Nevertheless, across all three measures, we effectively identify CHOKE examples."
+          ]
+        },
+        {
+          "title": "4.2 CHOKE Persists in Instruction-Tuning and Larger Models",
+          "paragraphs": [
+            "Since instruction tuning and model size often influence model behavior, we investigate their effect on CHOKE to assess its persistence.",
+            "Instruction-tuned models display poorer calibration between uncertainty and hallucinations, as reflected by their higher rates of high-certainty hallucinations. For example, for the Mistral model with the probability certainty measure on the child setting, approximately 20%20\\% of hallucinations have a certainty value of 0.5\\mathbf{0.5} or higher. In contrast, for the Mistral-Instruct model, around 20%20\\% of hallucinations have a certainty value of 0.9\\mathbf{0.9} or higher. These results are shown in the upper-left subfigure and the upper-third-from-the-left subfigure of Figure 3. Similar results are found with Llama and Gemma models (Appendix D).",
+            "These results suggest that certainty-based methods may be less effective in these models. These findings align with prior work noticing poor calibration after instruction tuning (Achiam et al., 2023) and underscore the need for improved detection methods tailored to instruction-tuned models.",
+            "Next, we conduct the same test on the larger Gemma-2-27B using TriviaQA in both settings. The results are shown in Figure 4. Evidently, the certainty levels of the Gemma-2-27B hallucinations are comparable to, and in some cases slightly higher than, those observed in Gemma-9B. This suggests that not only does this phenomenon exist in larger models, but it may also become more pronounced as model size increases. See Appendix H for similar results on the Natural Questions dataset."
+          ]
+        },
+        {
+          "title": "Instruction-Tuned Models are less Calibrated.",
+          "paragraphs": [
+            "Instruction-tuned models display poorer calibration between uncertainty and hallucinations, as reflected by their higher rates of high-certainty hallucinations. For example, for the Mistral model with the probability certainty measure on the child setting, approximately 20%20\\% of hallucinations have a certainty value of 0.5\\mathbf{0.5} or higher. In contrast, for the Mistral-Instruct model, around 20%20\\% of hallucinations have a certainty value of 0.9\\mathbf{0.9} or higher. These results are shown in the upper-left subfigure and the upper-third-from-the-left subfigure of Figure 3. Similar results are found with Llama and Gemma models (Appendix D).",
+            "These results suggest that certainty-based methods may be less effective in these models. These findings align with prior work noticing poor calibration after instruction tuning (Achiam et al., 2023) and underscore the need for improved detection methods tailored to instruction-tuned models."
+          ]
+        },
+        {
+          "title": "CHOKE also appears in larger models.",
+          "paragraphs": [
+            "Next, we conduct the same test on the larger Gemma-2-27B using TriviaQA in both settings. The results are shown in Figure 4. Evidently, the certainty levels of the Gemma-2-27B hallucinations are comparable to, and in some cases slightly higher than, those observed in Gemma-9B. This suggests that not only does this phenomenon exist in larger models, but it may also become more pronounced as model size increases. See Appendix H for similar results on the Natural Questions dataset."
+          ]
+        },
+        {
+          "title": "4.3 CHOKE Cannot Be Explained as Noise",
+          "paragraphs": [
+            "While the existence of CHOKE is apparent, a potential criticism is that these samples could merely reflect noise stemming from the natural correlation between uncertainty and hallucinations, rather than constituting a distinct and consistent subset. To address this, we evaluate the similarity of CHOKE examples across two distinct contexts: the Alice-Bob and Child settings.",
+            "Hallucination and non-hallucination classifications differ significantly between these settings, with overall Jaccard similarity between their hallucinations ranging from 30% to 50%. Thus, finding consistent CHOKE samples across these diverse settings will suggest they are not artifacts of the uncertainty-hallucination correlation but instead represent a robust phenomenon.",
+            "We quantify this consistency using the Jaccard similarity of CHOKE across settings and validate its uniqueness with a permutation test on 1010K randomly sampled subsets of hallucination samples of equivalent size. The results confirm that CHOKE similarity between context settings exceeds random expectations, as can be seen in Table 2, using probabilities, semantic entropy, and probability difference certainty metrics. Appendix G provides additional analyses, including results for only shared hallucination examples between the settings that further demonstrate the uniqueness of CHOKE."
+          ]
+        }
+      ]
+    },
+    "5 Hallucination Mitigation and CHOKE": {
+      "paragraphs": [
+        "Having established the existence of CHOKE, we hypothesize that they may impact the performance of mitigation methods. To test this hypothesis, we experiment with hallucination mitigation while focusing on CHOKE."
+      ],
+      "subsections": [
+        {
+          "title": "5.1 Mitigation Based on Certainty Measures",
+          "paragraphs": [
+            "Recent research has proposed leveraging certainty measures to mitigate hallucinations, primarily by abstaining from generating outputs when the model is uncertain about its predictions Cole et al. (2023); Tjandra et al. (2024). These approaches often rely on probabilities and entropy-based metrics Tjandra et al. (2024) or combine them with self-evaluation techniques Tomani et al. (2024). Other techniques employ alternative information-theoretic measures Yadkori et al. (2024a, b) or involve cross-verification using multiple language models to assess uncertainty Feng et al. (2024a).",
+            "The effectiveness of these measures is often evaluated using the area under the receiver operator characteristic (AUROC), which measures how well uncertainty ranks correct versus incorrect responses Kuhn et al. (2023). However, this focus on ranking accuracy overlooks cases where hallucinations occur with high certainty or when correct answers are generated with low certainty. Therefore, this oversight may limit their ability to mitigate hallucinations comprehensively.",
+            "To evaluate whether CHOKE samples are being overlooked, we test the usefulness of uncertainty-based mitigation methods in our setting. Specifically, we use the approaches of Tomani et al. (2024) and Cole et al. (2023), incorporating three uncertainty measures they used: negative log-likelihood, sampling, and predictive entropy. We introduce the probability measure as a simplified alternative to negative log-likelihood. Below, we briefly describe each measure, See Appendix C.3 for details.",
+            "Probability is a simplified version of negative log-likelihood that considers only the probability of the first token. Sampling assess the diversity of the model’s generated outputs, under the assumption that greater diversity reflects lower certainty. Lastly, predictive entropy estimates uncertainty by evaluating the average unpredictability of the model’s outputs. Examples are mitigated only if their uncertainty is below a defined threshold, as described in Section 3.3."
+          ]
+        },
+        {
+          "title": "5.2 Certainty-based Mitigation Methods Fail on CHOKE",
+          "paragraphs": [
+            "The results in Figure 5 show the percentage of unmitigated hallucination examples for each model. A lower value is better, as it indicates fewer hallucinations remain unmitigated.",
+            "Our results in Figure 5 show that a significant proportion of hallucinations exceed the threshold across all methods and models, remaining unmitigated. Among the methods, sampling performs the worst, while probability and predictive entropy consistently show a lower percentage of unmitigated hallucinations. This suggests sampling is less effective in avoiding mislabeling hallucinations among uncertainty-based methods. However, even probability and predictive entropy fail to mitigate a notable percentage of hallucinations. Lowering the threshold could improve mitigation, but this would lead to an increased mislabeling of low-certainty correct answers, as shown in Section 4.",
+            "These findings show that certainty-based mitigation fails to address high-certainty hallucinations. While uncertainty-based methods are expected to struggle with high-certainty hallucinations, our results here and in Section 4 indicate they consistently miss a distinct type, regardless of the uncertainty metric or threshold strictness. This failure suggests a fundamental limitation in assuming an ideal uncertainty metric can fully capture hallucinations."
+          ]
+        }
+      ]
+    },
+    "6 Discussion and Conclusion": {
+      "paragraphs": [
+        "In this work, we investigated the phenomenon of hallucinations occurring with high certainty, even when the model possesses the knowledge required to generate correct answers (CHOKE). While hallucinations are often correlated with uncertainty, we demonstrated that some hallucinations defy this trend, occurring with both high certainty and sufficient knowledge. Furthermore, we showed that large models also produce high-certainty hallucinations and that instruction-tuned models exhibit poorer calibration between uncertainty and hallucinations, amplifying this issue. Importantly, we provided evidence that these hallucinations are not mere noise but represent a distinct and robust subset of model behavior. Finally, we demonstrated that existing mitigation methods based on uncertainty fail to address these high-certainty hallucinations (CHOKE).",
+        "The phenomenon of CHOKE has significant implications for understanding the reliability and trustworthiness of LLMs. These examples reveal a critical vulnerability: Models may produce factually incorrect responses while maintaining a high degree of certainty, even when they possess the capability to provide the correct answer.",
+        "This presents a significant challenge for the deployment of LLMs in high-stakes domains, such as healthcare, legal applications, and scientific research, where erroneous outputs can have severe consequences."
+      ],
+      "subsections": []
+    },
+    "7 Limitations": {
+      "paragraphs": [
+        "This work demonstrates the existence of CHOKE, which poses a challenge for uncertainty-based methods in fully detecting and mitigating hallucinations. However, this study does not propose a solution to this problem. Additionally, this work solely demonstrated the existence of certain hallucinations despite knowledge and did not consider other types of hallucinations. Finally, we employed a single method for calculating the threshold for certainty hallucinations. While this approach provides a reasonable definition, alternative methods for defining the threshold may yield varying results."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Dataset Creation": {
+      "paragraphs": [
+        "To create the dataset, we first split the examples into knowledge-based examples, following a method similar to Simhi et al. (2024). Specifically, we performed one greedy generation and five generations with a temperature of 0.50.5. We used a 3-shot in-context learning scenario, generating a maximum of 5 tokens, and considered a generation correct only if it exactly matched the factually correct answer.",
+        "We also adopted the basic dataset curation process described in Simhi et al. (2024), but with two key modifications: we started with 70K examples instead of 30K, and we generated 10 tokens instead of 5. Each example in the dataset begins with question: and ends with answer:.",
+        "For instruct models, we adjusted the format to align better with their structure. Specifically, we presented the few-shot examples as a user-assistant conversation, where the user asks the questions and the assistant provides the answers. Additionally, we replaced answer: with The answer is, as part of the assistant generation, since this change was observed to improve the performance of instruction models.",
+        "To split the knowledge examples into factually correct examples and hallucination-despite knowledge examples, we sampled 20K knowledge-based examples (or fewer if fewer were available). Using the child and Alice-Bob settings, we checked whether the generated text changed and whether the exact match for the correct answer appeared within the 10-token model generations.",
+        "[Table: Table 3: Dataset statistics for TrivaQA/Natural Questions under Child setting.]",
+        "[Table: Table 4: Dataset statistics for TrivaQA/Natural Questions under Alice-Bob setting.]"
+      ],
+      "subsections": [
+        {
+          "title": "A.1 Additional Refinement",
+          "paragraphs": [
+            "We observed certain issues, especially with the instruct models, where an exact match was insufficient. For example, the model sometimes failed to generate an answer or produced a correct answer with minor variations, such as synonyms. To address these issues, we curated the WACK examples further, applying a set of simple heuristics that proved effective during manual examination:",
+            "Thus, we removed between 10% and 45% of all the hallucination examples. Note that this is a very harsh criterion for removing hallucinations; however, since our aim was to demonstrate that certain hallucinations exist, we preferred to remove any possibility of wrongly classified hallucinations.",
+            "1. Removing negations: We excluded examples where the generation stated with “The answer is not.”",
+            "2. Synonyms: Using the NLTK library (Loper and Bird, 2002), we removed examples where a synonym of the correct answer appeared in the generated text.",
+            "3. Stem-based similarity: We excluded examples if the stemmed version of the generation and the factually correct answer shared more than half of their words.",
+            "4. Edit distance: We kept examples where the edit distance between the generated text and the correct answer (in their stemmed versions) was greater than 2, or the answer is a number and great, none, and n/a, which were removed if present in the generated answer.",
+            "5. Initial word match: We removed examples where the generated answer was the first word of the factually correct answer.",
+            "6. Special formatting: For Gemma-instruct model, which we saw that typically generates the final answer enclosed in **, we removed examples where this formatting was absent.",
+            "Removing negations: We excluded examples where the generation stated with “The answer is not.”",
+            "Synonyms: Using the NLTK library (Loper and Bird, 2002), we removed examples where a synonym of the correct answer appeared in the generated text.",
+            "Stem-based similarity: We excluded examples if the stemmed version of the generation and the factually correct answer shared more than half of their words.",
+            "Edit distance: We kept examples where the edit distance between the generated text and the correct answer (in their stemmed versions) was greater than 2, or the answer is a number and great, none, and n/a, which were removed if present in the generated answer.",
+            "Initial word match: We removed examples where the generated answer was the first word of the factually correct answer.",
+            "Special formatting: For Gemma-instruct model, which we saw that typically generates the final answer enclosed in **, we removed examples where this formatting was absent."
+          ]
+        },
+        {
+          "title": "A.2 Dataset Statistics",
+          "paragraphs": [
+            "In this section, we present the final dataset statistics. The results are shown in Tables 3 and 4. We can see that the number of WACK hallucinations varies, with Gemma showing low numbers, while most other models exhibit more than 1000 WACK hallucinations."
+          ]
+        },
+        {
+          "title": "A.3 Additional Implementation Details",
+          "paragraphs": [
+            "We use the datasets under the Apache License and the models under each one’s agreement terms to follow each artifact’s terms. All experiments were run on NVIDIA RTX 6000 Ada (49GB) with 4 CPUs. Generating all the datasets and results takes approximately one month on one GPU.",
+            "Lastly, We used AI assistants only for simple paraphrasing as part of writing this paper."
+          ]
+        }
+      ]
+    },
+    "Appendix B Qualitative Evaluation": {
+      "paragraphs": [
+        "In this section, we show qualitative examples of certain hallucinations. In Table 5 provides an example from each model using the child setting on the Natural Questions dataset. These are examples of CHOKE hallucinations, where the model outputs have high probability and low semantic entropy, indicating a high degree of certainty.",
+        "[Table: Table 5: CHOKE generated answers and uncertainty measures were obtained using greedy decoding on the Natural Questions dataset in the child setting. In each of these examples, the model generates a hallucination despite having the necessary knowledge. The probability of the generated answer is high, and the semantic entropy is low, indicating that these examples exhibit high certainty.]"
+      ],
+      "subsections": []
+    },
+    "Appendix C Certainty Methods Additional Specifics": {
+      "paragraphs": [
+        "In this section, we elaborate on specifics in the calculations of the different methods."
+      ],
+      "subsections": [
+        {
+          "title": "C.1 Probability and Probability Difference",
+          "paragraphs": [
+            "To ensure that the probability we consider corresponds to the probability of the actual answer and not a preceding token, we employed the following heuristic: skipping over any of the following tokens: \"<|assistant|>\", \"<|user|>\", \"<|begin_of_text|>\", \"<|end_of_text|>\", \"<|eot_id|>\", \"<|start|>\", \"<|end|>\", \"<|sep|>\", \"<|sep_id|>\", \"assistant\", \"user\", \"\\n\", \"answer\", \"The\", \"Answer\", \"\"̈, \"’\", \" answer\", \"is\", \"it\", \"it’s\", \":\", \" \", \" is\", \" correct\", \"correct\", \"*\", \"**\", \" **\".",
+            "This heuristic proved sufficient during a manual investigation."
+          ]
+        },
+        {
+          "title": "C.2 Sampling Based Methods",
+          "paragraphs": [
+            "For the Semantic Entropy, Sampling, and Predictive Entropy methods, it is necessary to consider the temperature and define a stopping condition for each generation.",
+            "We stopped the generation if one of the following sequences was produced: ’\\n\\n\\n\\n’, ’\\n\\n\\’, \"\\n\\n, ’Question:’, ’Context:’, \".\\n\", \". \", ’question:’, \"Alice\", \"Bob\", \"(\", \"Explanation\", \"\\n question:\", \"What\", \"\\n answer\". These sequences often indicate the generation of new text that is not relevant to answering the question.",
+            "We used a temperature of 11 for 10 generations and an additional generation with a low temperature of 0.10.1, following the approach in the code of Kuhn et al. (2023) in repository https://github.com/jlko/semantic_uncertainty, and using DeBERTa (He et al., 2020) as the entailment model for the clustering stage based on meaning similarity. Additional results with a temperature of 0.50.5 instead of 11 are presented in Appendix E. Note that we used 10 tokens to generate as the maximum to be consistent with the knowledge and dataset creation steps."
+          ]
+        },
+        {
+          "title": "C.3 Mitigation Metrics",
+          "paragraphs": [
+            "In Section 5 we evaluate the mitigation abilities of probability, sampling and predictive entropy. In this section we detail each metric.",
+            "Probability is a simplified version of Negative Log-Likelihood that considers only the log probability of the first token. We observed that subsequent tokens often exhibit high certainty regardless of correctness, making the first token a more reliable indicator of uncertainty and improving performance.",
+            "Sampling-based methods assess the diversity of the model’s generated outputs, under the assumption that greater diversity reflects lower certainty. Following Cole et al. (2023), we define diversity as the proportion of unique outputs in SS generated samples. The uncertainty score is calculated as 1−|U|/|S|1-|U|/|S|, where UU is the set of unique generations, and |U|/|S||U|/|S| represents the ratio of unique outputs to the total number of generations.",
+            "Predictive Entropy estimates uncertainty by evaluating the average unpredictability of the model’s outputs. We approximate predictive entropy following Kuhn et al. (2023) and Tomani et al. (2024) by estimating the uncertainty of the model based on its generations for a given prompt xx. Using LL generated samples, the predictive entropy is calculated as:",
+            "Here, p​(li|x)p(l_{i}|x) represents the likelihood of the ii-th generation given the prompt xx. Predictive entropy captures the average uncertainty across the generated outputs.",
+            "We investigate whether these uncertainty measures can reliably detect and mitigate CHOKE hallucinations."
+          ]
+        },
+        {
+          "title": "Probability.",
+          "paragraphs": [
+            "Probability is a simplified version of Negative Log-Likelihood that considers only the log probability of the first token. We observed that subsequent tokens often exhibit high certainty regardless of correctness, making the first token a more reliable indicator of uncertainty and improving performance."
+          ]
+        },
+        {
+          "title": "Sampling.",
+          "paragraphs": [
+            "Sampling-based methods assess the diversity of the model’s generated outputs, under the assumption that greater diversity reflects lower certainty. Following Cole et al. (2023), we define diversity as the proportion of unique outputs in SS generated samples. The uncertainty score is calculated as 1−|U|/|S|1-|U|/|S|, where UU is the set of unique generations, and |U|/|S||U|/|S| represents the ratio of unique outputs to the total number of generations."
+          ]
+        },
+        {
+          "title": "Predictive Entropy.",
+          "paragraphs": [
+            "Predictive Entropy estimates uncertainty by evaluating the average unpredictability of the model’s outputs. We approximate predictive entropy following Kuhn et al. (2023) and Tomani et al. (2024) by estimating the uncertainty of the model based on its generations for a given prompt xx. Using LL generated samples, the predictive entropy is calculated as:",
+            "Here, p​(li|x)p(l_{i}|x) represents the likelihood of the ii-th generation given the prompt xx. Predictive entropy captures the average uncertainty across the generated outputs.",
+            "We investigate whether these uncertainty measures can reliably detect and mitigate CHOKE hallucinations."
+          ]
+        }
+      ]
+    },
+    "Appendix D Certain HK+ Exist – Additional Results": {
+      "paragraphs": [
+        "In this section, we present results similar to those in Section 4, focusing on the Gemma and Llama models. See Figures 7 and 6. These results correlate with those in the main paper on the Mistral model and demonstrate that CHOKE hallucinations exist. Furthermore, they show that these hallucinations occur across different methods and that instruct-tuned models exhibit poorer calibration between certainty and hallucinations.",
+        "[Figure: (a) Llama, Child]",
+        "[Figure: (a) Llama, Child]",
+        "[Figure: (b) Llama, Alice-Bob]",
+        "[Figure: (c) Llama-Instruct, Child]",
+        "[Figure: (d) Llama-Instruct, Alice-Bob]",
+        "[Figure: (a) Gemma, Child]",
+        "[Figure: (a) Gemma, Child]",
+        "[Figure: (b) Gemma, Alice-Bob]",
+        "[Figure: (c) Gemma-Instruct, Child]",
+        "[Figure: (d) Gemma-Instruct, Alice-Bob]"
+      ],
+      "subsections": []
+    },
+    "Appendix E Semantic Entropy Results – Different Temperature": {
+      "paragraphs": [
+        "In Section 4.3, we used Semantic Entropy with a temperature of 1 for generating the samples. To demonstrate that the certainty results are not specific to this temperature, we present in Figure 8 the Semantic Entropy results on the Mistral model. In the upper subfigure, we show the results using a temperature of 1, and in the lower row, we show the results using a temperature of 0.5. We observe that under a temperature of 0.5, there are even more certain hallucinations, further proving that the certainty hallucination phenomenon is not specific to a temperature of 1.",
+        "[Figure: (a) Mistral, Child]",
+        "[Figure: (a) Mistral, Child]",
+        "[Figure: (b) Mistral, Alice-Bob]",
+        "[Figure: (c) Mistral-Instruct, Child]",
+        "[Figure: (d) Mistral-Instruct, Alice-Bob]"
+      ],
+      "subsections": []
+    },
+    "Appendix F Prompt Specificity": {
+      "paragraphs": [
+        "In this section, we aim to demonstrate that the results are not restricted to a single variation of the setting. To investigate this, we created a new variation of the child setting. The new prompt is: ‘I’m working on a major school project, and there’s a lot of information I need to understand. Some of it is a bit challenging, and I’m unsure where to begin. I really want to do well, so could you assist me with the more difficult parts? It would mean so much to me!’",
+        "We present the certainty detection results using Mistral on the Natural Questions dataset in Figure 9. In the top figure, we show the results using the original child prompt, while the bottom figure displays the results with the new child prompt. Both settings reveal certain WACK hallucinations and exhibit overall similarity. This indicates that our results are robust to variations in the prompt.",
+        "[Figure: (a) Probability]",
+        "[Figure: (a) Probability]",
+        "[Figure: (b) Probability Difference]",
+        "[Figure: (c) Semantic Entropy]"
+      ],
+      "subsections": []
+    },
+    "Appendix G CHOKE Uniqueness – Additional Results": {
+      "paragraphs": [
+        "In this section, we extend the results presented in Section 4.3 by demonstrating that, even under shared hallucination examples, permutation tests confirm that certain hallucinations are not random.",
+        "Tables 6 and 7 display these results. Notably, all values are higher than those reported in the main paper, as the examples are now sampled from a subset of shared hallucination examples between the Child and Alice-Bob settings. However, even under the shared examples, the Jaccard similarity for certain cases remains significantly higher than the similarity observed under the permutation test. This further supports the conclusion that certain hallucinations are not mere noise but a distinct property of the models.",
+        "We compare the similarity under high certainty to that under the lowest certainty. Specifically, we examine the same subset of examples as the high-certainty subgroup but focus on those with the lowest probabilities. The results are shown in Table 8.",
+        "We observe that the Jaccard similarity for the lowest-certainty subgroup is higher than the values obtained from the permutation test, indicating a general similarity across all certainty levels between the two settings. However, the high-certainty subgroup still exhibits significantly higher similarity scores, suggesting that this subgroup is more aligned than would be expected by chance.",
+        "[Table: Table 6: Jaccard Similarity of CHOKE hallucinations across different prompts under shared hallucinations. The Certain column shows the overall similarity of CHOKE samples between prompts in the TriviaQA and NaturalQA datasets, using Probability as the certainty threshold. Results indicate high similarity, suggesting consistency across settings. All scores are statistically significant (p<0.0001p<0.0001, permutation test (the Rand column).]",
+        "[Table: Table 7: Jaccard Similarity of CHOKE hallucinations across different prompts under shared hallucinations. The Certain column shows the overall similarity of CHOKE samples between prompts in the TriviaQA and NaturalQA datasets, using Semantic Entropy as the certainty threshold. Results indicate high similarity, suggesting consistency across settings. All scores are statistically significant (p<0.0001p<0.0001, permutation test (the Rand column).]",
+        "[Table: Table 8: Jaccard Similarity of CHOKE hallucinations across different prompts. The Certain column shows the overall similarity of CHOKE samples between prompts in the TriviaQA and NaturalQA datasets and Low certain shows the results of the lowest certainty subset, using Probability as the certainty threshold. Results indicate high similarity, suggesting consistency across settings.]"
+      ],
+      "subsections": [
+        {
+          "title": "Answer Token Length.",
+          "paragraphs": [
+            "To investigate what distinguishes CHOKE samples, we analyzed the length of the first token in generated answers. Specifically, we examined whether the average length of the first token differed between CHOKE samples and low-certainty hallucinations. Across models, datasets, prompt settings, and metrics, CHOKE examples consistently exhibited shorter first tokens, with the difference statistically significant according to a t-test. Although the underlying reasons for this pattern remain unclear and warrant future study, this result further highlights the unique characteristics of CHOKE samples."
+          ]
+        }
+      ]
+    },
+    "Appendix H CHOKE Persists in Larger Models – Additional Results": {
+      "paragraphs": [
+        "In Section 4.2, we demonstrated that Gemma-2-27B achieves similar or slightly higher CHOKE detection results on the TriviaQA dataset than Gemma-2-9B, thus showing the existence of this phenomenon on larger models. To further illustrate this phenomenon, Figure 10 presents comparable results on the Natural Questions dataset. These results show a clear correlation with those presented in the main paper.",
+        "[Figure: (a) Gemma, Child]",
+        "[Figure: (a) Gemma, Child]",
+        "[Figure: (b) Gemma, Alice-Bob]"
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "Achiam et al. (2023) Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Florencia Leoni Aleman, Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal Anadkat, and 1 others. 2023. Gpt-4 technical report. arXiv preprint arXiv:2303.08774.",
+    "Azaria and Mitchell (2023) Amos Azaria and Tom Mitchell. 2023. The internal state of an llm knows when it’s lying. In Findings of the Association for Computational Linguistics: EMNLP 2023, pages 967–976.",
+    "Baan et al. (2023) Joris Baan, Nico Daheim, Evgenia Ilia, Dennis Ulmer, Haau-Sing Li, Raquel Fernández, Barbara Plank, Rico Sennrich, Chrysoula Zerva, and Wilker Aziz. 2023. Uncertainty in natural language generation: From theory to applications. arXiv preprint arXiv:2307.15703.",
+    "Barez et al. (2025) Fazl Barez, Tingchen Fu, Ameya Prabhu, Stephen Casper, Amartya Sanyal, Adel Bibi, Aidan O’Gara, Robert Kirk, Ben Bucknall, Tim Fist, Luke Ong, Philip Torr, Kwok-Yan Lam, Robert Trager, David Krueger, Sören Mindermann, José Hernandez-Orallo, Mor Geva, and Yarin Gal. 2025. Open problems in machine unlearning for ai safety. Preprint, arXiv:2501.04952.",
+    "Béchard and Ayala (2024) Patrice Béchard and Orlando Marquez Ayala. 2024. Reducing hallucination in structured outputs via retrieval-augmented generation. arXiv preprint arXiv:2404.08189.",
+    "Beigi et al. (2024) Mohammad Beigi, Sijia Wang, Ying Shen, Zihao Lin, Adithya Kulkarni, Jianfeng He, Feng Chen, Ming Jin, Jin-Hee Cho, Dawei Zhou, and 1 others. 2024. Rethinking the uncertainty: A critical review and analysis in the era of large language models. arXiv preprint arXiv:2410.20199.",
+    "Bürger et al. (2024) Lennart Bürger, Fred A Hamprecht, and Boaz Nadler. 2024. Truth is universal: Robust detection of lies in llms. arXiv preprint arXiv:2407.12831.",
+    "Chuang et al. (2023) Yung-Sung Chuang, Yujia Xie, Hongyin Luo, Yoon Kim, James R Glass, and Pengcheng He. 2023. Dola: Decoding by contrasting layers improves factuality in large language models. In The Twelfth International Conference on Learning Representations.",
+    "Cole et al. (2023) Jeremy Cole, Michael Zhang, Daniel Gillick, Julian Eisenschlos, Bhuwan Dhingra, and Jacob Eisenstein. 2023. Selectively answering ambiguous questions. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, pages 530–543, Singapore. Association for Computational Linguistics.",
+    "Dubey et al. (2024) Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Amy Yang, Angela Fan, and 1 others. 2024. The llama 3 herd of models. arXiv preprint arXiv:2407.21783.",
+    "Feng et al. (2024a) Shangbin Feng, Weijia Shi, Yike Wang, Wenxuan Ding, Vidhisha Balachandran, and Yulia Tsvetkov. 2024a. Don’t hallucinate, abstain: Identifying llm knowledge gaps via multi-llm collaboration. arXiv preprint arXiv:2402.00367.",
+    "Feng et al. (2024b) Shangbin Feng, Weijia Shi, Yike Wang, Wenxuan Ding, Vidhisha Balachandran, and Yulia Tsvetkov. 2024b. Don’t hallucinate, abstain: Identifying LLM knowledge gaps via multi-LLM collaboration. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 14664–14690, Bangkok, Thailand. Association for Computational Linguistics.",
+    "Gawlikowski et al. (2023) Jakob Gawlikowski, Cedrique Rovile Njieutcheu Tassi, Mohsin Ali, Jongseok Lee, Matthias Humt, Jianxiang Feng, Anna Kruspe, Rudolph Triebel, Peter Jung, Ribana Roscher, and 1 others. 2023. A survey of uncertainty in deep neural networks. Artificial Intelligence Review, 56(Suppl 1):1513–1589.",
+    "Guo et al. (2017) Chuan Guo, Geoff Pleiss, Yu Sun, and Kilian Q Weinberger. 2017. On calibration of modern neural networks. In International conference on machine learning, pages 1321–1330. PMLR.",
+    "He et al. (2023) Jinwen He, Yujia Gong, Kai Chen, Zijin Lin, Chengan Wei, and Yue Zhao. 2023. Llm factoscope: Uncovering llms’ factual discernment through intermediate data analysis. arXiv preprint arXiv:2312.16374.",
+    "He et al. (2020) Pengcheng He, Xiaodong Liu, Jianfeng Gao, and Weizhu Chen. 2020. Deberta: Decoding-enhanced bert with disentangled attention. arXiv preprint arXiv:2006.03654.",
+    "Hu et al. (2023) Mengting Hu, Zhen Zhang, Shiwan Zhao, Minlie Huang, and Bingzhe Wu. 2023. Uncertainty in natural language processing: Sources, quantification, and applications. arXiv preprint arXiv:2306.04459.",
+    "Huang et al. (2023) Yuheng Huang, Jiayang Song, Zhijie Wang, Shengming Zhao, Huaming Chen, Felix Juefei-Xu, and Lei Ma. 2023. Look before you leap: An exploratory study of uncertainty measurement for large language models. arXiv preprint arXiv:2307.10236.",
+    "Ji et al. (2023) Ziwei Ji, Nayeon Lee, Rita Frieske, Tiezheng Yu, Dan Su, Yan Xu, Etsuko Ishii, Ye Jin Bang, Andrea Madotto, and Pascale Fung. 2023. Survey of hallucination in natural language generation. ACM Computing Surveys, 55(12):1–38.",
+    "Jiang et al. (2023) Albert Q Jiang, Alexandre Sablayrolles, Arthur Mensch, Chris Bamford, Devendra Singh Chaplot, Diego de las Casas, Florian Bressand, Gianna Lengyel, Guillaume Lample, Lucile Saulnier, and 1 others. 2023. Mistral 7b. arXiv preprint arXiv:2310.06825.",
+    "Joshi et al. (2017) Mandar Joshi, Eunsol Choi, Daniel S Weld, and Luke Zettlemoyer. 2017. Triviaqa: A large scale distantly supervised challenge dataset for reading comprehension. In Proceedings of the 55th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 1601–1611.",
+    "Joshi et al. (2023) Nitish Joshi, Javier Rando, Abulhair Saparov, Najoung Kim, and He He. 2023. Personas as a way to model truthfulness in language models. arXiv preprint arXiv:2310.18168.",
+    "Kalai and Vempala (2023) Adam Tauman Kalai and Santosh S Vempala. 2023. Calibrated language models must hallucinate. arXiv preprint arXiv:2311.14648.",
+    "Kossen et al. (2024) Jannik Kossen, Jiatong Han, Muhammed Razzak, Lisa Schut, Shreshth Malik, and Yarin Gal. 2024. Semantic entropy probes: Robust and cheap hallucination detection in llms. arXiv preprint arXiv:2406.15927.",
+    "Kuhn et al. (2023) Lorenz Kuhn, Yarin Gal, and Sebastian Farquhar. 2023. Semantic uncertainty: Linguistic invariances for uncertainty estimation in natural language generation. arXiv preprint arXiv:2302.09664.",
+    "Kwiatkowski et al. (2019) Tom Kwiatkowski, Jennimaria Palomaki, Olivia Redfield, Michael Collins, Ankur Parikh, Chris Alberti, Danielle Epstein, Illia Polosukhin, Jacob Devlin, Kenton Lee, and 1 others. 2019. Natural questions: a benchmark for question answering research. Transactions of the Association for Computational Linguistics, 7:453–466.",
+    "Li et al. (2024) Kenneth Li, Tianle Liu, Naomi Bashkansky, David Bau, Fernanda Viégas, Hanspeter Pfister, and Martin Wattenberg. 2024. Measuring and controlling persona drift in language model dialogs. arXiv preprint arXiv:2402.10962.",
+    "Loper and Bird (2002) Edward Loper and Steven Bird. 2002. Nltk: The natural language toolkit. arXiv preprint cs/0205028.",
+    "Manakul et al. (2023) Potsawee Manakul, Adian Liusie, and Mark Gales. 2023. Selfcheckgpt: Zero-resource black-box hallucination detection for generative large language models. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, pages 9004–9017.",
+    "Meng et al. (2024) Kevin Meng, Vincent Huang, Neil Chowdhury, Dami Choi, Jacob Steinhardt, and Sarah Schwettmann. 2024. Monitor: An ai-driven observability interface. Transluce. Available at https://transluce.org/observability-interface#example-2.",
+    "Nardo (2023) Cleo Nardo. 2023. The waluigi effect (mega-post). LessWrong. Available at https://www.lesswrong.com/posts/D7PumeYTDPfBTp3i7/the-waluigi-effect-mega-post.",
+    "Pacchiardi et al. (2023) Lorenzo Pacchiardi, Alex James Chan, Sören Mindermann, Ilan Moscovitz, Alexa Yue Pan, Yarin Gal, Owain Evans, and Jan M Brauner. 2023. How to catch an ai liar: Lie detection in black-box llms by asking unrelated questions. In The Twelfth International Conference on Learning Representations.",
+    "Perković et al. (2024) Gabrijela Perković, Antun Drobnjak, and Ivica Botički. 2024. Hallucinations in llms: Understanding and addressing challenges. In 2024 47th MIPRO ICT and Electronics Convention (MIPRO), pages 2084–2088. IEEE.",
+    "Sharma et al. (2023) Mrinank Sharma, Meg Tong, Tomasz Korbak, David Duvenaud, Amanda Askell, Samuel R Bowman, Esin DURMUS, Zac Hatfield-Dodds, Scott R Johnston, Shauna M Kravec, and 1 others. 2023. Towards understanding sycophancy in language models. In The Twelfth International Conference on Learning Representations.",
+    "Si et al. (2022) Chenglei Si, Zhe Gan, Zhengyuan Yang, Shuohang Wang, Jianfeng Wang, Jordan Lee Boyd-Graber, and Lijuan Wang. 2022. Prompting gpt-3 to be reliable. In The Eleventh International Conference on Learning Representations.",
+    "Simhi et al. (2024) Adi Simhi, Jonathan Herzig, Idan Szpektor, and Yonatan Belinkov. 2024. Distinguishing ignorance from error in llm hallucinations. arXiv preprint arXiv:2410.22071.",
+    "Team et al. (2024) Gemma Team, Morgane Riviere, Shreya Pathak, Pier Giuseppe Sessa, Cassidy Hardin, Surya Bhupatiraju, Léonard Hussenot, Thomas Mesnard, Bobak Shahriari, Alexandre Ramé, and 1 others. 2024. Gemma 2: Improving open language models at a practical size. arXiv preprint arXiv:2408.00118.",
+    "Tjandra et al. (2024) Benedict Aaron Tjandra, Muhammed Razzak, Jannik Kossen, Kunal Handa, and Yarin Gal. 2024. Fine-tuning large language models to appropriately abstain with semantic entropy. arXiv preprint arXiv:2410.17234.",
+    "Tomani et al. (2024) Christian Tomani, Kamalika Chaudhuri, Ivan Evtimov, Daniel Cremers, and Mark Ibrahim. 2024. Uncertainty-based abstention in llms improves safety and reduces hallucinations. arXiv preprint arXiv:2404.10960.",
+    "Wen et al. (2024) Bingbing Wen, Jihan Yao, Shangbin Feng, Chenjun Xu, Yulia Tsvetkov, Bill Howe, and Lucy Lu Wang. 2024. Know your limits: A survey of abstention in large language models. arXiv preprint arXiv:2407.18418.",
+    "Xiao and Wang (2019) Yijun Xiao and William Yang Wang. 2019. Quantifying uncertainties in natural language processing tasks. In Proceedings of the AAAI conference on artificial intelligence, volume 33, pages 7322–7329.",
+    "Xu et al. (2023) Rongwu Xu, Brian S Lin, Shujian Yang, Tianqi Zhang, Weiyan Shi, Tianwei Zhang, Zhixuan Fang, Wei Xu, and Han Qiu. 2023. The earth is flat because…: Investigating llms’ belief towards misinformation via persuasive conversation. arXiv preprint arXiv:2312.09085.",
+    "Yadkori et al. (2024a) Yasin Abbasi Yadkori, Ilja Kuzborskij, András György, and Csaba Szepesvári. 2024a. To believe or not to believe your llm. arXiv preprint arXiv:2406.02543.",
+    "Yadkori et al. (2024b) Yasin Abbasi Yadkori, Ilja Kuzborskij, David Stutz, András György, Adam Fisch, Arnaud Doucet, Iuliya Beloshapka, Wei-Hung Weng, Yao-Yuan Yang, Csaba Szepesvári, and 1 others. 2024b. Mitigating llm hallucinations via conformal abstention. arXiv preprint arXiv:2405.01563.",
+    "Yang et al. (2024) Yongjin Yang, Haneul Yoo, and Hwaran Lee. 2024. Maqa: Evaluating uncertainty quantification in llms regarding data uncertainty. arXiv preprint arXiv:2408.06816.",
+    "Yao et al. (2023) Jia-Yu Yao, Kun-Peng Ning, Zhen-Hui Liu, Mu-Nan Ning, and Li Yuan. 2023. Llm lies: Hallucinations are not bugs, but features as adversarial examples. arXiv preprint arXiv:2310.01469.",
+    "Ye and Durrett (2022) Xi Ye and Greg Durrett. 2022. The unreliability of explanations in few-shot prompting for textual reasoning. Advances in neural information processing systems, 35:30378–30392.",
+    "Yona et al. (2024) Gal Yona, Roee Aharoni, and Mor Geva. 2024. Can large language models faithfully express their intrinsic uncertainty in words? arXiv preprint arXiv:2405.16908.",
+    "Zeng et al. (2024) Yi Zeng, Hongpeng Lin, Jingwen Zhang, Diyi Yang, Ruoxi Jia, and Weiyan Shi. 2024. How johnny can persuade llms to jailbreak them: Rethinking persuasion to challenge ai safety by humanizing llms. arXiv preprint arXiv:2401.06373."
+  ]
+}

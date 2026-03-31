@@ -1,0 +1,594 @@
+{
+  "title": "Aligning LLMs to Ask Good QuestionsA Case Study in Clinical Reasoning",
+  "authors": "Shuyue Stella Li1⋆Jimin Mun2⋆Faeze Brahman3Jonathan S. Ilgen1Yulia Tsvetkov1Maarten Sap21University of Washington2Carnegie Mellon University3Allen Institute for AIstelli@cs.washington.edu, jmun@andrew.cmu.eduhttps://github.com/stellalisy/ALFAhttps://huggingface.co/datasets/stellalisy/MediQ_AskDocs",
+  "abstract": "Large language models (LLMs) often fail to ask effective questions under uncertainty, making them unreliable in domains where proactive information-gathering is essential for decision-making. We present Alfa, a framework that improves LLM question-asking by (i) decomposing the notion of a “good” question into a set of theory-grounded attributes (e.g., clarity, relevance), (ii) controllably synthesizing attribute-specific question variations, and (iii) aligning models via preference-based optimization to explicitly learn to ask better questions along these fine-grained attributes. Focusing on clinical reasoning as a case study, we introduce the MediQ-AskDocs dataset, composed of 17k real-world clinical interactions augmented with 80k attribute-specific preference pairs of follow-up questions, as well as a novel expert-annotated interactive healthcare QA task to evaluate question-asking abilities. Models aligned with Alfa reduce diagnostic errors by 56.6% on MediQ-AskDocs compared to SOTA instruction-tuned LLMs, with a question-level win-rate of 64.4% and strong generalizability. Our findings suggest that explicitly guiding question-asking with structured, fine-grained attributes offers a scalable path to improve LLMs, especially in expert application domains.111We release all data, code, and models for further research.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Interactive language models have demonstrated remarkable capabilities across numerous domains (OpenAI et al., 2024), yet proactive interaction abilities in high-stakes scenarios—clinical reasoning, legal analysis, investigative journalism—remains a challenge (Fung et al., 2024). A key obstacle is the ability of these models to recognize and anticipate missing or ambiguous information and proactively seek clarification (Li et al., 2024; Deng et al., 2024). In clinical practice, for instance, physicians systematically ask patients questions to rule out or confirm relevant diagnoses (Richardson et al., 1995; Proffit, 2013). This iterative, information-seeking behavior is essential for accurate and safe decision-making. Similarly, for large language models (LLMs) to serve as reliable decision-support tools for clinicians, they must learn not only to provide answers, but also to identify when additional information is needed, and to ask follow-up questions that effectively reduce uncertainty (Figure 1).",
+        "However, there are two main challenges in building LLMs that ask good questions, especially in expert domains. First, defining a “good” question is inherently complex and context-dependent. In general, attributes such as clarity, focus, and answerability are essential (Heritage and Maynard, 2006; Roter and Hall, 1987; Freed, 1994; Searle, 1969); however, in domain-specific scenarios such as clinical reasoning, additional properties—medical accuracy, diagnostic relevance, and mitigating differential diagnosis (DDX) biases—are necessary for reducing diagnostic uncertainty (Richardson et al., 1995; Silverman et al., 2016; Heritage, 2010; Hall et al., 1995; West, 1984; Stivers and Majid, 2007; Ong et al., 1995). Second, instilling the ability to ask good questions in LLMs is technically non-trivial (Li et al., 2024; Johri et al., 2025; Zhang et al., 2024a). Naïve prompting strategies such as “Ask a follow-up question if needed.” may enhance interactivity but lack a principled foundation for defining a good question. We propose leveraging well-established general and task-specific principles from communication theory and psychology to improve LLMs’ information-seeking abilities.",
+        "Methodologically, we introduce a general recipe to incorporate question-asking abilities into LLMs, focusing on clinical reasoning as a case study. Our method—ALignment via Fine-grained Attributes (Alfa)—relies on the idea that question quality can be improved by explicitly training models with data grounded in structured, theoretically motivated attributes. Our recipe proceeds in three steps: Since labeled conversational datasets containing follow-up questions along a variety of important attributes are scarce, Alfa exposes models to a much broader range of question-asking behaviors than what can be typically found in the wild, especially in specialized domains like clinical interactions.",
+        "1. Decompose the high-level goal of asking “good” questions into structured, grounded attributes.",
+        "2. Synthesize counterfactual data by controllably altering specific attributes (e.g. make clearer).",
+        "3. Align models using preference optimization algorithms to integrate the attributes and produce a final policy.",
+        "We instantiate the above recipe with a focus on clinical reasoning, where question-asking is central to reducing diagnostic uncertainty and preventing errors. To this end, we construct a novel dataset, MediQ-AskDocs, containing 17k clinical interactions with follow-up questions from the r/AskDocs subreddit, paired with 80k synthesized counterfactual variants of these questions highlighting each attribute. These counterfactual pairs provide fine-grained training signals for preference learning. Finally, we integrate the attribute-specific signals into a unified policy by combining all synthetic data into a single model, training separate reward models and merging them, or fusing attribute-specific policies. Alfa contrasts with coarse-grained preference learning, offering a more targeted way to refine question-asking behaviors.",
+        "As part of MediQ-AskDocs, we introduce a novel healthcare QA task of 302 expert-annotated clinical interaction scenarios to evaluate the proposed method. These scenarios are passed into MediQ (Li et al., 2024), an interactive clinical simulator, in which the models asks questions to the patient agent. Alfa-aligned models achieve a 64.4% win-rate in question-level evaluation and a 56.6% reduction in diagnostic errors, relative to baselines of SOTA instruction tuned LLMs. Beyond these empirical gains, our work presents a new paradigm for aligning language models to specialized domains by decomposing the complex goal of question-asking into attributes, synthesizing pairwise data in each attribute dimension, and aligning the model to jointly optimize the overall complex goal. This general approach to attribute-based question-asking alignment can be extended to many other domains where systematically eliciting information is key to reliable, effective decision-making."
+      ],
+      "subsections": []
+    },
+    "2 Problem Statement": {
+      "paragraphs": [
+        "Aligning LLMs to ask good question requires contextual reasoning along multiple attributes (e.g., accuracy, clarity, focus). However, most alignment paradigms treat these goals as monolithic, aggregating preferences into a single reward that conflates attributes and obscures their individual contributions. We formalize this challenge as follows:",
+        "Given a complex goal GG and a dataset with sparse labels 𝒟\\mathcal{D}, we aim to learn a policy π\\pi that maximizes the composite reward R​(s,a)R(s,a), where: The key challenges lie in the complexity of the goal and the sparsity of labeled data. First, directly optimizing R​(s,a)R(s,a) is infeasible because human preferences for R​(s,a)R(s,a) are noisy and subjective. To address this, Alfa decomposes GG into KK attributes {A1,…,Ak}\\{A_{1},\\ldots,A_{k}\\}, each corresponding to a verifiable criterion with a reward function RkR_{k}. We constrain the selection of AkA_{k} such that each Rk​(s,a)R_{k}(s,a) is more measurable compared to R​(s,a)R(s,a).",
+        "• ss: Current world state (e.g., information acquired so far, conversation history).",
+        "• aa: Next action (e.g., follow-up question asked by the clinician agent π\\pi).",
+        "Second, we cannot observe parallel follow-up questions in natural conversations to construct preference pairs. To this end, we synthesize counterfactual synthetic data 𝒟s​y​n​t​hk\\mathcal{D}_{synth}^{k} for each AkA_{k}, where",
+        "Lastly, Alfa uses a reward integration strategy ff, where R​(s,a)=f​(R1​(s,a),…,RK​(s,a))R(s,a)=f(R_{1}(s,a),\\ldots,R_{K}(s,a)), to combine {R1,…,RK}\\{R_{1},\\ldots,R_{K}\\} into a policy π\\pi, such that:",
+        "optimizes performance on the complex goal GG, aligning models to be better question-askers."
+      ],
+      "subsections": []
+    },
+    "3 What Makes a “Good” Question?": {
+      "paragraphs": [
+        "To systematically improve LLM question asking, we define six key attributes grounded in cognitive science, psychology, and clinical communication research (Heritage and Maynard, 2006; Roter and Hall, 1987; Chouinard, 2007; Freed, 1994; Searle, 1969; Levinson, 2012). Unlike prior work that relies on implicit heuristics, we explicitly decompose question quality into interpretable, tangible attributes that enhance clinical reasoning."
+      ],
+      "subsections": [
+        {
+          "title": "General Question-Quality Attributes.",
+          "paragraphs": [
+            "Effective questions must be clear, targeted, and answerable to drive meaningful interactions. We select three core attributes:",
+            "• Clarity: Avoids ambiguity and unnecessary complexity, ensuring precise communication (Heritage and Maynard, 2006; Roter and Hall, 1987).",
+            "• Focus: Directly addresses a specific information gap, yielding more informative responses (Ronfard et al., 2018; Gopnik and Wellman, 2012; Chouinard, 2007; Freed, 1994). E.g., “Do you have a family history of breast cancer?” is superior to “Has anyone in your family been sick?”",
+            "• Answerability: Adapts to the respondent’s expertise (e.g., no jargans) (Levinson, 2012; Keil et al., 2008; Searle, 1969; Zhu and Wu, 2025).",
+            "Clarity: Avoids ambiguity and unnecessary complexity, ensuring precise communication (Heritage and Maynard, 2006; Roter and Hall, 1987).",
+            "Focus: Directly addresses a specific information gap, yielding more informative responses (Ronfard et al., 2018; Gopnik and Wellman, 2012; Chouinard, 2007; Freed, 1994). E.g., “Do you have a family history of breast cancer?” is superior to “Has anyone in your family been sick?”",
+            "Answerability: Adapts to the respondent’s expertise (e.g., no jargans) (Levinson, 2012; Keil et al., 2008; Searle, 1969; Zhu and Wu, 2025)."
+          ]
+        },
+        {
+          "title": "Domain-specific question-asking attributes.",
+          "paragraphs": [
+            "In clinical reasoning, question-asking is a structured diagnostic skill. Drawing from clinical communication research (Richardson et al., 1995; Silverman et al., 2016; Heritage, 2010; Hall et al., 1995; West, 1984; Stivers and Majid, 2007; Ong et al., 1995; Proffit, 2013), we define three additional attributes essential for clinical decision-making:",
+            "• Medical Accuracy: Aligns with established medical knowledge & guidelines.",
+            "• Diagnostic Relevance: Probes for symptoms, risk factors, or contextual details essential to refining differential diagnoses (DDX).",
+            "• Avoiding DDX Bias: Prevents suggestive or leading wording that could introduce cognitive biases and misguide diagnostic reasoning.",
+            "Medical Accuracy: Aligns with established medical knowledge & guidelines.",
+            "Diagnostic Relevance: Probes for symptoms, risk factors, or contextual details essential to refining differential diagnoses (DDX).",
+            "Avoiding DDX Bias: Prevents suggestive or leading wording that could introduce cognitive biases and misguide diagnostic reasoning.",
+            "These six attributes form the foundation of Alfa, guiding question optimization to improve LLM reliability in interactive clinical reasoning."
+          ]
+        }
+      ]
+    },
+    "4 AlfaFramework Overview": {
+      "paragraphs": [
+        "We now introduce Alfa, a structured recipe that decomposes the overall question-asking objective (§4.1), generates attribute-specific preference data (§4.2), and trains a policy that integrates the attributes (§4.3) to ask better follow-up questions."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Grounded Attribute Decomposition",
+          "paragraphs": [
+            "We first decompose the concept of “good” clinical questions into the six attributes AkA_{k} identified in §3 rather than relying on implicit heuristics or coarse scoring. This decomposition enables two advantages: (1) attribute-specific training signals that isolate distinct aspects of question quality, and (2) a controlled preference structure for fine-grained alignment, guiding the next stages of data generation and model alignment."
+          ]
+        },
+        {
+          "title": "4.2 Attribute-Specific Data Generation",
+          "paragraphs": [
+            "Real-world clinical datasets are scarce, private, and rarely contain annotations distinguishing, for instance, clear vs. ambiguous questions (Mireshghallah et al., 2023; Ramesh et al., 2024). Therefore, we generate synthetic preference data by (1) collecting authentic clinical posts (see §5.3 for dataset curation details) and (2) using an LLM to generate counterfactual variants along each attribute.",
+            "For each question aia_{i} in the dataset, we prompt an LLM to create “enhanced” and “corrupted” variants (aik+,aik−)(a_{i}^{k+},a_{i}^{k-}) that explicitly alter only one attribute kk at a time (e.g., rewriting the original question to be more clear/ambiguous) while keeping others consistent. This enables us to create controlled preference pairs, where one version of a question aik+a_{i}^{k+} is better aligned with a specific attribute than the other, aik−a_{i}^{k-}.",
+            "We use an LLM-judge to verify that the generated perturbations reflect their intended modification. With original question aia_{i}, we obtain an enhanced question aik+a_{i}^{k+} and a corrupted question aik−a_{i}^{k-}, resulting in three preference pairs: (aik+,ai)(a_{i}^{k+},a_{i}), (aik+,aik−)(a_{i}^{k+},a_{i}^{k-}), and (ai,aik−)(a_{i},a_{i}^{k-}). Given each pair, we provide additional context222Parsed conversation conclusions from future turns. to the LLM-judge, and ask the judge to compare the pairs in the specified attribute dimension (e.g., which question is clearer). If the judge’s decision matches the intended perturbation direction—verifying that Rk​(aik+)>Rk​(aik−)R_{k}(a_{i}^{k+})>R_{k}(a_{i}^{k-})—we retain the sample; otherwise, we discard it. This filtering step removes inconsistencies and ensures that our synthetic preference data provides reliable supervision for model alignment. See details in Appendix C.1."
+          ]
+        },
+        {
+          "title": "Counterfactual Perturbation.",
+          "paragraphs": [
+            "For each question aia_{i} in the dataset, we prompt an LLM to create “enhanced” and “corrupted” variants (aik+,aik−)(a_{i}^{k+},a_{i}^{k-}) that explicitly alter only one attribute kk at a time (e.g., rewriting the original question to be more clear/ambiguous) while keeping others consistent. This enables us to create controlled preference pairs, where one version of a question aik+a_{i}^{k+} is better aligned with a specific attribute than the other, aik−a_{i}^{k-}."
+          ]
+        },
+        {
+          "title": "Verification & Filtering.",
+          "paragraphs": [
+            "We use an LLM-judge to verify that the generated perturbations reflect their intended modification. With original question aia_{i}, we obtain an enhanced question aik+a_{i}^{k+} and a corrupted question aik−a_{i}^{k-}, resulting in three preference pairs: (aik+,ai)(a_{i}^{k+},a_{i}), (aik+,aik−)(a_{i}^{k+},a_{i}^{k-}), and (ai,aik−)(a_{i},a_{i}^{k-}). Given each pair, we provide additional context222Parsed conversation conclusions from future turns. to the LLM-judge, and ask the judge to compare the pairs in the specified attribute dimension (e.g., which question is clearer). If the judge’s decision matches the intended perturbation direction—verifying that Rk​(aik+)>Rk​(aik−)R_{k}(a_{i}^{k+})>R_{k}(a_{i}^{k-})—we retain the sample; otherwise, we discard it. This filtering step removes inconsistencies and ensures that our synthetic preference data provides reliable supervision for model alignment. See details in Appendix C.1."
+          ]
+        },
+        {
+          "title": "4.3 Attribute Integration Strategies",
+          "paragraphs": [
+            "We now combine signals from the attribute-specific data so that the model produces questions that optimize for all attributes. Standard preference optimization algorithms DPO and PPO allow distinct Points of Integration (POI) as described below333While reward sum, which trains attribute-specific reward models then combines the reward scores (e.g., via a learned linear combination or average) to produce a final scalar reward (Wu et al., 2023; Wang et al., 2024c), remains an option, we do not utilize this strategy due to high compute cost of loading all reward models during PPO without substantial performance improvements (Rame et al., 2024; Shi et al., 2024).:",
+            "(1) Data Mixing pools all synthetic data into one training set and uses standard DPO/PPO. This treats each attribute-specific comparison as part of a larger set of “better vs. worse” question pairs, enabling a single policy to learn from all attributes at once (Wang et al., 2023; Lambert et al., 2024)",
+            "(2) Reward Fusion trains separate reward models, then averages the reward model weights in an overall reward model which can then be used in PPO to align a final policy (Ramé et al., 2024).",
+            "(3) Policy Fusion trains separate policies or preference models, each specialized for one attribute, and then combine the model weights by averaging or taking a linear combination (Jang et al., 2023). This strategy offers the highest degree of parallelism and maximally preserves attribute strengths and interpretability.",
+            "Comparing these integration strategies informs how best to reconcile multiple, sometimes competing, objectives (e.g., focus vs. avoiding DDX bias) and thereby produce consistently high-quality diagnostic questioning."
+          ]
+        }
+      ]
+    },
+    "5 Experimental Setup": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "5.1 MediQ-AskDocsDataset Curation",
+          "paragraphs": [
+            "We obtain data from r/AskDocs, a public online health forum, and filter for conversation threads where (i) the patient posts a health inquiry and engage with another user to discuss the issue, and (ii) another user asks follow-up questions to acquire more information. The resulting dataset contains 13,496 unique posts, 17,425 threads, and 24,263 questions. For creating the counterfactual perturbations (§4.2), we sample 4463/433/620 questions for the train/dev/test splits. More details on dataset curation and sampling are in Appendix B."
+          ]
+        },
+        {
+          "title": "5.2 Experiments",
+          "paragraphs": [
+            "With the goal of instilling question-asking ability in LLMs in the clinical reasoning domain, we structure our experiments to progressively address two key questions: (1) Does the entire Alfa pipeline improve clinical question-asking performance? and (2) Necessity of each component of Alfa and to what extent do they contribute to the performance? Accordingly, we organize our evaluation into three parts:",
+            "1. Overall Performance. We first confirm that Alfa meaningfully reduces diagnostic errors and elicits better questions in an interactive clinical scenario (§6.1).",
+            "2. Key Pipeline Components. We isolate the two core components of Alfa:",
+            "• We compare the decomposed attributes (clarity, medical accuracy, etc.) to a “coarse” attribute (simply “good or bad”) to highlight the necessity of a theory-grounded decomposition (§6.2).",
+            "• We compare preference tuning to supervised fine-tuning (SFT) on the same synthetic data, revealing how pairwise reward signals refine question-asking beyond what SFT alone can achieve (§6.3).",
+            "We compare the decomposed attributes (clarity, medical accuracy, etc.) to a “coarse” attribute (simply “good or bad”) to highlight the necessity of a theory-grounded decomposition (§6.2).",
+            "We compare preference tuning to supervised fine-tuning (SFT) on the same synthetic data, revealing how pairwise reward signals refine question-asking beyond what SFT alone can achieve (§6.3).",
+            "3. Ablation Studies. We dissect each design choice to identify its role in the observed improvements. Specifically, we compare attribute-integration strategies (§6.4), apply quality filter on the synthetic data (§6.5), examine data perturbation directions (corruption vs. enhancement) (§6.6), ablate individual attributes (§6.7), and test out-of-distribution generalization (§6.8) on a separate medical reasoning task.444All ablations are done with DPO due to its lighter compute requirements unless otherwise specified.",
+            "Collectively, these analyses elucidate how components in Alfa—attribute decomposition, data synthesis, preference tuning—work together to improve question-asking in high-stakes clinical contexts. See implementation details in Appendix C."
+          ]
+        },
+        {
+          "title": "5.3 Evaluation",
+          "paragraphs": [
+            "We evaluate the aligned models along two fronts: Direct Question Quality, measured through expert human annotations and automatic LLM-judge comparison for the overall question quality, and Clinical Decision Impact, quantified by how well the model questions help reduce diagnostic errors.",
+            "We create an LLM-judge to compare pairs of questions, adopting prompt structures from Li et al. (2023) and Dubois et al. (2023). Specifically, we measure the percentage of times our aligned models’ questions are preferred over those of the baseline instruction-tuned models (llama-3.2-3b-Instruct and llama-3.1-8b-Instruct) by to the judge and report win-rate. Each comparison is carried out by gpt-4o with rationales, permuting the order of the questions in each pair to mitigate ordering bias. As an sanity check, we find that the LLM-judge assigns a higher win-rate to questions crafted by verified experts than to those written by non-experts, suggesting that our evaluation aligns with domain expertise.",
+            "Expert manual evaluation. To assess the quality of generated questions and further validate the LLM-judge, we collect preference rankings from medical experts and compute win-rate of select models. See Appendix F for further details.",
+            "We use the MediQ interactive framework (Li et al., 2024)—patient-clinician simulator—to holistically evaluate Alfa in a more realistic setting. MediQ presents some initial information x0x^{0} (often the patient’s chief complaint), a medical inquiry κ\\kappa, and tests an expert agent’s ability to ask follow-up questions aa to the patient until it has enough information to make a diagnosis yy. We replace the question generator module in the MediQ expert agent with models trained with Alfa, while keeping all other modules (patient system and diagnosis generator) consistent. We quantify the utility of the question generator with the accuracy of the diagnosis yy.",
+            "MediQ-AskDocs Task. MediQ is compatible with any QA task with contextual information. We introduce a novel healthcare QA task as part of the MediQ-AskDocs dataset: 302 consumer healthcare multiple choice questions manually annotated by medical experts. The task is automatically generated by o1 using the test split of MediQ-AskDocs (§5.1), and annotated by two human experts with 88.6% agreement. See Appendix E for task construction and annotation details. Additionally, we use MedQA (Jin et al., 2020) with MediQ to examine the models’ ability to generalize to out-of-domain tasks."
+          ]
+        },
+        {
+          "title": "Direct win-rate with LLM-judge.",
+          "paragraphs": [
+            "We create an LLM-judge to compare pairs of questions, adopting prompt structures from Li et al. (2023) and Dubois et al. (2023). Specifically, we measure the percentage of times our aligned models’ questions are preferred over those of the baseline instruction-tuned models (llama-3.2-3b-Instruct and llama-3.1-8b-Instruct) by to the judge and report win-rate. Each comparison is carried out by gpt-4o with rationales, permuting the order of the questions in each pair to mitigate ordering bias. As an sanity check, we find that the LLM-judge assigns a higher win-rate to questions crafted by verified experts than to those written by non-experts, suggesting that our evaluation aligns with domain expertise.",
+            "Expert manual evaluation. To assess the quality of generated questions and further validate the LLM-judge, we collect preference rankings from medical experts and compute win-rate of select models. See Appendix F for further details."
+          ]
+        },
+        {
+          "title": "Accuracy on interactive diagnostic task.",
+          "paragraphs": [
+            "We use the MediQ interactive framework (Li et al., 2024)—patient-clinician simulator—to holistically evaluate Alfa in a more realistic setting. MediQ presents some initial information x0x^{0} (often the patient’s chief complaint), a medical inquiry κ\\kappa, and tests an expert agent’s ability to ask follow-up questions aa to the patient until it has enough information to make a diagnosis yy. We replace the question generator module in the MediQ expert agent with models trained with Alfa, while keeping all other modules (patient system and diagnosis generator) consistent. We quantify the utility of the question generator with the accuracy of the diagnosis yy.",
+            "MediQ-AskDocs Task. MediQ is compatible with any QA task with contextual information. We introduce a novel healthcare QA task as part of the MediQ-AskDocs dataset: 302 consumer healthcare multiple choice questions manually annotated by medical experts. The task is automatically generated by o1 using the test split of MediQ-AskDocs (§5.1), and annotated by two human experts with 88.6% agreement. See Appendix E for task construction and annotation details. Additionally, we use MedQA (Jin et al., 2020) with MediQ to examine the models’ ability to generalize to out-of-domain tasks."
+          ]
+        }
+      ]
+    },
+    "6 Results & Analysis": {
+      "paragraphs": [
+        "The results section first demonstrates the superior performance of Alfa (§6.1). Then we investigate how the core modules—attribute decomposition (§6.2) and preference tuning (§6.3)—contributes to its effectiveness. Additionally, we ablate on attribute integration strategies (§6.4), synthetic data quality (§6.5), direction of synthetic data (corruption vs. enhancement) (§6.6), attribute-specific influences (§6.7), and the out-of-distribution generalization (§6.8) of Alfa."
+      ],
+      "subsections": [
+        {
+          "title": "6.1 AlfaImproves Overall Question Asking",
+          "paragraphs": [
+            "We begin by comparing Alfa with two baselines: (1) the base models (llama-3.2-3B-Instruct and llama-3.1-8B-Instruct) and (2) models trained via supervised fine-tuning (SFT) on the human-written questions. The Policy Fusion attribute integration strategy (§4.3) is reported for both Alfa-DPO and Alfa-PPO in Table 1 below.",
+            "We first confirm that fine-tuning the human-written questions in MediQ-AskDocs (SFT) already outperforms base models, establishing usefulness of the dataset. Notably, performance of the Alfa-aligned models shows explicitly modeling structured, theory-grounded attributes substantially boosts both question quality and diagnostic accuracy, reducing diagnostic errors by 56.62%."
+          ]
+        },
+        {
+          "title": "6.2 Fine-Grained Attributes Outperform Coarse Attribute",
+          "paragraphs": [
+            "The core idea of Alfa is to decompose a complex goal into structured, theory-grounded attributes rather than treating it as one coarse objective. We examine the role of attribute decomposition by comparing alignmend with fine-grained attributes (Alfa) with a simpler approach that optimizes models on a coarse “better” vs. “worse” distinction. Both models undergo the same counterfactual data generation and alignment processes, but the coarse model lacks explicit attribute separation.",
+            "Table 2 shows that Alfa, trained with fine-grained attributes, achieves higher performance compared to models trained on coarse attributes on MediQ diagnostic accuracy, while the two methods show comparable LLM-judge win-rates and identical expert evaluation win-rates. Aligning models based on structured attributes guides the reasoning process in a theory-grounded way, resulting in substantially better downstream performance. Additionally, qualitative analysis (Figure 3) shows that the coarse-aligned model tends to ask more superficial questions such as waiting for 8 weeks and check back, while the Alfa-model’s question, \"Was this the only issue that was found?\", indicates some form of reasoning to rule out other factors that might have contributed to the patient’s concern. Further, as we show in §6.8, coarsely aligned models generalize poorly to out-of-distribution tasks."
+          ]
+        },
+        {
+          "title": "6.3 Preference Tuning Outperforms SFT",
+          "paragraphs": [
+            "Another core advantage of Alfa is its use of pairwise preference learning, which allows models to refine question-asking beyond what supervised fine-tuning (SFT) achieves. To test whether Alfa’s improvements come solely from exposure to diverse synthetic data or from learning structured preferences, we compare Alfa with models fine-tuned on real data (SFT-Real), synthetic enhanced data (SFT-Synthetic), and both (SFT-Combined).",
+            "As shown in Table 3, Alfa outperforms SFT-Combined despite learning from the same data, confirming that learning directional differences from pairwise comparisons is key to better question-asking. These results highlight pairwise contrastive optimization as a necessary step for models to learn how to ask better follow-up questions."
+          ]
+        },
+        {
+          "title": "6.4 When to integrate the attributes?",
+          "paragraphs": [
+            "We now examine the effect of various attribute integration strategies from §4.3: data-mixing, reward-fusion (PPO only), and policy-fusion. Table 4 reveals three key findings. First, data-mixing achieves higher question win-rate but yields lower diagnostic accuracy than policy-fusion, and reward-fusion in PPO mirrors data-mixing patterns. This suggests that greater attribute separation leads to improved diagnostic accuracy, consistent with prior observations in Yang et al. (2025). Second, The LLM-judge scores strongly correlate with human expert assessments (r=0.9893,p<0.005r=0.9893,p<0.005), establishing the LLM-judge as a reliable proxy for human assessment. The high LLM-judge score of Alfa-PPO-Reward is echoed in the human evaluation with a score of 86.3%.",
+            "Third, despite high question quality (win-rate), diagnostic accuracy remains suboptimal due to two systemic factors: (i) Patient records derived from r/AskDocs contain only information elicited through human questions. When Alfa-aligned models generate superior questions than that of humans requesting any other useful information, the patient agent lacks corresponding answers. (ii) The final diagnosis generator achieves 86.75% accuracy given complete information, setting an upper bound. This explains why Alfa’s improvements in information-seeking (win-rate) only partially translate to final accuracy. Additionally, performance higher than 86.75% implies that Alfa-aligned models demonstrate emergent reasoning abilities beyond mere data retrieval, producing questions that actively guide clinical reasoning."
+          ]
+        },
+        {
+          "title": "6.5 Gains from Synthetic Data Quality",
+          "paragraphs": [
+            "Alfa relies on synthetic question perturbations to expose models to counterfactual scenarios. To ensure data quality, we filtered out 13.9% of generated pairs where LLM-judge ratings misalign with intended perturbation directions (§4.2). Filtering slightly improves both question quality and diagnostic accuracy, emphasizing the value of high-quality synthetic data (Table 5)."
+          ]
+        },
+        {
+          "title": "6.6 Synthetic Corruption vs. Enhancement",
+          "paragraphs": [
+            "In the counterfactual pairwise data generation stage of Alfa, each original sample aa is synthesized in two directions along each attribute dimension (e.g. more relevant and less relevant) to get a+a^{+} and a−a^{-}. In this section, we examine how the generation direction—enhanced (“more X”) vs. corrupted (“less X”)—influence performance. Specifically, we compare models trained with corruption only pairs (a,a−)(a,a^{-}), enhancement only pairs (a+,a)(a^{+},a), synthetic corruption and enhancement pairs (a+,a−)(a^{+},a^{-}), and all of the above. In Figure 4, we find while any generation direction is beneficial, combining all three pairs brings the most gains, especially apparent in the smaller 3B model."
+          ]
+        },
+        {
+          "title": "6.7 Attribute-Specific Influences",
+          "paragraphs": [
+            "A key component of Alfa is the explicit decomposition of question-asking into fine-grained, theory-grounded attributes. To assess their individual contributions, we conduct an ablation study where we remove one attribute at a time and evaluate the model’s performance. We also compare general question-asking attributes (clarity, focus, answerability) with clinical attributes (medical accuracy, diagnostic relevance, avoiding DDX bias).",
+            "Table 6 shows that removing any attribute leads to performance drops, confirming their importance in clinical question-asking. Clinical attributes have a stronger impact on MediQ accuracy, with avoiding DDX bias being the most critical—suggesting models need explicit training to counteract cognitive biases. Qualitatively, the questions generated by models aligned with general attributes vs. clinical domain-specific attributes show distinct styles (Figure 5), highlighting the impact of feature selection. These results validate Alfa’s structured attribute alignment, demonstrating that both domain-specific capabilities and general question quality contribute to effective clinical decision-making."
+          ]
+        },
+        {
+          "title": "6.8 AlfaModels Robustly Generalize to Out-of-Distribution Settings",
+          "paragraphs": [
+            "We further assess Alfa’s ability to generalize beyond the MediQ-AskDocs task by evaluating on a more challenging clinical reasoning benchmark unseen during training, MedQA (Jin et al., 2021), in the same MediQ-style interactive setting. Across intergration strategies, Alfa-aligned models generally outperform or match the coarse-alignment baseline when moving to MedQA (Figure 6). These suggests that learning from structured, theory-grounded attributes can enhance an LLM’s robustness in new and more diverse clinical settings, highlighting Alfa’s potential for broader applicability in real-world clinical scenarios."
+          ]
+        }
+      ]
+    },
+    "7 Related Work": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Clinical Reasoning in LLMs.",
+          "paragraphs": [
+            "LLMs have the potential to significantly transform medicine by enhancing personalized care and accessibility (Shanmugam et al., 2024). Models trained with medical data contain rich medical knowledge (Singhal et al., 2025; Lewis et al., 2020; Chen et al., 2023; Labrak et al., 2024; Singhal et al., 2023; Brin et al., 2023), but are limited in instruction-following and multi-hop reasoning Hager et al. (2024); Arroyo et al. (2024); Nov et al. (2023); Zhang et al. (2014). These models excel in static, medical QA benchmarks (Jin et al., 2020; Pal et al., 2022), but recent work has moved away from the static single-turn paradigm and highlight proactive question-asking as a key capability to reliable and effective clinical reasoning (Li et al., 2024; Hu et al., 2024b). Our work furthers this direction by providing an evaluation benchmark with real data and the first method to train specialized question-asking models.",
+            "Our proposed method relies on synthetic counterfactual data generation (Mishra et al., 2024a; Ding et al., 2024; Park et al., 2024) and fine-grained alignment. Inspired by prior work on multi-objcetive RLHF (Zhou et al., 2023b; Wu et al., 2023), we extend PPO (Ouyang et al., 2022; Christiano et al., 2017) and DPO (Rafailov et al., 2023) to align models with attribute-specific datasets, and uniquely compare different integration points of the fine-grained preference signals (Rame et al., 2024; Chronopoulou et al., 2023; Wang et al., 2024a)."
+          ]
+        }
+      ]
+    },
+    "8 Conclusion": {
+      "paragraphs": [
+        "Effective question-asking is a fundamental yet underdeveloped capability in large language models, particularly in high-stakes domains like clinical reasoning. We proposed Alfa, a framework that explicitly teaches models to ask better questions by decomposing question quality into theory-grounded, fine-grained attributes and aligning them through preference-based optimization, rather than treating such nuanced and complex goal as a monolithic objective. We introduced MediQ-AskDocs, a comprehensive dataset of training data, preference data, and a healthcare QA task, showing that models trained with Alfa substantially outperform baselines. While focused on medicine as a case study, Alfa is a general recipe adaptable to any field where clear, targeted questioning is essential, paving the way for interactive and reliable systems."
+      ],
+      "subsections": []
+    },
+    "Limitations": {
+      "paragraphs": [
+        "Manual attribute selection. Alfa requires manual selection of attributes when adapting to new expert domains. While it offers a structured framework, determining which attributes are essential still depends on domain expertise. However, Alfa can also help evaluate attribute necessity across different fields.",
+        "LLM dependence for counterfactual generation. The counterfactual perturbation step relies on LLMs to generate and evaluate counterfactual question variants (specifically, meta-llama/Llama-3.1-405B-Instruct-FP8), assuming they correctly interpret attributes like clarity and relevance. While these attributes are already more concrete than an overall “good question” metric, misinterpretations and evaluation biases remain possible. Future work should incorporate human verification of counterfactuals and attribute-level rankings.",
+        "Subjectivity in human annotation. Evaluating follow-up questions is inherently subjective and scenario-dependent. Some annotators expressed difficulty in ranking questions, stating that “none of the questions were good” or that “all of them were acceptable.” Furthermore, we could not require annotators to provide medical certifications, making expertise validation challenging. To mitigate this, we implemented a four-question screening test with known ground-truth answers, filtering out annotators who failed to meet a predefined accuracy threshold. However, this approach does not fully eliminate the risk of variability in domain expertise.",
+        "Data and scope. Our dataset is derived from online health forum discussions (r/AskDocs) rather than in-person clinician-patient dialogues in a hospital setting. While this source provides diverse real-world medical inquiries, it does not fully capture the structured questioning strategies used in professional clinical settings. Thus, while Alfa offers a strong technical foundation for studying medical question-asking, it should not be viewed as a direct replacement for physician training or real clinical interactions. Expanding to EHR-based or in-hospital dialogue datasets would improve clinical applicability."
+      ],
+      "subsections": []
+    },
+    "Ethics Statement": {
+      "paragraphs": [
+        "Alfa aims to improve LLM-driven question-asking in clinical reasoning, but its development and potential deployment pose potential ethical risks related to misinformation, bias, privacy, and regulatory compliance.",
+        "A primary concern is misinformation and overreliance on AI-generated questions. While Alfa improves question quality, it does not provide any sense of guarantee on factuality. If used without human oversight, it could generate misleading, irrelevant, or overly confident questions, potentially influencing clinical decision-making and leading to misdiagnosis or unnecessary medical interventions.",
+        "Bias in training data is another key risk. Alfa is trained on online health forum data (r/AskDocs), which may not reflect diverse patient populations, medical conditions, or expert questioning strategies. This could result in systematic biases, where the model generates better questions for certain demographic groups while failing others, reinforcing healthcare disparities. Future work should expand datasets to include diverse patient interactions and implement bias detection and mitigation strategies.",
+        "The medical experts recruited as annotators for the task curation and output evaluation are all based in the U.S. and are English-speakers. This not only lead to potential biases in their response, but also assumes US-based medical education background, limiting the generalizability of our results to other countries and regions. The reliance on LLM-judges to score question quality introduces potential automation bias, where models may reinforce subtle inaccuracies or stylistic preferences that diverge from expert human reasoning.",
+        "Privacy and data security are additional risks. Although Alfa does not process private medical records, future adaptations using clinical data or electronic health records (EHRs) must protect sensitive patient information. Transparent data governance frameworks and strict access controls are necessary for responsible use in healthcare applications.",
+        "Alfa is intended as a technical contribution to the field of computer science rather than a standalone clinical tool. Even after more comprehensive testing and development, the framework must be integrated with human-in-the-loop supervision, where clinicians retain final decision-making authority. Future work should explore uncertainty calibration, ethical safeguards, and regulatory alignment to ensure safe, fair, and reliable AI-assisted clinical reasoning."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Extended Related Works": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Clinical LLMs.",
+          "paragraphs": [
+            "LLMs have potential to highly impact medicine (Moor et al., 2023; Thirunavukarasu et al., 2023) from personalizing care to improving accessibility (Rodriguez et al., 2024; August et al., 2023). Thus, many language models have focused on clinical knowledge and usage including closed-sourced Med-PaLM 2 (Singhal et al., 2025) to open models such as BioGPT (Lewis et al., 2020), Meditron (Chen et al., 2023), and BioMistral (Labrak et al., 2024) to name a few (Toma et al., 2023; Zhou et al., 2023a). More recently, many non-medical, general purpose models such as OpenAI’s o1 have outperformed medically adapted models (Xie et al., 2024; Jeong et al., 2024). These models have shown human-level performance on MedQA (Jin et al., 2020) and other medical knowledge benchmarks (Singhal et al., 2023) and some have even shown to provide human-level soft skill such as empathy (Brin et al., 2023)."
+          ]
+        },
+        {
+          "title": "Clinical Reasoning and Question-asking of LLMs.",
+          "paragraphs": [
+            "However, reasoning abilities of these systems, especially under complex, high-stakes demands of medical interaction fulfilling various intentions of users (Nov et al., 2023; Zhang et al., 2014) require further attention. More specifically, clinical reasoning requires ability to ask effective questions (Silverman et al., 2016), crucial for information gathering phase with iterative hypotheses testing and updating. Shaikh et al. (2024) highlighted general lack of question-asking by LLMs in various contexts. While prior works have focused on improving question-asking of LLMs (Andukuri et al., 2024; Rao and Daumé III, 2018) with some focused diagnostic conversations, these works have been limited to rule-based, toy scenarios (Hu et al., 2024b), or prompting-based techniques (Li et al., 2024). Thus, our work expand on such prior works towards a more flexible medical dialogue system with effective question-asking under various real-world user queries."
+          ]
+        },
+        {
+          "title": "Alignment Methods.",
+          "paragraphs": [
+            "Methodologically, our work adopts various alignment algorithms, especially PPO (Ouyang et al., 2022; Christiano et al., 2017) and DPO (Rafailov et al., 2023). Moreover, to integrate complex and nuanced preferences, multi-objective settings have been explored including MODPO (Zhou et al., 2023b) and MORLHF (Wu et al., 2023; Bai et al., 2022). Additionally various works have highlighted efficient methods to integrate multiple objectives, for example, through combining reward model or adapter weights (Rame et al., 2024; Chronopoulou et al., 2023; Ramé et al., 2024)."
+          ]
+        },
+        {
+          "title": "Synthetic Data.",
+          "paragraphs": [
+            "With the growing capabilities of LLMs and to supplement human data, which can be sparse, synthetic data generation with LLMs have become a popular method (Long et al., 2024; Xu et al., 2024), especially to perform task-specific post-training (Kim et al., 2024). Synthetic data generation is especially appealing in healthcare domain as privacy issues can make data access prohibitive (Ramesh et al., 2024; Xin et al., ; Murtaza et al., 2023). Thus, synthetic data generation through both rule-based methods (Fansi Tchango et al., 2022) and LLMs (Oh et al., 2024; Mishra et al., 2024b; Yao et al., 2024; Wang et al., 2024b) have been explored for various medical tasks. However, data to investigate question quality, especially in medicine, remains under-explored and our data generation method addresses this gap."
+          ]
+        },
+        {
+          "title": "Evaluation Frameworks.",
+          "paragraphs": [
+            "To assess LLMs in various medical tasks, many different evaluation frameworks have been developed, typically consisting of static, single-turn question-answering task based on multiple choice questions (Jin et al., 2020; Pal et al., 2022; Jin et al., 2019; Rawat et al., 2024). However, with the advancement of LLMs, there has been a growing need to evaluate LLM agents beyond simple demonstration of knowledge (Thirunavukarasu et al., 2023). MediQ (Li et al., 2024) proposes to evaluate LLMs’ information-seeking ability through interactive clinical reasoning tasks, and constructs a benchmark based on MedQA (Jin et al., 2020) leveraging information asymmetry at benchmark construction time and at inference time. MEDIC (Kanithi et al., 2024) explores comprehensive assessment of LLMs using methods such as LLM-as-a-judge (Zheng et al., 2023). Concurrent work HealthQ (Wang et al., 2024d) analyzes attribute related factors in their evaluation, but lacks theory-grounding and does not propose methods to specifically improve the attributes. Our work builds upon prior works to comprehensively assess LLM’s ability to seek information towards effective clinical communication utilizing LLM-as-a-judge and adopting MediQ framework with a newly generated set of task-specific multiple choice questions (Yao et al., 2025)."
+          ]
+        }
+      ]
+    },
+    "Appendix B Dataset Curation": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "HealthQDataset.",
+          "paragraphs": [
+            "To study clinical conversations, we utilize data from publicly available online health forum r/AskDocs5552013-2021 data accessed at, a subreddit consisting of both lay-users and expert users666Verified by moderators with photo of self with credential documents. See https://www.reddit.com/r/AskDocs/.. We parsed each subsequent comments as a single thread and consider such threads as conversations between users. Since we are interested in clinical followup questions, we first selected threads where the first followup comment from the community contained sentences ending with question marks and further decomposed each conversation into atomic questions, conclusions, and presence of positive feedback from the post author (e.g., thank you) using GPT-4o777gpt-4o-2024-08-06. The resulting dataset contained 17,425 threads, 13,496 unique posts, and 24,263 questions."
+          ]
+        },
+        {
+          "title": "Synthetic Data.",
+          "paragraphs": [
+            "We sampled questions from the above conversations to build a seed set for synthetic data generation. To ensure balanced quality for both corruption and enhancement in contrastive learning, we used proxy measures such as the expert verification status of the question author, the outcome of the conversation (e.g., final conclusions), and positive feedback from post authors. This resulted in 8 proxy quality groups. We evenly sampled from these groups, with the test set including only questions from threads with final conclusions. We created distinct train, validation, and test sets containing 4,463; 433; and 620 questions, respectively, ensuring no post overlap."
+          ]
+        }
+      ]
+    },
+    "Appendix C Implementation Details": {
+      "paragraphs": [
+        "[Table: Table 7: Policy Fusion DPO models on attribute groups.]"
+      ],
+      "subsections": [
+        {
+          "title": "C.1 Counterfactual Perturbations",
+          "paragraphs": [
+            "To generate counterfactual perturbations, we use meta-llama/Llama-3.1-405B-Instruct-FP8 with VLLM on 8 A100 80GB GPUs with a temperature of 1.0 and max generation length of 512. See Appendix G.1 for an example prompt.",
+            "To verify the quality of generated counterfactual perturbations, we use LLM-judge to rank the generated questions in the perturbed attribute (e.g., accuracy). Furthermore, we used LLM-judge result to filter generated data in § 6.5. To avoid self-preference bias, we used GPT-4o888gpt-4o-2024-08-06. See Appendix G.2 for an example prompt.",
+            "In Table 7 below, we report the percentage of pairs kept after the filter in the Enhanced-Corrupted (C-O), Enhanced-Original (E-O), and Original-Corrupted (O-C) directions, as well as the number of training and dev samples after filtering. Intuitively, since the distance between enhanced and corrupted is the largest, the LLM-judge is the most likely to accurately detect the intended perturbation direction, whereas for the Enhanced-Original and Original-Corrupted pairs, more samples fail the LLM-judge filter. We can also see that among all the attributes, clarity has the lowest data quality before filtering."
+          ]
+        },
+        {
+          "title": "Counterfactual Verification & Filtering",
+          "paragraphs": [
+            "To verify the quality of generated counterfactual perturbations, we use LLM-judge to rank the generated questions in the perturbed attribute (e.g., accuracy). Furthermore, we used LLM-judge result to filter generated data in § 6.5. To avoid self-preference bias, we used GPT-4o888gpt-4o-2024-08-06. See Appendix G.2 for an example prompt.",
+            "In Table 7 below, we report the percentage of pairs kept after the filter in the Enhanced-Corrupted (C-O), Enhanced-Original (E-O), and Original-Corrupted (O-C) directions, as well as the number of training and dev samples after filtering. Intuitively, since the distance between enhanced and corrupted is the largest, the LLM-judge is the most likely to accurately detect the intended perturbation direction, whereas for the Enhanced-Original and Original-Corrupted pairs, more samples fail the LLM-judge filter. We can also see that among all the attributes, clarity has the lowest data quality before filtering."
+          ]
+        },
+        {
+          "title": "C.2 Training Hyperparameters",
+          "paragraphs": [
+            "We use Open-RLHF (Hu et al., 2024a) to train all models, and adopt the default hyperparameters. All models were trained on one A100 GPU and we list the hyperparameters of the final models below. Additionally, we experiment with different hyperparameter values (as listed in parentheses below) and find minimal differences in evaluation results. Supervised fine-tuning: DPO: Reward modeling: PPO:999Note that while it’s possible to use model parallelism to train 8B PPO models with qlora, we did not have the compute resources to train 8B PPO models with the same hyperparameters and settings as the 3B counterpart, so the experiments did not include comparisons with the 8B PPO models.",
+            "• Epoch: 2",
+            "• Learning Rate: 5e-6 (1e-6, 1e-5, 5e-5)",
+            "• Warm up ratio: 0.03",
+            "• LR Schedule: cosine_with_min_lr",
+            "• Batch size: 256",
+            "• Epoch: 1",
+            "• Learning Rate: 5e-7 (1e-6)",
+            "• Beta: 2 (0.1, 1, 4)",
+            "• Warm up ratio: 0.03",
+            "• LR Schedule: cosine_with_min_lr",
+            "• Batch size: 256",
+            "• Epoch: 1",
+            "• Learning Rate: 9e-6 (5e-7, 1e-6, 1e-5, 1e-4)",
+            "• Beta: 2",
+            "• Warm up ratio: 0.03",
+            "• LR Schedule: cosine_with_min_lr",
+            "• Batch size: 256 (4, 16, 64)",
+            "• Epoch: 1",
+            "• Learning Rate: 5e-7",
+            "• Warm up ratio: 0.03",
+            "• LR Schedule: cosine_with_min_lr",
+            "• Batch size: 256",
+            "Epoch: 2",
+            "Learning Rate: 5e-6 (1e-6, 1e-5, 5e-5)",
+            "Warm up ratio: 0.03",
+            "LR Schedule: cosine_with_min_lr",
+            "Batch size: 256",
+            "Epoch: 1",
+            "Learning Rate: 5e-7 (1e-6)",
+            "Beta: 2 (0.1, 1, 4)",
+            "Warm up ratio: 0.03",
+            "LR Schedule: cosine_with_min_lr",
+            "Batch size: 256",
+            "Epoch: 1",
+            "Learning Rate: 9e-6 (5e-7, 1e-6, 1e-5, 1e-4)",
+            "Beta: 2",
+            "Warm up ratio: 0.03",
+            "LR Schedule: cosine_with_min_lr",
+            "Batch size: 256 (4, 16, 64)",
+            "Epoch: 1",
+            "Learning Rate: 5e-7",
+            "Warm up ratio: 0.03",
+            "LR Schedule: cosine_with_min_lr",
+            "Batch size: 256"
+          ]
+        },
+        {
+          "title": "C.3 MediQ Interactive Benchmark",
+          "paragraphs": [
+            "We evaluate the downstream performance of the trained model by generating questions in a multi-turn clinical reasoning task using MediQ (Li et al., 2024). In MediQ, there is a patient agent and an expert agent interacting with each other, where the expert agent is provided some initial information in the beginning, and is expected to decide whether it wants to continue the interaction to acquire more information or terminate the interaction and provide a final answer. In this framework, the expert agent consists of three modules: abstention, question generation, and decision making. We fix the abstention and decision making modules using meta-llama/Llama-3.1-8B-Instruct, and replace the question generator with the model variants in our experiments. The goal of this evaluation is to show the effect of question quality on the final diagnostic accuracy. For reproducibility, we list the hyperparameters used in the MediQ interactive framework below:",
+            "• Abstention strategy: Scale",
+            "• Rationale generation: True",
+            "• Self-consistency: False",
+            "• Maximum interaction length: 15",
+            "• Temperature: 0.6",
+            "Abstention strategy: Scale",
+            "Rationale generation: True",
+            "Self-consistency: False",
+            "Maximum interaction length: 15",
+            "Temperature: 0.6"
+          ]
+        }
+      ]
+    },
+    "Appendix D Expert vs. Non-Expert Human-Written Questions": {
+      "paragraphs": [
+        "In r/AskDocs, members can upload credentials to acquire an expert flair (tag). In order to validate the quality of the LLM-judge, we aim to observe differences in the reported win-rates concerning questions generated by experts vs. non-experts. Since the original data is extremely scarce, there is limited samples where an expert and a non-expert respond to the same patient information, we design the following comparison scheme: Following the above procedure, we find that the win-rate of non-expert responses is 35.87%, while the win-rate of expert responses is 50.52%, suggesting that expert-written questions are of higher quality than the non-expert questions. Thus, this finding validates the relative accuracy of our LLM-judge. Additionally, this also shows that the responses generated by Alfa-aligned models are approaching human-expert quality.",
+        "1. Starting with two sets of contexts, one with expert-written responses, one with non-expert written responses.",
+        "2. Using a variety of models—DPO-Coarse, Alfa-DPO-DataMix, Alfa-DPO-PolicyFusion, Alfa-PPO-DataMix, Alfa-PPO-PolicyFusion—to generate responses conditioned on each set of contexts.",
+        "3. Use our LLM-judge to compare the human written response to the model generated responses for each set of contexts.",
+        "4. Compute the win-rates of expert vs. model and non-expert vs. model."
+      ],
+      "subsections": []
+    },
+    "Appendix E MediQ-AskDocsTask Construction": {
+      "paragraphs": [
+        "[Table: Table 8: Inter-rater agreement on correct answers chosen for each generated questions.]"
+      ],
+      "subsections": [
+        {
+          "title": "Task Construction.",
+          "paragraphs": [
+            "To construct the MediQ-AskDocs task for clinical reasoning and use it in the MediQ interactive doctor-patient simulator, we need to parse each patient’s information, collected from a Reddit conversation thread, into the following components: initial information, additional information, inquiry, options, correct answer.",
+            "Taking the entire conversation thread between the patient and the community member, including the initial post from the patient, as the patient’s record, we prompt o1 to extract the initial information of the patient with few shot examples. Then, in a separate call, we prompt o1 to extract the patient’s inquiry—posts in r/AskDocs are often in the form that the patient posts a paragraph of their information and asking a health question—and the conclusion from the responder if any. Finally, we treat the parsed conclusion as the correct option, and prompt the model to generate three alternative wrong answers to the inquiry.",
+            "We generate multiple choice questions following the above approach for all 302 threads in the test split of the MediQ-AskDocs dataset to form the novel interactive healthcare QA task."
+          ]
+        },
+        {
+          "title": "E.1 Expert Annotations",
+          "paragraphs": [
+            "We collected human expert annotations to validate the machine-generated multiple choice questions. To validate machine-generated questions, options, and the correct answer, the task included three questions: 1) plausibility of the generated question (“Yes” or “No”), 2) selecting a correct option out of four candidates with an additional option to select “None of the above”, and 3) adding a free-text option if a plausible option is not listed. We randomly assigned maximum of 3 annotators per sample and paid 20 USD/hr. Participant recruitment process is detailed in Appendix F.",
+            "Due to recruitment constraints, we collected at least one expert annotation per sample such that 23 samples were annotated by one expert, 138 samples annotated by two experts and 137 samples were annotated by more than two experts, resulting in a total of 724 annotations over 295 samples, excluding samples annotated during recruitment.",
+            "On 298 samples, excluding 4 test questions, all questions were considered plausible and correct answers generated by o1 showed 88.6% accuracy based on based on majority vote on 298 samples. Upon examining agreement on 295 samples, excluding 7 samples used during recruitment, we see moderate to substantial agreement (Wongpakaran et al., 2013; Wong et al., 2021) as shown in Table 8."
+          ]
+        },
+        {
+          "title": "Task Setup.",
+          "paragraphs": [
+            "We collected human expert annotations to validate the machine-generated multiple choice questions. To validate machine-generated questions, options, and the correct answer, the task included three questions: 1) plausibility of the generated question (“Yes” or “No”), 2) selecting a correct option out of four candidates with an additional option to select “None of the above”, and 3) adding a free-text option if a plausible option is not listed. We randomly assigned maximum of 3 annotators per sample and paid 20 USD/hr. Participant recruitment process is detailed in Appendix F."
+          ]
+        },
+        {
+          "title": "Annotation Details.",
+          "paragraphs": [
+            "Due to recruitment constraints, we collected at least one expert annotation per sample such that 23 samples were annotated by one expert, 138 samples annotated by two experts and 137 samples were annotated by more than two experts, resulting in a total of 724 annotations over 295 samples, excluding samples annotated during recruitment."
+          ]
+        },
+        {
+          "title": "Results.",
+          "paragraphs": [
+            "On 298 samples, excluding 4 test questions, all questions were considered plausible and correct answers generated by o1 showed 88.6% accuracy based on based on majority vote on 298 samples. Upon examining agreement on 295 samples, excluding 7 samples used during recruitment, we see moderate to substantial agreement (Wongpakaran et al., 2013; Wong et al., 2021) as shown in Table 8."
+          ]
+        }
+      ]
+    },
+    "Appendix F Expert Manual Evaluation": {
+      "paragraphs": [
+        "[Figure: Figure 7: Expert preference ranking results showing pairwise win-rates.]",
+        "[Figure: Figure 8: An example of majority annotated best question (PPO Reward) and worst question (DPO Coarse).]"
+      ],
+      "subsections": [
+        {
+          "title": "F.1 Recruitment",
+          "paragraphs": [
+            "We used Prolific for recruitment and selected participants who indicated their healthcare employment role as Physician, Nurse, Pharmacist, and Paramedics in the US. Recruitment task included 7 questions from multiple choice annotation task as described in Appendix E.1 and expertise information questions. As the roles on Prolific are self-reported, we added four test questions to filter experts, annotated by two medical researchers. We varied the difficulty of each of the four questions and weighed the most difficult question as 2 points and rest as 1 point. We passed participants who received greater than 2 points. We asked participants for information indicating expertise such as current roles, number of years studying medicine, and number of years practicing medicine. From 40 participants who responded to our task, we passed a total of 12 participants, which included 4 Nurses, 2 Pharmacist, 2 Physician, and 1 Medical Assistant."
+          ]
+        },
+        {
+          "title": "F.2 Ranking Annotation Task Setup",
+          "paragraphs": [
+            "We randomly selected 100 samples and asked participants to rank 5 different questions per sample from best to worst follow-up questions. The 5 questions were randomly selected out of 6 variations to reduce cognitive load and annotation time (Wang et al., 2022). The six question variations included one human-written question and five model generated questions under different experimental setup (Base Model, Alfa DPO Policy, Alfa DPO Coarse, Alfa PPO Policy, Alfa PPO Reward). At least 2, maximum of 3, human experts were randomly assigned for each sample. We paid participants 20 USD/hr.",
+            "[Figure: Figure 7: Expert preference ranking results showing pairwise win-rates.]",
+            "[Figure: Figure 8: An example of majority annotated best question (PPO Reward) and worst question (DPO Coarse).]"
+          ]
+        },
+        {
+          "title": "F.3 Results",
+          "paragraphs": [
+            "Similar to the results discussed in §6.4, human annotation win-rate shows prefrence towards Alfa PPO Reward, trained on fine-grained reward fusion as shown in Figure 7, which, as shown in qualitative example in Figure 8, demonstrates superior quality. Interestingly, while on automatic evaluation on medical diagnostic accuracy, Alfa DPO Policy outperformed other integration strategies, we observe that DPO trained with coarse attributes outperforms it on human annotations by a slight margin. This diverging outcome could indicate various factors, including stylistic preferences (Zhang et al., 2024b), that might influence annotation decisions which require further investigation."
+          ]
+        }
+      ]
+    },
+    "Appendix G Prompts": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "G.1 Counterfactual Perturbations",
+          "paragraphs": [
+            " You are a medical assistant and your task is to rewrite medical questions posted to an online health forum to vary some of their properties. The goal is to generate these diverse counterfactual questions to study the properties of clinical questions. You will be given a patient’s post, and the original clinician response, and you should rewrite the clinician response according to the instructions below. ***PATIENT POST*** title post ***CLINICIAN RESPONSE*** question ***INSTRUCTION*** Rewrite the clinician response so that it is less clear/more ambiguous for the patient, while keeping everything else constant. The definition of this property and what it means for this property at varying scales are given below: Definition: The ease with which a reader can understand the intent and meaning of the question. A clear question avoids ambiguity and vagueness, providing enough detail to prevent misunderstanding, while avoiding excessive complexity or overloading with jargon. Very ambiguous: The question is highly ambiguous, vague, or disorganized, making it very difficult to understand what the asker is seeking. The question may lead to multiple interpretations and confusion. Somewhat ambiguous: The question is somewhat ambiguous or vague and may include overly complex phrasing. It requires significant effort to interpret. In-between: The question is mostly understandable but could benefit from rewording or simplification to remove partial ambiguity or excessive jargon. Somewhat clear: The question is generally clear, with minimal ambiguity, and can be understood by a layperson. There is little chance of misunderstanding. Very clear: The question is entirely unambiguous, easy to understand, and structured in a logical, concise manner. No jargon or unnecessary complexity. Additional Tips for Clear Questions Use specific time frames: Instead of “lately,” try “in the past week” or “since your last visit.” Break down complex questions: If a question could be answered in multiple ways, consider asking two separate questions. Avoid medical jargon: Use plain language that patients without a medical background can understand. Please make the rewritten question more realistic -- something that clinicians would ask in an actual patient interaction. Return the rewritten question ONLY and do not include any other text. ***REWRITTEN RESPONSE*** "
+          ]
+        },
+        {
+          "title": "G.2 Automatic Synthetic Data Verification",
+          "paragraphs": [
+            " SYSTEM: Please act as an impartial judge and evaluate the quality of the responses provided by three medically trained AI assistants in a medical interaction. Carefully read the questions being asked by these expert systems as a response to the medical interaction and rank them in the provided dimensions. Begin your evaluation by comparing the three responses and provide a short explanation. Avoid any position biases and ensure that the order in which the responses were presented does not influence your decision. Do not allow the length of the responses to influence your evaluation. Ignore possible spelling or grammar mistakes and focus only on the content of the text. Be as objective as possible. The only ranking choice is \">\" (greater than). For each dimension listed, provide your answer in the following example JSON format: { ‘‘dimension_name’’: { ‘‘ranking’’: ‘‘A B C’’, ‘‘reasoning’’: ‘‘Provide a clear and concise explanation for your ranking decision here.’’ } } USER: Please carefully review the previous interaction below, which includes patient post, title, and subsequent responses if any. ***PREVIOUS MEDICAL INTERACTION*** prev_context ***MEDICAL AI QUESTIONS TO PATIENT*** - **Question A:** question_a - **Question B:** question_b - **Question C:** question_c ***EVALUATION DIMENSIONS*** dimensions ***SUPPLEMENTARY INFORMATION*** To help you evaluate the questions, please refer to the provided additional information regarding the final conclusion of this patient’s case below: Final diagnosis: final_diagnosis Conclusion: conclusion "
+          ]
+        },
+        {
+          "title": "G.3 MediQ-AskDocsTask Construction",
+          "paragraphs": [
+            " SYSTEM: You are a experienced expert working in the field of medicine education. Based on your understanding of basic and clinical science, medical knowledge, and mechanisms underlying health, disease, patient care, and modes of therapy, you are given a patient case and you are tasked to parse the patient’s inquiry into a multiple choice question. The generated multiple choice should consist of a question and 4 options, which could be answered by the given patient conversation. Base your response on the current and standard practices referenced in medical guidelines. The created question should be answerable only with the patient information, rather than testing some hardcore scientific foundational knowledge recall. The questions should be faithful to the original patient’s inqiury in their post. The correct answer should be correct, and the distractors should be plausible. The correct answer should be evenly distributed among the available options to enhance the quality and reliability of the questions. The output should be in json format. USER: You could use some parsed auxiliary information such as the final diagnosis and conclusion. Make sure that the multiple choice question you generate is not too easy but also not impossible to answer. Based on this patient record, faithfully generate a multiple choice questions according to the patient inquiry and store them in the following json format: { \"question\": [generated question 1], \"optionA\": [option A], \"optionB\": [option B], \"optionC\": [option C], \"optionD\": [option D], \"correct_answer\": [A or B or C or D] } After you generate the question, do a round of revision. In your revision, you should: 1. Identify any medical inaccuracies in your first response, corrsect them if any exists. 2. Make sure the question is what the patient is asking for or concerned about in their post. 3. The correct answer is indeed correct, if none of the options are correct or more than one options are correct, revise the options to improve the question. 4. Ensure that the correct answer is in a random position among the available options (shuffle if necessary) to enhance the quality and reliability of the questions. 5. Guarantee that the json output is parsable. Respond with the final revised question in the json format and NOTHING ELSE. "
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "Andukuri et al. (2024) Chinmaya Andukuri, Jan-Philipp Fränken, Tobias Gerstenberg, and Noah D Goodman. 2024. Star-gate: Teaching language models to ask clarifying questions. arXiv preprint arXiv:2403.19154.",
+    "Arroyo et al. (2024) Alberto Mario Ceballos Arroyo, Monica Munnangi, Jiuding Sun, Karen Y. C. Zhang, Denis Jered McInerney, Byron C. Wallace, and Silvio Amir. 2024. Open (clinical) llms are sensitive to instruction phrasings.",
+    "August et al. (2023) Tal August, Lucy Lu Wang, Jonathan Bragg, Marti A Hearst, Andrew Head, and Kyle Lo. 2023. Paper plain: Making medical research papers approachable to healthcare consumers with natural language processing. ACM Transactions on Computer-Human Interaction, 30(5):1–38.",
+    "Bai et al. (2022) Yuntao Bai, Andy Jones, Kamal Ndousse, Amanda Askell, Anna Chen, Nova DasSarma, Dawn Drain, Stanislav Fort, Deep Ganguli, Tom Henighan, et al. 2022. Training a helpful and harmless assistant with reinforcement learning from human feedback. arXiv preprint arXiv:2204.05862.",
+    "Brin et al. (2023) Dana Brin, Vera Sorin, Akhil Vaid, Ali Soroush, Benjamin S Glicksberg, Alexander W Charney, Girish Nadkarni, and Eyal Klang. 2023. Comparing chatgpt and gpt-4 performance in usmle soft skill assessments. Scientific Reports, 13(1):16492.",
+    "Chen et al. (2023) Zeming Chen, Alejandro Hernández Cano, Angelika Romanou, Antoine Bonnet, Kyle Matoba, Francesco Salvi, Matteo Pagliardini, Simin Fan, Andreas Köpf, Amirkeivan Mohtashami, et al. 2023. Meditron-70b: Scaling medical pretraining for large language models. arXiv preprint arXiv:2311.16079.",
+    "Chouinard (2007) Michelle M. Chouinard. 2007. Children’s questions: A mechanism for cognitive development. Monographs of the Society for Research in Child Development, 72(1):1–112.",
+    "Christiano et al. (2017) Paul F Christiano, Jan Leike, Tom Brown, Miljan Martic, Shane Legg, and Dario Amodei. 2017. Deep reinforcement learning from human preferences. Advances in neural information processing systems, 30.",
+    "Chronopoulou et al. (2023) Alexandra Chronopoulou, Matthew E Peters, Alexander Fraser, and Jesse Dodge. 2023. Adaptersoup: Weight averaging to improve generalization of pretrained language models. arXiv preprint arXiv:2302.07027.",
+    "Deng et al. (2024) Yang Deng, Lizi Liao, Zhonghua Zheng, Grace Hui Yang, and Tat-Seng Chua. 2024. Towards human-centered proactive conversational agents. In Proceedings of the 47th International ACM SIGIR Conference on Research and Development in Information Retrieval, pages 807–818.",
+    "Ding et al. (2024) Bosheng Ding, Chengwei Qin, Ruochen Zhao, Tianze Luo, Xinze Li, Guizhen Chen, Wenhan Xia, Junjie Hu, Luu Anh Tuan, and Shafiq Joty. 2024. Data augmentation using llms: Data perspectives, learning paradigms and challenges. In Findings of the Association for Computational Linguistics ACL 2024, pages 1679–1705.",
+    "Dubois et al. (2023) Yann Dubois, Xuechen Li, Rohan Taori, Tianyi Zhang, Ishaan Gulrajani, Jimmy Ba, Carlos Guestrin, Percy Liang, and Tatsunori B. Hashimoto. 2023. Alpacafarm: A simulation framework for methods that learn from human feedback.",
+    "Fansi Tchango et al. (2022) Arsene Fansi Tchango, Rishab Goel, Zhi Wen, Julien Martel, and Joumana Ghosn. 2022. Ddxplus: A new dataset for automatic medical diagnosis. Advances in neural information processing systems, 35:31306–31318.",
+    "Freed (1994) Alice F. Freed. 1994. The form and function of questions in informal dyadic conversation. Journal of Pragmatics, 21(6):621–644.",
+    "Fung et al. (2024) Yi Fung, Anoop Kumar, Aram Galstyan, Heng Ji, and Prem Natarajan. 2024. Agenda-driven question generation: A case study in the courtroom domain. In Proceedings of the 2024 Joint International Conference on Computational Linguistics, Language Resources and Evaluation (LREC-COLING 2024), pages 572–583, Torino, Italia. ELRA and ICCL.",
+    "Gopnik and Wellman (2012) Alison Gopnik and Henry M Wellman. 2012. Reconstructing constructivism: causal models, bayesian learning mechanisms, and the theory theory. Psychological bulletin, 138(6):1085.",
+    "Hager et al. (2024) Paul Hager, Friederike Jungmann, Robbie Holland, Kunal Bhagat, Inga Hubrecht, Manuel Knauer, Jakob Vielhauer, Marcus Makowski, Rickmer Braren, Georgios Kaissis, et al. 2024. Evaluation and mitigation of the limitations of large language models in clinical decision-making. Nature medicine, 30(9):2613–2622.",
+    "Hall et al. (1995) JA Hall, DL Roter, and Barbara Junghans. 1995. Doctors talking with patients—patients talking with doctors: improving communication in medical visits.",
+    "Heritage (2010) John Heritage. 2010. Questioning in medicine. Why do you ask, pages 42–68.",
+    "Heritage and Maynard (2006) John Heritage and Douglas W. Maynard, editors. 2006. Communication in Medical Care: Interactions between Primary Care Physicians and Patients. Cambridge University Press, Cambridge, UK.",
+    "Hu et al. (2024a) Jian Hu, Xibin Wu, Zilin Zhu, Xianyu, Weixun Wang, Dehao Zhang, and Yu Cao. 2024a. Openrlhf: An easy-to-use, scalable and high-performance rlhf framework. arXiv preprint arXiv:2405.11143.",
+    "Hu et al. (2024b) Zhiyuan Hu, Chumin Liu, Xidong Feng, Yilun Zhao, See-Kiong Ng, Anh Tuan Luu, Junxian He, Pang Wei Koh, and Bryan Hooi. 2024b. Uncertainty of thoughts: Uncertainty-aware planning enhances information seeking in large language models. arXiv preprint arXiv:2402.03271.",
+    "Jang et al. (2023) Joel Jang, Seungone Kim, Bill Yuchen Lin, Yizhong Wang, Jack Hessel, Luke Zettlemoyer, Hannaneh Hajishirzi, Yejin Choi, and Prithviraj Ammanabrolu. 2023. Personalized soups: Personalized large language model alignment via post-hoc parameter merging. arXiv preprint arXiv:2310.11564.",
+    "Jeong et al. (2024) Daniel P Jeong, Pranav Mani, Saurabh Garg, Zachary C Lipton, and Michael Oberst. 2024. The limited impact of medical adaptation of large language and vision-language models. arXiv preprint arXiv:2411.08870.",
+    "Jin et al. (2020) Di Jin, Eileen Pan, Nassim Oufattole, Wei-Hung Weng, Hanyi Fang, and Peter Szolovits. 2020. What disease does this patient have. A Large-scale Open Domain Question Answering Dataset from Medical Exams. arXiv [cs. CL].",
+    "Jin et al. (2021) Di Jin, Eileen Pan, Nassim Oufattole, Wei-Hung Weng, Hanyi Fang, and Peter Szolovits. 2021. What disease does this patient have? a large-scale open domain question answering dataset from medical exams. Applied Sciences, 11(14):6421.",
+    "Jin et al. (2019) Qiao Jin, Bhuwan Dhingra, Zhengping Liu, William W. Cohen, and Xinghua Lu. 2019. Pubmedqa: A dataset for biomedical research question answering.",
+    "Johri et al. (2025) Shreya Johri, Jaehwan Jeong, Benjamin A Tran, Daniel I Schlessinger, Shannon Wongvibulsin, Leandra A Barnes, Hong-Yu Zhou, Zhuo Ran Cai, Eliezer M Van Allen, David Kim, et al. 2025. An evaluation framework for clinical use of large language models in patient interaction tasks. Nature Medicine, pages 1–10.",
+    "Kanithi et al. (2024) Praveen K Kanithi, Clément Christophe, Marco AF Pimentel, Tathagata Raha, Nada Saadi, Hamza Javed, Svetlana Maslenkova, Nasir Hayat, Ronnie Rajan, and Shadab Khan. 2024. Medic: Towards a comprehensive framework for evaluating llms in clinical applications.",
+    "Keil et al. (2008) Frank C Keil, Courtney Stein, Lisa Webb, Van Dyke Billings, and Leonid Rozenblit. 2008. Discerning the division of cognitive labor: An emerging understanding of how knowledge is clustered in other minds. Cognitive science, 32(2):259–300.",
+    "Kim et al. (2024) Seungone Kim, Juyoung Suk, Xiang Yue, Vijay Viswanathan, Seongyun Lee, Yizhong Wang, Kiril Gashteovski, Carolin Lawrence, Sean Welleck, and Graham Neubig. 2024. Evaluating language models as synthetic data generators. arXiv preprint arXiv:2412.03679.",
+    "Labrak et al. (2024) Yanis Labrak, Adrien Bazoge, Emmanuel Morin, Pierre-Antoine Gourraud, Mickael Rouvier, and Richard Dufour. 2024. Biomistral: A collection of open-source pretrained large language models for medical domains. arXiv preprint arXiv:2402.10373.",
+    "Lambert et al. (2024) Nathan Lambert, Jacob Morrison, Valentina Pyatkin, Shengyi Huang, Hamish Ivison, Faeze Brahman, Lester James V Miranda, Alisa Liu, Nouha Dziri, Shane Lyu, et al. 2024. T\\\\backslash\" ulu 3: Pushing frontiers in open language model post-training. arXiv preprint arXiv:2411.15124.",
+    "Levinson (2012) Stephen C Levinson. 2012. Interrogative intimations: On a possible social economics of interrogatives. In Questions: Formal, functional and interactional perspectives, pages 11–32. Cambridge University Press.",
+    "Lewis et al. (2020) Patrick Lewis, Myle Ott, Jingfei Du, and Veselin Stoyanov. 2020. Pretrained language models for biomedical and clinical tasks: Understanding and extending the state-of-the-art. In Proceedings of the 3rd Clinical Natural Language Processing Workshop, pages 146–157, Online. Association for Computational Linguistics.",
+    "Li et al. (2024) Shuyue Stella Li, Vidhisha Balachandran, Shangbin Feng, Jonathan S Ilgen, Emma Pierson, Pang Wei Koh, and Yulia Tsvetkov. 2024. Mediq: Question-asking llms and a benchmark for reliable interactive clinical reasoning. In The Thirty-eighth Annual Conference on Neural Information Processing Systems.",
+    "Li et al. (2023) Xuechen Li, Tianyi Zhang, Yann Dubois, Rohan Taori, Ishaan Gulrajani, Carlos Guestrin, Percy Liang, and Tatsunori B. Hashimoto. 2023. Alpacaeval: An automatic evaluator of instruction-following models. https://github.com/tatsu-lab/alpaca_eval.",
+    "Long et al. (2024) Lin Long, Rui Wang, Ruixuan Xiao, Junbo Zhao, Xiao Ding, Gang Chen, and Haobo Wang. 2024. On llms-driven synthetic data generation, curation, and evaluation: A survey. arXiv preprint arXiv:2406.15126.",
+    "Mireshghallah et al. (2023) Fatemehsadat Mireshghallah, Yu Su, Tatsunori Hashimoto, Jason Eisner, and Richard Shin. 2023. Privacy-preserving domain adaptation of semantic parsers.",
+    "Mishra et al. (2024a) Ashish Mishra, Gyanaranjan Nayak, Suparna Bhattacharya, Tarun Kumar, Arpit Shah, and Martin Foltin. 2024a. Llm-guided counterfactual data generation for fairer ai. In Companion Proceedings of the ACM on Web Conference 2024, pages 1538–1545.",
+    "Mishra et al. (2024b) Prakamya Mishra, Zonghai Yao, Parth Vashisht, Feiyun Ouyang, Beining Wang, Vidhi Dhaval Mody, and Hong Yu. 2024b. Synfac-edit: Synthetic imitation edit feedback for factual alignment in clinical summarization. arXiv preprint arXiv:2402.13919.",
+    "Moor et al. (2023) Michael Moor, Oishi Banerjee, Zahra Shakeri Hossein Abad, Harlan M Krumholz, Jure Leskovec, Eric J Topol, and Pranav Rajpurkar. 2023. Foundation models for generalist medical artificial intelligence. Nature, 616(7956):259–265.",
+    "Murtaza et al. (2023) Hajra Murtaza, Musharif Ahmed, Naurin Farooq Khan, Ghulam Murtaza, Saad Zafar, and Ambreen Bano. 2023. Synthetic data generation: State of the art in health care domain. Computer Science Review, 48:100546.",
+    "Nov et al. (2023) Oded Nov, Nina Singh, and Devin Mann. 2023. Putting chatgpt’s medical advice to the (turing) test: survey study. JMIR Medical Education, 9:e46939.",
+    "Oh et al. (2024) Byoung-Doo Oh, Gi-Youn Kim, Chulho Kim, and Yu-Seop Kim. 2024. How to use language models for synthetic text generation in cerebrovascular disease-specific medical reports. In Proceedings of the 1st Workshop on Personalization of Generative AI Systems (PERSONALIZE 2024), pages 10–17.",
+    "Ong et al. (1995) Lucille ML Ong, Johanna CJM De Haes, Alaysia M Hoos, and Frits B Lammes. 1995. Doctor-patient communication: a review of the literature. Social science & medicine, 40(7):903–918.",
+    "OpenAI et al. (2024) OpenAI, Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Florencia Leoni Aleman, Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal Anadkat, Red Avila, Igor Babuschkin, Suchir Balaji, Valerie Balcom, Paul Baltescu, Haiming Bao, Mohammad Bavarian, Jeff Belgum, Irwan Bello, Jake Berdine, Gabriel Bernadett-Shapiro, Christopher Berner, Lenny Bogdonoff, Oleg Boiko, Madelaine Boyd, Anna-Luisa Brakman, Greg Brockman, Tim Brooks, Miles Brundage, Kevin Button, Trevor Cai, Rosie Campbell, Andrew Cann, Brittany Carey, Chelsea Carlson, Rory Carmichael, Brooke Chan, Che Chang, Fotis Chantzis, Derek Chen, Sully Chen, Ruby Chen, Jason Chen, Mark Chen, Ben Chess, Chester Cho, Casey Chu, Hyung Won Chung, Dave Cummings, Jeremiah Currier, Yunxing Dai, Cory Decareaux, Thomas Degry, Noah Deutsch, Damien Deville, Arka Dhar, David Dohan, Steve Dowling, Sheila Dunning, Adrien Ecoffet, Atty Eleti, Tyna Eloundou, David Farhi, Liam Fedus, Niko Felix, Simón Posada Fishman, Juston Forte, Isabella Fulford, Leo Gao, Elie Georges, Christian Gibson, Vik Goel, Tarun Gogineni, Gabriel Goh, Rapha Gontijo-Lopes, Jonathan Gordon, Morgan Grafstein, Scott Gray, Ryan Greene, Joshua Gross, Shixiang Shane Gu, Yufei Guo, Chris Hallacy, Jesse Han, Jeff Harris, Yuchen He, Mike Heaton, Johannes Heidecke, Chris Hesse, Alan Hickey, Wade Hickey, Peter Hoeschele, Brandon Houghton, Kenny Hsu, Shengli Hu, Xin Hu, Joost Huizinga, Shantanu Jain, Shawn Jain, Joanne Jang, Angela Jiang, Roger Jiang, Haozhun Jin, Denny Jin, Shino Jomoto, Billie Jonn, Heewoo Jun, Tomer Kaftan, Łukasz Kaiser, Ali Kamali, Ingmar Kanitscheider, Nitish Shirish Keskar, Tabarak Khan, Logan Kilpatrick, Jong Wook Kim, Christina Kim, Yongjik Kim, Jan Hendrik Kirchner, Jamie Kiros, Matt Knight, Daniel Kokotajlo, Łukasz Kondraciuk, Andrew Kondrich, Aris Konstantinidis, Kyle Kosic, Gretchen Krueger, Vishal Kuo, Michael Lampe, Ikai Lan, Teddy Lee, Jan Leike, Jade Leung, Daniel Levy, Chak Ming Li, Rachel Lim, Molly Lin, Stephanie Lin, Mateusz Litwin, Theresa Lopez, Ryan Lowe, Patricia Lue, Anna Makanju, Kim Malfacini, Sam Manning, Todor Markov, Yaniv Markovski, Bianca Martin, Katie Mayer, Andrew Mayne, Bob McGrew, Scott Mayer McKinney, Christine McLeavey, Paul McMillan, Jake McNeil, David Medina, Aalok Mehta, Jacob Menick, Luke Metz, Andrey Mishchenko, Pamela Mishkin, Vinnie Monaco, Evan Morikawa, Daniel Mossing, Tong Mu, Mira Murati, Oleg Murk, David Mély, Ashvin Nair, Reiichiro Nakano, Rajeev Nayak, Arvind Neelakantan, Richard Ngo, Hyeonwoo Noh, Long Ouyang, Cullen O’Keefe, Jakub Pachocki, Alex Paino, Joe Palermo, Ashley Pantuliano, Giambattista Parascandolo, Joel Parish, Emy Parparita, Alex Passos, Mikhail Pavlov, Andrew Peng, Adam Perelman, Filipe de Avila Belbute Peres, Michael Petrov, Henrique Ponde de Oliveira Pinto, Michael, Pokorny, Michelle Pokrass, Vitchyr H. Pong, Tolly Powell, Alethea Power, Boris Power, Elizabeth Proehl, Raul Puri, Alec Radford, Jack Rae, Aditya Ramesh, Cameron Raymond, Francis Real, Kendra Rimbach, Carl Ross, Bob Rotsted, Henri Roussez, Nick Ryder, Mario Saltarelli, Ted Sanders, Shibani Santurkar, Girish Sastry, Heather Schmidt, David Schnurr, John Schulman, Daniel Selsam, Kyla Sheppard, Toki Sherbakov, Jessica Shieh, Sarah Shoker, Pranav Shyam, Szymon Sidor, Eric Sigler, Maddie Simens, Jordan Sitkin, Katarina Slama, Ian Sohl, Benjamin Sokolowsky, Yang Song, Natalie Staudacher, Felipe Petroski Such, Natalie Summers, Ilya Sutskever, Jie Tang, Nikolas Tezak, Madeleine B. Thompson, Phil Tillet, Amin Tootoonchian, Elizabeth Tseng, Preston Tuggle, Nick Turley, Jerry Tworek, Juan Felipe Cerón Uribe, Andrea Vallone, Arun Vijayvergiya, Chelsea Voss, Carroll Wainwright, Justin Jay Wang, Alvin Wang, Ben Wang, Jonathan Ward, Jason Wei, CJ Weinmann, Akila Welihinda, Peter Welinder, Jiayi Weng, Lilian Weng, Matt Wiethoff, Dave Willner, Clemens Winter, Samuel Wolrich, Hannah Wong, Lauren Workman, Sherwin Wu, Jeff Wu, Michael Wu, Kai Xiao, Tao Xu, Sarah Yoo, Kevin Yu, Qiming Yuan, Wojciech Zaremba, Rowan Zellers, Chong Zhang, Marvin Zhang, Shengjia Zhao, Tianhao Zheng, Juntang Zhuang, William Zhuk, and Barret Zoph. 2024. Gpt-4 technical report.",
+    "Ouyang et al. (2022) Long Ouyang, Jeffrey Wu, Xu Jiang, Diogo Almeida, Carroll Wainwright, Pamela Mishkin, Chong Zhang, Sandhini Agarwal, Katarina Slama, Alex Ray, et al. 2022. Training language models to follow instructions with human feedback. Advances in neural information processing systems, 35:27730–27744.",
+    "Pal et al. (2022) Ankit Pal, Logesh Kumar Umapathi, and Malaikannan Sankarasubbu. 2022. Medmcqa: A large-scale multi-subject multi-choice dataset for medical domain question answering. In Proceedings of the Conference on Health, Inference, and Learning, volume 174 of Proceedings of Machine Learning Research, pages 248–260. PMLR.",
+    "Park et al. (2024) Chan Young Park, Shuyue Stella Li, Hayoung Jung, Svitlana Volkova, Tanu Mitra, David Jurgens, and Yulia Tsvetkov. 2024. ValueScope: Unveiling implicit norms and values via return potential model of social interactions. In Findings of the Association for Computational Linguistics: EMNLP 2024, pages 16659–16695, Miami, Florida, USA. Association for Computational Linguistics.",
+    "Proffit (2013) William R Proffit. 2013. Evidence and clinical decisions: asking the right questions to obtain clinically useful answers. In Seminars in orthodontics, volume 19, pages 130–136. Elsevier.",
+    "Rafailov et al. (2023) Rafael Rafailov, Archit Sharma, Eric Mitchell, Christopher D Manning, Stefano Ermon, and Chelsea Finn. 2023. Direct preference optimization: Your language model is secretly a reward model. Advances in Neural Information Processing Systems, 36:53728–53741.",
+    "Rame et al. (2024) Alexandre Rame, Guillaume Couairon, Corentin Dancette, Jean-Baptiste Gaya, Mustafa Shukor, Laure Soulier, and Matthieu Cord. 2024. Rewarded soups: towards pareto-optimal alignment by interpolating weights fine-tuned on diverse rewards. Advances in Neural Information Processing Systems, 36.",
+    "Ramé et al. (2024) Alexandre Ramé, Nino Vieillard, Léonard Hussenot, Robert Dadashi, Geoffrey Cideron, Olivier Bachem, and Johan Ferret. 2024. Warm: On the benefits of weight averaged reward models. arXiv preprint arXiv:2401.12187.",
+    "Ramesh et al. (2024) Krithika Ramesh, Nupoor Gandhi, Pulkit Madaan, Lisa Bauer, Charith Peris, and Anjalie Field. 2024. Evaluating differentially private synthetic data generation in high-stakes domains.",
+    "Rao and Daumé III (2018) Sudha Rao and Hal Daumé III. 2018. Learning to ask good questions: Ranking clarification questions using neural expected value of perfect information. In Proceedings of the 56th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 2737–2746, Melbourne, Australia. Association for Computational Linguistics.",
+    "Rawat et al. (2024) Rajat Rawat, Hudson McBride, Rajarshi Ghosh, Dhiyaan Nirmal, Jong Moon, Dhruv Alamuri, Sean O’Brien, and Kevin Zhu. 2024. DiversityMedQA: A benchmark for assessing demographic biases in medical diagnosis using large language models. In Proceedings of the Third Workshop on NLP for Positive Impact, pages 334–348, Miami, Florida, USA. Association for Computational Linguistics.",
+    "Richardson et al. (1995) W Scott Richardson, Mark C Wilson, Jim Nishikawa, and Robert S Hayward. 1995. The well-built clinical question: a key to evidence-based decisions. ACP journal club, 123(3):A12–3.",
+    "Rodriguez et al. (2024) Jorge A Rodriguez, Emily Alsentzer, and David W Bates. 2024. Leveraging large language models to foster equity in healthcare. Journal of the American Medical Informatics Association, page ocae055.",
+    "Ronfard et al. (2018) Samuel Ronfard, Imac M Zambrana, Tone K Hermansen, and Deborah Kelemen. 2018. Question-asking in childhood: A review of the literature and a framework for understanding its development. Developmental Review, 49:101–120.",
+    "Roter and Hall (1987) Debra L. Roter and Judith A. Hall. 1987. Studies of doctor-patient interaction. Annual Review of Public Health, 8:163–180.",
+    "Searle (1969) John R. Searle. 1969. Speech Acts: An Essay in the Philosophy of Language. Cambridge University Press, Cambridge, UK.",
+    "Shaikh et al. (2024) Omar Shaikh, Kristina Gligorić, Ashna Khetan, Matthias Gerstgrasser, Diyi Yang, and Dan Jurafsky. 2024. Grounding gaps in language model generations. In Proceedings of the 2024 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers), pages 6279–6296.",
+    "Shanmugam et al. (2024) Divya Shanmugam, Monica Agrawal, Rajiv Movva, Irene Y Chen, Marzyeh Ghassemi, and Emma Pierson. 2024. Generative ai in medicine. arXiv preprint arXiv:2412.10337.",
+    "Shi et al. (2024) Ruizhe Shi, Yifang Chen, Yushi Hu, Alisa Liu, Hannaneh Hajishirzi, Noah A Smith, and Simon S Du. 2024. Decoding-time language model alignment with multiple objectives. arXiv preprint arXiv:2406.18853.",
+    "Silverman et al. (2016) Jonathan Silverman, Suzanne Kurtz, and Juliet Draper. 2016. Skills for communicating with patients. crc press.",
+    "Singhal et al. (2023) Karan Singhal, Shekoofeh Azizi, Tao Tu, S Sara Mahdavi, Jason Wei, Hyung Won Chung, Nathan Scales, Ajay Tanwani, Heather Cole-Lewis, Stephen Pfohl, et al. 2023. Large language models encode clinical knowledge. Nature, 620(7972):172–180.",
+    "Singhal et al. (2025) Karan Singhal, Tao Tu, Juraj Gottweis, Rory Sayres, Ellery Wulczyn, Mohamed Amin, Le Hou, Kevin Clark, Stephen R Pfohl, Heather Cole-Lewis, et al. 2025. Toward expert-level medical question answering with large language models. Nature Medicine, pages 1–8.",
+    "Stivers and Majid (2007) Tanya Stivers and Asifa Majid. 2007. Questioning children: Interactional evidence of implicit bias in medical interviews. Social Psychology Quarterly, 70(4):424–441.",
+    "Thirunavukarasu et al. (2023) Arun James Thirunavukarasu, Darren Shu Jeng Ting, Kabilan Elangovan, Laura Gutierrez, Ting Fang Tan, and Daniel Shu Wei Ting. 2023. Large language models in medicine. Nature medicine, 29(8):1930–1940.",
+    "Toma et al. (2023) Augustin Toma, Patrick R Lawler, Jimmy Ba, Rahul G Krishnan, Barry B Rubin, and Bo Wang. 2023. Clinical camel: An open expert-level medical language model with dialogue-based knowledge encoding. arXiv preprint arXiv:2305.12031.",
+    "Wang et al. (2022) Ding Wang, Shantanu Prabhat, and Nithya Sambasivan. 2022. Whose ai dream? in search of the aspiration in data annotation. In Proceedings of the 2022 CHI Conference on Human Factors in Computing Systems, CHI ’22, New York, NY, USA. Association for Computing Machinery.",
+    "Wang et al. (2024a) Haoxiang Wang, Wei Xiong, Tengyang Xie, Han Zhao, and Tong Zhang. 2024a. Interpretable preferences via multi-objective reward modeling and mixture-of-experts. arXiv preprint arXiv:2406.12845.",
+    "Wang et al. (2024b) Junda Wang, Zonghai Yao, Zhichao Yang, Huixue Zhou, Rumeng Li, Xun Wang, Yucheng Xu, and Hong Yu. 2024b. NoteChat: A dataset of synthetic patient-physician conversations conditioned on clinical notes. In Findings of the Association for Computational Linguistics: ACL 2024, pages 15183–15201, Bangkok, Thailand. Association for Computational Linguistics.",
+    "Wang et al. (2023) Yizhong Wang, Hamish Ivison, Pradeep Dasigi, Jack Hessel, Tushar Khot, Khyathi Chandu, David Wadden, Kelsey MacMillan, Noah A Smith, Iz Beltagy, et al. 2023. How far can camels go? exploring the state of instruction tuning on open resources. Advances in Neural Information Processing Systems, 36:74764–74786.",
+    "Wang et al. (2024c) Zhilin Wang, Yi Dong, Olivier Delalleau, Jiaqi Zeng, Gerald Shen, Daniel Egert, Jimmy J Zhang, Makesh Narsimhan Sreedhar, and Oleksii Kuchaiev. 2024c. Helpsteer2: Open-source dataset for training top-performing reward models. arXiv preprint arXiv:2406.08673.",
+    "Wang et al. (2024d) Ziyu Wang, Hao Li, Di Huang, and Amir M. Rahmani. 2024d. Healthq: Unveiling questioning capabilities of llm chains in healthcare conversations.",
+    "West (1984) Candace West. 1984. Routine complications: Troubles with talk between doctors and patients.",
+    "Wong et al. (2021) Ka Wong, Praveen Paritosh, and Lora Aroyo. 2021. Cross-replication reliability - an empirical approach to interpreting inter-rater reliability. In Proceedings of the 59th Annual Meeting of the Association for Computational Linguistics and the 11th International Joint Conference on Natural Language Processing (Volume 1: Long Papers), pages 7053–7065, Online. Association for Computational Linguistics.",
+    "Wongpakaran et al. (2013) Nahathai Wongpakaran, Tinakon Wongpakaran, Danny Wedding, et al. 2013. A comparison of cohen’s kappa and gwet’s ac1 when calculating inter-rater reliability coefficients: a study conducted with personality disorder samples. BMC Medical Research Methodology, 13:61.",
+    "Wu et al. (2023) Zeqiu Wu, Yushi Hu, Weijia Shi, Nouha Dziri, Alane Suhr, Prithviraj Ammanabrolu, Noah A Smith, Mari Ostendorf, and Hannaneh Hajishirzi. 2023. Fine-grained human feedback gives better rewards for language model training. Advances in Neural Information Processing Systems, 36:59008–59033.",
+    "Xie et al. (2024) Yunfei Xie, Juncheng Wu, Haoqin Tu, Siwei Yang, Bingchen Zhao, Yongshuo Zong, Qiao Jin, Cihang Xie, and Yuyin Zhou. 2024. A preliminary study of o1 in medicine: Are we closer to an ai doctor? arXiv preprint arXiv:2409.15277.",
+    "(83) Rui Xin, Niloofar Mireshghallah, Shuyue Stella Li, Michael Duan, Hyunwoo Kim, Yejin Choi, Yulia Tsvetkov, Sewoong Oh, and Pang Wei Koh. A false sense of privacy: Evaluating textual data sanitization beyond surface-level privacy leakage. In Neurips Safe Generative AI Workshop 2024.",
+    "Xu et al. (2024) Can Xu, Qingfeng Sun, Kai Zheng, Xiubo Geng, Pu Zhao, Jiazhan Feng, Chongyang Tao, Qingwei Lin, and Daxin Jiang. 2024. Wizardlm: Empowering large pre-trained language models to follow complex instructions. In The Twelfth International Conference on Learning Representations.",
+    "Yang et al. (2025) Jinluan Yang, Dingnan Jin, Anke Tang, Li Shen, Didi Zhu, Zhengyu Chen, Daixin Wang, Qing Cui, Zhiqiang Zhang, Jun Zhou, Fei Wu, and Kun Kuang. 2025. Mix data or merge models? balancing the helpfulness, honesty, and harmlessness of large language model via model merging.",
+    "Yao et al. (2024) Zonghai Yao, Aditya Parashar, Huixue Zhou, Won Seok Jang, Feiyun Ouyang, Zhichao Yang, and Hong Yu. 2024. Mcqg-srefine: Multiple choice question generation and evaluation with iterative self-critique, correction, and comparison feedback. arXiv preprint arXiv:2410.13191.",
+    "Yao et al. (2025) Zonghai Yao, Aditya Parashar, Huixue Zhou, Won Seok Jang, Feiyun Ouyang, Zhichao Yang, and Hong Yu. 2025. Mcqg-srefine: Multiple choice question generation and evaluation with iterative self-critique, correction, and comparison feedback.",
+    "Zhang et al. (2024a) Michael JQ Zhang, W Bradley Knox, and Eunsol Choi. 2024a. Modeling future conversation turns to teach llms to ask clarifying questions. arXiv preprint arXiv:2410.13788.",
+    "Zhang et al. (2024b) Michael JQ Zhang, Zhilin Wang, Jena D. Hwang, Yi Dong, Olivier Delalleau, Yejin Choi, Eunsol Choi, Xiang Ren, and Valentina Pyatkin. 2024b. Diverging preferences: When do annotators disagree and do models know?",
+    "Zhang et al. (2014) Thomas Zhang, Jason HD Cho, and Chengxiang Zhai. 2014. Understanding user intents in online health forums. In Proceedings of the 5th ACM Conference on Bioinformatics, Computational Biology, and Health Informatics, pages 220–229.",
+    "Zheng et al. (2023) Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan Zhuang, Zhanghao Wu, Yonghao Zhuang, Zi Lin, Zhuohan Li, Dacheng Li, Eric Xing, Hao Zhang, Joseph E Gonzalez, and Ion Stoica. 2023. Judging llm-as-a-judge with mt-bench and chatbot arena. In Advances in Neural Information Processing Systems, volume 36, pages 46595–46623. Curran Associates, Inc.",
+    "Zhou et al. (2023a) Hongjian Zhou, Fenglin Liu, Boyang Gu, Xinyu Zou, Jinfa Huang, Jinge Wu, Yiru Li, Sam S Chen, Peilin Zhou, Junling Liu, et al. 2023a. A survey of large language models in medicine: Progress, application, and challenge. arXiv preprint arXiv:2311.05112.",
+    "Zhou et al. (2023b) Zhanhui Zhou, Jie Liu, Chao Yang, Jing Shao, Yu Liu, Xiangyu Yue, Wanli Ouyang, and Yu Qiao. 2023b. Beyond one-preference-for-all: Multi-objective direct preference optimization. arXiv preprint arXiv:2310.03708.",
+    "Zhu and Wu (2025) Jiayuan Zhu and Junde Wu. 2025. Ask patients with patience: Enabling llms for human-centric medical dialogue with grounded reasoning."
+  ]
+}

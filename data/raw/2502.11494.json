@@ -1,0 +1,296 @@
+{
+  "title": "Stop Looking for “Important Tokens” in Multimodal Language Models:Duplication Matters More",
+  "authors": "Zichen Wen1,2,Yifeng Gao1,Shaobo Wang1,Junyuan Zhang2,Qintong Zhang2,4,Weijia Li3,2,Conghui He2222Corresponding authors.,Linfeng Zhang1222Corresponding authors.1Shanghai Jiao Tong University2Shanghai AI Laboratory3Sun Yat-sen University4Peking Universityzichen.wen@outlook.com, heconghui@pjlab.org.cn, zhanglinfeng@sjtu.edu.cn",
+  "abstract": "Vision tokens in multimodal large language models often dominate huge computational overhead due to their excessive length compared to linguistic modality. Abundant recent methods aim to solve this problem with token pruning, which first defines an importance criterion for tokens and then prunes the unimportant vision tokens during inference. However, in this paper, we show that the importance is not an ideal indicator to decide whether a token should be pruned. Surprisingly, it usually results in inferior performance than random token pruning and leading to incompatibility to efficient attention computation operators. Instead, we propose DART (Duplication-Aware Reduction of Tokens), which prunes tokens based on its duplication with other tokens, leading to significant and training-free acceleration. Concretely, DART selects a small subset of pivot tokens and then retains the tokens with low duplication to the pivots, ensuring minimal information loss during token pruning. Experiments demonstrate that DART can prune 88.9% vision tokens while maintaining comparable performance, leading to a 1.99×\\times and 2.99×\\times speed-up in total time and prefilling stage, respectively, with good compatibility to efficient attention operators.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Multimodal large language models (MLLMs) exhibit remarkable capabilities across a diverse range of multimodal tasks, including image captioning, visual question answering (VQA), video understanding (Wang et al., 2024b), and multimodal reasoning (Wang et al., 2024c).",
+        "However, such impressive performance is always accompanied by huge computation costs, which are mainly caused by massive vision tokens in the input data, especially for high-resolution images (Li et al., 2024b) and multi-frame video (Tang et al., 2023), leading to challenges in their applications.",
+        "To solve this problem, abundant recent methods introduce token pruning to remove the vision tokens in a training-free manner, which usually first defines the importance score of each token, and then prunes the most unimportant tokens during the inference phrase (Chen et al., 2024; Zhang et al., 2024b; Liu et al., 2024e). The key to a token pruning method is the definition of the importance of vision tokens, where most existing methods are based on the attention scores between vision-only tokens and vision-language tokens. However, this paper argues that these importance-based methods have several serious problems.",
+        "(I) Ignoring interactions between tokens during pruning: Although the interaction between different tokens is considered in attention scores, however, importance-based methods directly remove the most unimportant tokens, ignoring the truth that the importance of each token should be adjusted when other tokens are pruned or preserved. For instance, for two similar tokens, if one of both is determined to be pruned, then the importance of the other token should be improved and vice versa. Unfortunately, previous importance-based token pruning methods fail to model such interaction.",
+        "(II) Incompatibility to efficient attention: Efficient attention operators such as FlashAttention Dao et al. (2022) have become the default configure in neural networks, which accelerates attention computation by around 2×\\times and reduce the memory costs from O​(N2)O(N^{2}) to O​(N)O(N). However, these efficient attention operators make attention scores not accessible during computation, indicating conflicts with most previous importance-based token pruning methods. Disabling FlashAttention for accessing attention scores significantly improves the overall latency and memory footprint.",
+        "(III) Bias in token positions: As claimed by abundant recent works (Endo et al., 2024; Zhang et al., 2024a) and shown in Figure 1, attention scores have position bias, where the tokens are positionally close to the last token tend to have a higher attention score, making attention score does not truly reveal the value of this token.",
+        "(IV) Significant accuracy drop: Although the aforementioned three problems have reminded us the ineffectiveness of importance-based token pruning, however, it is still extremely surprising to find that some influential importance-based token pruning methods show inferior accuracy than random token pruning, (i.e., randomly selecting the tokens for pruning), as shown in Figure 2.",
+        "The above observations demonstrates the disadvantages of importance-based token pruning methods, while also introducing the expectation for the ideal alternative: The expected method should consider both the individual value of a token and its interaction to other tokens. It should be cheap in computation and friendly to hardware, and shows no bias in the positions of tokens.",
+        "These insights inspire us to incorporate token duplication into the token reduction. Intuitively, when multiple tokens exhibit identical or highly similar representations, it is natural to retain only one of them for the following computation, thereby maintaining efficiency without harming accuracy. Building upon this idea, we introduce a simple but effective token pruning pipeline referred to as DART (Duplication-Aware Reduction of Tokens) with the following two steps.",
+        "Firstly, we begin by selecting a small subset of tokens as pivot tokens, which comprise no more than 2%2\\% of the total tokens. Such pivot tokens can be selected based on the norm of tokens or even randomly selected, which does not introduce notable computations. Secondly, we then calculate the cosine similarity between pivot tokens and the remaining image tokens. Since the pivot tokens are fewer than 2%2\\%, such computation is efficient in both computing and memory. With a desired token reduction ratio, we retain only those vision tokens with the lowest cosine similarity to pivot tokens and remove the similar ones. The entire process is simple and highly efficient, completing in no more than 0.08 seconds, friendly to efficient attention operators, and leading to significantly higher accuracy than previous methods.",
+        "In summary, our contributions are three-fold:",
+        "• Rethink Token Importance. Through empirical analysis, we demonstrate the suboptimality of relying on attention scores to measure token importance to guide the token reduction paradigm.",
+        "• Token Duplication as a Key Factor. Building on token duplication, we introduce a training-free, plug-and-play token reduction method that seamlessly integrates with Flash Attention.",
+        "• Superior Performance with Extreme Compression. Extensive experiments across four diverse MLLMs and over 10 benchmarks demonstrate the clear superiority of DART. For instance, our method outperforms the second-best method by 2.2% (93.7%​ vs. ​91.5%93.7\\%\\text{ vs. }91.5\\%) on LLaVA-1.5-7B with an 88.9% reduction ratio."
+      ],
+      "subsections": []
+    },
+    "2 Related Work": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "2.1 Multimodal Large Language Models",
+          "paragraphs": [
+            "Multimodal large language models (MLLMs) (Liu et al., 2024b; Li et al., 2023a; Zhu et al., 2023; Liu et al., 2024d) achieve remarkable performance in tasks involving images, videos, and multimodal reasoning by integrating vision and text processing. However, processing visual data poses computational challenges due to the redundancy and low information density of high-resolution tokens (Liang et al., 2022) and the quadratic scaling of attention mechanisms (Vaswani et al., 2017). For instance, models like LLaVA (Liu et al., 2023) and mini-Gemini-HD (Li et al., 2024b) encode high-resolution images into thousands of tokens, while video-based models such as VideoLLaVA (Lin et al., 2023) and VideoPoet (Kondratyuk et al., 2023) require even more tokens to process multiple frames. These challenges highlight the need for efficient token representations and longer context lengths to enable scalability. Recent advancements, such as Gemini (Team et al., 2023) and LWM (Liu et al., 2024a), address these issues by optimizing token efficiency and extending context length, paving the way for more scalable and effective MLLMs."
+          ]
+        },
+        {
+          "title": "2.2 Visual Token Compression",
+          "paragraphs": [
+            "Visual tokens often exceed text tokens by tens to hundreds of times, with visual signals being more spatially redundant compared to information dense text (Marr, 2010). Various methods have been proposed to address this issue. For instance, LLaMA-VID (Li et al., 2024a) uses a Q-Former with context tokens, and DeCo (Yao et al., 2024a) applies adaptive pooling to downsample visual tokens at the patch level. However, these approaches require modifying model components and additional training, increasing computational and training costs. ToMe (Bolya et al., 2023) reduces tokens without training by adding a token merge module to ViTs (Alexey, 2020), but this disrupts early cross-modal interactions in language models (Xing et al., 2024). FastV (Chen et al., 2024) selects important visual tokens using attention scores, while SparseVLM (Zhang et al., 2024b) incorporates text guidance via cross-modal attention. However, these methods forgo Flash-Attention (Dao et al., 2022; Dao, 2024) and primarily focus on token importance, overlooking the impact of token duplication. In our work, we maintain hardware acceleration compatibility, including Flash Attention, while focusing on another critical factor, token duplication, for efficient token reduction."
+          ]
+        }
+      ]
+    },
+    "3 Methodology": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "3.1 Preliminary",
+          "paragraphs": [
+            "Architecture of MLLM. The architecture of Multimodal Large Language Models (MLLMs) typically comprises three core components: a visual encoder, a modality projector, and a language model (LLM). Given an image II, the visual encoder and a subsequent learnable MLP are used to encode II into a set of visual tokens eve_{v}. These visual tokens eve_{v} are then concatenated with text tokens ete_{t} encoded from text prompt ptp_{t}, forming the input for the LLM. The LLM decodes the output tokens yy sequentially, which can be formulated as: yi=f​(I,pt,y0,y1,⋯,yi−1).y_{i}=f(I,p_{t},y_{0},y_{1},\\cdots,y_{i-1})."
+          ]
+        },
+        {
+          "title": "3.2 Beyond Token Importance: Questioning the Status Quo",
+          "paragraphs": [
+            "Given the computational burden associated with the length of visual tokens in MLLMs, numerous studies have embraced a paradigm that utilizes attention scores to evaluate the significance of visual tokens, thereby facilitating token reduction. Specifically, in transformer-based MLLMs, each layer performs attention computation as illustrated below:",
+            "where dkd_{k} is the dimension of 𝐊\\mathbf{K}. The result of Softmax​(𝐐⋅𝐊⊤/dk)\\text{Softmax}(\\mathbf{Q}\\cdot\\mathbf{K}^{\\top}/\\sqrt{d_{k}}) is a square matrix known as the attention map. Existing methods extract the corresponding attention maps from one or multiple layers and compute the average attention score for each visual token based on these attention maps:",
+            "where Attention​(xi,xj)\\text{Attention}(x_{i},x_{j}) denotes the attention score between token xix_{i} and token xjx_{j}, ϕattn​(xi)\\phi_{\\text{attn}}(x_{i}) is regarded as the importance score of the token xix_{i}, NN represents the number of visual tokens. Finally, based on the importance score of each token and the predefined reduction ratio, the most important visual tokens are selectively retained:",
+            "where ℛ\\mathcal{R} represents the set of retained visual tokens, and τ\\tau is a threshold determined by the predefined reduction ratio.",
+            "Problems: Although this paradigm has demonstrated initial success in enhancing the efficiency of MLLMs, it is accompanied by several inherent limitations that are challenging to overcome.",
+            "One key limitation is disregarding the dynamic nature of token importance during pruning. For a token sequence {x1,…,xn}\\{x_{1},\\ldots,x_{n}\\}, importance-based methods compute static token importance via a scoring function si=ℱ​(xi|X)s_{i}=\\mathcal{F}(x_{i}|X), where XX is the full token set. The strategy retains Top-kk tokens:",
+            "This implies an independence assumption: the score sjs_{j} remains unchanged for any subset X′⊂XX^{\\prime}\\subset X, ignoring dynamic token interactions. For example, if two similar tokens xp,xqx_{p},x_{q} have sp≈sqs_{p}\\approx s_{q}, removing xqx_{q} should recalibrate sps_{p} as:",
+            "which leads to a bias in importance estimation Δ=sp′−sp\\Delta=s_{p}^{\\prime}-s_{p}. This contradiction between static scoring and dynamic interaction can be quantified as:",
+            "Additionally, Figure 1 visualizes the results of token reduction, revealing that selecting visual tokens based on attention scores introduces a noticeable bias toward tokens in the lower-right region of the image, those appearing later in the visual token sequence. However, this region is not always the most significant in every image. Further, we present the outputs of various methods. Notably, FastV generates more hallucinations than the vanilla model, while DART effectively reduces them. We attribute this to the inherent bias of attention-based methods, which tend to retain tokens concentrated in specific regions, often neglecting the broader context of the image. In contrast, DART removes highly duplication tokens and preserves a more balanced distribution across the image, enabling more accurate and consistent outputs.",
+            "Furthermore, methods relying on attention scores for token importance are incompatible with Flash Attention, compromising speed, and sometimes even underperforming random token reduction in effectiveness (See Fig. 2)."
+          ]
+        },
+        {
+          "title": "3.3 Token Duplication: Rethinking Reduction",
+          "paragraphs": [
+            "Given the numerous drawbacks associated with the paradigm of using attention scores to evaluate token importance for token reduction, what additional factors should we consider beyond token importance in the process of token reduction? Inspired by the intuitive ideas mentioned in §1 and the phenomenon of tokens in transformers tending toward uniformity (i.e., over-smoothing) (Nguyen et al., 2023; Gong et al., 2021), we propose that token duplication should be a critical focus.",
+            "Due to the prohibitively high computational cost of directly measuring duplication among all tokens, we adopt a paradigm that involves selecting a minimal number of pivot tokens.",
+            "Let 𝒫={p1,p2,…,pk}⊆𝒳\\mathcal{P}=\\{p_{1},p_{2},\\dots,p_{k}\\}\\subseteq\\mathcal{X} denote the pivot tokens, where k≪nk\\ll n and nn is the total length of the tokens 𝒳={x1,x2,…,xn}\\mathcal{X}=\\{x_{1},x_{2},\\dots,x_{n}\\}. The pivot tokens 𝒫\\mathcal{P} are a subset of 𝒳\\mathcal{X}, selected for their representativeness of the entire set.",
+            "Given the pivot tokens, we can define the duplication score based on it. ",
+            "The token duplication score between a pivot token pip_{i} and a visual token xjx_{j} is defined as:",
+            "where ∥⋅∥\\|\\cdot\\| denotes the Euclidean norm. Two tokens pi,xjp_{i},x_{j} are ϵ\\epsilon-duplicates if",
+            "With the ϵ\\epsilon-duplicate score, for each pivot pip_{i}, the associated retained token set is defined as:",
+            "The final retained set is:",
+            "where ϵ\\epsilon is the threshold dynamically determined for each pivot pip_{i} based on reduction ratio. This ensures that only tokens that are sufficiently different from the pivot tokens are kept.",
+            "Our method is orthogonal to the paradigm of using attention scores to measure token importance, meaning it is compatible with existing approaches. Specifically, we can leverage attention scores to select pivot tokens, and subsequently incorporate token duplication into the process.",
+            "However, this still does not fully achieve compatibility with Flash Attention. Therefore, we explored alternative strategies for selecting pivot tokens, such as using K-norm, V-norm111Here, the K-norm and V-norm refer to the L1-norm of K matrix and V matrix in attention computing, respectively., or even random selection. Surprisingly, all these strategies achieve competitive performance across multiple benchmarks. This indicates that our token reduction paradigm based on token duplication is not highly sensitive to the choice of pivot tokens. Moreover, it suggests that removing duplicate tokens may be more critical than identifying “important tokens”, highlighting token duplication as a more significant factor in token reduction. Detailed discussion on pivot token selection is provided in §5.2."
+          ]
+        },
+        {
+          "title": "3.4 Theoretical Analysis",
+          "paragraphs": [
+            "To further justify trustworthiness of our proposed method, we provide a theoretical analysis of it.",
+            "For transformer property, we assume the following: (A1). (Lipschitz continuity under Hausdorff distance). The model ff is Lipschitz continuous with respect to the Hausdorff distance between token sets. Formally, there exists K>0K>0 such that for any two token sets 𝒳1,𝒳2⊆ℝd\\mathcal{X}_{1},\\mathcal{X}_{2}\\subseteq\\mathbb{R}^{d}:",
+            "where dH​(𝒳1,𝒳2)≜maxd_{H}(\\mathcal{X}_{1},\\mathcal{X}_{2})\\triangleq\\max {supx1∈𝒳1infx2∈𝒳2‖x1−x2‖,supx2∈𝒳2infx1∈𝒳1‖x1−x2‖}\\left\\{\\sup\\limits_{x_{1}\\in\\mathcal{X}_{1}}\\inf\\limits_{x_{2}\\in\\mathcal{X}_{2}}\\|x_{1}-x_{2}\\|,\\sup\\limits_{x_{2}\\in\\mathcal{X}_{2}}\\inf\\limits_{x_{1}\\in\\mathcal{X}_{1}}\\|x_{1}-x_{2}\\|\\right\\}. (A2). (Bounded embedding). All tokens have bounded Euclidean norms:",
+            "where B>0B>0 is a constant.",
+            "minpi∈𝒫⁡|pi−xj|≤(2​(1−ϵ))1/2​B,∀xj∈𝒳∖ℛ\\min_{p_{i}\\in\\mathcal{P}}|p_{i}-x_{j}|\\leq(2(1-\\epsilon))^{1/2}B,\\quad\\forall x_{j}\\in\\mathcal{X}\\setminus\\mathcal{R}.",
+            "Using A2 and Definition 2, we obtain:",
+            "Therefore, the duplication distance bound is given by: minpi∈𝒫⁡|pi−xj|2≤(2​(1−ϵ))1/2​B\\min_{p_{i}\\in\\mathcal{P}}|p_{i}-x_{j}|^{2}\\leq(2(1-\\epsilon))^{1/2}B ∎",
+            "Under Assumption 1, the Hausdorff distance between original and retained tokens satisfies:",
+            "For any x∈𝒳x\\in\\mathcal{X}: Thus: Since ℛ⊆𝒳\\mathcal{R}\\subseteq\\mathcal{X}, Hausdorff distance simplifies to: dH​(𝒳,ℛ)=supx∈𝒳infr∈ℛ‖x−r‖≤2​(1−ϵ)​B.d_{H}(\\mathcal{X},\\mathcal{R})=\\sup_{x\\in\\mathcal{X}}\\inf_{r\\in\\mathcal{R}}\\|x-r\\|\\leq\\sqrt{2(1-\\epsilon)}B. ∎",
+            "• If x∈ℛx\\in\\mathcal{R}, then infr∈ℛ‖x−r‖=0\\inf_{r\\in\\mathcal{R}}\\|x-r\\|=0",
+            "• If x∉ℛx\\notin\\mathcal{R}, by definition and Lemma 1 there exists pi∈𝒫⊆ℛp_{i}\\in\\mathcal{P}\\subseteq\\mathcal{R} with ‖x−pi‖≤2​(1−ϵ)​B\\|x-p_{i}\\|\\leq\\sqrt{2(1-\\epsilon)}B",
+            "If x∈ℛx\\in\\mathcal{R}, then infr∈ℛ‖x−r‖=0\\inf_{r\\in\\mathcal{R}}\\|x-r\\|=0",
+            "If x∉ℛx\\notin\\mathcal{R}, by definition and Lemma 1 there exists pi∈𝒫⊆ℛp_{i}\\in\\mathcal{P}\\subseteq\\mathcal{R} with ‖x−pi‖≤2​(1−ϵ)​B\\|x-p_{i}\\|\\leq\\sqrt{2(1-\\epsilon)}B",
+            "Under Assumptions 1, the output difference between original and pruned token sets is bounded by:",
+            "Direct application of Lipschitz continuity (A1) with Lemma 2: ‖f​(𝒳)−f​(ℛ)‖≤K⋅dH​(𝒳,ℛ)≤K​2​(1−ϵ)​B.\\|f(\\mathcal{X})-f(\\mathcal{R})\\|\\leq K\\cdot d_{H}(\\mathcal{X},\\mathcal{R})\\leq K\\sqrt{2(1-\\epsilon)}B. ∎"
+          ]
+        }
+      ]
+    },
+    "4 Experiments": {
+      "paragraphs": [
+        "Experiment Setting. We conduct experiments on over four MLLMs across ten image-based and four video-based benchmarks. For details on implementation, please refer to Appendix B."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Main Results",
+          "paragraphs": [
+            "Image understanding task. The results presented in Table 1 highlight the exceptional performance of DART, across a diverse range of image understanding tasks under varying vision token configurations. We can observe that (i) with only 192192 tokens retained (↓66.7%\\downarrow 66.7\\%), DART achieves an impressive average performance of 98.8%98.8\\%, substantially outperforming the second-best method, MustDrop by 1.6%\\mathbf{1.6\\%}. (ii) This trend becomes even more pronounced under more aggressive reduction ratios, with DART outperforming by 2.2%\\mathbf{2.2\\%} while retaining only 6464 tokens. (iii) Moreover, DART scales seamlessly to more advanced models, as evidenced by its performance on the LLaVA-Next-7B backbone, where it achieves an average score of 93.9%\\mathbf{93.9\\%} with only 11.1%11.1\\% of visual tokens retained, outperforming all competing methods by a significant margin. These results highlight DART’s exceptional efficiency in leveraging limited visual tokens while preserving critical information, showcasing its robust performance across diverse tasks and seamless adaptability to various model architectures. Video Understanding Task. To assess DART’s capabilities in video understanding, we integrate it with Video-LLaVA (Lin et al., 2023) and benchmark it against state-of-the-art methods, including FastV (Chen et al., 2024). Following established protocols, Video-LLaVA processes videos by sampling 88 frames and extracting 20482048 vision tokens, with 50%50\\% retained for evaluation. As demonstrated in Table 5, DART surpasses FastV across all benchmarks, achieving a notable 4.04.0 score on MSVD, 46.3%46.3\\% accuracy on TGIF, and 56.7%56.7\\% accuracy on MSRVT. With an average accuracy of 58.0%58.0\\% and an evaluation score of 3.73.7, DART demonstrates superior reasoning over complex multimodal data."
+          ]
+        }
+      ]
+    },
+    "5 Analysis and Discussion": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "5.1 Efficiency Analysis",
+          "paragraphs": [
+            "As shown in Table 2, we compare the total inference time, prefill time, FLOPs, and KV cache memory of multiple methods. (i) DART achieves a 2.99×\\times speedup in the prefill phase and a 1.99×\\times speedup in the entire inference, while its performance on POPE degrades by less than 3% compared to the vanilla model. (ii) Further analysis reveals that although the FLOPs reduction of different methods is similar, their actual inference speeds vary significantly. For instance, SparseVLM increases FLOPs by only 2.8% compared to DART, but its speedup drops by 21.6%, demonstrating that relying solely on FLOPs to measure acceleration effectiveness lacks practical significance. (iii) We further evaluate the performance-latency trade-off of each method based on actual latency. As illustrated in Figure 4, when considering the balance between latency and performance, some existing methods even underperform random visual token retention. We argue that SparseVLM and MustDrop suffer from significant speed degradation due to their sequential multi-stage token processing. For FastV, its reliance on biased attention scores for “important” token selection results in slightly inferior performance. In contrast, DART seamlessly integrates Flash Attention and incurs less than 0.08s overhead for token reduction, achieving a better trade-off between performance and speed."
+          ]
+        },
+        {
+          "title": "5.2 Influence from Selection of Pivot Tokens",
+          "paragraphs": [
+            "In this section, we investigate whether pivot token selection in DART significantly affects its performance. Table 6 in Appendix A.1 evaluates pivot tokens based on criteria such as maximum (♠\\spadesuit), minimum (♡\\heartsuit) attention scores, K-norm, V-norm, and random selection. Results show that various strategies achieve over 94.9%94.9\\% of the vanilla model’s performance across benchmarks. Even DART with randomly selected pivot tokens incurs only a 1.2%1.2\\% performance drop compared to the best strategy and outperforms the previous importance-based methods by 2.1%2.1\\%. This observation shows the robustness in the selection of pivot tokens in DART, and highlights the crucial role of duplication in token reduction, as selecting “important” pivot tokens based on attention scores is only 0.2% better than selecting “unimportant” ones as pivot tokens.",
+            "Furthermore, on the MME benchmark, we analyze the visual tokens retained by selecting pivot tokens based on K-norm♠ and K-norm♡. Interestingly, statistical analysis shows that the overlap between tokens preserved by these two strategies is, on average, less than 50%. Despite this low overlap, both strategies achieve highly effective results, indicating the existence of multiple distinct groups of tokens which should not be pruned. This finding challenges the conventional notion of a single critical token set defined by importance scores, demonstrating that diverse token subsets with minimal overlap can yield comparable performance."
+          ]
+        },
+        {
+          "title": "5.3 Influence from Choice of the Pruned Layer and the Number of Pivot Tokens",
+          "paragraphs": [
+            "We explore the impact of layer on model performance. As expected, pruning deeper layers yields performance closer to the vanilla model but increases latency, as shown in Figure 5. However, we observe two intriguing findings: (i) Pruning at layers 10, 15, and 20 surprisingly outperforms the vanilla model (Fig. 5(a)), consistent with Fig. 1, suggesting that removing duplicate tokens may reduce hallucinations in MLLMs on the POPE. (ii) At deeper layers (e.g., 15, 20), the latency-minimizing points correspond to pruning all vision tokens, yet performance drops only by 0.1%∼1.6%\\mathbf{0.1\\%}\\mathbf{\\sim}\\mathbf{1.6\\%}. This highlights a modality imbalance in MLLMs, indicating underutilization of the visual modality.",
+            "Furthermore, we delved into the impact of the number of pivot tokens on performance. As depicted in Figure 6, choosing either an insufficient or an excessive number of pivot tokens leads to suboptimal outcomes. When a limited number of pivot tokens (e.g., one or two), the lack of diversity among these tokens may impede their ability to comprehensively represent the entire feature space. In contrast, when an overly large number of pivot tokens, for example, 20 or more, are chosen, the majority of retained visual tokens tend to be pivot tokens. In extreme cases, our approach starts to resemble the importance-based method, where pivot tokens essentially transform into important tokens, overlooking the impact of duplication factors."
+          ]
+        },
+        {
+          "title": "5.4 Influence from Modalities of Pivot Tokens",
+          "paragraphs": [
+            "We further analyze the impact of the source of pivot tokens on the overall performance of DART, with a particular focus on understanding whether guidance from the language modality is essential for effective token reduction. We evaluate the performance implications of selecting pivot tokens exclusively from either the visual or text modality, aiming to quantify the influence of each modality. As illustrated in Figure 7, the absence of pivot tokens from either modality leads to a noticeable decline in performance. This demonstrates that information from both modalities contributes to the token reduction process to varying degrees. Moreover, it highlights that we provide an effective method for incorporating textual guidance without the need to explicitly compute cross-modal attention scores while remaining compatible with Flash Attention."
+          ]
+        }
+      ]
+    },
+    "6 Conclusion": {
+      "paragraphs": [
+        "The pursuit of efficient token reduction in MLLMs has traditionally centered on token “importance” often measured by attention scores, sometimes suffering from worse performance than random token pruning. This study introduces DART, which focuses on the duplication of tokens, aiming to remove the tokens that are similar to others, leading to a superior balance between performance and latency in 13 benchmarks and 5 MLLMs (Tab. 1, 2, 4, 4, and Fig. 4). Our exploration yields surprising insights: multiple distinct sets of retained tokens, sharing less than 50% overlap, can deliver comparable and good performance (§5.2). Additionally, token pruning shows potential to mitigate hallucinations (§5.3). These observations highlight the limitations of importance-based methods and may offer valuable insights into the influence of vision tokens in MLLMs."
+      ],
+      "subsections": []
+    },
+    "7 Limitations": {
+      "paragraphs": [
+        "One of the limitations of our work is that it cannot be applied to black-box models like the GPT (e.g. GPT 3.5 and more advanced versions) and Claude series, as we are unable to access their encoded tokens during the inference process. Additionally, our proposed DART exhibits slightly degraded performance when dealing with models that encode tokens with high information density. For instance, Qwen2-VL employs token merging during training, and MiniCPM-V-2.6 utilizes learnable queries in its Resampler module to map variable-length patch features into shorter feature representations. In such cases, removing a single visual token results in a greater loss of information, thereby impacting the effectiveness of our approach. Despite this, DART is still able to maintain 97.0% and 92.9% of its performance while reducing visual tokens by 66.7%, as demonstrated in Tables 4, 4."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Additional Experiments": {
+      "paragraphs": [
+        "[Table: Table 6: Analysis on how to select the pivot token. This study evaluates pivot tokens, comprising a fixed set of 44 visual and 44 text tokens, using various criteria with 128 retained tokens. A-Score denotes the Attention Score. ♠\\spadesuit represents selecting token with the highest value as the pivot token. ♡\\heartsuit represents selecting the token with the smallest value as the pivot token. For instance, A-Score♠ means selecting the token with the highest value of Attention Score as the pivot token.]"
+      ],
+      "subsections": [
+        {
+          "title": "A.1 Supplementary Results on Pivot Token Selection",
+          "paragraphs": [
+            "This section presents comprehensive experimental results conducted on the LLaVA-1.5-7B model, supporting the analysis of pivot token selection strategies within DART. Table 6 details performance metrics across multiple benchmarks, including GQA, MMB, MME, POPE, SQA, and VQA, with all experiments retaining 128 vision tokens. These findings further validate the robustness of DART under various pivot token selection criteria, ranging from random selection to methods based on attention scores and norm-based approaches. The table also includes comparisons with baseline methods (e.g., SparseVLM and FastV), highlighting the consistent superiority of DART across different configurations. For additional insights, refer to the main discussion in §5.2."
+          ]
+        }
+      ]
+    },
+    "Appendix B Detailed Experiment Settings": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "B.1 Datasets",
+          "paragraphs": [
+            "Our experiments are conducted on a suite of widely recognized benchmarks, each designed to evaluate distinct aspects of multimodal intelligence. For image understanding task, we performed experiments on ten widely used benchmarks, including GQA (Hudson and Manning, 2019), MMBench (MMB) and MMB-CN (Liu et al., 2025b), MME (Fu et al., 2023), POPE (Li et al., 2023b), VizWiz (Bigham et al., 2010), SQA (Lu et al., 2022), VQAV2{}^{\\text{V2}} (VQA V2) (Goyal et al., 2017), VQAText{}^{\\text{Text}} (TextVQA) (Singh et al., 2019), and OCRBench (Liu et al., 2024f). For video understanding task, we evaluated our method on three video-based benchmarks: TGIF-QA (Jang et al., 2017), MSVD-QA (Xu et al., 2017), and MSRVTT-QA (Xu et al., 2017).",
+            "GQA. GQA is structured around three core components: scene graphs, questions, and images. It includes not only the images themselves but also detailed spatial features and object-level attributes. The questions are crafted to assess a model’s ability to comprehend visual scenes and perform reasoning tasks based on the image content.",
+            "MMBench. MMBench offers a hierarchical evaluation framework, categorizing model capabilities into three levels. The first level (L-1) focuses on perception and reasoning. The second level (L-2) expands this to six sub-abilities, while the third level (L-3) further refines these into 20 specific dimensions. This structured approach allows for a nuanced and comprehensive assessment of a model’s multifaceted abilities. MMBench-CN is the Chinese version of the dataset.",
+            "MME. The MME benchmark is designed to rigorously evaluate a model’s perceptual and cognitive abilities through 14 subtasks. It employs carefully constructed instruction-answer pairs and concise instructions to minimize data leakage and ensure fair evaluation. This setup provides a robust measure of a model’s performance across various tasks.",
+            "POPE. POPE is tailored to assess object hallucination in models. It presents a series of binary questions about the presence of objects in images, using accuracy, recall, precision, and F1 score as metrics. This approach offers a precise evaluation of hallucination levels under different sampling strategies.",
+            "ScienceQA. ScienceQA spans a wide array of domains, including natural, language, and social sciences. Questions are hierarchically categorized into 26 topics, 127 categories, and 379 skills, providing a diverse and comprehensive testbed for evaluating multimodal understanding, multi-step reasoning, and interpretability.",
+            "VQA V2. VQA V2 challenges models with open-ended questions based on 265,016 images depicting a variety of real-world scenes. Each question is accompanied by 10 human-annotated answers, enabling a thorough assessment of a model’s ability to accurately interpret and respond to visual queries.",
+            "TextVQA. TextVQA emphasizes the integration of textual information within images. It evaluates a model’s proficiency in reading and reasoning about text embedded in visual content, requiring both visual and textual comprehension to answer questions accurately.",
+            "OCRBench. OCRBench is a comprehensive benchmark for evaluating the OCR capabilities of multi-modal language models across five key tasks: text recognition, scene text-centric and document-oriented VQA, key information extraction, and handwritten mathematical expression recognition.",
+            "TGIF-QA. TGIF-QA extends the image question-answering task to videos, featuring 165,000 question-answer pairs. It introduces tasks that require spatio-temporal reasoning, such as repetition count and state transition, as well as frame-based questions, promoting advancements in video question answering.",
+            "MSVD-QA. Based on the MSVD dataset, MSVD-QA includes 1970 video clips and approximately 50.5K QA pairs. The questions cover a broad spectrum of topics and are open-ended, categorized into what, who, how, when, and where types, making it a versatile tool for video understanding tasks.",
+            "MSRVTT-QA. MSRVTT-QA comprises 10K video clips and 243K QA pairs. It addresses the challenge of integrating visual and temporal information in videos, requiring models to effectively process both to answer questions accurately. Similar to MSVD-QA, it includes five types of questions, further enriching the evaluation landscape."
+          ]
+        },
+        {
+          "title": "B.2 Models",
+          "paragraphs": [
+            "We evaluate DART using various open-source MLLMs. For image understanding tasks, experiments are conducted on the LLaVA family, including LLaVA-1.5-7B222https://huggingface.co/liuhaotian/llava-v1.5-7b (Liu et al., 2024d) and LLaVA-Next-7B333https://huggingface.co/liuhaotian/llava-v1.6-vicuna-7b (Liu et al., 2024c), with the latter used to validate performance on high-resolution images. Furthermore, we validate our method on more advanced models, including Qwen2-VL-7B444https://huggingface.co/Qwen/Qwen2-VL-7B-Instruct (Wang et al., 2024a) and MiniCPM-V-2.6555https://huggingface.co/openbmb/MiniCPM-V-2_6 (Yao et al., 2024b). For video understanding tasks, we use Video-LLaVA (Lin et al., 2023) as the baseline model. following the settings reported in their paper to ensure a fair comparison."
+          ]
+        },
+        {
+          "title": "B.3 Baselines",
+          "paragraphs": [
+            "We analyze multiple representative methods for accelerating multi-modal language models (MLLMs) through token reduction. These methods share the goal of improving efficiency by reducing redundant tokens, yet differ in their strategies, such as token merging, pruning, or adaptive allocation.",
+            "ToMe (Bolya et al., 2023) merges similar tokens in visual transformer layers through lightweight matching techniques, achieving acceleration without requiring additional training.",
+            "FastV (Chen et al., 2024) focuses on early-stage token pruning by leveraging attention maps, effectively reducing computational overhead in the initial layers.",
+            "SparseVLM (Zhang et al., 2024b) ranks token importance using cross-modal attention and introduces adaptive sparsity ratios, complemented by a novel token recycling mechanism.",
+            "HiRED (Arif et al., 2024) allocates token budgets across image partitions based on CLS token attention, followed by the selection of the most informative tokens within each partition, ensuring spatially aware token reduction.",
+            "LLaVA-PruMerge (Shang et al., 2024) combines pruning and merging strategies by dynamically removing less important tokens using sparse CLS-visual attention and clustering retained tokens based on key similarity.",
+            "PDrop (Xing et al., 2024) adopts a progressive token-dropping strategy across model stages, forming a pyramid-like token structure that balances efficiency and performance.",
+            "MustDrop (Liu et al., 2024e) integrates multiple strategies, including spatial merging, text-guided pruning, and output-aware cache policies, to reduce tokens across various stages.",
+            "FasterVLM (Zhang et al., 2024a) evaluates token importance via CLS attention in the encoder and performs pruning before interaction with the language model, streamlining the overall process.",
+            "GlobalCom2 (Liu et al., 2025a) introduces a hierarchical approach by coordinating thumbnail tokens to allocate retention ratios for high-resolution crops while preserving local details.",
+            "These methods collectively highlight diverse approaches to token reduction, ranging from attention-based pruning to adaptive merging, offering complementary solutions for accelerating MLLMs."
+          ]
+        },
+        {
+          "title": "B.4 Implementation Details",
+          "paragraphs": [
+            "All of our experiments are conducted on Nvidia A100-80G GPU. The implementation was carried out in Python 3.10, utilizing PyTorch 2.1.2, and CUDA 11.8. All baseline settings follow the original paper. "
+          ]
+        }
+      ]
+    },
+    "Appendix C Computational Complexity.": {
+      "paragraphs": [
+        "To evaluate the computational complexity of MLLMs, it is essential to analyze their core components, including the self-attention mechanism and the feed-forward network (FFN). The total floating-point operations (FLOPs) required can be expressed as:",
+        "where TT denotes the number of transformer layers, nn is the sequence length, dd represents the hidden dimension size, and mm is the intermediate size of the FFN. This equation highlights the significant impact of sequence length nn on computational complexity. Notable, we follow FastV Chen et al. (2024) to roughly estimate various token reduction baseline FLOPs. The FLOPs after token pruning can be represented as:",
+        "where LL denotes the pruned layer, n^\\hat{n} represents token sequence length after pruning. The theoretical FLOPs reduction ratio related to visual tokens is computed as:"
+      ],
+      "subsections": []
+    },
+    "Appendix D Future Works": {
+      "paragraphs": [
+        "As can be observed from Figure 1 and Figure 5(a), in certain cases, token pruning contributes to the reduction of hallucinations. Our method achieved better results than the vanilla model on the POPE benchmark, which is specifically designed for evaluating the hallucination issues of multimodal large language models. Therefore, we believe that it is worth exploring in the future why token pruning is beneficial for reducing hallucinations and how we can better utilize efficient techniques (e.g., token pruning, and token merge) to reduce hallucinations while achieving acceleration benefits."
+      ],
+      "subsections": []
+    },
+    "Appendix E Sparsification Visualization on Different Pivot Token Selection Strategy": {
+      "paragraphs": [
+        "Figure 8 showcases a diverse array of sparsification visualization examples on different pivot token selection strategy, including K-norm♠\\spadesuit, K-norm♡\\heartsuit, V-norm♠\\spadesuit, V-norm♡\\heartsuit, Attention Score♠\\spadesuit, Attention Score♡\\heartsuit, and Random. Here, we can observe two interesting points: (i) The commonality is that DART employs different pivot token selection strategies for token reduction, and the retained tokens are distributed in a relatively scattered manner without obvious bias, i.e., spatial uniformity, which contributes to a more accurate understanding of the entire image and consistent responses. (ii) The difference lies in the fact that although each strategy achieves comparable performance, it is noticeable that the final set of retained tokens varies significantly across strategies, indicating the existence of multiple token sets that can deliver satisfactory results. This further corroborates the limitation of selecting a unique set of tokens based solely on importance scores.",
+        "[Figure: Figure 8: Sparsification Visualization examples of DART on different Pivot Token Selection Strategy.]"
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "Alexey (2020) Dosovitskiy Alexey. 2020. An image is worth 16x16 words: Transformers for image recognition at scale. arXiv preprint arXiv: 2010.11929.",
+    "Arif et al. (2024) Kazi Hasan Ibn Arif, JinYi Yoon, Dimitrios S Nikolopoulos, Hans Vandierendonck, Deepu John, and Bo Ji. 2024. Hired: Attention-guided token dropping for efficient inference of high-resolution vision-language models in resource-constrained environments. arXiv preprint arXiv:2408.10945.",
+    "Bigham et al. (2010) Jeffrey P Bigham, Chandrika Jayant, Hanjie Ji, Greg Little, Andrew Miller, Robert C Miller, Robin Miller, Aubrey Tatarowicz, Brandyn White, Samual White, et al. 2010. Vizwiz: nearly real-time answers to visual questions. In Proceedings of the 23nd annual ACM symposium on User interface software and technology, pages 333–342.",
+    "Bolya et al. (2023) Daniel Bolya, Cheng-Yang Fu, Xiaoliang Dai, Peizhao Zhang, Christoph Feichtenhofer, and Judy Hoffman. 2023. Token merging: Your ViT but faster. In International Conference on Learning Representations.",
+    "Chen et al. (2024) Liang Chen, Haozhe Zhao, Tianyu Liu, Shuai Bai, Junyang Lin, Chang Zhou, and Baobao Chang. 2024. An image is worth 1/2 tokens after layer 2: Plug-and-play inference acceleration for large vision-language models.",
+    "Dao (2024) Tri Dao. 2024. FlashAttention-2: Faster attention with better parallelism and work partitioning. In International Conference on Learning Representations (ICLR).",
+    "Dao et al. (2022) Tri Dao, Daniel Y. Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. 2022. FlashAttention: Fast and memory-efficient exact attention with IO-awareness. In Advances in Neural Information Processing Systems (NeurIPS).",
+    "Endo et al. (2024) Mark Endo, Xiaohan Wang, and Serena Yeung-Levy. 2024. Feather the throttle: Revisiting visual token pruning for vision-language model acceleration. arXiv preprint arXiv:2412.13180.",
+    "Fu et al. (2023) Chaoyou Fu, Peixian Chen, Yunhang Shen, Yulei Qin, Mengdan Zhang, Xu Lin, Jinrui Yang, Xiawu Zheng, Ke Li, Xing Sun, et al. 2023. MME: A comprehensive evaluation benchmark for multimodal large language models. arXiv:2306.13394.",
+    "Gong et al. (2021) Chengyue Gong, Dilin Wang, Meng Li, Vikas Chandra, and Qiang Liu. 2021. Vision transformers with patch diversification. arXiv preprint arXiv:2104.12753.",
+    "Goyal et al. (2017) Yash Goyal, Tejas Khot, Douglas Summers-Stay, Dhruv Batra, and Devi Parikh. 2017. Making the v in vqa matter: Elevating the role of image understanding in visual question answering. In Proceedings of the IEEE conference on computer vision and pattern recognition, pages 6904–6913.",
+    "Hudson and Manning (2019) Drew A Hudson and Christopher D Manning. 2019. GQA: A new dataset for real-world visual reasoning and compositional question answering. Conference on Computer Vision and Pattern Recognition (CVPR).",
+    "Jang et al. (2017) Yunseok Jang, Yale Song, Youngjae Yu, Youngjin Kim, and Gunhee Kim. 2017. Tgif-qa: Toward spatio-temporal reasoning in visual question answering. In Proceedings of the IEEE conference on computer vision and pattern recognition, pages 2758–2766.",
+    "Kondratyuk et al. (2023) Dan Kondratyuk, Lijun Yu, Xiuye Gu, José Lezama, Jonathan Huang, Rachel Hornung, Hartwig Adam, Hassan Akbari, Yair Alon, Vighnesh Birodkar, et al. 2023. Videopoet: A large language model for zero-shot video generation. arXiv:2312.14125.",
+    "Li et al. (2023a) Junnan Li, Dongxu Li, Silvio Savarese, and Steven Hoi. 2023a. Blip-2: Bootstrapping language-image pre-training with frozen image encoders and large language models. In International conference on machine learning, pages 19730–19742. PMLR.",
+    "Li et al. (2024a) Yanwei Li, Chengyao Wang, and Jiaya Jia. 2024a. LLaMA-VID: An image is worth 2 tokens in large language models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition.",
+    "Li et al. (2024b) Yanwei Li, Yuechen Zhang, Chengyao Wang, Zhisheng Zhong, Yixin Chen, Ruihang Chu, Shaoteng Liu, and Jiaya Jia. 2024b. Mini-gemini: Mining the potential of multi-modality vision language models. arXiv:2403.18814.",
+    "Li et al. (2023b) Yifan Li, Yifan Du, Kun Zhou, Jinpeng Wang, Wayne Xin Zhao, and Ji-Rong Wen. 2023b. Evaluating object hallucination in large vision-language models. arXiv:2305.10355.",
+    "Liang et al. (2022) Y Liang, C Ge, Z Tong, Y Song, P Xie, et al. 2022. Not all patches are what you need: Expediting vision transformers via token reorganizations. In ICLR.",
+    "Lin et al. (2023) Bin Lin, Bin Zhu, Yang Ye, Munan Ning, Peng Jin, and Li Yuan. 2023. Video-llava: Learning united visual representation by alignment before projection. arXiv:2311.10122.",
+    "Liu et al. (2024a) Hao Liu, Wilson Yan, Matei Zaharia, and Pieter Abbeel. 2024a. World model on million-length video and language with ringattention. Preprint, arXiv:2402.08268.",
+    "Liu et al. (2023) Haotian Liu, Chunyuan Li, Yuheng Li, and Yong Jae Lee. 2023. Improved baselines with visual instruction tuning. arXiv:2310.03744.",
+    "Liu et al. (2024b) Haotian Liu, Chunyuan Li, Yuheng Li, and Yong Jae Lee. 2024b. Improved baselines with visual instruction tuning. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 26296–26306.",
+    "Liu et al. (2024c) Haotian Liu, Chunyuan Li, Yuheng Li, Bo Li, Yuanhan Zhang, Sheng Shen, and Yong Jae Lee. 2024c. Llava-next: Improved reasoning, ocr, and world knowledge.",
+    "Liu et al. (2024d) Haotian Liu, Chunyuan Li, Qingyang Wu, and Yong Jae Lee. 2024d. Visual instruction tuning. Advances in neural information processing systems.",
+    "Liu et al. (2024e) Ting Liu, Liangtao Shi, Richang Hong, Yue Hu, Quanjun Yin, and Linfeng Zhang. 2024e. Multi-stage vision token dropping: Towards efficient multimodal large language model. arXiv preprint arXiv:2411.10803.",
+    "Liu et al. (2025a) Xuyang Liu, Ziming Wang, Yuhang Han, Yingyao Wang, Jiale Yuan, Jun Song, Bo Zheng, Linfeng Zhang, Siteng Huang, and Honggang Chen. 2025a. Compression with global guidance: Towards training-free high-resolution mllms acceleration. arXiv preprint arXiv:2501.05179.",
+    "Liu et al. (2025b) Yuan Liu, Haodong Duan, Yuanhan Zhang, Bo Li, Songyang Zhang, Wangbo Zhao, Yike Yuan, Jiaqi Wang, Conghui He, Ziwei Liu, et al. 2025b. Mmbench: Is your multi-modal model an all-around player? In European Conference on Computer Vision, pages 216–233. Springer.",
+    "Liu et al. (2024f) Yuliang Liu, Zhang Li, Mingxin Huang, Biao Yang, Wenwen Yu, Chunyuan Li, Xu-Cheng Yin, Cheng-Lin Liu, Lianwen Jin, and Xiang Bai. 2024f. Ocrbench: on the hidden mystery of ocr in large multimodal models. Science China Information Sciences, 67(12):220102.",
+    "Lu et al. (2022) Pan Lu, Swaroop Mishra, Tanglin Xia, Liang Qiu, Kai-Wei Chang, Song-Chun Zhu, Oyvind Tafjord, Peter Clark, and Ashwin Kalyan. 2022. Learn to explain: Multimodal reasoning via thought chains for science question answering. Advances in Neural Information Processing Systems, 35:2507–2521.",
+    "Marr (2010) David Marr. 2010. Vision: A computational investigation into the human representation and processing of visual information. MIT press.",
+    "Nguyen et al. (2023) Tam Nguyen, Tan Nguyen, and Richard Baraniuk. 2023. Mitigating over-smoothing in transformers via regularized nonlocal functionals. Advances in Neural Information Processing Systems, 36:80233–80256.",
+    "Shang et al. (2024) Yuzhang Shang, Mu Cai, Bingxin Xu, Yong Jae Lee, and Yan Yan. 2024. Llava-prumerge: Adaptive token reduction for efficient large multimodal models. arXiv preprint arXiv:2403.15388.",
+    "Singh et al. (2019) Amanpreet Singh, Vivek Natarjan, Meet Shah, Yu Jiang, Xinlei Chen, Devi Parikh, and Marcus Rohrbach. 2019. Towards VQA models that can read. In Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition, pages 8317–8326.",
+    "Tang et al. (2023) Yunlong Tang, Jing Bi, Siting Xu, Luchuan Song, Susan Liang, Teng Wang, Daoan Zhang, Jie An, Jingyang Lin, Rongyi Zhu, et al. 2023. Video understanding with large language models: A survey. arXiv preprint arXiv:2312.17432.",
+    "Team et al. (2023) Gemini Team, Rohan Anil, Sebastian Borgeaud, Yonghui Wu, Jean-Baptiste Alayrac, Jiahui Yu, Radu Soricut, Johan Schalkwyk, Andrew M Dai, Anja Hauth, et al. 2023. Gemini: a family of highly capable multimodal models. arXiv preprint arXiv:2312.11805.",
+    "Vaswani et al. (2017) Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Lukasz Kaiser, and Illia Polosukhin. 2017. Attention is all you need. arXiv:1706.03762.",
+    "Wang et al. (2024a) Peng Wang, Shuai Bai, Sinan Tan, Shijie Wang, Zhihao Fan, Jinze Bai, Keqin Chen, Xuejing Liu, Jialin Wang, Wenbin Ge, et al. 2024a. Qwen2-vl: Enhancing vision-language model’s perception of the world at any resolution. arXiv preprint arXiv:2409.12191.",
+    "Wang et al. (2024b) Yi Wang, Kunchang Li, Xinhao Li, Jiashuo Yu, Yinan He, Guo Chen, Baoqi Pei, Rongkun Zheng, Jilan Xu, Zun Wang, et al. 2024b. Internvideo2: Scaling video foundation models for multimodal video understanding. Arxiv e-prints, pages arXiv–2403.",
+    "Wang et al. (2024c) Yiqi Wang, Wentao Chen, Xiaotian Han, Xudong Lin, Haiteng Zhao, Yongfei Liu, Bohan Zhai, Jianbo Yuan, Quanzeng You, and Hongxia Yang. 2024c. Exploring the reasoning abilities of multimodal large language models (mllms): A comprehensive survey on emerging trends in multimodal reasoning. arXiv preprint arXiv:2401.06805.",
+    "Xing et al. (2024) Long Xing, Qidong Huang, Xiaoyi Dong, Jiajie Lu, Pan Zhang, Yuhang Zang, Yuhang Cao, Conghui He, Jiaqi Wang, Feng Wu, and Dahua Lin. 2024. Pyramiddrop: Accelerating your large vision-language models via pyramid visual redundancy reduction. arXiv preprint arXiv:2410.17247.",
+    "Xu et al. (2017) Dejing Xu, Zhou Zhao, Jun Xiao, Fei Wu, Hanwang Zhang, Xiangnan He, and Yueting Zhuang. 2017. Video question answering via gradually refined attention over appearance and motion. In Proceedings of the ACM international conference on Multimedia, pages 1645–1653.",
+    "Yao et al. (2024a) Linli Yao, Lei Li, Shuhuai Ren, Lean Wang, Yuanxin Liu, Xu Sun, and Lu Hou. 2024a. DeCo: Decoupling token compression from semantic abstraction in multimodal large language models. arXiv:2405.20985.",
+    "Yao et al. (2024b) Yuan Yao, Tianyu Yu, Ao Zhang, Chongyi Wang, Junbo Cui, Hongji Zhu, Tianchi Cai, Haoyu Li, Weilin Zhao, Zhihui He, et al. 2024b. Minicpm-v: A gpt-4v level mllm on your phone. arXiv preprint arXiv:2408.01800.",
+    "Zhang et al. (2024a) Qizhe Zhang, Aosong Cheng, Ming Lu, Zhiyong Zhuo, Minqi Wang, Jiajun Cao, Shaobo Guo, Qi She, and Shanghang Zhang. 2024a. [cls] attention is all you need for training-free visual token pruning: Make vlm inference faster. arXiv preprint arXiv:2412.01818.",
+    "Zhang et al. (2024b) Yuan Zhang, Chun-Kai Fan, Junpeng Ma, Wenzhao Zheng, Tao Huang, Kuan Cheng, Denis Gudovskiy, Tomoyuki Okuno, Yohei Nakata, Kurt Keutzer, et al. 2024b. Sparsevlm: Visual token sparsification for efficient vision-language model inference. arXiv preprint arXiv:2410.04417.",
+    "Zhu et al. (2023) Deyao Zhu, Jun Chen, Xiaoqian Shen, Xiang Li, and Mohamed Elhoseiny. 2023. Minigpt-4: Enhancing vision-language understanding with advanced large language models. arXiv preprint arXiv:2304.10592."
+  ]
+}

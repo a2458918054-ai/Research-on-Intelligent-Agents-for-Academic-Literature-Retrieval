@@ -1,0 +1,483 @@
+{
+  "title": "KVTuner: Sensitivity-Aware Layer-wiseMixed Precision KV Cache Quantization forEfficient and Nearly Lossless LLM Inference",
+  "authors": "Xing Li1†&Zeyu Xing2†&Yiming Li1&Linping Qu1&Hui-Ling Zhen1&Wulong Liu1&Yiwu Yao3&Sinno Jialin Pan2&Mingxuan Yuan11Noah’s Ark Lab, Huawei2The Chinese University of Hong Kong3Computing Product Line, Huawei{li.xing2, li.yiming3, qulinping, zhenhuiling2, liuwulong, yaoyiwu, yuan.mingxuan}@huawei.comzeyuxing@link.cuhk.edu.hk, sinnopan@cuhk.edu.hk",
+  "abstract": "KV cache quantization can improve Large Language Models (LLMs) inference throughput and latency in long contexts and large batch-size scenarios while preserving LLMs effectiveness. However, current methods have three unsolved issues: overlooking layer-wise sensitivity to KV cache quantization, high overhead of online fine-grained decision-making, and low flexibility to different LLMs and constraints. Therefore, we thoroughly analyze the inherent correlation of layer-wise transformer attention patterns to KV cache quantization errors and study why key cache is more important than value cache for quantization error reduction. We further propose a simple yet effective framework KVTuner to adaptively search for the optimal hardware-friendly layer-wise KV quantization precision pairs for coarse-grained KV cache with multi-objective optimization and directly utilize the offline searched configurations during online inference. To reduce the computational cost of offline calibration, we utilize the intra-layer KV precision pair pruning and inter-layer clustering to reduce the search space. Experimental results show that we can achieve nearly lossless 3.25-bit mixed precision KV cache quantization for LLMs like Llama-3.1-8B-Instruct and 4.0-bit for sensitive models like Qwen2.5-7B-Instruct on mathematical reasoning tasks. The maximum inference throughput can be improved by 38.3% compared with KV8 quantization over various context lengths. Our code and searched configurations are available at https://github.com/cmd2001/KVTuner.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Large language models (LLMs) and multi-modality large models can comprehend and generate text, audio, image, and video like humans, showing the strong capability of assisting and interacting with humans. LLM inference efficiency such as throughput and latency is critical to enhance user experience and reduce cost. To improve the inference efficiency of LLMs, previously processed KV tokens are cached to avoid redundant recomputation. However, the memory usage of the KV cache linearly grows with the number of batch size and sequence length, so the KV cache becomes the new bottleneck of LLM serving systems with large batching requests and long context. Valuable long context generation applications include multi-turn dialogues, long document understanding, and OpenAI o1-like level-2 reasoning. Commercial companies are releasing their supports for long context generation and KV cache-based services like prompt caching for better capability and efficiency OpenAI (2024); DeepSeek (2024). Efficient KV cache management and compression can accelerate LLM inference and reduce hardware resource consumption, making it a foundational technique for advancing both enterprise-scale LLM deployment and personalized AI agents.",
+        "KV cache quantization is one of the most stable and easily deployable KV cache compression methods to reduce the memory footprint and improve throughput Yuan et al. (2024). INT8/FP8 KV cache with dynamic asymmetric token-wise (per-token-asym) or channel-wise (per-channel-asym) quantization can achieve lossless compression in most practical applications. However, lower-bit KV cache quantization easily leads to model accuracy degradation.",
+        "Intra-layer mixed precision KV quantization methods retain important KV tokens with high precision to reduce KV cache quantization errors and quantize other cache in the same layer with uniformly low precision such as 2-bit. KIVI Liu et al. (2024f), IntactKV Liu et al. (2024c), and KVQuant Hooper et al. (2024) statically keep prefix and initial KV cache blocks with high precision. They need specially designed operators for hardware like GPUs and require more careful KV cache management. Besides, the assumption that the static prefix and recent KV is important may not always hold as demonstrated in Figure 1, where low-precision quantization (4-bit and 2-bit) leads to dramatic attention distribution shift in sensitive models like Qwen2.5-7B-Instruct. Existing static and uniform KV precision methods including KIVI 4-bit cannot effectively handle these non-sparse retrieval heads. The only viable and efficient solution is to increase KV cache quantization precision of the whole model or some critical and sensitive layers.",
+        "In contrast, fine-grained methods, such as QAQ Dong et al. (2024), MiKV Yang et al. (2024b), and ZipCache He et al. (2024b), dynamically identify critical KV cache and update their precision on-the-fly to improve accuracy. However, they cannot be easily integrated with flash attention Dao et al. (2022) and vLLM Kwon et al. (2023), because of the intra-layer fine-grained KV cache precision difference and additional deployment efforts. In addition, the online computation and control flow logic for critical token identification introduce overhead and do not fit into static graph-based inference acceleration methods.",
+        "There are still several issues to improve the inference throughput and maximum supported context length with KV cache quantization under constrained hardware resources: 1) Can we further almost losslessly compress KV cache with hardware-friendly and mixed precision quantization in a plug-and-play way? 2) Are there any other inherent model properties such as attention patterns Tang et al. (2024a); Xiao et al. (2024) that can help better trade-off memory reduction and model accuracy? 3) There are normally multiple deployed LLMs in the industrial service systems and Artificial Intelligence (AI) agents. How to adaptively tune the KV cache quantization precision considering the accuracy requirement of requests and the LLM sensitivity to KV cache quantization?",
+        "To address these issues, we thoroughly study the sensitivity of LLM transformer layers to KV cache quantization and find out that error accumulation caused by KV cache quantization is strongly correlated with attention patterns in Section 4.1 and 4.4. According to our observation of the sensitivity of key and value cache in the same layer in Section 4.2 and 4.3 and the layer-wise difference of transformer layers in Section 4.5, we propose to quantize coarse-grained key and value cache in the same layer with different precision and automatically search for the optimal layer-wise KV cache quantization precision pairs based on the inherent importance of intermediate layers in Section 5. During online serving, the offline calibrated layer-wise KV cache quantization precision pairs are directly loaded without any additional overhead to improve inference throughput and latency. Our contributions are summarized as follows:",
+        "• We study the underlying mechanism of why key cache normally is more important than value cache. The LLM accuracy degradation with low-bit key cache quantization is mainly caused by error accumulation and the layer-wise attention error distribution shift. We find out that the sensitivity of LLMs and intermediate layers to KV cache quantization is the model property and independent of input prompts.",
+        "• We propose to automatically search for the hardware-friendly layer-wise KV cache precision pairs such as K8V4 and K4V2 with multi-objective optimization (MOO) under certain memory or accuracy constraints for efficient online inference. The intra-layer pruning and inter-layer clustering are used to significantly reduce the search space and the offline tuning cost.",
+        "• We empirically demonstrate that our mixed-precision KV tuning framework KVTuner can achieve almost lossless KV cache quantization with equivalent 4-bit even 3.25-bit precision in mathematical reasoning tasks for most LLMs including the sensitive Qwen2.5-7B-Instruct with 38.3% inference throughput improvement."
+      ],
+      "subsections": []
+    },
+    "2 Related Work": {
+      "paragraphs": [
+        "KV cache management and compression methods include paged KV cache Kwon et al. (2023), prefilling-decoding (PD) disaggregation Qin et al. (2024), quantization Liu et al. (2024f, c); Hooper et al. (2024); Zhang et al. (2024c); Yang et al. (2024b); He et al. (2024b, a); Dong et al. (2024), eviction Zhang et al. (2024d); Ge et al. (2023); Liu et al. (2024e); Li et al. (2024a); Adnan et al. (2024), merging Zhang et al. (2024b); Wang et al. (2024); Wan et al. (2024); Liu et al. (2024b), low-rank decomposition Kang et al. (2024); Sun et al. (2024a), offloading Sheng et al. (2023); Zhang et al. (2024a), prefetching Lee et al. (2024b), and retrieval Tang et al. (2024b). Among them, KV cache quantization is orthogonal to most other KV cache management and compression methods, so it has been integrated with eviction, retrieval, and transferring Tang et al. (2024b); Liu et al. (2024d).",
+        "Model and activation quantization methods such as GPTQ Frantar et al. (2022), SmoothQuant Xiao et al. (2023a), AWQ Lin et al. (2024a), SpinQuant Liu et al. (2024g), and QServe Lin et al. (2024b) are also used to reduce model memory usage and inference latency with low-bit computation units. Model pruning and layer skipping reduce computational cost by directly pruning unimportant layers or heads Ma et al. (2023); Zeng et al. (2023); Elhoushi et al. (2024).",
+        "Speculative decoding is another promising direction for lossless LLM inference acceleration by reducing the LLM inference iteration times and KV cache memory movement cost in the memory-bounded decoding stage. LLMs verify multiple tokens speculated with smaller models Li et al. (2024b), self-partial layers Cai et al. (2024); Liu et al. (2024a); Gloeckle et al. (2024); Stern et al. (2018), or other training-free algorithms Zhao et al. (2024) in one forward step. In addition, Triforce Sun et al. (2024b) is proposed to integrate KV cache compression with hierarchical speculative decoding to improve long context generation efficiency."
+      ],
+      "subsections": []
+    },
+    "3 Background": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "3.1 Transformer and KV Cache",
+          "paragraphs": [
+            "In LLMs, there are multiple intermediate transformer layers stacked and executed to generate final output responses. For the ll-th transformer layer, given ii-th D-dimensional input hidden state 𝒙il∈ℝD\\boldsymbol{x}_{i}^{l}\\in\\mathbb{R}^{D}, the ll-th query, key, and value feedforward neural network layers generate 𝒒il=𝑾ql​𝒙il\\boldsymbol{q}_{i}^{l}=\\boldsymbol{W}_{q}^{l}\\boldsymbol{x}_{i}^{l}, 𝒌il=𝑾kl​𝒙il\\boldsymbol{k}_{i}^{l}=\\boldsymbol{W}_{k}^{l}\\boldsymbol{x}_{i}^{l}, and 𝒗il=𝑾vl​𝒙il\\boldsymbol{v}_{i}^{l}=\\boldsymbol{W}_{v}^{l}\\boldsymbol{x}_{i}^{l} with the corresponding weight matrices 𝑾ql\\boldsymbol{W}_{q}^{l}, 𝑾kl\\boldsymbol{W}_{k}^{l}, and 𝑾vl\\boldsymbol{W}_{v}^{l}, respectively. Then the self-attention scores 𝒂il\\boldsymbol{a}_{i}^{l} are computed with the current query embedding and all key embeddings until the ii-th step. Finally, the ll-th self-attention layer generates the output state 𝒐il\\boldsymbol{o}_{i}^{l}, which is forwarded to downstream sub-layers in the ll-th transformer layer, with the softly weighted value embeddings 𝑽l\\boldsymbol{V}^{l} using the attention scores 𝒂il\\boldsymbol{a}_{i}^{l}:",
+            "where 𝑲l=concat​(𝑲:i−1l,𝒌il)\\boldsymbol{K}^{l}\\!\\!=\\!\\!\\text{concat}(\\boldsymbol{K}_{:i-1}^{l},\\boldsymbol{k}_{i}^{l}) and 𝑽l=concat​(𝑽:i−1l,𝒗il)\\boldsymbol{V}^{l}\\!\\!=\\!\\!\\text{concat}(\\boldsymbol{V}_{:i-1}^{l},\\boldsymbol{v}_{i}^{l}) are the key and value embeddings generated in the prefilling and decoding stage in ll-th transformer layer until ii-th step. They will still be re-used in subsequent generation steps for self-attention computation. Therefore, we need to store them as KV cache in each layer independently to remove the additional computational cost of KV cache re-computation."
+          ]
+        },
+        {
+          "title": "3.2 KV Cache Quantization",
+          "paragraphs": [
+            "Although storing KV cache can reduce the re-computation cost, the KV cache may become the new inference memory and latency bottleneck in the large batch size and long context scenario. KV cache quantization can effectively address these problems. The round-to-nearest BB-bit quantization and dequantization along the channel or token dimension to input 𝑿∈ℝS×D\\boldsymbol{X}\\in\\mathbb{R}^{S\\times D} are defined as",
+            "where the offset 𝒛=min⁡(𝑿)\\boldsymbol{z}=\\min(\\boldsymbol{X}) and the scale 𝒔=max⁡(𝑿)−min⁡(𝑿)2B−1\\boldsymbol{s}=\\frac{\\max(\\boldsymbol{X})-\\min(\\boldsymbol{X})}{2^{B}-1}. We measure the relative KV cache and attention output errors and the absolute attention score error as ekl=mean​(|𝑲l−𝑲^l||𝑲l|)e_{k}^{l}=\\text{mean}\\left(\\frac{|\\boldsymbol{K}^{l}-\\hat{\\boldsymbol{K}}^{l}|}{|\\boldsymbol{K}^{l}|}\\right), evl=mean​(|𝑽l−𝑽^l||𝑽l|)e_{v}^{l}=\\text{mean}\\left(\\frac{|\\boldsymbol{V}^{l}-\\hat{\\boldsymbol{V}}^{l}|}{|\\boldsymbol{V}^{l}|}\\right), eal=mean​(|𝒂l−𝒂^l|)e_{a}^{l}=\\text{mean}(|\\boldsymbol{a}^{l}-\\hat{\\boldsymbol{a}}^{l}|), and eol=mean​(|𝒐l−𝒐^l||𝒐l|)e_{o}^{l}=\\text{mean}\\left(\\frac{|\\boldsymbol{o}^{l}-\\hat{\\boldsymbol{o}}^{l}|}{|\\boldsymbol{o}^{l}|}\\right), where the attention score with dequantized key cache 𝒂^il=softmax​(𝒒il​𝑲^l⊤D)\\hat{\\boldsymbol{a}}_{i}^{l}=\\text{softmax}\\left(\\frac{\\boldsymbol{q}_{i}^{l}{\\boldsymbol{\\hat{K}}^{l}}^{\\top}}{\\sqrt{D}}\\right) and the attention output with dequantized KV cache 𝒐^il=𝒂^il​𝑽^l\\hat{\\boldsymbol{o}}_{i}^{l}=\\hat{\\boldsymbol{a}}_{i}^{l}\\hat{\\boldsymbol{V}}^{l}."
+          ]
+        }
+      ]
+    },
+    "4 Observation": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "4.1 Error Accumulation",
+          "paragraphs": [
+            "Due to the sequential nature of LLMs along both the model layer and token sequence dimensions, the previous layer output with KV cache quantization errors is the input of the current layer and the previous step model output token with errors is the input of the input and subsequent transformer layers. Therefore, KV cache quantization leads to two-dimensional error accumulation. The error in the ll-th layer and ii-th token eile_{i}^{l} depends on previous 1∼l−11\\sim l-1 layers and 1∼i−11\\sim i-1 steps, as defined in",
+            "The KV cache quantization error of a single token and layer may be ignorable. However, the error accumulation over the whole model and long context length is noticeable and may lead to token flipping and generation error, which is similar to model quantization Lee et al. (2024a). The error accumulation caused by low-precision KV cache quantization is a general problem in domain knowledge QA, AI Generated Contents (AIGC), coding, and mathematical reasoning tasks, which may lead to critical factual errors and loss of instruction following ability.",
+            "Accumulated errors and intermediate token flipping can render the entire mathematical and logical reasoning process ineffective, resulting in unnecessary computational overhead in long-context reasoning models like OpenAI o1. As demonstrated in Table 1, KIVI-4 has exactly the same response with half-precision KV cache of an example from the GSM8K 15-shot dataset, while the first three generated sentences with low-precision KIVI-2 are highly similar to original generation except for minor differences. Additionally, there is a small token flipping from −- to ++, which leads to the arithmetic operation error in the fourth sentence with KIVI-2. The wrong 20+4+4=2820+4+4=28 instead of 20−4−4=1220-4-4=12 finally leads to the arithmetic error 28/20 = <<28/20=14>>14%\\% and the completely wrong final answer 1414."
+          ]
+        },
+        {
+          "title": "4.2 Sensitivity to Quantization Mode and Precision",
+          "paragraphs": [
+            "KV cache quantization errors strongly correlate with the quantization mode and precision as in Table 4. In terms of relative key error eke_{k}, the per-channel-asym quantization mode consistently outperforms the per-token-asym counterpart under the same precision for key cache, because key cache has strong channel-wise outliers Liu et al. (2024f); Hooper et al. (2024), more detailed experiment results can be found in Table 8. Therefore, for specific KV cache, the quantization mode modification may lead to the shift of importance of key and value to attention output errors. As shown in Table 4, the Pareto-optimal intra-layer KV cache quantization precision pairs significantly differ between these two modes. Therefore, the KV cache precision pairs need to be adapted to quantization modes. More detailed experimental settings and results are available in Appendix B and D.1 due to space limitations."
+          ]
+        },
+        {
+          "title": "4.3 Why Key Cache Is More Important?",
+          "paragraphs": [
+            "We discover the diverse model and transformer layer sensitivity to KV cache quantization mode and pairs, which is mainly caused by attention distribution shift as in Figure 1. In this section, we thus analyze the reason why key cache is normally more important than value cache from both the empirical and theoretical perspectives.",
+            "Intermediate attention errors. Following the settings in Table 8, we visualize the simulated layer-wise attention score errors of Llama-3.1-8B-Instruct with the per-token-asym KV cache quantization mode in Figure 2. More results of diverse LLMs and datasets are available in Appendix G. Decreasing the key cache quantization precision from 8-bit to 4-bit and from 4-bit to 2-bit leads to 13.9×13.9\\times and 4.6×4.6\\times average attention score error degradation in Figure 2, respectively. It may result in attention distribution shift in the token levels of specific sensitive heads as in Figure 1 and thus degrade the final accuracy. A similar phenomenon occurs in the final output token probability when implementing KV cache eviction Adnan et al. (2024).",
+            "As shown in Table 3, the relative attention output errors of high-precision key cache quantization with the same overall memory usage e.g. K4V2 is significantly lower than the high-precision value quantization e.g. K2V4, which empirically validates that key cache is more important than value cache during KV cache quantization of intermediate transformer layers. More detailed experiment setting and results can be found in Figure 13 and 14.",
+            "Final generation errors. We also study the final LLM generation performance with error accumulation enabled during decoding. Low-precision KV cache in all intermediate layers are quantized with the same KV precision pairs such as K8V4 and K4V2. We utilize the KIVI implementation with the HQQ backend in huggingface transformers v4.46.2 Wolf (2020), which supports popular LLMs with different scales and proposes, and measure the word-perplexity with lm-evaluation-harness Gao et al. (2024) in Table 2.",
+            "As shown in Table 2, both KV8 and K8V4 quantization demonstrate similar perplexity levels across all models. Similarly, KV4 and K4V2 quantization demonstrate comparable patterns. These results suggest that we can achieve equivalent performance using either 6-bit (K8V4) or 3-bit (K4V2) KV cache quantization while maintaining accuracy levels similar to those of KV8 or KV4 quantization, respectively. In contrast, K4V8 and K2V4 quantizations lead to substantial increases in perplexity scores, resulting in significant degradation of generation quality. A noticeable decline in generation quality occurs when reducing the precision of the key cache rather than the value cache. The 5-bit K8V2 precision pair achieves performance equal to or better than the higher 6-bit K4V8 precision pair while achieving an additional 12.5% reduction in memory usage. These LLMs demonstrate varying levels of sensitivity to KV cache quantization. Most models experience significant perplexity increases only with int2 key cache quantization, with two notable exceptions: Qwen2.5-{7B, Math-7B}-Instruct. These two LLMs are sensitive even to int4 key cache quantization, indicating a lower tolerance for precision reduction. Based on these findings, we conclude that the key cache plays a more critical role than the value cache during quantization. This characteristic can be leveraged to optimize memory usage while maintaining model effectiveness."
+          ]
+        },
+        {
+          "title": "4.4 KV Quantization Errors vs Attention Patterns",
+          "paragraphs": [
+            "As shown in Figure 3, heads with high KV cache quantization errors typically exhibit non-sparse attention patterns. The sparsity patterns of the attention heads are correlated with the head-wise and layer-wise sensitivity to KV cache quantization, Highly sparse streaming heads are generally more robust to KV cache quantization than retrieval heads. The proof of Lemma 1 is available in Appendix A.",
+            "Only attention heads with sparse and concentrated patterns demonstrate consistent robustness to low-precision KV cache quantization.",
+            "The optimal strategy to mitigate attention shift and enhance accuracy is to increase key quantization precision, specifically reducing 𝒒​Δ​𝑲\\boldsymbol{q}\\Delta\\boldsymbol{K} in highly sensitive layers. This approach is recommended when dynamic fine-grained token or page-level KV cache quantization for better accuracy is not feasible, as such methods remain challenging to implement on existing hardware."
+          ]
+        },
+        {
+          "title": "4.5 Layer-wise Sensitivity to KV Cache Quantization",
+          "paragraphs": [
+            "According to the layer-wise attention score and relative output errors of different prompts and KV cache quantization precision pairs of Llama-3.1-8B-Instruct in Figure 2 and 13, transformer layers sensitive to KV cache quantization remain consistent across different input prompts. The observed shifts in layer-wise error distribution primarily stem from variations in key cache quantization precision. Both Qwen2.5-7B-Instruct and Mistral-7B-Instruct-v0.3 exhibit similar behavioral patterns in this respect. Further analysis results can be found in Appendix G. We can thus conclude that layer-wise sensitivity to KV cache quantization is an inherent characteristic of LLMs.",
+            "KV cache quantization errors are accumulated over both the model layer and generation sequence dimensions, and the sensitive layer will further amplify errors and lead to dramatic model performance degradation. We can perform an offline search to identify the optimal coarse-grained KV cache quantization configuration, determining the most effective precision pairs for each layer, particularly for sensitive layers, to achieve a balance between memory reduction and generation efficiency without incurring any overhead during online inference."
+          ]
+        }
+      ]
+    },
+    "5 Method": {
+      "paragraphs": [
+        "KVTuner is an adaptive tuning framework for hardware-friendly mixed-precision KV cache quantization. It optimizes layer-wise KV precision pairs by considering their inherent sensitivity properties, aiming to achieve a better trade-off between inference efficiency and model accuracy.",
+        "Instead of making online decisions about fine-grained token or page-level KV cache quantization precision for improved model accuracy, we conduct offline search to identify the Pareto-optimal quantization precision settings for coarse-grained KV cache in each transformer layer using multi-objective optimization algorithms. Here, we refer to the entire low-bit KV cache being quantized with a specific precision pair, such as K8V4 or K4V2. This approach ensures that no additional overhead is introduced during dynamic quantization and online inference. Due to the flexibility introduced by layer-wise KV cache quantization precision tuning, KVTuner is able to accommodate more hardware and accuracy constraints of different deployed LLMs compared to uniform 8-bit or even lower precision quantization. Moreover, KVTuner accelerates LLM inference and reduces memory footprint, while still maintaining lossless or slightly lossy final model generation."
+      ],
+      "subsections": [
+        {
+          "title": "5.1 Problem Formulation",
+          "paragraphs": [
+            "The offline layer-wise KV precision pair tuning problem can be formulated as a discrete combinatorial optimization task, considering hardware limitations and accuracy loss constraints. It can be solved using multi-objective optimization algorithms. We aim to minimize the quantized KV cache memory usage across all transformer layers while minimizing the final model accuracy loss, subject to the maximum MM memory and Δ​A\\Delta A accuracy loss constraints:",
+            "where the search space 𝐏∈SL\\mathbf{P}\\in S^{L} is the KV cache precision pairs in LL layers. The layer-wise search space SS is defined as the KV cache precision pair (PklP^{l}_{k}, PvlP^{l}_{v}) in the ll-th layer. fm​(𝐏)=∑(𝐏)2​Lf_{m}(\\mathbf{P})=\\frac{\\sum(\\mathbf{P})}{2L} captures the average equivalent quantization bits of all KV cache, fa​(𝐏)=AL​L​M​(K​Vh​a​l​f)−AL​L​M​(K​V𝐏)f_{a}(\\mathbf{P})=A_{LLM}(KV_{half})-A_{LLM}(KV_{\\mathbf{P}}) measures the final LLM accuracy loss with the KV precision as 𝐏\\mathbf{P} compared with LLM inference using 16-bit half precision KV cache. For instance, we can limit the average KV cache quantization precision to 2.5-bit, while optimizing the equivalent quantization precision and inference accuracy."
+          ]
+        },
+        {
+          "title": "5.2 Framework",
+          "paragraphs": [
+            "To reduce the overhead of online fine-grained KV cache mixed-precision quantization tuning, we propose offline calibration of the optimal coarse-grained KV cache quantization precision pairs for each layer or head using multi-objective optimization algorithms Akiba et al. (2019); Zhang & Li (2007). These pre-calibrated settings are then directly applied during online quantization. The efficiency of offline calibration is crucial for practical applications due to the large combinatorial search space of KV cache quantization pairs across multiple transformer layers. Therefore, as demonstrated in Figure 4, we propose the intra-layer and inter-layer search space pruning algorithms to accelerate the search process while preserving optimization opportunities. After the efficient preprocessing, the final LLM inference accuracy is utilized to search the Pareto optimal layer-wise KV precision pairs 𝐏\\mathbf{P} capturing complex dependencies of the nonlinear error accumulation."
+          ]
+        },
+        {
+          "title": "5.3 Automatic KV Cache Quantization Precision Pair Search",
+          "paragraphs": [
+            "As analyzed in Section 4.2 and 4.3, the model-wise and layer-wise sensitivity to KV cache quantization mode and precision is the inherent model property and is independent of the input prompts. Therefore, we can search for the optimal layer-wise KV cache quantization precision pairs offline to eliminate the additional online decision-making overhead with high generalization. If the candidate layer-wise KV precision pairs are {2,4,8}×{2,4,8}\\{2,4,8\\}\\times\\{2,4,8\\}, then the number of possible combinations is 9L9^{L}, where the LL is the number of transformer layers. For example, the Llama-3.1-8B-Instruct model with 32 layers has about 3.4×10303.4\\times 10^{30}, which is intractable. Therefore, we design the following two-level search space pruning algorithm to reduce 𝐏\\mathbf{P} from SL{S}^{L} to SpG{S_{p}}^{G}, where SpS_{p} is the pruned candidate set in a group and GG is the number of clustered layer groups.",
+            "KV cache quantization errors in each layer accumulate across both the model layers and generation token dimensions. Therefore, we must control the layer-wise error by pruning KV cache quantization pairs to limit the final model error. For all candidate KV cache quantization pairs in each layer, we prune those that are not part of the Pareto frontier, considering both the equivalent KV cache quantization precision and the relative attention output errors. For example, the precision pairs KV8, K8V4, KV4, K4V2, and KV2 are Pareto efficient for most layers in Llama-3.1-8B-Instruct in Figure 13, except for the 0-th layer, where K4V8 results in smaller errors than K8V4.",
+            "Although the above intra-layer pruning already significantly reduces the search space to SpL{S_{p}}^{L} such as 532≈2.3×10225^{32}\\approx 2.3\\times 10^{22} in Llama-3.1-8B-Instruct, it is still too computationally costly for searching. Therefore, we further propose the inter-layer clustering algorithm based on relative attention output errors and the pruned candidate KV quantization pairs to SpG{S_{p}}^{G} such as 56=156255^{6}=15625. The initial step involves partitioning layers based on distinct candidate sets of pruned KV cache quantization precision pairs. These candidate sets serve as indicators of how individual layers respond differently to specific KV cache quantization precision configurations. The subsequent step involves clustering layers that share the same candidate set, using quantization sensitivity as the clustering metric. This sensitivity is quantified with the relative attention output errors produced by the pruned precision pairs.",
+            "To effectively evaluate different quantization settings, we develop an approach that amplifies KV cache quantization error accumulation and distinguishes the performance of KV precision pairs during the calibration process. This approach utilizes dequantized KV cache for self-attention computation during the prefilling stage, enabling error accumulation across model layers. Furthermore, we utilize long-context generation and challenging calibration datasets such as mathematical reasoning. In these tasks, minor errors propagating in decoding steps may result in intermediate generation token flipping and substantial mistakes in final answers as demonstrated by Table 1."
+          ]
+        }
+      ]
+    },
+    "6 Experimental results": {
+      "paragraphs": [
+        "The detailed experimental settings are available in Section C. The intra-layer and inter-layer KV precision pairs pruning results of various LLMs are available in Appendix D.1. The proposed pruning algorithm can significantly reduce the search space to SpG{S_{p}}^{G} and speedup convergence of MOO search. The final model accuracy on mathematical reasoning datasets and the throughput improvement validate the effectiveness of KVTuner."
+      ],
+      "subsections": [
+        {
+          "title": "6.1 Pareto-optimal KV Cache Precision Pair Search",
+          "paragraphs": [
+            "KIVI. The mixed precision KIVI quantization mode can maintain high accuracy. As shown in Figure 5(a), KVTuner with KIVI effectively maintains Llama-3.1-8B-Instruct performance while reducing the equivalent quantization precision to 3.06-bit. In addition, KVTuner also finds out four settings including lower-precision 4.91-bit in the Pareto frontier whose memory usage and accuracy are better than KV8. Most sampled settings are close to the Pareto frontier, indicating that Llama-3.1-8B-Instruct is more robust to low-precision KV quantization. These demonstrate that KVTuner increases the flexibility of KV cache quantization and can achieve lower precision and even better precision than uniform KV precision.",
+            "Per-token-asym. According to Figure 5(b), when using the per-token-asym quantization mode on the sensitive Qwen2.5-7B-Instruct model, the Pareto frontier identified by KVTuner consistently outperforms uniform precision quantization. Especially, KVTuner can achieve KV8 accuracy with the equivalent 3.92-bit KV precision, while the uniform KV4 accuracy significantly degrades to around 0%0\\%. Therefore, even leveraging the simple and commonly used per-token-asym mode Lin et al. (2024b); Sheng et al. (2023), KVTuner can reduce the memory footprint with the maintained accuracy of models with high knowledge density."
+          ]
+        },
+        {
+          "title": "6.2 LLM Mathematical and Scientific Reasoning Accuracy",
+          "paragraphs": [
+            "Apart the in-context few-shot GSM8K datasets, we also utilize them as the internal reasoning steps in a multi-turn way to imitate Openai o1 like reasoning systems in Table 5. KIVI-2 and KIVI-4 result in dramatic accuracy loss in Qwen2.5-{3B, 7B}-Instruct due to their high sensitivity to low-precision KV quantization. KVTuner with KIVI can nearly losslessly quantizate KV cache to 3.25-bit, 3.17-bit, and 5.96-bit of the three models, respectively, further reducing the memory footprint compared with KIVI-4 and KIVI-8. In addition, we find out an interesting observation: KVTuner enables longer context and lower KV precision for better CoT and multi-turn mathematical reasoning accuracy than short-context and original BF16 precision KV. Most LLMs benefit from longer CoT and KVTuner enables nearly lossless lower-precision KV quantization.",
+            "We extend our evaluation to the GPQA dataset with few-shot CoTs, as detailed in Table 6. KVTuner successfully enables lower than 4-bit, such as 3.59-bit, KV cache quantization with minimal performance degradation across various models. These results demonstrate the effectiveness of our method in maintaining high mathematical reasoning accuracy while significantly reducing memory usage."
+          ]
+        },
+        {
+          "title": "6.3 Throughput",
+          "paragraphs": [
+            "We measure the maximum throughput and the corresponding batch size under specific input prompt length with the implementation of the KIVI GPU kernel. The Llama2-7B model and the output length 128 are used to align with KIVI. As shown in Table 7, for context length ranging from 512 to 4096, the high accuracy mode KVTuner-C6 can achieve 26.7%∼38.3%26.7\\%\\sim 38.3\\% throughput improvement and the high efficiency KVTuner-C3 can achieve 58.3%∼76.4%58.3\\%\\sim 76.4\\% throughput improvement than KV8."
+          ]
+        },
+        {
+          "title": "6.4 Detailed Analysis",
+          "paragraphs": [
+            "By analyzing the detailed configurations in the Pareto frontier identified for Llama-3.1-8B-Instruct, we observe that:",
+            "• In most cases, all layer groups adopt a quantization configuration where the precision of the key is higher than the precision of the value. This supports our earlier observation from uniform quantization that the key plays a more critical role in quantization.",
+            "• In other cases, in certain specialized layer groups, the value is set at a higher precision than the key for certain specialized layer groups. This aligns with the patterns identified in Table 4, which highlight specific layer groups may require higher precision for values.",
+            "• KVTuner tends to allocate higher precision to groups with larger quantization errors. Reducing the quantization precision of the key for a crucial group of layers can significantly degrade the performance. For instance, in Llama-3.1-8B-Instruct, the layer group [8∼118\\sim 11, 14∼1714\\sim 17, 20, 30] is particularly sensitive to the reduction of the key precision, and if the precision of the key is reduced from 4-bit to 2-bit, the performance would drop from 0.67 to 0.495.",
+            "In most cases, all layer groups adopt a quantization configuration where the precision of the key is higher than the precision of the value. This supports our earlier observation from uniform quantization that the key plays a more critical role in quantization.",
+            "In other cases, in certain specialized layer groups, the value is set at a higher precision than the key for certain specialized layer groups. This aligns with the patterns identified in Table 4, which highlight specific layer groups may require higher precision for values.",
+            "KVTuner tends to allocate higher precision to groups with larger quantization errors. Reducing the quantization precision of the key for a crucial group of layers can significantly degrade the performance. For instance, in Llama-3.1-8B-Instruct, the layer group [8∼118\\sim 11, 14∼1714\\sim 17, 20, 30] is particularly sensitive to the reduction of the key precision, and if the precision of the key is reduced from 4-bit to 2-bit, the performance would drop from 0.67 to 0.495."
+          ]
+        },
+        {
+          "title": "6.5 Ablation Studies",
+          "paragraphs": [
+            "According to Figure 6, when using the per-token-asym quantization mode on the Llama-3.1-8B-Instruct model, the search results deteriorate significantly if the proposed intra-layer and inter-layer search space pruning algorithms are not applied. In comparison with the counterpart with search space pruning as pre-processing in Figure 9(a), this highlights search space pruning is helpful for MOO search convergence and maintaining quantization performance."
+          ]
+        }
+      ]
+    },
+    "7 Conclusion": {
+      "paragraphs": [
+        "KVTuner enables efficient and adaptive layer-wise mixed-precision KV cache quantization via sensitivity-aware optimization techniques. It systematically reduces KV cache quantization errors by prioritizing key cache precision while balancing memory efficiency and inference accuracy. Experimental results demonstrate that KVTuner achieves nearly lossless compression at 3.25-bit for Llama-3.1-8B-Instruct and 4-bit for sensitive Qwen2.5-7B-Instruct. KVTuner also demonstrates that employing longer CoTs with lower and mixed precision KV cache quantization yields superior performance compared to shorter CoTs utilizing higher precision KV cache. This improvement is evident in both memory efficiency and accuracy, particularly in the context of mathematical reasoning tasks. KVTuner also greatly narrows the performance difference between the simple per-token-asym and accurate KIVI quantization modes, even when using overall similar low-precision settings."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Proof of Lemma1": {
+      "paragraphs": [
+        "Lemma 1 claims that only attention heads with sparse and concentrated patterns demonstrate consistent robustness to low-precision KV cache quantization. Its proof is below."
+      ],
+      "subsections": []
+    },
+    "Appendix B Effects of KV Cache Quantization Modes and Precision": {
+      "paragraphs": [
+        "In this section, we analyze the effects of KV cache quantization mode and precision. We collect the full precision query tensor in the decoding phase and KV cache in both prefilling and decoding stages of the Llama-3.1-8B-Instruct model when processing the first 20 mathematical GSM8K zero-shot prompts without KV cache quantization. After that, we quantize KV cache along the channel or token dimension with uniform precision to compute errors of KV cache and attention score and output vectors of each self-attention layer as defined in Section 3.2, caused by KV cache quantization without any error accumulation. Finally, we average the simulated errors over different prompts and all layers in Table 8 to study the inherent sensitivity of KV cache to quantization mode and precision.",
+        "The non-accumulated relative attention output errors eoe_{o} of INT8 KV cache quantization with the per-token-asym or per-channel-asym are lower than 3%3\\%. Minor single-token errors may cause slight shifts in intermediate attention patterns and final output distributions, yet these shifts are typically insufficient to alter the generated output tokens. However, when implementing extremely low-precision 2-bit KV2 cache quantization, the relative key quantization error eae_{a} increases to 40.1%40.1\\% or 77.5%77.5\\%, which may lead to substantial attention distribution shift for non-sparse retrieval heads as demonstrated in Figure 3. eoe_{o} increases dramatically to 81.4%81.4\\% with the per-channel-asym mode even 96.2%96.2\\% with the per-token-asym mode. The noticeable errors may thus lead to noticeable token flipping and generation errors as in Table 1.",
+        "The relative key error eke_{k} of the INT8 per-token-asym key quantization is 0.012280, which is 2.5×2.5\\times larger than the per-channel-asym counterpart 0.004869. Dynamically asymmetric quantization along the channel dimension leads to significantly smaller error of both key cache and attention score compared with token dimension quantization, indicating that key cache is strongly sensitive to quantization dimensions. The phenomenon can be explained with the strong channel-wise outliers of key cache Liu et al. (2024f); Hooper et al. (2024). While value cache can not benefit from switching the quantization dimension, as the relative value errors of the channel or token dimensions over different precision are quite close.",
+        "As shown in Figure 7, there are clear layer-wise diversities of KV quantization errors eke_{k} and eoe_{o} with different quantization modes including per-token-asym and per-channel-asym and different precision like INT8, INT4, and INT2. In addition, changing the quantization dimension or mode can result in the significant distribution shift of layer-wise key quantization error. For example, the most sensitive layer with the per-token-asym quantization mode is layer-29, while it changes to layer-11 and layer-13 with the per-token-asym mode. Statically retaining the first or last several layers with more sparse budgets Tang et al. (2024b) may not general well in KV cache quantization. Therefore, we need an automatic KV cache quantization tuning framework to adaptively adopt to these layer-wise differences and configuration modifications.",
+        "[Figure: (a) K8 per-token-asym]",
+        "[Figure: (a) K8 per-token-asym]",
+        "[Figure: (b) K4 per-token-asym]",
+        "[Figure: (c) K2 per-token-asym]",
+        "[Figure: (d) K8 per-channel-asym]",
+        "[Figure: (e) K4 per-channel-asym]",
+        "[Figure: (f) K2 per-channel-asym]",
+        "[Figure: (g) V8 per-token-asym]",
+        "[Figure: (h) V4 per-token-asym]",
+        "[Figure: (i) V2 per-token-asym]",
+        "[Figure: (j) V8 per-channel-asym]",
+        "[Figure: (k) V4 per-channel-asym]",
+        "[Figure: (l) V2 per-channel-asym]",
+        "[Table: Table 8: Key and value cache quantization relative error analysis of different precision and quantization methods. We collect BF16 KV cache of 20 prompts from the GSM8K zero-shot dataset with Llama-3.1-8B-Instruct and then perform offline quantization to compute the mean error between BF16 and dequantized KV cache.]"
+      ],
+      "subsections": []
+    },
+    "Appendix C Experimental Settings": {
+      "paragraphs": [
+        "KVTuner is an automatic KV cache quantization precision tuning framework and can be applied to any quantization mode. We choose two representative and efficient KV cache quantization algorithms KIVI Liu et al. (2024f) and per-token-asym with uniform KV8, KV4, or KV2 precision pairs in all layers as baselines. Specifically, for the KIVI quantization method, we set the residual length to 32 and the group size to 32. KVTuner is currently implemented based on huggingface transformers, but it can be applied to inference frameworks such as vLLM Kwon et al. (2023), Megatron Shoeybi et al. (2019), LMDeploy Contributors (2023), and SGLang Zheng et al. (2024). To ensure compatibility, we integrate KV cache quantization methods including KIVI, per-token-asym, and KVTuner within the lm-evaluation-harness Gao et al. (2024), allowing for seamless adaptation and reproducibility of KVTuner.",
+        "We select three popular and recently released LLMs series Llama3.1 Dubey et al. (2024), Mistral-v0.3 Jiang et al. (2023), and Qwen2.5 Yang et al. (2024a). Among them, Llama-3.1-8B-Instruct, Mistral-7B-Instruct-v0.3, and Qwen2.5-7B-Instruct represent the most studied model size. To cover more LLMs application scenarios with different scales, Qwen2.5-3B-Instuct and its quantized version Qwen2.5-3B-Instruct-AWQ are selected for personal devices with limited GPU memory, while Qwen2.5-{14B, 32B}-Instuct with larger model scale and better performance are also tested. We also test Qwen2.5-Math-7B-Instruct for mathematical reasoning tasks.",
+        "We cover 5 general AIGC and 2 mathematical reasoning tasks available in lm-evaluation-harness . 1) General tasks: CEVALHuang et al. (2024), MMLU Hendrycks et al. (2020), TriviaQA Joshi et al. (2017), RACE Lai et al. (2017), and TruthfulQA Lin et al. (2021). 2) Math, science, and logic tasks: GSM8K {0-shot, 4-shot, 8-shot, 16-shot} Cobbe et al. (2021), GSM8K multi-round with lm-evaluation-harness Gao et al. (2024), GPQA Rein et al. (2023).",
+        "For the final layer-wise KV cache quantization precision pair searching with multi-objective optimization, we use the open-sourced and widely used Optuna framework Akiba et al. (2019) and MOEA/D Zhang & Li (2007) algorithm. In which case, we treat the LLM inference accuracy under different layer-wise KV precision pairs and input prompts as block-box. The intra-layer and inter-layer search space pruning only takes several minutes but significantly improves sampling efficiency of the downstream Optuna.",
+        "We first preprocess the available quantization precision options for each layer group and store them in an array. The indices of this array are then treated as integer parameters, which are optimized by Optuna through multi-objective optimization. The first objective is to maximize the accuracy on the first 200 samples of the GSM8K dataset, while the second objective is to minimize the equivalent quantization precision or memory usage of KV cache. For each combination of model and quantization mode, we set a soft constraint on the equivalent precision at 4-bit and 6-bit for optuna, conducting 200 search iterations for each setting. The total time cost of offline KV cache precision pair tuning with Optuna mainly depends on the hardware and operator implementation efficiency."
+      ],
+      "subsections": []
+    },
+    "Appendix D Search Space Pruning and Multi-objective Searching Results": {
+      "paragraphs": [
+        "[Figure: (a) Llama-3.1-8B-Instruct]",
+        "[Figure: (a) Llama-3.1-8B-Instruct]",
+        "[Figure: (b) Mistral-7B-Instruct-v0.3]",
+        "[Figure: (c) Qwen2.5-3B-Instruct]",
+        "[Figure: (d) Qwen2.5-7B-Instruct]",
+        "[Figure: (a) Llama-3.1-8B-Instruct]",
+        "[Figure: (a) Llama-3.1-8B-Instruct]",
+        "[Figure: (b) Mistral-7B-Instruct-v0.3]",
+        "[Figure: (c) Qwen2.5-3B-Instruct]",
+        "[Figure: (d) Qwen2.5-7B-Instruct]",
+        "[Figure: (a) Llama-3.1-8B-Instruct]",
+        "[Figure: (a) Llama-3.1-8B-Instruct]",
+        "[Figure: (b) Qwen2.5-3B-Instruct]",
+        "[Table: Table 9: Inter-layer grouping results by clustering among the layers with the same pruned intra-layer KV cache quantization precision pairs.]",
+        "[Table: Table 10: Detailed searched layer-wise KV cache quantization precision pairs of different LLMs and KV cache quantization modes by KVTuner.]"
+      ],
+      "subsections": [
+        {
+          "title": "D.1 Intra-Layer and Inter-Layer Search Space Pruning Results",
+          "paragraphs": [
+            "The intra-layer KV cache quantization precision pair pruning based on Pareto frontier are available in Table 4. The calibration dataset is the first 20 prompts from the zeroshot GSM8K dataset. The Pareto optimal KV cache precision pairs in most layers are the key-first set {KV8, K8V4, KV4, K4V2, KV2}, indicating that the observation that key cache is more important than value cache holds.",
+            "When both key and value cache are quantized along the token dimension, only the first layer in Llama-3.1-8B-Instruct and Mistral-7B-Instruct-v0.3 prefers other KV precision pairs and all layers in Qwen2.5-{14B, 32B}-Instruct select the key-first set. In contrast, K8V2 outperforms KV4 in four important layers of Qwen2.5-{3B, 7B}-Instruct, indicating that uniform 4-bit key quantization may lead to model accuracy degradation as in Table 13.",
+            "When utilizing the KIVI-like key per-channel-asym and value per-token-asym quantization mode, more layers show diverse preference of Pareto optimal KV cache quantization precision pairs. In these layers, K4V8 and K2V4 outperform K8V4 and K4V2, which means that lower precision key is better than lower precision value in terms of attention errors. It indicates that per-channel key quantization can effectively reduce quantization errors.",
+            "After the intra-layer KV cache quantization precision pair pruning, we apply the inter-layer clustering among the layers with the same precision pair set. The clustering algorithm is DBSCAN Ester et al. (1996) with the hyper-parameter epsilon=0.05 and min_samples=2. As demonstrated in Table 9, we successfully reduce the exponential component of search space size from the number of transformer layers LL e.g. 28∼\\sim64 to the number of clustered layer groups GG e.g. 4∼\\sim8. Utilizing the two-level search space pruning, the total number of combinations of candidate KV cache precision pairs is significantly reduced from 9L9^{L} to 5G5^{G} or 6G6^{G}. In Llama-3.1-8B-Instruct, 9L=932≈3.4×10309^{L}=9^{32}\\approx 3.4\\times 10^{30}, while 5G=56=156255^{G}=5^{6}=15625.",
+            "In the layer-wise relative attention output errors with per-token-asym KV cache quantization of Llama-3.1-8B-Instruct in Figure 13, the highly sensitive layers include layer-{0, 1, 2, 3, 4, 23, 24, 25, 27, 28, 29}, while the insensitive layers include layer-{8, 9, 10, 11, 13, 14, 15, 20, 30}. Layers in these two classes are correctly clustered into different groups. Similar phenomenon can also be observed in Qwen2.5-7B-Instruct per-token-asym and KIVI-like quantization modes in Figure 16 and 18, respectively. Therefore, we can conclude that the proposed multi-objective Pareto frontier based intra-layer pruning and inter-layer clustering algorithms successfully reduce the search space by considering the inherent layer-wise sensitivities."
+          ]
+        },
+        {
+          "title": "D.2 Searched layer-wise KV precision pairs",
+          "paragraphs": [
+            "The final searched layer-wise mixed precision KV cache quantization precision pairs of different LLMs and KV quantization modes are available in Table 10. Some clustered layer groups in Table 9 choose the same KV cache quantization pairs under the given memory consumption and/or accuracy degradation constraints. The number of utilized KV cache quantization precision pairs is reduced from 6∼86\\sim 8 to 2∼52\\sim 5 in the tested Llama-3.1-8B-Instruct, Qwen2.5-3B-Instruct, and Qwen2.5-7B-Instruct models. In addition, the significantly diverse layer-wise KV precision pair distribution in Table 10 indicates that there are not clear heuristic rules based on layer depths to identify layer importance and sensitivity to KV cache quantization. Therefore, we need to measure the model accuracies considering their complicated nonlinear dependencies to layer-wise KV cache precision pairs and utilize accuracies to distinguish the whole model level KV cache precision pair combinations."
+          ]
+        },
+        {
+          "title": "D.3 Pareto Frontier with the GSM8K Calibration Dataset",
+          "paragraphs": [
+            "We use the open-sourced package optuna Akiba et al. (2019) with the MOEA/D algorithm Zhang & Li (2007) for the final search with the model memory usage and inference accuracy of the first 200 4-shot GSM8K prompts. The multi-objective search of the Pareto optimal layer-wise KV cache quantization precision pairs of Llama-3.1-8B-Instruct, Mistral-7B-Instruct-v0.3, Qwen2.5-3B-Instruct, and Qwen2.5-7B-Instruct with the KIVI and per-token-asym quantization modes are available in Figure 8 and 9. In order to validate the effectiveness of the proposed two-stage intra-layer and inter-layer search space pruning, we disable the pre-processing process and directly use the original full SLS^{L} search space in Figure 10.",
+            "For each combination of model and quantization mode, we set a soft constraint on the equivalent precision at 4-bit and 6-bit for optuna, conducting 200 search iterations for each setting. The search results are then merged for visualization. In cases where the two-stage intra-layer and inter-layer search space pruning is not applied, we set the maximum equivalent quantization precision to 6-bit and similarly perform 200 search iterations. Specifically, for the KIVI quantization method, we set the residual length to 32 and the group size to 32.",
+            "Note that for Qwen-2.5-7B with the KIVI quantization mode, the result from 200 search iterations appeared abnormal. Therefore, we extended the search to 500 iterations to obtain the final result.",
+            "[Figure: (a) Llama-3.1-8B-Instruct]",
+            "[Figure: (a) Llama-3.1-8B-Instruct]",
+            "[Figure: (b) Mistral-7B-Instruct-v0.3]",
+            "[Figure: (c) Qwen2.5-3B-Instruct]",
+            "[Figure: (d) Qwen2.5-7B-Instruct]",
+            "[Figure: (a) Llama-3.1-8B-Instruct]",
+            "[Figure: (a) Llama-3.1-8B-Instruct]",
+            "[Figure: (b) Mistral-7B-Instruct-v0.3]",
+            "[Figure: (c) Qwen2.5-3B-Instruct]",
+            "[Figure: (d) Qwen2.5-7B-Instruct]",
+            "[Figure: (a) Llama-3.1-8B-Instruct]",
+            "[Figure: (a) Llama-3.1-8B-Instruct]",
+            "[Figure: (b) Qwen2.5-3B-Instruct]"
+          ]
+        }
+      ]
+    },
+    "Appendix E Correlation of Model- and Layer-wise KV Cache Quantization Sensitivity with Attention Patterns": {
+      "paragraphs": [
+        "According to the layer-wise attention score errors of Llama-3.1-8B-Instruct in Figure 2 and Qwen2.5-7B-Instruct in Figure 16, we can observe the clear layer-wise difference in the same LLM. In this section, we try to explain the reason of the difference from the attention pattern perspective as in Figure 11 and 12. In which, we visualize block level attention scores of the first 4 heads with block size 4 in the prefilling and decoding stages, and horizontal and vertical axes represent the key and query dimensions respectively. Yellow, green, and purple points indicate high, medium, and low attention scores, respectively. We find out that the more complex and dynamic attention patterns usually lead to larger attention score errors and sensitivity to KV cache quantization of intermediate transformer layers and the whole LLMs.",
+        "Take Llama-3.1-8B-Instruct as an example, layer 12 and 13 are in the group with high attention score errors, while layer 0 and 31 are in the medium error group and layer 2 and 23 are in the low error group. Analyzing the attention patterns of these layer in the below Figure 11, we can conclude that heads in the layer 12 and 13 have dynamic and non-sparse attention patterns, which are called as retrieval heads Tang et al. (2024a); Xiao et al. (2024). In contrast, heads in layer 0, 2, 23 and 31 have more static attention patterns like attention sink and recent window, which are called as streaming heads Xiao et al. (2024, 2023b).",
+        "Compared with Llama-3.1-8B-Instruct which has the high ratio of heads with static attention patterns, Qwen2.5-7B-Instruct consists of many heads with mixture of dynamic retrieval heads and other static patterns. It may explain why Qwen2.5-7B-Instruct is more unstable to KV cache quantization as in Table 2. Layer 5, 12, 21, and 27 have similar attention patterns, but the relative strength of retrieval and streaming heads leads to the difference of layer-wise sensitivity to KV cache quantization.",
+        "However, the sensitivity to KV cache quantization is the inherent model property which can be learned offline. Therefore, it is necessary to apply layer-wise mixed precision KV cache quantization and maintain high precision of key cache than value cache with multi-objective optimization KV precision pair tuning as proposed in this work. KVTuner thus makes equivalent 4-bit and even lower KV cache quantization nearly lossless in the sensitive models like Qwen2.5-7B-Instruct.",
+        "[Figure: (a) Layer-0 with recent attention patterns (medium attention score errors)]",
+        "[Figure: (a) Layer-0 with recent attention patterns (medium attention score errors)]",
+        "[Figure: (b) Layer-2 with attention sinks (low attention score errors)]",
+        "[Figure: (c) Layer-12 with retrieval heads (high attention score errors)]",
+        "[Figure: (d) Layer-13 with retrieval heads (high attention score errors)]",
+        "[Figure: (e) Layer-23 with attention sink (low attention score errors)]",
+        "[Figure: (f) Layer-31 with mixture of retrieval and streaming heads (medium attention score errors)]",
+        "[Figure: (a) Layer-0 with mixture of recent window, re-access, and retrieval heads (high attention score errors)]",
+        "[Figure: (a) Layer-0 with mixture of recent window, re-access, and retrieval heads (high attention score errors)]",
+        "[Figure: (b) Layer-1 with mixture of recent window and re-access patterns (medium attention score errors)]",
+        "[Figure: (c) Layer-5 with mixture of retrieval and streaming heads (low attention score errors)]",
+        "[Figure: (d) Layer-12 with mixture of retrieval and streaming heads (medium attention score errors)]",
+        "[Figure: (e) Layer-21 with mixture of retrieval heads and attention sinks (medium attention score errors)]",
+        "[Figure: (f) Layer-27 with mixture of retrieval heads and attention sinks (high attention score errors)]"
+      ],
+      "subsections": []
+    },
+    "Appendix F More KV Cache Quantization Results": {
+      "paragraphs": [
+        "[Table: Table 11: Mathematical reasoning accuracy comparison of different KV cache precision settings with the KIVI and per-token-asym quant. mode on the GSM8K few-shot CoT and CoT as multiturn dataset. Notably, for the Qwen2.5-3B-Instruct model using KIVI quantization mode, all configurations within the 4-bit to 6-bit equivalent precision range exhibit lower accuracy on the calibration dataset compared to a configuration with an equivalent precision of 3.44-bit. As a result, we choose this 3.44-bit configuration as the highest-accuracy representative for cases where the equivalent precision is constrained to ≤\\leq6-bit. We observe that KVTuner significantly reduces the performance gap between the per-token-asym and KIVI quantization modes.]",
+        "[Table: Table 12: Final generation accuracy comparison of different KV cache quantization modes and precisions and Llama-3.1-8B-Instruct and Mistral-7B-Instruct-v0.3 on the AIGC and mathematical datasets. KV cache quantization is enabled during both prefilling and decoding stages to amplify the effects of error accumulation.]",
+        "[Table: Table 13: Final generation accuracy comparison of different KV cache quantization modes and precisions and Qwen2.5 LLMs on the AIGC and mathematical datasets. KV cache quantization is enabled during both prefilling and decoding stages to amplify the effects of error accumulation.]",
+        "[Table: Table 14: KIVI-HQQ KV cache quantization results of different precision and LLM models on the GSM8K few-shot CoTs as multiturn conversation dataset.]"
+      ],
+      "subsections": [
+        {
+          "title": "F.1 More KV Cache Quantization Results on GSM8K",
+          "paragraphs": []
+        },
+        {
+          "title": "F.2 More KV Cache Quantization Results on General and Mathematical Reasoning Datasets",
+          "paragraphs": [
+            "The experimental results of the selected 5 LLMs on the general and mathematical reasoning datasets with uniform KV cache quantization precision pairs are available in Table 12 and 13. To simulate the Openai o1 like long CoT reasoning process, the few-shot CoTs in the GSM8K dataset are treated as a multi-turn conversation, which is enabled with the flags fewshot_as_multiturn and apply_chat_template in lm-evaluation-harness. In which cases, questions are provided as user content and answers are provided as assistant responses instead of directly using the given standard answers. Table 14 summarizes the results of 8 LLMs including Qwen2.5-{14, 32B}-Instruct under the fewshot_as_multiturn setting.",
+            "There are limited long output mathematical reasoning datasets in lm-evaluation-harness Gao et al. (2024) and the evaluation of the long context generation is an open question. Therefore, we enable KV cache quantization in both the prefilling and decoding stages to amplify the effects to final generation results caused by KV cache quantization error accumulation, which makes distinguishing different quantization methods easier. For the KIVI quantization mode, we utilize the HQQ quantizer from HuggingFace’s implementation, with both the residual length and group size set to 32.",
+            "According to Table 12, 13, and 14, most LLMs, including Llama-3.1-8B-Instruct, Mistral-7B-Instruct-v0.3, Qwen2.5-{14B, 32B}-Instruct, are robust to low-bit KV cache quantization. Although error accumulation caused by KV cache quantization starts from the prefilling stage, the high KV cache quantization precision pair KV8 with KIVI or per-token-asym quantization mode are still generally lossless, except Qwen2.5-Math-7B-Instruct. The uniform KV cache quantization precision pairs KV4 or even K4V2 with the KIVI quantization mode can achieve nearly lossless 4×4\\times or even 5.3×5.3\\times KV cache compression, respectively. KV4 with the simple per-token-asym mode also results in negligible accuracy loss in Llama-3.1-8B-Instruct and Mistral-7B-Instruct-v0.3 as shown in Table 12. KIVI does outperform the per-token-asym quantization mode in the low-precision settings such as KV4, K4V2, and KV2, especially in Qwen2.5-3B-Instruct-AWQ and Qwen2.5-7B-Instruct as demonstrated in Figure 13.",
+            "As shown in Figure 14, the larger Qwen2.5-{14B,32B}-Instruct models are robust than the smaller Qwen2.5-{3B, 7B, Math-7B}-Instruct and the weight quantized Qwen2.5-3B-Instruct-AWQ models. In addition, comparing Qwen2.5-3B-Instruct-AWQ and Qwen2.5-3B-Instruct, we can conclude that model weight quantization with AWQ does not affect the model-level sensitivity to KV cache quantization. The increasing GSM8K accuracy with the longer CoTs under the half precision BF16 KV cache setting indicates that most Qwen2.5 models benefit from longer CoTs. We also obverse that 16-shot CoTs with K4V2 KV cache precision outperforms the 4-shot CoTs with BF16 KV cache precision on the larger Qwen2.5-{14B,32B}-Instruct models. It indicates that longer CoT with lower and mixed precision KV cache outperforms uniform precision counterparts as in Section 6.2. In other words, mixed precision key cache quantization with higher precision key can achieve both memory usage and inference accuracy improvement than equal precision key and value cache quantization."
+          ]
+        }
+      ]
+    },
+    "Appendix G Layer-wise Attention Score and Relative Output Error": {
+      "paragraphs": [
+        "In this section, we visualize more layer-wise attention errors with KV cache quantization covering different LLMs, datasets, and KV cache quantization mode and precision. We select the first 20 prompts from the mathematical reasoning dataset GSM8K Cobbe et al. (2021) and the AIGC multi-turn conversation dataset multiturn-softage SoftAge-AI (2024). Tested LLMs include Llama-3.1-8B-Instruct, Qwen2.5-7B-Instruct, and Mistral-7B-Instruct-v0.3. The layer-wise sensitivity to KV cache quantization of different LLMs are consistent to different prompts and datasets. Key cache quantization generally leads to the layer-wiser attention output error distribution shift. When the layer-wise attention error distribution significantly changes, the final model accuracy also dramatically degrades. For example, the perplexity and final generation accruracy of Qwen2.5-7B-Instruct dramatically degrades when the key quantization precision decreases to 4-bit and 2-bit with the KIVI or per-token-asym quantization mode as demonstrated in Table 2, 5, and 6. The attention distribution of it also significantly shifts as shown in Figure 16, 17, and 18. The most",
+        "As visualized in Figure 12, most layers of Qwen2.5-7B-Instruct have a high ratio of non-sparse retrieval heads, which are sensitive to low-precision key cache quantization as analyzed in Section 4.4. As a result, 4-bit or 2-bit key quantization leads to noticeable errors of attention score and critical KV identification in these layers with medium attention errors such as layer-1, 12, and 21.",
+        "[Figure: (a) KV8 eoe_{o}: 0.014]",
+        "[Figure: (a) KV8 eoe_{o}: 0.014]",
+        "[Figure: (b) K8V4 eoe_{o}: 0.100]",
+        "[Figure: (c) K8V2 eoe_{o}: 0.401]",
+        "[Figure: (d) K4V8 eoe_{o}: 0.168]",
+        "[Figure: (e) KV4 eoe_{o}: 0.207 ]",
+        "[Figure: (f) K4V2 eoe_{o}: 0.453]",
+        "[Figure: (g) K2V8 eoe_{o}: 0.882]",
+        "[Figure: (h) K2V4 eoe_{o}: 0.892 ]",
+        "[Figure: (i) KV2 eoe_{o}: 0.962]",
+        "[Figure: (a) K8 eae_{a}: 5.0×10−65.0\\times 10^{-6}]",
+        "[Figure: (a) K8 eae_{a}: 5.0×10−65.0\\times 10^{-6}]",
+        "[Figure: (b) K4 eae_{a}: 6.7×10−56.7\\times 10^{-5}]",
+        "[Figure: (c) K2 eae_{a}: 3.26×10−43.26\\times 10^{-4}]",
+        "[Figure: (d) KV8 eoe_{o}: 0.017]",
+        "[Figure: (e) K8V4 eoe_{o}: 0.110]",
+        "[Figure: (f) K8V2 eoe_{o}: 0.418]",
+        "[Figure: (g) K4V8 eoe_{o}: 0.199]",
+        "[Figure: (h) KV4 eoe_{o}: 0.240]",
+        "[Figure: (i) K4V2 eoe_{o}: 0.484]",
+        "[Figure: (j) K2V8 eoe_{o}: 1.092]",
+        "[Figure: (k) K2V4 eoe_{o}: 1.103]",
+        "[Figure: (l) K2V2 eoe_{o}: 1.148]",
+        "[Figure: (a) K8 eae_{a}: 4.0×10−64.0\\times 10^{-6}]",
+        "[Figure: (a) K8 eae_{a}: 4.0×10−64.0\\times 10^{-6}]",
+        "[Figure: (b) K4 eae_{a}: 6.7×10−56.7\\times 10^{-5}]",
+        "[Figure: (c) K2 eae_{a}: 3.26×10−43.26\\times 10^{-4}]",
+        "[Figure: (d) KV8 eoe_{o}: 0.008]",
+        "[Figure: (e) K8V4 eoe_{o}: 0.110]",
+        "[Figure: (f) K8V2 eoe_{o}: 0.418]",
+        "[Figure: (g) K4V8 eoe_{o}: 0.138]",
+        "[Figure: (h) KV4 eoe_{o}: 0.187]",
+        "[Figure: (i) K4V2 eoe_{o}: 0.484]",
+        "[Figure: (j) K2V8 eoe_{o}: 1.092]",
+        "[Figure: (k) K2V4 eoe_{o}: 1.103]",
+        "[Figure: (l) K2V2 eoe_{o}: 1.148]",
+        "[Figure: (a) K8 eae_{a}: 1.74×10−41.74\\times 10^{-4}]",
+        "[Figure: (a) K8 eae_{a}: 1.74×10−41.74\\times 10^{-4}]",
+        "[Figure: (b) K4 eae_{a}: 1.54×10−31.54\\times 10^{-3}]",
+        "[Figure: (c) K2 eae_{a}: 4.68×10−34.68\\times 10^{-3}]",
+        "[Figure: (d) KV8 eoe_{o}: 0.033]",
+        "[Figure: (e) K8V4 eoe_{o}: 0.117]",
+        "[Figure: (f) K8V2 eoe_{o}: 0.446]",
+        "[Figure: (g) K4V8 eoe_{o}: 0.292]",
+        "[Figure: (h) KV4 eoe_{o}: 0.324 ]",
+        "[Figure: (i) K4V2 eoe_{o}: 0.557]",
+        "[Figure: (j) K2V8 eoe_{o}: 0.948]",
+        "[Figure: (k) K2V4 eoe_{o}: 0.958 ]",
+        "[Figure: (l) KV2 eoe_{o}: 1.038]",
+        "[Figure: (a) K8 eae_{a}: 1.8×10−51.8\\times 10^{-5}]",
+        "[Figure: (a) K8 eae_{a}: 1.8×10−51.8\\times 10^{-5}]",
+        "[Figure: (b) K4 eae_{a}: 1.68×10−41.68\\times 10^{-4}]",
+        "[Figure: (c) K2 eae_{a}: 5.00×10−35.00\\times 10^{-3}]",
+        "[Figure: (d) KV8 eoe_{o}: 0.031]",
+        "[Figure: (e) K8V4 eoe_{o}: 0.110]",
+        "[Figure: (f) K8V2 eoe_{o}: 0.427]",
+        "[Figure: (g) K4V8 eoe_{o}: 0.280]",
+        "[Figure: (h) KV4 eoe_{o}: 0.310]",
+        "[Figure: (i) K4V2 eoe_{o}: 0.531]",
+        "[Figure: (j) K2V8 eoe_{o}: 0.901]",
+        "[Figure: (k) K2V4 eoe_{o}: 0.909]",
+        "[Figure: (l) K2V2 eoe_{o}: 0.961]",
+        "[Figure: (a) K8 eae_{a}: 8.0×10−68.0\\times 10^{-6}]",
+        "[Figure: (a) K8 eae_{a}: 8.0×10−68.0\\times 10^{-6}]",
+        "[Figure: (b) K4 eae_{a}: 8.3×10−58.3\\times 10^{-5}]",
+        "[Figure: (c) K2 eae_{a}: 3.92×10−43.92\\times 10^{-4}]",
+        "[Figure: (d) KV8 eoe_{o}: 0.017]",
+        "[Figure: (e) K8V4 eoe_{o}: 0.101]",
+        "[Figure: (f) K8V2 eoe_{o}: 0.424]",
+        "[Figure: (g) K4V8 eoe_{o}: 0.131]",
+        "[Figure: (h) KV4 eoe_{o}: 0.174]",
+        "[Figure: (i) K4V2 eoe_{o}: 0.454]",
+        "[Figure: (j) K2V8 eoe_{o}: 0.679]",
+        "[Figure: (k) K2V4 eoe_{o}: 0.696]",
+        "[Figure: (l) K2V2 eoe_{o}: 0.838]",
+        "[Figure: (a) K8: 5.90×10−55.90\\times 10^{-5}]",
+        "[Figure: (a) K8: 5.90×10−55.90\\times 10^{-5}]",
+        "[Figure: (b) K4: 8.51×10−48.51\\times 10^{-4}]",
+        "[Figure: (c) K2: 4.04×10−34.04\\times 10^{-3}]",
+        "[Figure: (d) KV8 eoe_{o}: 0.013]",
+        "[Figure: (e) K8V4 eoe_{o}: 0.102]",
+        "[Figure: (f) K8V2 eoe_{o}: 0.411]",
+        "[Figure: (g) K4V8 eoe_{o}: 0.149]",
+        "[Figure: (h) KV4 eoe_{o}: 0.191 ]",
+        "[Figure: (i) K4V2 eoe_{o}: 0.453]",
+        "[Figure: (j) K2V8 eoe_{o}: 0.823]",
+        "[Figure: (k) K2V4 eoe_{o}: 0.837 ]",
+        "[Figure: (l) KV2 eoe_{o}: 0.939]"
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "Adnan et al. (2024) Adnan, M., Arunkumar, A., Jain, G., Nair, P., Soloveychik, I., and Kamath, P. Keyformer: Kv cache reduction through key tokens selection for efficient generative inference. Proceedings of Machine Learning and Systems, 6:114–127, 2024.",
+    "Akiba et al. (2019) Akiba, T., Sano, S., Yanase, T., Ohta, T., and Koyama, M. Optuna: A next-generation hyperparameter optimization framework. In Proceedings of the 25th ACM SIGKDD international conference on knowledge discovery & data mining, pp. 2623–2631, 2019.",
+    "Cai et al. (2024) Cai, T., Li, Y., Geng, Z., Peng, H., Lee, J. D., Chen, D., and Dao, T. Medusa: Simple llm inference acceleration framework with multiple decoding heads. arXiv preprint arXiv:2401.10774, 2024.",
+    "Cobbe et al. (2021) Cobbe, K., Kosaraju, V., Bavarian, M., Chen, M., Jun, H., Kaiser, L., Plappert, M., Tworek, J., Hilton, J., Nakano, R., Hesse, C., and Schulman, J. Training verifiers to solve math word problems. arXiv preprint arXiv:2110.14168, 2021.",
+    "Contributors (2023) Contributors, L. Lmdeploy: A toolkit for compressing, deploying, and serving llm. https://github.com/InternLM/lmdeploy, 2023.",
+    "Dao et al. (2022) Dao, T., Fu, D., Ermon, S., Rudra, A., and Ré, C. Flashattention: Fast and memory-efficient exact attention with io-awareness. Advances in Neural Information Processing Systems, 35:16344–16359, 2022.",
+    "DeepSeek (2024) DeepSeek, 2024. URL https://api-docs.deepseek.com/guides/kv_cache.",
+    "Dong et al. (2024) Dong, S., Cheng, W., Qin, J., and Wang, W. Qaq: Quality adaptive quantization for llm kv cache. arXiv preprint arXiv:2403.04643, 2024.",
+    "Dubey et al. (2024) Dubey, A., Jauhri, A., Pandey, A., Kadian, A., Al-Dahle, A., Letman, A., Mathur, A., Schelten, A., Yang, A., Fan, A., et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783, 2024.",
+    "Elhoushi et al. (2024) Elhoushi, M., Shrivastava, A., Liskovich, D., Hosmer, B., Wasti, B., Lai, L., Mahmoud, A., Acun, B., Agarwal, S., Roman, A., et al. Layer skip: Enabling early exit inference and self-speculative decoding. arXiv preprint arXiv:2404.16710, 2024.",
+    "Ester et al. (1996) Ester, M., Kriegel, H.-P., Sander, J., Xu, X., et al. A density-based algorithm for discovering clusters in large spatial databases with noise. In kdd, volume 96, pp. 226–231, 1996.",
+    "Frantar et al. (2022) Frantar, E., Ashkboos, S., Hoefler, T., and Alistarh, D. Gptq: Accurate post-training quantization for generative pre-trained transformers. arXiv preprint arXiv:2210.17323, 2022.",
+    "Gao et al. (2024) Gao, L., Tow, J., Abbasi, B., Biderman, S., Black, S., DiPofi, A., Foster, C., Golding, L., Hsu, J., Le Noac’h, A., Li, H., McDonell, K., Muennighoff, N., Ociepa, C., Phang, J., Reynolds, L., Schoelkopf, H., Skowron, A., Sutawika, L., Tang, E., Thite, A., Wang, B., Wang, K., and Zou, A. A framework for few-shot language model evaluation, 07 2024. URL https://zenodo.org/records/12608602.",
+    "Ge et al. (2023) Ge, S., Zhang, Y., Liu, L., Zhang, M., Han, J., and Gao, J. Model tells you what to discard: Adaptive kv cache compression for llms. arXiv preprint arXiv:2310.01801, 2023.",
+    "Gloeckle et al. (2024) Gloeckle, F., Idrissi, B. Y., Rozière, B., Lopez-Paz, D., and Synnaeve, G. Better & faster large language models via multi-token prediction. arXiv preprint arXiv:2404.19737, 2024.",
+    "He et al. (2024a) He, Y., Chen, F., Liu, J., Shao, W., Zhou, H., Zhang, K., and Zhuang, B. Zipvl: Efficient large vision-language models with dynamic token sparsification and kv cache compression. arXiv preprint arXiv:2410.08584, 2024a.",
+    "He et al. (2024b) He, Y., Zhang, L., Wu, W., Liu, J., Zhou, H., and Zhuang, B. Zipcache: Accurate and efficient kv cache quantization with salient token identification. arXiv preprint arXiv:2405.14256, 2024b.",
+    "Hendrycks et al. (2020) Hendrycks, D., Burns, C., Basart, S., Zou, A., Mazeika, M., Song, D., and Steinhardt, J. Measuring massive multitask language understanding. arXiv preprint arXiv:2009.03300, 2020.",
+    "Hooper et al. (2024) Hooper, C., Kim, S., Mohammadzadeh, H., Mahoney, M. W., Shao, Y. S., Keutzer, K., and Gholami, A. Kvquant: Towards 10 million context length llm inference with kv cache quantization. arXiv preprint arXiv:2401.18079, 2024.",
+    "Huang et al. (2024) Huang, Y., Bai, Y., Zhu, Z., Zhang, J., Zhang, J., Su, T., Liu, J., Lv, C., Zhang, Y., Fu, Y., et al. C-eval: A multi-level multi-discipline chinese evaluation suite for foundation models. Advances in Neural Information Processing Systems, 36, 2024.",
+    "Jiang et al. (2023) Jiang, A. Q., Sablayrolles, A., Mensch, A., Bamford, C., Chaplot, D. S., Casas, D. d. l., Bressand, F., Lengyel, G., Lample, G., Saulnier, L., et al. Mistral 7b. arXiv preprint arXiv:2310.06825, 2023.",
+    "Joshi et al. (2017) Joshi, M., Choi, E., Weld, D. S., and Zettlemoyer, L. Triviaqa: A large scale distantly supervised challenge dataset for reading comprehension. arXiv preprint arXiv:1705.03551, 2017.",
+    "Kang et al. (2024) Kang, H., Zhang, Q., Kundu, S., Jeong, G., Liu, Z., Krishna, T., and Zhao, T. Gear: An efficient kv cache compression recipefor near-lossless generative inference of llm. arXiv preprint arXiv:2403.05527, 2024.",
+    "Kwon et al. (2023) Kwon, W., Li, Z., Zhuang, S., Sheng, Y., Zheng, L., Yu, C. H., Gonzalez, J., Zhang, H., and Stoica, I. Efficient memory management for large language model serving with pagedattention. In Proceedings of the 29th Symposium on Operating Systems Principles, pp. 611–626, 2023.",
+    "Lai et al. (2017) Lai, G., Xie, Q., Liu, H., Yang, Y., and Hovy, E. Race: Large-scale reading comprehension dataset from examinations. arXiv preprint arXiv:1704.04683, 2017.",
+    "Lee et al. (2024a) Lee, J., Park, S., Hong, S., Kim, M., Chang, D.-S., and Choi, J. Improving conversational abilities of quantized large language models via direct preference alignment. arXiv preprint arXiv:2407.03051, 2024a.",
+    "Lee et al. (2024b) Lee, W., Lee, J., Seo, J., and Sim, J. {\\{InfiniGen}\\}: Efficient generative inference of large language models with dynamic {\\{KV}\\} cache management. In 18th USENIX Symposium on Operating Systems Design and Implementation (OSDI 24), pp. 155–172, 2024b.",
+    "Li et al. (2024a) Li, Y., Huang, Y., Yang, B., Venkitesh, B., Locatelli, A., Ye, H., Cai, T., Lewis, P., and Chen, D. Snapkv: Llm knows what you are looking for before generation. arXiv preprint arXiv:2404.14469, 2024a.",
+    "Li et al. (2024b) Li, Y., Wei, F., Zhang, C., and Zhang, H. Eagle: Speculative sampling requires rethinking feature uncertainty. arXiv preprint arXiv:2401.15077, 2024b.",
+    "Lin et al. (2024a) Lin, J., Tang, J., Tang, H., Yang, S., Chen, W.-M., Wang, W.-C., Xiao, G., Dang, X., Gan, C., and Han, S. Awq: Activation-aware weight quantization for on-device llm compression and acceleration. Proceedings of Machine Learning and Systems, 6:87–100, 2024a.",
+    "Lin et al. (2021) Lin, S., Hilton, J., and Evans, O. Truthfulqa: Measuring how models mimic human falsehoods. arXiv preprint arXiv:2109.07958, 2021.",
+    "Lin et al. (2024b) Lin, Y., Tang, H., Yang, S., Zhang, Z., Xiao, G., Gan, C., and Han, S. Qserve: W4a8kv4 quantization and system co-design for efficient llm serving. arXiv preprint arXiv:2405.04532, 2024b.",
+    "Liu et al. (2024a) Liu, A., Feng, B., Xue, B., Wang, B., Wu, B., Lu, C., Zhao, C., Deng, C., Zhang, C., Ruan, C., et al. Deepseek-v3 technical report. arXiv preprint arXiv:2412.19437, 2024a.",
+    "Liu et al. (2024b) Liu, A., Liu, J., Pan, Z., He, Y., Haffari, G., and Zhuang, B. Minicache: Kv cache compression in depth dimension for large language models. arXiv preprint arXiv:2405.14366, 2024b.",
+    "Liu et al. (2024c) Liu, R., Bai, H., Lin, H., Li, Y., Gao, H., Xu, Z., Hou, L., Yao, J., and Yuan, C. Intactkv: Improving large language model quantization by keeping pivot tokens intact. arXiv preprint arXiv:2403.01241, 2024c.",
+    "Liu et al. (2024d) Liu, Y., Li, H., Cheng, Y., Ray, S., Huang, Y., Zhang, Q., Du, K., Yao, J., Lu, S., Ananthanarayanan, G., et al. Cachegen: Kv cache compression and streaming for fast large language model serving. In Proceedings of the ACM SIGCOMM 2024 Conference, pp. 38–56, 2024d.",
+    "Liu et al. (2024e) Liu, Z., Desai, A., Liao, F., Wang, W., Xie, V., Xu, Z., Kyrillidis, A., and Shrivastava, A. Scissorhands: Exploiting the persistence of importance hypothesis for llm kv cache compression at test time. Advances in Neural Information Processing Systems, 36, 2024e.",
+    "Liu et al. (2024f) Liu, Z., Yuan, J., Jin, H., Zhong, S., Xu, Z., Braverman, V., Chen, B., and Hu, X. Kivi: A tuning-free asymmetric 2bit quantization for kv cache. arXiv preprint arXiv:2402.02750, 2024f.",
+    "Liu et al. (2024g) Liu, Z., Zhao, C., Fedorov, I., Soran, B., Choudhary, D., Krishnamoorthi, R., Chandra, V., Tian, Y., and Blankevoort, T. Spinquant–llm quantization with learned rotations. arXiv preprint arXiv:2405.16406, 2024g.",
+    "Ma et al. (2023) Ma, X., Fang, G., and Wang, X. Llm-pruner: On the structural pruning of large language models. Advances in neural information processing systems, 36:21702–21720, 2023.",
+    "OpenAI (2024) OpenAI, 2024. URL https://openai.com/index/api-prompt-caching/.",
+    "Qin et al. (2024) Qin, R., Li, Z., He, W., Zhang, M., Wu, Y., Zheng, W., and Xu, X. Mooncake: A kvcache-centric disaggregated architecture for llm serving. URL https://arxiv. org/abs/2407.00079, 2024.",
+    "Rein et al. (2023) Rein, D., Hou, B. L., Stickland, A. C., Petty, J., Pang, R. Y., Dirani, J., Michael, J., and Bowman, S. R. Gpqa: A graduate-level google-proof q&a benchmark. arXiv preprint arXiv:2311.12022, 2023.",
+    "Sheng et al. (2023) Sheng, Y., Zheng, L., Yuan, B., Li, Z., Ryabinin, M., Chen, B., Liang, P., Ré, C., Stoica, I., and Zhang, C. Flexgen: High-throughput generative inference of large language models with a single gpu. In International Conference on Machine Learning, pp. 31094–31116. PMLR, 2023.",
+    "Shoeybi et al. (2019) Shoeybi, M., Patwary, M., Puri, R., LeGresley, P., Casper, J., and Catanzaro, B. Megatron-lm: Training multi-billion parameter language models using model parallelism. arXiv preprint arXiv:1909.08053, 2019.",
+    "SoftAge-AI (2024) SoftAge-AI, 2024. URL https://huggingface.co/datasets/SoftAge-AI/multi-turn_dataset.",
+    "Stern et al. (2018) Stern, M., Shazeer, N., and Uszkoreit, J. Blockwise parallel decoding for deep autoregressive models. Advances in Neural Information Processing Systems, 31, 2018.",
+    "Sun et al. (2024a) Sun, H., Chang, L.-W., Bao, W., Zheng, S., Zheng, N., Liu, X., Dong, H., Chi, Y., and Chen, B. Shadowkv: Kv cache in shadows for high-throughput long-context llm inference. arXiv preprint arXiv:2410.21465, 2024a.",
+    "Sun et al. (2024b) Sun, H., Chen, Z., Yang, X., Tian, Y., and Chen, B. Triforce: Lossless acceleration of long sequence generation with hierarchical speculative decoding. arXiv preprint arXiv:2404.11912, 2024b.",
+    "Tang et al. (2024a) Tang, H., Lin, Y., Lin, J., Han, Q., Hong, S., Yao, Y., and Wang, G. Razorattention: Efficient kv cache compression through retrieval heads. arXiv preprint arXiv:2407.15891, 2024a.",
+    "Tang et al. (2024b) Tang, J., Zhao, Y., Zhu, K., Xiao, G., Kasikci, B., and Han, S. Quest: Query-aware sparsity for efficient long-context llm inference. arXiv preprint arXiv:2406.10774, 2024b.",
+    "Wan et al. (2024) Wan, Z., Wu, Z., Liu, C., Huang, J., Zhu, Z., Jin, P., Wang, L., and Yuan, L. Look-m: Look-once optimization in kv cache for efficient multimodal long-context inference. arXiv preprint arXiv:2406.18139, 2024.",
+    "Wang et al. (2024) Wang, Z., Jin, B., Yu, Z., and Zhang, M. Model tells you where to merge: Adaptive kv cache merging for llms on long-context tasks. arXiv preprint arXiv:2407.08454, 2024.",
+    "Wolf (2020) Wolf, T. Transformers: State-of-the-art natural language processing. arXiv preprint arXiv:1910.03771, 2020.",
+    "Xiao et al. (2023a) Xiao, G., Lin, J., Seznec, M., Wu, H., Demouth, J., and Han, S. Smoothquant: Accurate and efficient post-training quantization for large language models. In International Conference on Machine Learning, pp. 38087–38099. PMLR, 2023a.",
+    "Xiao et al. (2023b) Xiao, G., Tian, Y., Chen, B., Han, S., and Lewis, M. Efficient streaming language models with attention sinks. arXiv preprint arXiv:2309.17453, 2023b.",
+    "Xiao et al. (2024) Xiao, G., Tang, J., Zuo, J., Guo, J., Yang, S., Tang, H., Fu, Y., and Han, S. Duoattention: Efficient long-context llm inference with retrieval and streaming heads. arXiv preprint arXiv:2410.10819, 2024.",
+    "Yang et al. (2024a) Yang, A., Yang, B., Zhang, B., Hui, B., Zheng, B., Yu, B., Li, C., Liu, D., Huang, F., Wei, H., et al. Qwen2. 5 technical report. arXiv preprint arXiv:2412.15115, 2024a.",
+    "Yang et al. (2024b) Yang, J. Y., Kim, B., Bae, J., Kwon, B., Park, G., Yang, E., Kwon, S. J., and Lee, D. No token left behind: Reliable kv cache compression via importance-aware mixed precision quantization. arXiv preprint arXiv:2402.18096, 2024b.",
+    "Yuan et al. (2024) Yuan, J., Liu, H., Chuang, Y.-N., Li, S., Wang, G., Le, D., Jin, H., Chaudhary, V., Xu, Z., Liu, Z., et al. Kv cache compression, but what must we give in return? a comprehensive benchmark of long context capable approaches. arXiv preprint arXiv:2407.01527, 2024.",
+    "Zeng et al. (2023) Zeng, D., Du, N., Wang, T., Xu, Y., Lei, T., Chen, Z., and Cui, C. Learning to skip for language modeling. arXiv preprint arXiv:2311.15436, 2023.",
+    "Zhang et al. (2024a) Zhang, H., Ji, X., Chen, Y., Fu, F., Miao, X., Nie, X., Chen, W., and Cui, B. Pqcache: Product quantization-based kvcache for long context llm inference. arXiv preprint arXiv:2407.12820, 2024a.",
+    "Zhang & Li (2007) Zhang, Q. and Li, H. Moea/d: A multiobjective evolutionary algorithm based on decomposition. IEEE Transactions on evolutionary computation, 11(6):712–731, 2007.",
+    "Zhang et al. (2024b) Zhang, Y., Du, Y., Luo, G., Zhong, Y., Zhang, Z., Liu, S., and Ji, R. Cam: Cache merging for memory-efficient llms inference. In Forty-first International Conference on Machine Learning, 2024b.",
+    "Zhang et al. (2024c) Zhang, Z., Liu, S., Chen, R., Kailkhura, B., Chen, B., and Wang, A. Q-hitter: A better token oracle for efficient llm inference via sparse-quantized kv cache. Proceedings of Machine Learning and Systems, 6:381–394, 2024c.",
+    "Zhang et al. (2024d) Zhang, Z., Sheng, Y., Zhou, T., Chen, T., Zheng, L., Cai, R., Song, Z., Tian, Y., Ré, C., Barrett, C., et al. H2o: Heavy-hitter oracle for efficient generative inference of large language models. Advances in Neural Information Processing Systems, 36, 2024d.",
+    "Zhao et al. (2024) Zhao, Y., Xie, Z., Liang, C., Zhuang, C., and Gu, J. Lookahead: An inference acceleration framework for large language model with lossless generation accuracy. In Proceedings of the 30th ACM SIGKDD Conference on Knowledge Discovery and Data Mining, pp. 6344–6355, 2024.",
+    "Zheng et al. (2024) Zheng, L., Yin, L., Xie, Z., Sun, C., Huang, J., Yu, C. H., Cao, S., Kozyrakis, C., Stoica, I., Gonzalez, J. E., et al. Sglang: Efficient execution of structured language model programs. arXiv preprint arXiv:2312.07104, 2024."
+  ]
+}

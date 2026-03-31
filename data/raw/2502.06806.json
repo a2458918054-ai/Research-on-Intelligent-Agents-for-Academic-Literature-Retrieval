@@ -1,0 +1,433 @@
+{
+  "title": "Logits are All We Need to Adapt Closed Models",
+  "authors": "Gaurush Hiranandani1Haolun Wu2,3Subhojyoti Mukherjee4Sanmi Koyejo21Typeface Inc.2Stanford University3Mila - Quebec AI Institute4University of Wisconsin-Madisongaurush@typeface.ai,smukherjee27@wisc.edu,{haolunwu, sanmi}@cs.stanford.eduWork done while visiting Stanford.",
+  "abstract": "Many commercial Large Language Models (LLMs) are often closed-source, limiting developers to prompt tuning for aligning content generation with specific applications. While these models currently do not provide access to token logits, we argue that if such access were available, it would enable more powerful adaptation techniques beyond prompt engineering. In this paper, we propose a token-level probability reweighting framework that, given access to logits and a small amount of task-specific data, can effectively steer black-box LLMs toward application-specific content generation. Our approach views next-token prediction through the lens of supervised classification. We show that aligning black-box LLMs with task-specific data can be formulated as a label noise correction problem, leading to Plugin model – an autoregressive probability reweighting model that operates solely on logits. We provide theoretical justification for why reweighting logits alone is sufficient for task adaptation. Extensive experiments with multiple datasets, LLMs, and reweighting models demonstrate the effectiveness of our method, advocating for broader access to token logits in closed-source models. Our code can be found at this link.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "The rise of Large Language Models (LLMs) has revolutionized generative AI, yet the most capable models are often closed-source or black-box (Achiam et al., 2023; Bai et al., 2022a). These models generate text based on input prompts but keep their internal weights and training data undisclosed, limiting transparency and customization. Despite these constraints, closed-source LLMs are widely adopted across applications ranging from travel itinerary generation to tax advice, with developers largely relying on prompt optimization to achieve domain-specific outputs.",
+        "However, this reliance on prompt engineering is insufficient for specialized tasks, e.g., those requiring brand-specific tone or style. Consider a content writer aiming to generate product descriptions that reflect a brand’s unique identity. Black-box LLMs, trained on broad datasets, often fail to meet such nuanced requirements. With access limited to generated tokens, developers resort to zero-shot (Kojima et al., 2022) or few-shot (Song et al., 2023) prompting techniques. However, if model weights were accessible, advanced techniques like Parameter-Efficient Fine-Tuning (PEFT) using LoRA (Hu et al., 2021), QLoRA (Dettmers et al., 2024), prefix tuning (Li and Liang, 2021), or adapters (Hu et al., 2023a) could be employed for fine-tuning. Yet, due to intellectual property concerns and the high costs of development, most commercial LLMs remain closed-source, and even with API-based fine-tuning options, concerns over data privacy discourage developers from sharing proprietary data.",
+        "In this paper, we propose a middle ground between general-purpose LLM creators and developers seeking application-specific alignment. We argue that providing access to token logits, in addition to generated text, would enable more effective customization for downstream tasks. Viewing next-token prediction as a classification problem, we draw an analogy between LLMs and supervised classification models. Since decoder-only LLMs are trained to predict the next token given preceding tokens, aligning black-box LLMs to domain-specific data can be reframed as a label noise correction problem in supervised classification. In this analogy, the LLM’s broad training data serves as proxy labels, while application-specific data represents true labels. This can be interpreted as a distribution shift scenario. For example, in “label shift” (Lipton et al., 2018), certain tokens may appear more frequently in application-specific data than in the LLM’s original corpus. In “class-dependent or independent label noise” (Patrini et al., 2017), synonymous expressions or stylistic variations in application data may diverge from those seen during model training.",
+        "Inspired by label noise correction methods (Patrini et al., 2017), which estimate a transition matrix to adjust for class-dependent noise, we adapt this approach to black-box LLM alignment. Unlike prior methods that modify loss functions during training, we lack access to the LLM’s original training data and cannot retrain the model. Instead, we estimate an autoregressive transition matrix from application-specific data to reweight token probabilities at inference.",
+        "This autoregressive extension is novel, as it accounts for dependencies on previously generated tokens when adjusting logits for the next token. By adapting label noise correction techniques to autoregressive language modeling, we present a practical method to align black-box LLMs using only logits—without requiring access to model weights or original training data.",
+        "Our contributions are summarized as follows:",
+        "1. We formulate the problem of adapting black-box LLMs for application-specific content generation as a loss correction approach, requiring only token logits at each generation step. This bridges label noise correction in supervised classification with autoregressive language modeling (Sections 2 and 3).",
+        "2. We propose an autoregressive probability reweighting framework, enabling token-level probability adjustment during inference. The resulting Plugin model dynamically reweights logits to align generation with task-specific data (Section 4).",
+        "3. We provide theoretical guarantees, showing that under mild assumptions, the Plugin model consistently aligns probability estimates with the target distribution given sufficient application-specific samples. To our knowledge, this is the first work to establish such consistency in an autoregressive label noise setting (Section 5).",
+        "4. We conduct extensive experiments across four language generation datasets and three black-box LLMs. Our results, supported by multiple ablations, demonstrate that the Plugin model outperforms baselines in adapting black-box LLMs for domain-specific content generation (Section 7). Based on our results, we advocate for publishing token logits alongside outputs in closed-source LLMs."
+      ],
+      "subsections": []
+    },
+    "2 Preliminaries": {
+      "paragraphs": [
+        "We begin by establishing the notation. The index set is denoted as [c]={1,…,c}[c]=\\{1,\\dots,c\\} for any positive integer cc. Vectors are represented in boldface, for example, 𝒗\\bm{v}, while matrices are denoted using uppercase letters, such as VV. The coordinates of a vector are indicated with subscripts, for instance, vjv_{j}. The all-ones vector is denoted by 𝟏\\mathbf{1}, with its size being clear from the context. The cc-dimensional simplex is represented as Δc−1⊂[0,1]c\\Delta^{c-1}\\subset[0,1]^{c}. Finally, a sequence (xt,xt−1,…,x1)(x_{t},x_{t-1},\\dots,x_{1}) of size tt is denoted by xt:1x_{t\\mathrel{\\mathop{\\ordinarycolon}}1}.",
+        "We assume access to language data for the target task, while the black-box LLM, trained on broad world knowledge, is treated as having learned from a noisy version of this data. Our objective is to adapt the black-box model to align with the task-specific distribution. To formalize this, we extend the label-noise framework from supervised classification (Patrini et al., 2017) to the decoder-only language modeling setting.",
+        "Decoder-only models are trained using a next-token prediction objective. At each step, this setup resembles a supervised classification problem with |V||V| classes, where VV is the vocabulary of tokens. Formally, the label space at step tt is 𝒳t={𝒆i:i∈[|V|]}{\\cal X}_{t}=\\{\\bm{e}^{i}\\mathrel{\\mathop{\\ordinarycolon}}i\\in[|V|]\\}, where 𝒆i\\bm{e}^{i} denotes the ii-th standard canonical vector in ℝ|V|\\mathbb{R}^{|V|}, i.e., 𝒆i∈{0,1}|V|,𝟏T​𝒆i=1\\bm{e}^{i}\\in\\{0,1\\}^{|V|},\\mathbf{1}^{T}\\bm{e}^{i}=1. The task at each step tt is to predict the next token 𝒙t\\bm{x}_{t} (denoted as one-hot vector) given a sequence of tokens 𝒙t−1:1\\bm{x}_{t-1\\mathrel{\\mathop{\\ordinarycolon}}1}.",
+        "One observes examples (𝒙t,𝒙t−1:1)(\\bm{x}_{t},\\bm{x}_{t-1\\mathrel{\\mathop{\\ordinarycolon}}1}) drawn from an unknown distribution p∗​(𝒙t,𝒙t−1:1)=p∗​(𝒙t|𝒙t−1:1)​p∗​(𝒙t−1:1)p^{*}(\\bm{x}_{t},\\bm{x}_{t-1\\mathrel{\\mathop{\\ordinarycolon}}1})=p^{*}(\\bm{x}_{t}|\\bm{x}_{t-1\\mathrel{\\mathop{\\ordinarycolon}}1})p^{*}(\\bm{x}_{t-1\\mathrel{\\mathop{\\ordinarycolon}}1}) over V×V[t−1]V\\times V^{[t-1]}, with expectations denoted by E𝒙t,𝒙t−1:1∗E^{*}_{\\bm{x}_{t},\\bm{x}_{t-1\\mathrel{\\mathop{\\ordinarycolon}}1}}. The standard cross-entropy loss is typically used for training over the vocabulary tokens. Assuming access to token logits, and thus the softmax outputs, from the black-box LLM, we interpret the softmax output as a vector approximating the class-conditional probabilities p∗​(𝒙t|𝒙t−1:1)p^{*}(\\bm{x}_{t}|\\bm{x}_{t-1\\mathrel{\\mathop{\\ordinarycolon}}1}), denoted as b​(𝒙t|𝒙t−1:1)∈Δ|V|−1b(\\bm{x}_{t}|\\bm{x}_{t-1\\mathrel{\\mathop{\\ordinarycolon}}1})\\in\\Delta^{|V|-1}.",
+        "To quantify the discrepancy between the target label 𝒙t=𝒆i\\bm{x}_{t}=\\bm{e}^{i} at step tt and the model’s predicted output, we define a loss function ℓ:|V|×Δ|V|−1→ℝ\\ell\\mathrel{\\mathop{\\ordinarycolon}}|V|\\times\\Delta^{|V|-1}\\rightarrow\\mathbb{R}. A common choice in next-token prediction tasks is the cross-entropy loss:",
+        "With some abuse of notation, the loss in vector form ℓ:Δ|V|−1→ℝ|V|\\bm{\\ell}\\mathrel{\\mathop{\\ordinarycolon}}\\Delta^{|V|-1}\\rightarrow\\mathbb{R}^{|V|}, computed on every possible label is ℓ(b(𝒙t|𝒙t−1:1)=(ℓ(𝒆1,b(𝒙t|𝒙t−1:1)),…,ℓ(𝒆|V|,b(𝒙t|𝒙t−1:1)))T.\\bm{\\ell}(b(\\bm{x}_{t}|\\bm{x}_{t-1\\mathrel{\\mathop{\\ordinarycolon}}1})=\\Big{(}\\ell(\\bm{e}^{1},b(\\bm{x}_{t}|\\bm{x}_{t-1\\mathrel{\\mathop{\\ordinarycolon}}1})),\\dots,\\ell(\\bm{e}^{|V|},b(\\bm{x}_{t}|\\bm{x}_{t-1\\mathrel{\\mathop{\\ordinarycolon}}1}))\\Big{)}^{T}."
+      ],
+      "subsections": []
+    },
+    "3 Loss Robustness": {
+      "paragraphs": [
+        "We extend label noise modeling to the autoregressive language setting, focusing on asymmetric or class-conditional noise. At each step tt, the label 𝒙t\\bm{x}_{t} in the black-box model’s training data is flipped to 𝒙~t∈V\\tilde{\\bm{x}}_{t}\\in V with probability p∗​(𝒙~t|𝒙t)p^{*}(\\tilde{\\bm{x}}_{t}|\\bm{x}_{t}), while preceding tokens (𝒙t−1:1)(\\bm{x}_{t-1\\mathrel{\\mathop{\\ordinarycolon}}1}) remain unchanged. As a result, the black-box model observes samples from a noisy distribution: p∗​(𝒙~t,𝒙t−1:1)=∑𝒙tp∗​(𝒙~t|𝒙t)​p∗​(𝒙t|𝒙t−1:1)​p∗​(𝒙t−1:1).p^{*}(\\tilde{\\bm{x}}_{t},\\bm{x}_{t-1\\mathrel{\\mathop{\\ordinarycolon}}1})=\\sum_{\\bm{x}_{t}}p^{*}(\\tilde{\\bm{x}}_{t}|\\bm{x}_{t})p^{*}(\\bm{x}_{t}|\\bm{x}_{t-1\\mathrel{\\mathop{\\ordinarycolon}}1})p^{*}(\\bm{x}_{t-1\\mathrel{\\mathop{\\ordinarycolon}}1}).",
+        "We define the noise transition matrix Tt∈[0,1]|V|×|V|T_{t}\\in[0,1]^{|V|\\times|V|} at step tt, where each entry Tti​j=p∗​(𝒙~t=𝒆j|𝒙t=𝒆i)T_{t_{ij}}=p^{*}(\\tilde{\\bm{x}}_{t}=\\bm{e}^{j}|\\bm{x}_{t}=\\bm{e}^{i}) represents the probability of label flipping. This matrix is row-stochastic but not necessarily symmetric.",
+        "To handle asymmetric label noise, we modify the loss ℓ\\bm{\\ell} for robustness. Initially, assuming a known TtT_{t}, we apply a loss correction inspired by (Patrini et al., 2017; Sukhbaatar et al., 2015). We then relax this assumption by estimating TtT_{t} directly, forming the basis of our Plugin model approach.",
+        "We observe that a language model trained with no loss correction would result in a predictor for noisy labels b​(𝒙~t|𝒙t−1:1)b(\\tilde{\\bm{x}}_{t}|\\bm{x}_{t-1\\mathrel{\\mathop{\\ordinarycolon}}1}). We can make explicit the dependence on TtT_{t}. For example, with cross-entropy we have:",
+        "or in matrix form",
+        "This loss compares the noisy label 𝒙~t\\tilde{\\bm{x}}_{t} to the noisy predictions averaged via the transition matrix TtT_{t} at step tt. Cross-entropy loss, commonly used for next-token prediction, is a proper composite loss with the softmax function as its inverse link function (Patrini et al., 2017). Consequently, from Theorem 2 of Patrini et al. (2017), the minimizer of the forwardly-corrected loss in Equation (3) on noisy data aligns with the minimizer of the true loss on clean data, i.e.,",
+        "where ww are the language model’s weights, implicitly embedded in the softmax output bb from the black-box model. This result suggests that if TtT_{t} were known, we could transform the softmax output b​(𝒙t∣𝒙t−1:1)b(\\bm{x}_{t}\\mid\\bm{x}_{t-1\\mathrel{\\mathop{\\ordinarycolon}}1}) using TtTT_{t}^{T}, use the transformed predictions as final outputs, and retrain the model accordingly. However, since TtT_{t} is unknown and training data is inaccessible, estimating TtT_{t} from clean data is essential to our approach."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Estimation of Transition Matrix",
+          "paragraphs": [
+            "We assume access to a small amount of target language data for the task. Given that the black-box model is expressive enough to approximate p∗​(𝒙~t∣𝒙t−1:1)p^{*}(\\tilde{\\bm{x}}_{t}\\mid\\bm{x}_{t-1\\mathrel{\\mathop{\\ordinarycolon}}1}) (Assumption (2) in Theorem 3 of Patrini et al. (2017)), the transition matrix TtT_{t} can be estimated from this target data. Considering the supervised classification setting at step tt, let 𝒳ti\\mathcal{X}_{t}^{i} represent all target data samples where 𝒙t=𝒆i\\bm{x}_{t}=\\bm{e}^{i} and the preceding tokens are (𝒙t−1:1)(\\bm{x}_{t-1\\mathrel{\\mathop{\\ordinarycolon}}1}). A naive estimate of the transition matrix is: T^ti​j=b​(𝒙~t=𝒆j|𝒙t=𝒆i)=1|𝒳ti|​∑x∈𝒳tib​(𝒙~t=𝒆j|𝒙t−1:1)\\hat{T}_{t_{ij}}=b(\\tilde{\\bm{x}}_{t}=\\bm{e}^{j}|\\bm{x}_{t}=\\bm{e}^{i})=\\frac{1}{|\\mathcal{X}_{t}^{i}|}\\sum_{x\\in\\mathcal{X}_{t}^{i}}b(\\tilde{\\bm{x}}_{t}=\\bm{e}^{j}|\\bm{x}_{t-1\\mathrel{\\mathop{\\ordinarycolon}}1}).",
+            "While this setup works for a single step tt, there are two key challenges in extending it across all steps in the token prediction task:",
+            "1. Limited sample availability: The number of samples where 𝒙t=𝒆i\\bm{x}_{t}=\\bm{e}^{i} and the preceding tokens (𝒙t−1,…,𝒙1)(\\bm{x}_{t-1},\\dots,\\bm{x}_{1}) match exactly is limited in the clean data, especially with large vocabulary sizes (e.g., |V|=O​(100​K)|V|=O(100K) for LLaMA (Dubey et al., 2024)). This necessitates modeling the transition matrix as a function of features derived from 𝒙t−1:1\\bm{x}_{t-1\\mathrel{\\mathop{\\ordinarycolon}}1}, akin to text-based autoregressive models.",
+            "2. Large parameter space: With a vocabulary size of |V|=O​(100​K)|V|=O(100K), the transition matrix TtT_{t} at step tt contains approximately 10 billion parameters. This scale may exceed the size of the closed-source LLM and cannot be effectively learned from limited target data. Therefore, structural restrictions must be imposed on TtT_{t} to reduce its complexity.",
+            "Limited sample availability: The number of samples where 𝒙t=𝒆i\\bm{x}_{t}=\\bm{e}^{i} and the preceding tokens (𝒙t−1,…,𝒙1)(\\bm{x}_{t-1},\\dots,\\bm{x}_{1}) match exactly is limited in the clean data, especially with large vocabulary sizes (e.g., |V|=O​(100​K)|V|=O(100K) for LLaMA (Dubey et al., 2024)). This necessitates modeling the transition matrix as a function of features derived from 𝒙t−1:1\\bm{x}_{t-1\\mathrel{\\mathop{\\ordinarycolon}}1}, akin to text-based autoregressive models.",
+            "Large parameter space: With a vocabulary size of |V|=O​(100​K)|V|=O(100K), the transition matrix TtT_{t} at step tt contains approximately 10 billion parameters. This scale may exceed the size of the closed-source LLM and cannot be effectively learned from limited target data. Therefore, structural restrictions must be imposed on TtT_{t} to reduce its complexity.",
+            "To address these challenges, we impose the restriction that the transition matrix TtT_{t} is diagonal. While various constraints could be applied to simplify the problem, assuming TtT_{t} is diagonal offers two key advantages. First, it allows the transition matrix—effectively a vector in this case—to be modeled using standard autoregressive language models, such as a GPT-2 model with kk transformer blocks, a LLaMA model with dd-dimensional embeddings, or a fine-tuned GPT-2-small model. These architectures can be adjusted based on the size of the target data. Second, a diagonal transition matrix corresponds to a symmetric or class-independent label noise setup, where 𝒙t=𝒆i\\bm{x}_{t}=\\bm{e}^{i} flips to any other class with equal probability in the training data. This assumption, while simplifying, remains realistic within the framework of label noise models.",
+            "By enforcing this diagonal structure, we ensure efficient estimation of the transition matrix while maintaining practical applicability within our framework. In the next section, we outline our approach for adapting closed-source language models to target data."
+          ]
+        }
+      ]
+    },
+    "4 Proposed Method: The Plugin Approach": {
+      "paragraphs": [
+        "To estimate the autoregressive transition vector, we train an autoregressive language model on target data, which operates alongside the black-box model during inference. This model acts as an autoregressive reweighting mechanism, adjusting the token probabilities produced by the black-box model. The combined approach, integrating probabilities from the black-box and reweighting models, is referred to as the Plugin model. The term Plugin is inspired by classification literature, where plugin methods reweight probabilities to adapt to distribution shifts (Koyejo et al., 2014; Narasimhan et al., 2014, 2015; Hiranandani et al., 2021). We now detail the training and inference phases, summarized in Algorithm 1 (Appendix A) and illustrated in Figure 1."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Training the Plugin Model",
+          "paragraphs": [
+            "During each training iteration, a sequence ss of mm tokens is passed through both the black-box model and the reweighting model to obtain token probabilities {𝒃1,𝒃2,…,𝒃m}\\{\\bm{b}_{1},\\bm{b}_{2},\\dots,\\bm{b}_{m}\\} and {𝒓1,𝒓2,…,𝒓m}\\{\\bm{r}_{1},\\bm{r}_{2},\\dots,\\bm{r}_{m}\\}, respectively, where each 𝒃i,𝒓i∈Δ|V|−1\\bm{b}_{i},\\bm{r}_{i}\\in\\Delta^{|V|-1}. The final token probability from the Plugin model is computed by normalizing the element-wise product of these probabilities:",
+            "The sequence-level cross-entropy loss is given by:",
+            "where the jj-th token appears at the ii-th position in the sequence ss. During backpropagation, only the reweighting model parameters are updated, while the black-box model remains frozen. This formulation extends naturally to batch training, refining 𝒓i\\bm{r}_{i} over iterations to approximate the transition vector governing label shifts in the target data."
+          ]
+        },
+        {
+          "title": "4.2 Inference from the Plugin Model",
+          "paragraphs": [
+            "Given a fully trained reweighting model and access to the black-box model, token generation proceeds autoregressively. At the first step, the black-box model produces token probabilities 𝒃1\\bm{b}_{1}, while the reweighting model outputs 𝒓1\\bm{r}_{1}. The Plugin model selects the first token as 𝒙1=argmaxV(𝒃1⊙𝒓1).\\bm{x}_{1}=\\operatorname*{argmax}_{V}(\\bm{b}_{1}\\odot\\bm{r}_{1}). For subsequent steps, given the previously generated tokens 𝒙t−1:1\\bm{x}_{t-1\\mathrel{\\mathop{\\ordinarycolon}}1}, we obtain probabilities 𝒃t\\bm{b}_{t} from the black-box model and 𝒓t\\bm{r}_{t} from the reweighting model. The Plugin model then predicts the next token as: 𝒙t=argmaxV(𝒃t⊙𝒓t)\\bm{x}_{t}=\\operatorname*{argmax}_{V}(\\bm{b}_{t}\\odot\\bm{r}_{t}).",
+            "The process continues until a stopping criterion is met. Note that, this manuscript focuses on greedy decoding for inference. Other decoding strategies, such as temperature scaling, top-pp sampling, or beam search, can be incorporated by normalizing the element-wise product of probabilities and using them as the final token distribution, as in (4)."
+          ]
+        }
+      ]
+    },
+    "5 Theoretical Analysis": {
+      "paragraphs": [
+        "We establish the convergence properties of the Plugin model, demonstrating that after training for tt tokens, it accurately estimates the autoregressive noise transition matrix. We model the transition matrix as a function of an unknown parameter 𝜽∗\\bm{\\theta}_{*} and show that, after optimizing the autoregressive loss over a sequence of tokens, the Plugin model estimates 𝜽∗\\bm{\\theta}_{*} with high probability.",
+        "Let ℱt−1\\mathcal{F}^{t-1} denote the history of selected tokens up to time t−1t-1. Let an unknown parameter 𝜽∗∈𝚯⊆ℝd\\bm{\\theta}_{*}\\in\\bm{\\Theta}\\subseteq\\mathbb{R}^{d} governs the transition dynamics of label flipping between token pairs. The transition matrix at time tt, denoted as Tt​(𝜽∗|ℱt−1)T_{t}(\\bm{\\theta}_{*}|\\mathcal{F}^{t-1}), depends on 𝜽∗\\bm{\\theta}_{*} and all previously observed tokens. Before proving our main result, we first make a few assumptions.",
+        "˜5.1 ensures that the transition matrix depends on the generalized history-dependent function fIt​(⋅)f_{I_{t}}(\\cdot) which has a bounded gradient and hessian. Similar assumptions for other deep models have been made in Singh et al. (2023); Zhang et al. (2024).",
+        "˜5.2 ensures that the clipped log loss is upper bounded by a smoother squared loss. For the remaining of this section we refer to this squared loss at time tt as ℓt​(𝜽)\\ell_{t}(\\bm{\\theta}). Let the Plugin model minimize the loss ℓ1​(𝜽),ℓ2​(𝜽),⋯,ℓt​(𝜽)\\ell_{1}(\\bm{\\theta}),\\ell_{2}(\\bm{\\theta}),\\cdots,\\ell_{t}(\\bm{\\theta}) over tt iterations. Let 𝜽^t=argmin𝜽∈𝚯​∑s=1tℓs​(𝜽){\\widehat{\\bm{\\theta}}}_{t}=\\operatorname*{argmin}_{\\bm{\\theta}\\in\\bm{\\Theta}}\\sum_{s=1}^{t}\\ell_{s}(\\bm{\\theta}). At every iteration tt, the Plugin algorithm looks into the history ℱt−1\\mathcal{F}^{t-1} and samples a token 𝒙t∼𝒑θ^t=𝒃t⊙𝒓θ^t\\bm{x}_{t}\\sim\\bm{p}_{\\hat{\\theta}_{t}}=\\bm{b}_{t}\\odot\\bm{r}_{\\hat{\\theta}_{t}}.",
+        "Let ℒ^t​(𝜽)=1t​∑s=1tℓs​(𝜽)\\widehat{\\cal L}_{t}(\\bm{\\theta})=\\frac{1}{t}\\sum_{s=1}^{t}\\ell_{s}(\\bm{\\theta}) and its expectation ℒt​(𝜽)=1t​∑s=1t𝔼xs∼𝐩𝜽^s−1​[ℓs​(𝜽)|ℱs−1]{\\cal L}_{t}(\\bm{\\theta})=\\frac{1}{t}\\sum_{s=1}^{t}\\mathbb{E}_{x_{s}\\sim\\mathbf{p}_{{\\widehat{\\bm{\\theta}}}_{s-1}}}[\\ell_{s}(\\bm{\\theta})|\\mathcal{F}^{s-1}]. We impose regularity and smoothness assumptions on the loss function ℓt​(𝜽)\\ell_{t}(\\bm{\\theta}) as stated in ˜B.1 (Appendix˜B). We are now ready to prove the main theoretical result of the paper.",
+        "˜1 bounds the difference between the estimated and true average loss functions, showing that this gap diminishes as the number of training tokens increases. Since 𝜽^t=argmin𝜽∈𝚯​∑s=1tℓs​(𝜽){\\widehat{\\bm{\\theta}}}_{t}=\\operatorname*{argmin}_{\\bm{\\theta}\\in\\bm{\\Theta}}\\sum_{s=1}^{t}\\ell_{s}(\\bm{\\theta}), the Plugin model progressively refines its estimation of the unknown parameter 𝜽∗\\bm{\\theta}_{*}. As the transition matrix Tt​(𝜽∗;xi,xj,ℱt−1)T_{t}(\\bm{\\theta}_{*};x_{i},x_{j},\\mathcal{F}^{t-1}) is derived from fIt​(𝜽∗;xi,xj,ℱt−1)f_{I_{t}}(\\bm{\\theta}_{*};x_{i},x_{j},\\mathcal{F}^{t-1}), which depends on 𝜽∗\\bm{\\theta}_{*}, training on sufficiently many tokens ensures an accurate estimation of each component of Tt​(𝜽∗|ℱt−1)T_{t}(\\bm{\\theta}_{*}|\\mathcal{F}^{t-1}).",
+        "Our proof reformulates the problem as a sequential hypothesis testing setting to estimate the average loss function ℒt​(𝜽^t){\\cal L}_{t}({\\widehat{\\bm{\\theta}}}_{t}) using the sequence of losses ℓ1​(𝜽),…,ℓt​(𝜽)\\ell_{1}(\\bm{\\theta}),\\dots,\\ell_{t}(\\bm{\\theta}) (Naghshvar and Javidi, 2013; Lattimore and Szepesvári, 2020). Unlike prior work (Frostig et al., 2015; Chaudhuri et al., 2015), which assumes i.i.d. losses, the loss at time tt in our setting depends on all previous losses. Additionally, Mukherjee et al. (2022) study a different active regression setting without considering cross-entropy loss or transition noise matrices as in (Patrini et al., 2017). We provide a brief overview of the proof technique in Remark˜B.9 (Appendix˜B), highlighting key novelties."
+      ],
+      "subsections": []
+    },
+    "6 Related Work": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Parameter-Efficient Fine-Tuning (PEFT).",
+          "paragraphs": [
+            "PEFT methods adapt LLMs to downstream tasks while minimizing computational overhead. LoRA (Hu et al., 2021) and QLoRA (Dettmers et al., 2024) introduce low-rank updates and quantization for efficient fine-tuning, while prefix tuning (Li and Liang, 2021), adapters (Hu et al., 2023b), and soft prompting (Lester et al., 2021) modify task-specific representations through trainable layers or embeddings. However, these methods require access to model weights, gradients, or architecture details, making them unsuitable for closed-source LLMs and inapplicable as baselines in our setup. In contrast, our approach operates solely on token logits, enabling adaptation without modifying the underlying model."
+          ]
+        },
+        {
+          "title": "Steering and Aligning LLMs.",
+          "paragraphs": [
+            "LLM alignment methods primarily use reinforcement learning or instruction tuning. RLHF and DPO (Christiano et al., 2017; Ouyang et al., 2022; Rafailov et al., 2024) optimize model behavior via human preferences, with DPO eliminating reward modeling. Constitutional AI (Bai et al., 2022b) aligns models using self-generated principles, while instruction tuning (Wei et al., 2021; Sanh et al., 2022) adapts them via task-specific demonstrations. Unlike our approach, these methods require model weights and training data, limiting their applicability as baselines in our setup."
+          ]
+        },
+        {
+          "title": "Calibration of LLMs.",
+          "paragraphs": [
+            "LLM calibration methods aim to align model confidence with predictive accuracy and adjust confidence scores but do not alter token predictions (Ulmer et al., 2024; Shen et al., ; Huang et al., 2024; Kapoor et al., 2024; Zhu et al., 2023). In contrast, our method reweights token probabilities at inference, enabling adaptation of black-box LLMs without modifying the model or requiring fine-tuning."
+          ]
+        },
+        {
+          "title": "Black-box LLMs.",
+          "paragraphs": [
+            "Prior work explores various approaches for adapting black-box LLMs without fine-tuning, though they differ fundamentally from our method. Gao et al. (2024) infer user preferences through interactive edits but do not adapt models based on past language data. Diffusion-LM (Li et al., 2022) formulates text generation as a non-autoregressive denoising process, whereas our approach reweights token probabilities autoregressively without requiring black-box model weights. Discriminator-based methods (Dathathri et al., ; Mireshghallah et al., 2022; Yang and Klein, 2021; Krause et al., 2021) control generation based on predefined attributes, contrasting with our method, which enables free-form text adaptation. DExperts (Liu et al., 2021) combines expert and anti-expert probabilities; we incorporate a similar probability combining strategy in a modified baseline without a de-expert component. In-context learning (Long et al., 2023; Dong et al., 2024) offers a common adaptation technique for black-box models and serves as a baseline in our setup."
+          ]
+        }
+      ]
+    },
+    "7 Experiments": {
+      "paragraphs": [
+        "We divide this section into three parts. Section˜7.1 evaluates Plugin on four text generation datasets across three black-box language models. Since the Plugin model is trained on top of black-box models, we refer to black-box models interchangeably as base models. Section˜7.2 presents ablation studies analyzing the impact of black-box model quality, Plugin’s complexity, and architecture choices. Section 7.3 shows qualitative analysis and case studies.",
+        "We evaluate Plugin on four text generation benchmarks: (a) E2E NLG (Dušek et al., 2020), (b) Web NLG (Gardent et al., 2017), (c) CommonGen (Lin et al., 2020), and (d) the Adidas product description dataset (adi, 2023). For the first three datasets, we use the standard train-validation-test splits from the Transformers library (Wolf, 2020). To introduce distribution shifts, we filter Web NLG’s training data to include only infrastructure descriptions, while validation and test sets retain person descriptions. Similarly, CommonGen’s training set is restricted to samples containing man, while validation and test sets remain unchanged. Details of this setup are in Section˜7.3. The Adidas dataset is split into validation and test sets. Dataset statistics are provided in Table˜5, Appendix C.1."
+      ],
+      "subsections": [
+        {
+          "title": "7.1 Text Generation Performance Comparison",
+          "paragraphs": [
+            "We evaluate Plugin on the text generation task using only the validation and test splits of all four datasets, reserving the train split for ablation studies (Section˜7.2). Plugin and baseline models are trained on the small validation set, with performance measured on the test set. Additionally, we allocate 40% of the validation data as hyper-validation for cross-validation of hyperparameters.",
+            "Performance is reported using seven standard natural language generation metrics: (a) BLEU (Papineni et al., 2002), (b) ROUGE-1 (Lin, 2004), (c) ROUGE-2 (Lin, 2004), (d) ROUGE-L (Lin and Och, 2004), (e) METEOR (Banerjee and Lavie, 2005), (f) CIDEr (Vedantam et al., 2015), and (g) NIST (Doddington, 2002). All experiments are repeated over five random seeds, and we report the mean and standard deviation for each metric.",
+            "We compare Plugin with the following baselines: (a) Zeroshot: The black-box model directly performs text generation without additional adaptation. (b) ICL-1 (Long et al., 2023): One randomly selected validation sample is used as an in-context example. (c) ICL-3 (Long et al., 2023): Three randomly selected validation samples are used as in-context examples. (d) NewModel: A new language model is trained using the validation data. (e) WeightedComb (Liu et al., 2021): A new model is trained alongside the black-box model, with token probabilities computed as α​𝒏+(1−α)​𝒃\\alpha\\bm{n}+(1-\\alpha)\\bm{b}, where 𝒏\\bm{n} represents the probabilities from the new model and α\\alpha is cross-validated in {0.25,0.50,0.75}\\{0.25,0.50,0.75\\}. Since the black-box model weights are inaccessible, fine-tuning-based approaches are not applicable in our setting.",
+            "All methods use the same prompts where applicable (Appendix C.2) and employ greedy decoding. The base (black-box) models used are GPT2-M (Radford et al., 2019), GPT2-XL (Radford et al., 2019), and LLaMA-3.1-8B (Dubey et al., 2024). NewModel, WeightedComb, and the reweighting model in Plugin share the same architecture. For GPT-based models, these use a Transformer encoder with one hidden layer and default configurations. For LLaMA-based models, the architecture consists of a Transformer encoder with one hidden layer, 256 hidden size, 1024 intermediate size, and one attention head. Learning rate and weight decay are cross-validated over {1​e−5,5​e−5,1​e−4,5​e−4,1​e−3,5​e−3}\\{1e-5,5e-5,1e-4,5e-4,1e-3,5e-3\\} and {0.01,0.1,1,10}\\{0.01,0.1,1,10\\}, respectively. Models are trained using AdamW with warmup followed by linear decay, and early stopping is applied if the hyper-validation loss does not decrease for five consecutive epochs.",
+            "Due to space constraints, results for GPT2-M as the base model are presented in Appendix C.4. As shown in Tables 1–4 and their counterparts in Appendix C.4 (the best is bold, the second best is underlined), Plugin outperforms baselines across nearly all datasets, black-box models, and evaluation metrics. NewModel occasionally achieves higher NIST scores due to increased repetition of less-frequent input tokens, but this comes at the cost of coherence, as reflected by other metrics. WeightedComb does not perform well, indicating one combination for all tokens is not a good modeling choice. We note that the absolute numbers may not appear competitive with state-of-the-art results, because (a) we restrict to greedy decoding (Section˜4.2), and (b) Web NLG and CommonGen use distribution-shifted subsets.",
+            "We also conduct a human evaluation on 100 Adidas dataset samples, where three subjects compare outputs from Plugin and ICL-3 using LLaMA-3.1 as the base model. Evaluators select the prediction closest to the ground truth, with Plugin preferred in 81% of cases. Details are in Appendix C.7."
+          ]
+        },
+        {
+          "title": "7.2 Ablation Study",
+          "paragraphs": [
+            "We now show ablation studies that reflect various aspects of the Plugin model. We display the results using GPT2-M as base model on the E2E NLG dataset. The observation is similar on other base models and datasets (Appendix C.5).",
+            "We fine-tune GPT2-M for varying epochs, denoted as 1FT (one epoch), 2FT (two epochs), and 5FT (five epochs), and train a Plugin model for each. Figure 2 shows that as the base model’s task-specific quality improves, the Plugin’s performance improves.",
+            "We train Plugin models with reweighting architectures varying from 1 to 12 transformer layers while keeping other configurations unchanged. Additionally, we train a variant where the reweighting model is initialized with GPT2-Small. As shown in Figure 3, a single-layer reweighting model yields significant improvements over the base GPT2-M model, while additional layers (e.g., 2, 4, 8, 12) offer diminishing returns and slight performance decline due to overfitting on the small validation set of E2E NLG. This suggests that more data is required for learning complex reweighting models. Notably, initializing with a pretrained GPT2-Small substantially improves performance, underscoring the advantage of using small pretrained models for reweighting due to their inherent autoregressive properties."
+          ]
+        },
+        {
+          "title": "Impact of Base Model Quality.",
+          "paragraphs": [
+            "We fine-tune GPT2-M for varying epochs, denoted as 1FT (one epoch), 2FT (two epochs), and 5FT (five epochs), and train a Plugin model for each. Figure 2 shows that as the base model’s task-specific quality improves, the Plugin’s performance improves."
+          ]
+        },
+        {
+          "title": "Complexity of the Reweighting Model inPlugin.",
+          "paragraphs": [
+            "We train Plugin models with reweighting architectures varying from 1 to 12 transformer layers while keeping other configurations unchanged. Additionally, we train a variant where the reweighting model is initialized with GPT2-Small. As shown in Figure 3, a single-layer reweighting model yields significant improvements over the base GPT2-M model, while additional layers (e.g., 2, 4, 8, 12) offer diminishing returns and slight performance decline due to overfitting on the small validation set of E2E NLG. This suggests that more data is required for learning complex reweighting models. Notably, initializing with a pretrained GPT2-Small substantially improves performance, underscoring the advantage of using small pretrained models for reweighting due to their inherent autoregressive properties."
+          ]
+        },
+        {
+          "title": "7.3 Qualitative Analysis and Case Study",
+          "paragraphs": [
+            "We evaluate Plugin on distribution-shifted Web NLG and CommonGen using LLaMA-3.1-8B as the base model. Web NLG training data contains only Infrastructure concepts, while validation and test sets include Person concepts. Similarly, CommonGen training data features man, whereas validation and test sets contain both man and woman. The base model is fine-tuned on training data, and Plugin is trained on validation data using the fine-tuned model as the base, ensuring that Plugin corrects biases learned from training.",
+            "Using GPT-4o (Hurst et al., 2024) as an evaluator, the fine-tuned Web NLG model generates only 17.99% Person-related sentences, while Plugin increases this to 71.34%. On CommonGen, the fine-tuned model generates 10.37% Woman-related sentences, whereas Plugin improves this to 31.92%. These results highlight Plugin’s ability to adapt under distribution shift and mitigate biases in the base model.",
+            "We examine token probabilities during inference for LLaMA-3.1-8B and Plugin to assess domain adaptation in the Adidas dataset. Removing stopwords, we extract the top-50 most frequent words, defining the “Adidas domain”. Figure 4 illustrates this adaptation: the first row shows product attributes and ground-truth references; the second row compares outputs from the base model (left) and Plugin (right); the third row visualizes model probabilities for “Adidas domain” words at three decoding steps.",
+            "As seen in Figure 4, Plugin dynamically reweights probabilities to align with domain-specific language. At step 23, “keep” is significantly upweighted. At step 48, “comfortable” and “dry” gain prominence over “fit,” which the base model favors. At step 51, “ambition” is preferred by Plugin, aligning with the ground truth, while the base model favors “look” and “products”. This demonstrates that Plugin effectively steers generation toward domain-specific terminology, whereas the base model, trained on broad corpora, lacks inherent domain preference."
+          ]
+        },
+        {
+          "title": "Pluginadapting to distribution shift.",
+          "paragraphs": [
+            "We evaluate Plugin on distribution-shifted Web NLG and CommonGen using LLaMA-3.1-8B as the base model. Web NLG training data contains only Infrastructure concepts, while validation and test sets include Person concepts. Similarly, CommonGen training data features man, whereas validation and test sets contain both man and woman. The base model is fine-tuned on training data, and Plugin is trained on validation data using the fine-tuned model as the base, ensuring that Plugin corrects biases learned from training.",
+            "Using GPT-4o (Hurst et al., 2024) as an evaluator, the fine-tuned Web NLG model generates only 17.99% Person-related sentences, while Plugin increases this to 71.34%. On CommonGen, the fine-tuned model generates 10.37% Woman-related sentences, whereas Plugin improves this to 31.92%. These results highlight Plugin’s ability to adapt under distribution shift and mitigate biases in the base model."
+          ]
+        },
+        {
+          "title": "Case study:Pluginadapting to domain.",
+          "paragraphs": [
+            "We examine token probabilities during inference for LLaMA-3.1-8B and Plugin to assess domain adaptation in the Adidas dataset. Removing stopwords, we extract the top-50 most frequent words, defining the “Adidas domain”. Figure 4 illustrates this adaptation: the first row shows product attributes and ground-truth references; the second row compares outputs from the base model (left) and Plugin (right); the third row visualizes model probabilities for “Adidas domain” words at three decoding steps.",
+            "As seen in Figure 4, Plugin dynamically reweights probabilities to align with domain-specific language. At step 23, “keep” is significantly upweighted. At step 48, “comfortable” and “dry” gain prominence over “fit,” which the base model favors. At step 51, “ambition” is preferred by Plugin, aligning with the ground truth, while the base model favors “look” and “products”. This demonstrates that Plugin effectively steers generation toward domain-specific terminology, whereas the base model, trained on broad corpora, lacks inherent domain preference."
+          ]
+        }
+      ]
+    },
+    "8 Conclusion": {
+      "paragraphs": [
+        "We propose Plugin, a token-level probability reweighting framework that adapts black-box LLMs using only logits and small task-specific data. Framing next-token prediction as a label noise correction problem, we demonstrate both theoretical guarantees and empirical effectiveness across multiple datasets and models. Our findings highlight the potential of logit-based adaptation and advocate for broader access to token logits in closed-source LLMs."
+      ],
+      "subsections": []
+    },
+    "Impact Statement": {
+      "paragraphs": [
+        "The ability to adapt closed-source LLMs without modifying their weights has significant implications for both research and industry. Our proposed method, which leverages token logits for task-specific alignment, offers a practical solution for developers constrained by black-box APIs. This approach enhances customization, allowing models to generate more domain-relevant and controlled content while preserving the privacy and security of proprietary data. Furthermore, by advocating for broader access to token logits, this work fosters greater transparency and flexibility in commercial LLMs. The findings also highlight the importance of mitigating biases in black-box models, contributing to more equitable and context-aware language generation across diverse applications.",
+        "While Plugin effectively adapts black-box LLMs, it has some limitations, too. Since it only reweights token probabilities without modifying internal representations or embeddings, it may struggle with tasks requiring deep structural adaptations, such as executing complex reasoning. Further research on this aspect is needed. Additionally, although Plugin avoids full fine-tuning, training a separate reweighting model introduces computational overhead compared to prompt tuning or in-context learning, with efficiency depending on the complexity of the reweighting model and the availability of task-specific data."
+      ],
+      "subsections": []
+    },
+    "Acknowledgement": {
+      "paragraphs": [
+        "HW acknowledges support by Fonds de recherche du Québec – Nature et technologies (FRQNT) and Borealis AI. SK acknowledges support by NSF 2046795 and 2205329, IES R305C240046, the MacArthur Foundation, Stanford HAI, OpenAI, and Google."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Algorithm Details": {
+      "paragraphs": [
+        "We provide summarized form of the training and inference algorithm for the Plugin model below."
+      ],
+      "subsections": []
+    },
+    "Appendix B Proof of Main Convergence Theorem": {
+      "paragraphs": [
+        "We define the following assumption on the smoothness and regularity of the loss function."
+      ],
+      "subsections": []
+    },
+    "Appendix C Experimental Details": {
+      "paragraphs": [
+        "[Figure: Figure 5: Performance of applying a single-layer reweighting model across increasingly fine-tuned GPT2-M models on the three datasets. Results demonstrate consistent improvements introduced by our method regardless of the strength of the base model.]",
+        "[Figure: Figure 6: Performance of GPT2-M with varying reweighting model complexities on the three datasets, measured by BLEU and Rouge-L. Results demonstrate that a single reweighting layer achieves significant improvements, while increasing the number of layers beyond this leads to performance degradation, likely due to overfitting. Using a pretrained GPT2-Small as the reweighting model largely boosts the performance, highlighting the benefits of leveraging pretrained models.]",
+        "[Figure: Figure 7: Performance comparison of the weighting model architecture in Plugin. The transformer layer achieves the best performance with consistently higher means and narrower standard deviations. Shaded bands represent the standard deviation around the mean.]",
+        "[Figure: Figure 8: Word Frequency of the Top-50 Words in Adidas Dataset.]",
+        "[Table: Table 5: Processed Dataset Statistics. Training set is only used for ablation and qualitative analysis due to the black-box model assumption.]",
+        "[Table: Table 6: Performance comparison on E2E NLG dataset. The base model is GPT2-M. We show mean and standard deviation of the metrics over five seeds.]",
+        "[Table: Table 7: Performance comparison on Web NLG dataset. The base model is GPT2-M. We show mean and standard deviation of the metrics over five seeds.]",
+        "[Table: Table 8: Performance comparison on CommonGen dataset. The base model is GPT2-M. We show mean and standard deviation of the metrics over five seeds.]",
+        "[Table: Table 9: Performance comparison on Adidas dataset. The base model is GPT2-M. We show mean and standard deviation of the metrics over five seeds.]"
+      ],
+      "subsections": [
+        {
+          "title": "C.1 Dataset Statistics",
+          "paragraphs": [
+            "We provide the processed data statistics in Table 5. We would like to highlight that due to the black-box assumption of the base model, the training set is merely used for ablation and qualitative analysis in Section 7.2 and Section 7.3."
+          ]
+        },
+        {
+          "title": "C.2 Prompts",
+          "paragraphs": [
+            "We now describe the prompts we used for the four datasets and three models.",
+            "• For the GPT2-M model, we use the prompt: Given the following aspects of a restaurant, [attributes], a natural language sentence describing the restaurant is:",
+            "• For the GPT2-XL model, the prompt is: Imagine you are writing a one-sentence description for a restaurant, given the following aspects: [attributes], a human-readable natural language sentence describing the restaurant is:",
+            "• For the LLaMA-3.1-8B model, we use: Please convert the following attributes into a coherent sentence. Do not provide an explanation.",
+            "For the GPT2-M model, we use the prompt: Given the following aspects of a restaurant, [attributes], a natural language sentence describing the restaurant is: ",
+            "For the GPT2-XL model, the prompt is: Imagine you are writing a one-sentence description for a restaurant, given the following aspects: [attributes], a human-readable natural language sentence describing the restaurant is: ",
+            "For the LLaMA-3.1-8B model, we use: Please convert the following attributes into a coherent sentence. Do not provide an explanation. ",
+            "• For the GPT2-M model, we use the prompt: Convert the following facts into a coherent sentence: Facts: [facts] Sentence:",
+            "• For the GPT2-XL model, the prompt is: You are given the following facts. Facts: [facts] A short, coherent sentence summarizing the facts is:",
+            "• For the LLaMA-3.1-8B model, we use: Do not provide an explanation or follow-up. Just convert the following facts of an entity into a coherent sentence. Facts: [facts] Sentence:",
+            "For the GPT2-M model, we use the prompt: Convert the following facts into a coherent sentence: Facts: [facts] Sentence: ",
+            "For the GPT2-XL model, the prompt is: You are given the following facts. Facts: [facts] A short, coherent sentence summarizing the facts is: ",
+            "For the LLaMA-3.1-8B model, we use: Do not provide an explanation or follow-up. Just convert the following facts of an entity into a coherent sentence. Facts: [facts] Sentence: ",
+            "• For the GPT2-M and GPT2-XL models, we use the same prompt: One coherent sentence that uses all the following concepts: [concepts], is:",
+            "• For the LLaMA-3.1-8B model, we use: Please write a coherent sentence that uses all the following concepts. Concepts: [concepts] Sentence:",
+            "For the GPT2-M and GPT2-XL models, we use the same prompt: One coherent sentence that uses all the following concepts: [concepts], is: ",
+            "For the LLaMA-3.1-8B model, we use: Please write a coherent sentence that uses all the following concepts. Concepts: [concepts] Sentence: ",
+            "• For the GPT2-M and GPT2-XL models, we use the same prompt: Given the following attributes of a product, write a description. Attributes: [attributes] Description:",
+            "• For the LLaMA-3.1-8B model, we use: Please write a description of this product given the following attributes. Attributes: [attributes] Description:",
+            "For the GPT2-M and GPT2-XL models, we use the same prompt: Given the following attributes of a product, write a description. Attributes: [attributes] Description: ",
+            "For the LLaMA-3.1-8B model, we use: Please write a description of this product given the following attributes. Attributes: [attributes] Description: ",
+            "For in-context learning, we simply add a sentence at the beginning of the prompt before offering the samples: Below are a list of demonstrations:.",
+            "For the qualitative analysis on the distribution shift in Section 7.3, we ask GPT-4o with the following prompt: For Web NLG dataset: Focus on all the samples, how much percentage is related to ‘‘Person’’? ",
+            "For CommonGen dataset: Focus on those samples whose target is related to gender, how much percentage is related to ‘‘woman’’? "
+          ]
+        },
+        {
+          "title": "E2E NLG Dataset",
+          "paragraphs": [
+            "• For the GPT2-M model, we use the prompt: Given the following aspects of a restaurant, [attributes], a natural language sentence describing the restaurant is:",
+            "• For the GPT2-XL model, the prompt is: Imagine you are writing a one-sentence description for a restaurant, given the following aspects: [attributes], a human-readable natural language sentence describing the restaurant is:",
+            "• For the LLaMA-3.1-8B model, we use: Please convert the following attributes into a coherent sentence. Do not provide an explanation.",
+            "For the GPT2-M model, we use the prompt: Given the following aspects of a restaurant, [attributes], a natural language sentence describing the restaurant is: ",
+            "For the GPT2-XL model, the prompt is: Imagine you are writing a one-sentence description for a restaurant, given the following aspects: [attributes], a human-readable natural language sentence describing the restaurant is: ",
+            "For the LLaMA-3.1-8B model, we use: Please convert the following attributes into a coherent sentence. Do not provide an explanation. "
+          ]
+        },
+        {
+          "title": "Web NLG Dataset",
+          "paragraphs": [
+            "• For the GPT2-M model, we use the prompt: Convert the following facts into a coherent sentence: Facts: [facts] Sentence:",
+            "• For the GPT2-XL model, the prompt is: You are given the following facts. Facts: [facts] A short, coherent sentence summarizing the facts is:",
+            "• For the LLaMA-3.1-8B model, we use: Do not provide an explanation or follow-up. Just convert the following facts of an entity into a coherent sentence. Facts: [facts] Sentence:",
+            "For the GPT2-M model, we use the prompt: Convert the following facts into a coherent sentence: Facts: [facts] Sentence: ",
+            "For the GPT2-XL model, the prompt is: You are given the following facts. Facts: [facts] A short, coherent sentence summarizing the facts is: ",
+            "For the LLaMA-3.1-8B model, we use: Do not provide an explanation or follow-up. Just convert the following facts of an entity into a coherent sentence. Facts: [facts] Sentence: "
+          ]
+        },
+        {
+          "title": "CommonGen Dataset",
+          "paragraphs": [
+            "• For the GPT2-M and GPT2-XL models, we use the same prompt: One coherent sentence that uses all the following concepts: [concepts], is:",
+            "• For the LLaMA-3.1-8B model, we use: Please write a coherent sentence that uses all the following concepts. Concepts: [concepts] Sentence:",
+            "For the GPT2-M and GPT2-XL models, we use the same prompt: One coherent sentence that uses all the following concepts: [concepts], is: ",
+            "For the LLaMA-3.1-8B model, we use: Please write a coherent sentence that uses all the following concepts. Concepts: [concepts] Sentence: "
+          ]
+        },
+        {
+          "title": "Adidas Dataset",
+          "paragraphs": [
+            "• For the GPT2-M and GPT2-XL models, we use the same prompt: Given the following attributes of a product, write a description. Attributes: [attributes] Description:",
+            "• For the LLaMA-3.1-8B model, we use: Please write a description of this product given the following attributes. Attributes: [attributes] Description:",
+            "For the GPT2-M and GPT2-XL models, we use the same prompt: Given the following attributes of a product, write a description. Attributes: [attributes] Description: ",
+            "For the LLaMA-3.1-8B model, we use: Please write a description of this product given the following attributes. Attributes: [attributes] Description: ",
+            "For in-context learning, we simply add a sentence at the beginning of the prompt before offering the samples: Below are a list of demonstrations:.",
+            "For the qualitative analysis on the distribution shift in Section 7.3, we ask GPT-4o with the following prompt: For Web NLG dataset: Focus on all the samples, how much percentage is related to ‘‘Person’’? ",
+            "For CommonGen dataset: Focus on those samples whose target is related to gender, how much percentage is related to ‘‘woman’’? "
+          ]
+        },
+        {
+          "title": "C.3 Metrics",
+          "paragraphs": [
+            "We report performance using seven standard metrics often used in the natural language generation tasks. These are: (a) BLEU Papineni et al. [2002] (measures n-gram overlap between the generated and reference texts, emphasizing precision), (b) ROUGE-1 Lin [2004] (computes unigram recall to measure the overlap between generated and reference texts), (c) ROUGE-2 Lin [2004] (extends ROUGE-1 to bigrams, measuring the recall of two-word sequences), (d) ROUGE-L Lin and Och [2004] (uses the longest common subsequence to evaluate recall), (e) METEOR Banerjee and Lavie [2005] (combines unigram precision, recall, and semantic matching to assess similarity), (f) CIDEr Vedantam et al. [2015] (measures consensus in n-gram usage across multiple references, with tf-idf weighting), and (g) NIST Doddington [2002] (similar to BLEU but weights n-grams by their informativeness, favoring less frequent and meaningful phrases)."
+          ]
+        },
+        {
+          "title": "C.4 Additional Results when using GPT2-M as the Base Model",
+          "paragraphs": [
+            "Due to page limit, we move the results of using the base model as GPT2-M here in Appendix. In Table 6, 7, 8, and 9, we observe the similar trend that Plugin generally performs the best. Only on E2E NLG that NewModel performs better, likely due to the GPT2-M model on this dataset providing too noisy predictions, and it is better to learn a new language model."
+          ]
+        },
+        {
+          "title": "C.5 Further Quantitative Analysis and Ablation",
+          "paragraphs": [
+            "Following Section 7.2, we now display the same analysis of GPT2-M on the other three datasets.",
+            "As shown in Figure 5, we observe the similar trend as that in Figure 2, that the Plugin model consistently improves across all settings as the base model becomes stronger with additional fine-tuning, approving the robustness and versatility of our approach.",
+            "As shown in Figure 6, we also observe the similar trend as that in Figure 3. A single-layer reweighting model achieves the best performance, while adding more layers leads to overfitting, causing a decline in performance. Consistently, initializing the reweighting model with a pretrained GPT2-Small significantly enhances performance.",
+            "[Figure: Figure 5: Performance of applying a single-layer reweighting model across increasingly fine-tuned GPT2-M models on the three datasets. Results demonstrate consistent improvements introduced by our method regardless of the strength of the base model.]",
+            "[Figure: Figure 6: Performance of GPT2-M with varying reweighting model complexities on the three datasets, measured by BLEU and Rouge-L. Results demonstrate that a single reweighting layer achieves significant improvements, while increasing the number of layers beyond this leads to performance degradation, likely due to overfitting. Using a pretrained GPT2-Small as the reweighting model largely boosts the performance, highlighting the benefits of leveraging pretrained models.]"
+          ]
+        },
+        {
+          "title": "C.6 Influence of the architecture of the reweighting model inPlugin",
+          "paragraphs": [
+            "We ablate the choice of the reweighting model architecture. We find that a causal transformer layer identical to those used in the base model performs best, as it can leverage the base model’s logits and aggregate contextual information from prior tokens to better adapt the base model to the new data distribution. This conclusion is reinforced by Figure 7, where the transformer architecture consistently outperforms both the MLP (two layer with ReLU activation) and linear layers across all metrics, as indicated by higher means and narrower standard deviation bands. These results highlight the importance of leveraging the architectural capacity of transformers to effectively adapt the logits of the base black-box model.",
+            "[Figure: Figure 7: Performance comparison of the weighting model architecture in Plugin. The transformer layer achieves the best performance with consistently higher means and narrower standard deviations. Shaded bands represent the standard deviation around the mean.]"
+          ]
+        },
+        {
+          "title": "C.7 Details for Adidas Qualitative Studies",
+          "paragraphs": [
+            "We finally conduct a human evaluation on 100 test passages from the Adidas product dataset, comparing outputs generated with and without applying the reweighting model, using LLaMA-3.1-8B as the base model. Three human evaluators are presented with a ground-truth Adidas product description and two randomly ordered descriptions: one generated with the reweighting layer and one without (i.e., we use the base model with ICL-3 as a much stronger baseline due to the low quality of the zero-shot). Evaluators are prompted to select the prediction closest to the ground truth. Results show that the output generated with the reweighting model is preferred on an average of 80.7 out of all 100 cases. The output descriptions from the base model without the reweighting are generally short and general; see details in Appendix C.7. This demonstrates that our approach effectively adapts a closed model to the unique style of the given dataset.",
+            "In this section, we display some details for the qualitative analysis on the Adidas product description dataset.",
+            "We discuss the details on extracting the most frequent 50 words in the Adidas product description dataset as the “Adidas style” words. We argue that there does not exist a gold-standard way to define the “style” words for a dataset. We extract these style words through a minimal preprocessing pipeline: converting text to lowercase, removing special characters and numbers, and filtering out common English stopwords. We deliberately preserve the original word forms without lemmatization or stemming to maintain distinct style markers (e.g., keeping “comfortable” distinct from “comfort”, “running” distinct from “run”). After tokenization using NLTK’s word tokenizer, we count word frequencies across all product descriptions and select the top 50 most frequent words. This approach captures the exact vocabulary used in Adidas’ product descriptions, including specific product features.",
+            "A statistics of the frequency of these top-50 words is shown in Figure 8.",
+            "Below we provide more case studies on the Adidas product description datasets. We display the given product attributes, base model’s zero-shot outputs, base model with ICL-3’s outputs, Plugin model’s outputs, and the ground-truth references for each case.",
+            "[Figure: Figure 8: Word Frequency of the Top-50 Words in Adidas Dataset.]"
+          ]
+        },
+        {
+          "title": "Human Evaluation.",
+          "paragraphs": [
+            "We finally conduct a human evaluation on 100 test passages from the Adidas product dataset, comparing outputs generated with and without applying the reweighting model, using LLaMA-3.1-8B as the base model. Three human evaluators are presented with a ground-truth Adidas product description and two randomly ordered descriptions: one generated with the reweighting layer and one without (i.e., we use the base model with ICL-3 as a much stronger baseline due to the low quality of the zero-shot). Evaluators are prompted to select the prediction closest to the ground truth. Results show that the output generated with the reweighting model is preferred on an average of 80.7 out of all 100 cases. The output descriptions from the base model without the reweighting are generally short and general; see details in Appendix C.7. This demonstrates that our approach effectively adapts a closed model to the unique style of the given dataset.",
+            "In this section, we display some details for the qualitative analysis on the Adidas product description dataset."
+          ]
+        },
+        {
+          "title": "Details of Extracting Adidas Style Words.",
+          "paragraphs": [
+            "We discuss the details on extracting the most frequent 50 words in the Adidas product description dataset as the “Adidas style” words. We argue that there does not exist a gold-standard way to define the “style” words for a dataset. We extract these style words through a minimal preprocessing pipeline: converting text to lowercase, removing special characters and numbers, and filtering out common English stopwords. We deliberately preserve the original word forms without lemmatization or stemming to maintain distinct style markers (e.g., keeping “comfortable” distinct from “comfort”, “running” distinct from “run”). After tokenization using NLTK’s word tokenizer, we count word frequencies across all product descriptions and select the top 50 most frequent words. This approach captures the exact vocabulary used in Adidas’ product descriptions, including specific product features.",
+            "A statistics of the frequency of these top-50 words is shown in Figure 8.",
+            "[Figure: Figure 8: Word Frequency of the Top-50 Words in Adidas Dataset.]"
+          ]
+        },
+        {
+          "title": "Case Studies for Human Side-by-side Evaluation.",
+          "paragraphs": [
+            "Below we provide more case studies on the Adidas product description datasets. We display the given product attributes, base model’s zero-shot outputs, base model with ICL-3’s outputs, Plugin model’s outputs, and the ground-truth references for each case."
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "adi (2023) Adidas us retail products dataset. Kaggle, 2023. URL https://www.kaggle.com/datasets/whenamancodes/adidas-us-retail-products-dataset.",
+    "Achiam et al. (2023) Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Florencia Leoni Aleman, Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal Anadkat, et al. Gpt-4 technical report. arXiv preprint arXiv:2303.08774, 2023.",
+    "Bai et al. (2022a) Yuntao Bai, Andy Jones, Kamal Ndousse, Amanda Askell, Anna Chen, Nova DasSarma, Dawn Drain, Stanislav Fort, Deep Ganguli, Tom Henighan, et al. Training a helpful and harmless assistant with reinforcement learning from human feedback. arXiv preprint arXiv:2204.05862, 2022a.",
+    "Bai et al. (2022b) Yuntao Bai, Saurav Kadavath, Sandipan Kundu, Amanda Askell, Jackson Kernion, Andy Jones, Anna Chen, Anna Goldie, Azalia Mirhoseini, Cameron McKinnon, et al. Constitutional ai: Harmlessness from ai feedback. arXiv preprint arXiv:2212.08073, 2022b.",
+    "Banerjee and Lavie (2005) Satanjeev Banerjee and Alon Lavie. Meteor: An automatic metric for mt evaluation with improved correlation with human judgments. In Proceedings of the acl workshop on intrinsic and extrinsic evaluation measures for machine translation and/or summarization, pages 65–72, 2005.",
+    "Chaudhuri et al. (2015) Kamalika Chaudhuri, Sham M Kakade, Praneeth Netrapalli, and Sujay Sanghavi. Convergence rates of active learning for maximum likelihood estimation. Advances in Neural Information Processing Systems, 28, 2015.",
+    "Christiano et al. (2017) Paul F Christiano, Jan Leike, Tom Brown, Miljan Martic, Shane Legg, and Dario Amodei. Deep reinforcement learning from human preferences. Advances in neural information processing systems, 30, 2017.",
+    "(8) Sumanth Dathathri, Andrea Madotto, Janice Lan, Jane Hung, Eric Frank, Piero Molino, Jason Yosinski, and Rosanne Liu. Plug and play language models: A simple approach to controlled text generation. In International Conference on Learning Representations.",
+    "Dettmers et al. (2024) Tim Dettmers, Artidoro Pagnoni, Ari Holtzman, and Luke Zettlemoyer. Qlora: Efficient finetuning of quantized llms. Advances in Neural Information Processing Systems, 36, 2024.",
+    "Doddington (2002) George Doddington. Automatic evaluation of machine translation quality using n-gram co-occurrence statistics. In Proceedings of the second international conference on Human Language Technology Research, pages 138–145, 2002.",
+    "Dong et al. (2024) Qingxiu Dong, Lei Li, Damai Dai, Ce Zheng, Jingyuan Ma, Rui Li, Heming Xia, Jingjing Xu, Zhiyong Wu, Baobao Chang, et al. A survey on in-context learning. In Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing, pages 1107–1128, 2024.",
+    "Dubey et al. (2024) Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Amy Yang, Angela Fan, et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783, 2024.",
+    "Dušek et al. (2020) Ondřej Dušek, Jekaterina Novikova, and Verena Rieser. Evaluating the state-of-the-art of end-to-end natural language generation: The e2e nlg challenge. Computer Speech & Language, 59:123–156, 2020.",
+    "Frostig et al. (2015) Roy Frostig, Rong Ge, Sham M Kakade, and Aaron Sidford. Competing with the empirical risk minimizer in a single pass. In Conference on learning theory, pages 728–763. PMLR, 2015.",
+    "Gao et al. (2024) Ge Gao, Alexey Taymanov, Eduardo Salinas, Paul Mineiro, and Dipendra Misra. Aligning llm agents by learning latent preference from user edits. arXiv preprint arXiv:2404.15269, 2024.",
+    "Gardent et al. (2017) Claire Gardent, Anastasia Shimorina, Shashi Narayan, and Laura Perez-Beltrachini. Creating training corpora for nlg micro-planning. In 55th Annual Meeting of the Association for Computational Linguistics, ACL 2017, pages 179–188. Association for Computational Linguistics (ACL), 2017.",
+    "Hiranandani et al. (2021) Gaurush Hiranandani, Jatin Mathur, Harikrishna Narasimhan, Mahdi Milani Fard, and Sanmi Koyejo. Optimizing black-box metrics with iterative example weighting. In International Conference on Machine Learning, pages 4239–4249. PMLR, 2021.",
+    "Hsu et al. (2012) Daniel Hsu, Sham Kakade, Tong Zhang, et al. A tail inequality for quadratic forms of subgaussian random vectors. Electronic Communications in Probability, 17, 2012.",
+    "Hu et al. (2021) Edward J Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and Weizhu Chen. Lora: Low-rank adaptation of large language models. arXiv preprint arXiv:2106.09685, 2021.",
+    "Hu et al. (2023a) Zhiqiang Hu, Lei Wang, Yihuai Lan, Wanyu Xu, Ee-Peng Lim, Lidong Bing, Xing Xu, Soujanya Poria, and Roy Lee. LLM-adapters: An adapter family for parameter-efficient fine-tuning of large language models. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, pages 5254–5276, 2023a.",
+    "Hu et al. (2023b) Zhiqiang Hu, Lei Wang, Yihuai Lan, Wanyu Xu, Ee-Peng Lim, Lidong Bing, Xing Xu, Soujanya Poria, and Roy Lee. Llm-adapters: An adapter family for parameter-efficient fine-tuning of large language models. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, pages 5254–5276, 2023b.",
+    "Huang et al. (2024) Yukun Huang, Yixin Liu, Raghuveer Thirukovalluru, Arman Cohan, and Bhuwan Dhingra. Calibrating long-form generations from large language models. arXiv preprint arXiv:2402.06544, 2024.",
+    "Hurst et al. (2024) Aaron Hurst, Adam Lerer, Adam P Goucher, Adam Perelman, Aditya Ramesh, Aidan Clark, AJ Ostrow, Akila Welihinda, Alan Hayes, Alec Radford, et al. Gpt-4o system card. arXiv preprint arXiv:2410.21276, 2024.",
+    "Kapoor et al. (2024) Sanyam Kapoor, Nate Gruver, Manley Roberts, Arka Pal, Samuel Dooley, Micah Goldblum, and Andrew Wilson. Calibration-tuning: Teaching large language models to know what they don’t know. In Proceedings of the 1st Workshop on Uncertainty-Aware NLP (UncertaiNLP 2024), pages 1–14, 2024.",
+    "Kojima et al. (2022) Takeshi Kojima, Shixiang Shane Gu, Machel Reid, Yutaka Matsuo, and Yusuke Iwasawa. Large language models are zero-shot reasoners. Advances in neural information processing systems, 35:22199–22213, 2022.",
+    "Koyejo et al. (2014) Oluwasanmi O Koyejo, Nagarajan Natarajan, Pradeep K Ravikumar, and Inderjit S Dhillon. Consistent binary classification with generalized performance metrics. Advances in neural information processing systems, 27, 2014.",
+    "Krause et al. (2021) Ben Krause, Akhilesh Deepak Gotmare, Bryan McCann, Nitish Shirish Keskar, Shafiq Joty, Richard Socher, and Nazneen Fatema Rajani. Gedi: Generative discriminator guided sequence generation. In Findings of the Association for Computational Linguistics: EMNLP 2021, pages 4929–4952, 2021.",
+    "Lattimore and Szepesvári (2020) Tor Lattimore and Csaba Szepesvári. Bandit algorithms. Cambridge University Press, 2020.",
+    "Lester et al. (2021) Brian Lester, Rami Al-Rfou, and Noah Constant. The power of scale for parameter-efficient prompt tuning. In Proceedings of the 2021 Conference on Empirical Methods in Natural Language Processing, pages 3045–3059, 2021.",
+    "Li et al. (2022) Xiang Li, John Thickstun, Ishaan Gulrajani, Percy S Liang, and Tatsunori B Hashimoto. Diffusion-lm improves controllable text generation. Advances in Neural Information Processing Systems, 35:4328–4343, 2022.",
+    "Li and Liang (2021) Xiang Lisa Li and Percy Liang. Prefix-tuning: Optimizing continuous prompts for generation. In Proceedings of the 59th Annual Meeting of the Association for Computational Linguistics and the 11th International Joint Conference on Natural Language Processing (Volume 1: Long Papers), pages 4582–4597, 2021.",
+    "Lin et al. (2020) Bill Yuchen Lin, Wangchunshu Zhou, Ming Shen, Pei Zhou, Chandra Bhagavatula, Yejin Choi, and Xiang Ren. Commongen: A constrained text generation challenge for generative commonsense reasoning. In Findings of the Association for Computational Linguistics: EMNLP 2020, pages 1823–1840, 2020.",
+    "Lin (2004) Chin-Yew Lin. Rouge: A package for automatic evaluation of summaries. In Text summarization branches out, pages 74–81, 2004.",
+    "Lin and Och (2004) Chin-Yew Lin and Franz Josef Och. Automatic evaluation of machine translation quality using longest common subsequence and skip-bigram statistics. In Proceedings of the 42nd annual meeting of the association for computational linguistics (ACL-04), pages 605–612, 2004.",
+    "Lipton et al. (2018) Zachary Lipton, Yu-Xiang Wang, and Alexander Smola. Detecting and correcting for label shift with black box predictors. In International conference on machine learning, pages 3122–3130. PMLR, 2018.",
+    "Liu et al. (2021) Alisa Liu, Maarten Sap, Ximing Lu, Swabha Swayamdipta, Chandra Bhagavatula, Noah A Smith, and Yejin Choi. Dexperts: Decoding-time controlled text generation with experts and anti-experts. In Proceedings of the 59th Annual Meeting of the Association for Computational Linguistics and the 11th International Joint Conference on Natural Language Processing (Volume 1: Long Papers), 2021.",
+    "Long et al. (2023) Quanyu Long, Wenya Wang, and Sinno Pan. Adapt in contexts: Retrieval-augmented domain adaptation via in-context learning. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, pages 6525–6542, 2023.",
+    "Mireshghallah et al. (2022) Fatemehsadat Mireshghallah, Kartik Goyal, and Taylor Berg-Kirkpatrick. Mix and match: Learning-free controllable text generationusing energy language models. In Proceedings of the 60th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 401–415, 2022.",
+    "Mukherjee et al. (2020) Subhojyoti Mukherjee, Ardhendu Tripathy, and Robert Nowak. Generalized chernoff sampling for active testing, active regression and structured bandit algorithms. arXiv preprint arXiv:2012.08073, 2020.",
+    "Mukherjee et al. (2022) Subhojyoti Mukherjee, Ardhendu S Tripathy, and Robert Nowak. Chernoff sampling for active testing and extension to active regression. In International Conference on Artificial Intelligence and Statistics, pages 7384–7432. PMLR, 2022.",
+    "Naghshvar and Javidi (2013) Mohammad Naghshvar and Tara Javidi. Active sequential hypothesis testing. 2013.",
+    "Narasimhan et al. (2014) Harikrishna Narasimhan, Rohit Vaish, and Shivani Agarwal. On the statistical consistency of plug-in classifiers for non-decomposable performance measures. Advances in neural information processing systems, 27, 2014.",
+    "Narasimhan et al. (2015) Harikrishna Narasimhan, Harish Ramaswamy, Aadirupa Saha, and Shivani Agarwal. Consistent multiclass algorithms for complex performance measures. In International Conference on Machine Learning, pages 2398–2407. PMLR, 2015.",
+    "Ouyang et al. (2022) Long Ouyang, Jeffrey Wu, Xu Jiang, Diogo Almeida, Carroll Wainwright, Pamela Mishkin, Chong Zhang, Sandhini Agarwal, Katarina Slama, Alex Ray, et al. Training language models to follow instructions with human feedback. Advances in Neural Information Processing Systems, 35:27730–27744, 2022.",
+    "Papineni et al. (2002) Kishore Papineni, Salim Roukos, Todd Ward, and Wei-Jing Zhu. Bleu: a method for automatic evaluation of machine translation. In Proceedings of the 40th annual meeting of the Association for Computational Linguistics, pages 311–318, 2002.",
+    "Patrini et al. (2017) Giorgio Patrini, Alessandro Rozza, Aditya Krishna Menon, Richard Nock, and Lizhen Qu. Making deep neural networks robust to label noise: A loss correction approach. In Proceedings of the IEEE conference on computer vision and pattern recognition, pages 1944–1952, 2017.",
+    "Radford et al. (2019) Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario Amodei, Ilya Sutskever, et al. Language models are unsupervised multitask learners. OpenAI blog, 1(8):9, 2019.",
+    "Rafailov et al. (2024) Rafael Rafailov, Archit Sharma, Eric Mitchell, Christopher D Manning, Stefano Ermon, and Chelsea Finn. Direct preference optimization: Your language model is secretly a reward model. Advances in Neural Information Processing Systems, 36, 2024.",
+    "Sanh et al. (2022) Victor Sanh, Albert Webson, Colin Raffel, Stephen Bach, Lintang Sutawika, Zaid Alyafeai, Antoine Chaffin, Arnaud Stiegler, Arun Raja, Manan Dey, et al. Multitask prompted training enables zero-shot task generalization. In International Conference on Learning Representations, 2022.",
+    "(50) Maohao Shen, Subhro Das, Kristjan Greenewald, Prasanna Sattigeri, Gregory W Wornell, and Soumya Ghosh. Thermometer: Towards universal calibration for large language models. In Forty-first International Conference on Machine Learning.",
+    "Singh et al. (2023) Sidak Pal Singh, Thomas Hofmann, and Bernhard Schölkopf. The hessian perspective into the nature of convolutional neural networks. arXiv preprint arXiv:2305.09088, 2023.",
+    "Song et al. (2023) Chan Hee Song, Jiaman Wu, Clayton Washington, Brian M Sadler, Wei-Lun Chao, and Yu Su. Llm-planner: Few-shot grounded planning for embodied agents with large language models. In Proceedings of the IEEE/CVF International Conference on Computer Vision, pages 2998–3009, 2023.",
+    "Sukhbaatar et al. (2015) Sainbayar Sukhbaatar, Joan Bruna, Manohar Paluri, Lubomir Bourdev, and Rob Fergus. Training convolutional networks with noisy labels. In 3rd International Conference on Learning Representations, ICLR 2015, 2015.",
+    "Ulmer et al. (2024) Dennis Ulmer, Martin Gubri, Hwaran Lee, Sangdoo Yun, and Seong Joon Oh. Calibrating large language models using their generations only. arXiv preprint arXiv:2403.05973, 2024.",
+    "Vedantam et al. (2015) Ramakrishna Vedantam, C Lawrence Zitnick, and Devi Parikh. Cider: Consensus-based image description evaluation. In Proceedings of the IEEE conference on computer vision and pattern recognition, pages 4566–4575, 2015.",
+    "Wei et al. (2021) Jason Wei, Maarten Bosma, Vincent Zhao, Kelvin Guu, Adams Wei Yu, Brian Lester, Nan Du, Andrew M Dai, and Quoc V Le. Finetuned language models are zero-shot learners. In International Conference on Learning Representations, 2021.",
+    "Wolf (2020) Thomas Wolf. Transformers: State-of-the-art natural language processing. arXiv preprint arXiv:1910.03771, 2020.",
+    "Yang and Klein (2021) Kevin Yang and Dan Klein. Fudge: Controlled text generation with future discriminators. In Proceedings of the 2021 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, pages 3511–3535, 2021.",
+    "Zhang et al. (2024) Yushun Zhang, Congliang Chen, Tian Ding, Ziniu Li, Ruoyu Sun, and Zhi-Quan Luo. Why transformers need adam: A hessian perspective. arXiv preprint arXiv:2402.16788, 2024.",
+    "Zhu et al. (2023) Chiwei Zhu, Benfeng Xu, Quan Wang, Yongdong Zhang, and Zhendong Mao. On the calibration of large language models and alignment. In Findings of the Association for Computational Linguistics: EMNLP 2023, pages 9778–9795, 2023."
+  ]
+}

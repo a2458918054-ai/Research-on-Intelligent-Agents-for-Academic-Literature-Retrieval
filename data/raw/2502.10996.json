@@ -1,0 +1,566 @@
+{
+  "title": "RAS: Retrieval-And-Structuring for Knowledge-Intensive LLM Generation",
+  "authors": "Pengcheng JiangLang CaoRuike ZhuMinhao JiangYunyi ZhangJimeng SunJiawei Han",
+  "abstract": "Retrieval-augmented language models often struggle with knowledge-intensive tasks due to inefficient retrieval, unstructured knowledge integration, and single-pass architectures. We present Retrieval-And-Structuring (RAS), a novel framework that dynamically constructs and reasons over query-specific knowledge graphs through iterative retrieval and structuring. RAS introduces four key technical innovations: (1) a theme-scoped retrieval mechanism that efficiently narrows the search space while maintaining retrieval quality, (2) an action planning module that determines knowledge needs and generates focused sub-queries, (3) a dynamic knowledge structuring approach that converts retrieved text into an evolving knowledge graph, and (4) a graph-augmented answering component that leverages the accumulated structured information. Our framework achieves state-of-the-art performance, surpassing leading baselines by 6.4% with open-source language models and 7.0% with proprietary models on seven knowledge-intensive generation datasets across all evaluation metrics. Detailed ablation studies verify the contribution of each technical component to the overall system performance.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Complex reasoning tasks like scientific analysis or multi-hop question answering demand both comprehensive knowledge and structured logical thinking. While large language models (LLMs) have achieved remarkable performance across natural language processing tasks (Devlin et al., 2018; Brown et al., 2020; Chowdhery et al., 2023), they often struggle with knowledge-intensive reasoning due to the absence of precise, logically structured information (Rae et al., 2021; Ling et al., 2024). This limitation has prompted growing research into augmenting LLMs with structured knowledge to enhance their reasoning capabilities (Wang et al., 2021).",
+        "Retrieval-augmented generation (RAG) approaches have emerged as a promising direction by providing LLMs with additional context from retrieved passages (Guu et al., 2020; Lewis et al., 2020; Izacard & Grave, 2021; He et al., 2024). However, these methods frequently face hallucination challenges (Maynez et al., 2020; Zhang et al., 2023b), where generated content deviates from retrieved information. This issue stems primarily from the unstructured nature of retrieved passages, which lack explicit logical connections needed for precise reasoning. Recent efforts have explored integrating knowledge graphs (KGs) with LLMs (Sun et al., 2019; Yu et al., 2022; He et al., 2024; Edge et al., 2024), as KGs offer compact, structured representations of entities and relationships that enable more accurate and interpretable reasoning (Hogan et al., 2021; Jiang et al., 2024).",
+        "We present Retrieval-And-Structuring (RAS), a novel framework that dynamically constructs and reasons over query-specific knowledge graphs through iterative retrieval and structuring. RAS integrates theme-aware retrieval, dynamic KG construction, and self-refinement (Ji et al., 2023; Asai et al., 2023; Lyu et al., 2024b) to comprehensively prepare knowledge for challenging questions. The framework comprises four key components: (1) an action planner that strategically determines knowledge needs and generates targeted sub-queries, (2) a theme-scoped retrieval module that efficiently combines thematic and semantic relevance, (3) a knowledge structuring module that builds and expands query-specific KGs, and (4) a knowledge-augmented answerer that leverages the gathered structured information.",
+        "RAS addresses several critical limitations of existing approaches. First, unlike traditional RAG methods that rely solely on semantic similarity (Lewis et al., 2020; Guu et al., 2020), RAS employs theme-aware retrieval that significantly reduces the search space while preserving retrieval quality. Second, in contrast to static KG approaches (He et al., 2024; Edge et al., 2024), RAS dynamically constructs and evolves KGs based on the specific reasoning requirements of each query. Third, through its iterative planning mechanism, RAS actively identifies knowledge gaps and initiates focused retrievals, moving beyond the single-pass limitations of existing methods (Izacard & Grave, 2021).",
+        "On seven knowledge-intensive tasks including open-domain QA, closed-set QA, and long-form generation, RAS outperforms state-of-the-art baselines by 6.4% with open-source LLMs and 7.0% with proprietary models. The main contributions of this work: ",
+        "• We introduce RAS, a novel framework that dynamically constructs query-specific knowledge graphs through iterative retrieval and structuring for knowledge-intensive language generation.",
+        "• We propose theme-scoped retrieval that combines thematic classification with dense retrieval to efficiently narrow the search space while maintaining retrieval quality.",
+        "• We develop a dynamic knowledge structuring approach that iteratively builds and enriches knowledge graphs based on reasoning needs.",
+        "• We validate RAS’s effectiveness through comprehensive experiments and ablation studies across diverse knowledge-intensive tasks."
+      ],
+      "subsections": []
+    },
+    "2 Related Work": {
+      "paragraphs": [
+        "Retrieval-Augmented Generation. Retrieval-Augmented Generation (RAG) (Lewis et al., 2020; Guu et al., 2020) enhances performance on knowledge-intensive tasks by incorporating retrieved passages into input of large language models (LLMs), improving factual accuracy and grounding. Traditional approaches retrieved a fixed number of passages once before generation (Shao et al., 2023; Es et al., 2024; Lyu et al., 2024a) or focused on adaptive retrieval (Jiang et al., 2023), where models dynamically query external knowledge when confidence is low, or analyze on the retrieval (Kim et al., 2024b). However, these methods often fail to perform complex or multi-hop reasoning process due to the linear and simple designs, where several recent methods have emerged to improve retrieval quality. Iterative retrieval-generation approaches (Shao et al., 2023; Guan et al., 2024) leverage historical context to enhance subsequent retrievals. Other work introduces targeted retrieval strategies through subqueries (Khattab et al., 2023) or follow-up questions (Yao et al., 2023; Press et al., 2022), progressively enriching the context for more factually grounded generation. SelfRAG (Asai et al., 2023) introduced self-reflective RAG, which allows LLMs to retrieve content on demand and critically evaluate retrievals, demonstrating both the importance of retrieval quality and the capacity of LLMs to seek self-directed information. RPG (Lyu et al., 2024b) further refined this approach by extracting fine-grained paragraphs from retrieved content to improve query relevance. However, existing methods face key limitations. They often either include irrelevant content in the retrieved context or risk discarding essential information through refinement. Additionally, dense retrieval approaches can be computationally expensive when deployed on large corpora, hampering real-time user interaction. To address these challenges, we propose converting retrieved text into knowledge-intensive graphs and maintaining an iteratively enriched, query-specific knowledge graph for knowledge serving. We also introduce theme-scoped retrieval for more focused and efficient context retrieval.",
+        "Graph as Context for LLMs. The integration of graphs into modern language models represents a promising research direction (Yasunaga et al., 2021, 2022; Yu, 2022; Ju et al., 2022; Zhu et al., 2024; Gutiérrez et al., 2024). Recent approaches leverage graph-based knowledge representation to enhance LLM performance. For instance, GraphToken (Perozzi et al., 2024) shows that LLM can understand a graph encoded as a token, after a simple p-tuning (Liu et al., 2021) while keeping the LLM’s parameters frozen. Based on the findings, G-Retriever (He et al., 2024) constructs subgraphs by retrieving relevant entities and relations from a global KG, using these as structured knowledge input for LLMs. GraphRAG (Edge et al., 2024) employs an alternative strategy, extracting a comprehensive global KG from the corpus, identifying meaningful clusters through graph community detection, and generating LLM-based summaries of these communities to create a refined retrieval corpus. These methods demonstrate how graphs, with their knowledge-intensive modality and inherent structural properties, can significantly improve LLMs’ contextual understanding. However, current approaches treat graphs as static data structures without refinement based on LLM requirements. Moreover, building global KGs for large-scale corpora remains prohibitively expensive and often impractical – Wikipedia alone contains over 30 million documents per dump. The key challenge lies in developing methods to dynamically construct and utilize graphs on-the-fly for knowledge-intensive generation. To address these limitations, we propose a retrieval-and-structuring paradigm that dynamically builds and maintains query-specific KGs on-the-fly. Our approach iteratively enriches these graphs through LLM’s self-evaluation of information completeness and targeted retrieval via focused subqueries."
+      ],
+      "subsections": []
+    },
+    "3 RAS Framework": {
+      "paragraphs": [
+        "Knowledge-intensive language generation requires not just retrieving relevant information, but also structuring and reasoning over it effectively. We propose Retrieval-And-Structuring (RAS), a framework shown in Figure 1. In the following subsections, we detail the technical mechanisms underlying each stage. To facilitate understanding, we showcase a running example of RAS in Figure 26."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Action Planning",
+          "paragraphs": [
+            "The Action Planning stage is the first critical step in the RAS framework, guiding the retrieval and reasoning process based on the input query and the current knowledge state. It involves two key components: the Action Planner ℳp​l​a​n\\mathcal{M}_{plan}, a language model that assesses the sufficiency of the current knowledge state and generates sub-queries for further retrieval if necessary, and a decision step that determines the next action based on the planner’s output.",
+            "(For initial iteration) Formally, given an input query QQ, the Action Planner ℳp​l​a​n\\mathcal{M}_{plan} generates a plan p0p_{0} according to:",
+            "where p0p_{0} can take one of two forms:",
+            "• [NO_RETRIEVAL]: If ℳp​l​a​n\\mathcal{M}_{plan} determines that QQ can be answered directly without requiring any additional knowledge, the planning process terminates, and the framework proceeds directly to the final Answer Generation stage (§3.4).",
+            "• [SUBQ] q0=Qq_{0}=Q: If ℳp​l​a​n\\mathcal{M}_{plan} assesses that the query cannot be satisfactorily answered with its own knowledge, we start the iteration with the main query QQ as the initial subquery, and move to the next stage (§3.2).",
+            "[NO_RETRIEVAL]: If ℳp​l​a​n\\mathcal{M}_{plan} determines that QQ can be answered directly without requiring any additional knowledge, the planning process terminates, and the framework proceeds directly to the final Answer Generation stage (§3.4).",
+            "[SUBQ] q0=Qq_{0}=Q: If ℳp​l​a​n\\mathcal{M}_{plan} assesses that the query cannot be satisfactorily answered with its own knowledge, we start the iteration with the main query QQ as the initial subquery, and move to the next stage (§3.2).",
+            "(For iteration >> 0) At each iteration ii, the Action Planner reassesses the cumulative retrieved knowledge GiG_{i} and the chain of previous sub-queries (q0,g0),…,(qi,gi)(q_{0},g_{0}),...,(q_{i},g_{i}) in the context of the main query QQ:",
+            "where fg​n​nf_{gnn} is a graph neural network for encoding the evolving KG GiG_{i}; qkq_{k} is the subquery at iteration kk, and gkg_{k} is the extracted graph information (triple list) from the retrieved context. The base model we use here is GraphLLM, an architecture derived from previous work (Perozzi et al., 2024; He et al., 2024). We discuss more details in §3.3.",
+            "The planner’s output pi+1p_{i+1} at each iteration can be either:",
+            "• [SUFFICIENT]: The accumulated knowledge GiG_{i} is deemed sufficient to comprehensively address the main query QQ. The iterative retrieval process terminates, and the framework proceeds to the Knowledge-Augmented Generation stage (§3.4).",
+            "• [SUBQ] qi+1q_{i+1}: The planner generates a new subquery qi+1q_{i+1} to guide the retrieval of additional relevant knowledge. The subquery is designed to fill specific gaps in the current knowledge state with respect to answering QQ. The framework continues the iterative process and proceeds to the Theme-Scoped Retrieval stage (§3.2).",
+            "[SUFFICIENT]: The accumulated knowledge GiG_{i} is deemed sufficient to comprehensively address the main query QQ. The iterative retrieval process terminates, and the framework proceeds to the Knowledge-Augmented Generation stage (§3.4).",
+            "[SUBQ] qi+1q_{i+1}: The planner generates a new subquery qi+1q_{i+1} to guide the retrieval of additional relevant knowledge. The subquery is designed to fill specific gaps in the current knowledge state with respect to answering QQ. The framework continues the iterative process and proceeds to the Theme-Scoped Retrieval stage (§3.2).",
+            "The Action Planner serves as a key driver of the RAS framework’s iterative retrieval and refinement process. By dynamically assessing the adequacy of the retrieved knowledge and generating targeted sub-queries, it enables the efficient acquisition of query-relevant information."
+          ]
+        },
+        {
+          "title": "3.2 Theme-Scoped Retrieval",
+          "paragraphs": [
+            "This stage efficiently retrieves thematically and semantically relevant context for subquery qiq_{i} through a two-step process: (1) theme scoping to identify a narrowed sub-corpus cic_{i} close to qiq_{i}’s thematic distribution, and (2) dense retrieval to find the most relevant passages tit_{i} within cic_{i}. This thematic pre-filtering before semantic matching aims to improve both retrieval efficiency and precision.",
+            "The Theme Scoping mechanism transforms sub-queries into thematic probability distributions and retrieves relevant document subsets through three key operations:",
+            "First, a theme classifier fc​l​sf_{cls} maps the subquery qiq_{i} to a posteriori probability distribution (PPD) over thematic classes (Eq. 3). The classifier is trained on DBPedia-298 (Lehmann et al., 2015)111Document label space of DBPedia-298: https://mappings.dbpedia.org/server/ontology/classes/, a multilabel wiki text classification dataset, enabling fine-grained thematic distinctions.",
+            "To address the distribution shift between queries and documents, an MLP-based shifter fs​h​i​f​tf_{shift} transforms the query theme distribution PPD​(qi)\\text{PPD}(q_{i}) into an expected document theme distribution PPD​(di)\\text{PPD}(d_{i}) (Eq. 4). This shifter is trained on query-document pairs in our constructed dataset HotpotQA-SUBQ (see Appendix B), learning to capture the relationship between query and document thematic patterns.",
+            "Finally, using the shifted distribution PPD​(di)\\text{PPD}(d_{i}), we retrieve a theme-specific sub-corpus cic_{i} from the theme-indexed corpus CP​P​DC_{PPD} (Eq. 5). The ThemeSim​(⋅)\\text{ThemeSim}(\\cdot) function selects the top-KK documents based on L2 similarity between PPD​(di)\\text{PPD}(d_{i}) and the pre-computed theme distributions in CP​P​DC_{PPD}. This focused retrieval process effectively reduces the search space while maintaining thematic relevance for subsequent semantic matching operations.",
+            "Within the theme-specific sub-corpus cic_{i}, a dense retriever fd​e​nf_{den} is employed to identify the most semantically relevant passages tit_{i} for the subquery qiq_{i}:",
+            "where DenseSim​(⋅)\\text{DenseSim}(\\cdot) selects the top-kk passages based on the cosine similarity between the query embedding fd​e​n​(qi)f_{den}(q_{i}) and the passage embeddings fd​e​n​(ci)f_{den}(c_{i}) precomputed in the dense index."
+          ]
+        },
+        {
+          "title": "3.3 Knowledge Structuring and Enrichment",
+          "paragraphs": [
+            "This stage is designed to transform the retrieved text passages tit_{i} into a structured graph representation gig_{i} and iteratively expand the query-specific knowledge graph GQG_{Q}.",
+            "To capture the essential facts from the retrieved passages tit_{i}, a text-to-triples model ft​2​tf_{t2t} is employed. We train the model on the full set of WikiOFGraph dataset (Kim et al., 2024a), an LLM-curated high-quality text-triples dataset, enabling it to generate quality and information-rich triples in the format:",
+            "where each triple (sj,rj,oj)(s_{j},r_{j},o_{j}) represents a subject-predicate-object fact extracted from the text. This structured representation allows for efficient downstream reasoning and simple external knowledge graph integration.",
+            "The extracted triples gig_{i} are then converted into a graph structure gi′=(Vi,Ei)g_{i}^{\\prime}=(V_{i},E_{i}), where ViV_{i} and EiE_{i} denote the sets of nodes and edges, respectively. Each node v∈Viv\\in V_{i} corresponds to a unique subject or object entity in gig_{i}, while each edge e∈Eie\\in E_{i} represents a predicate connecting two entities. To enrich the graph with semantic information, the attributes of nodes and edges are obtained through a text encoder fe​n​cf_{enc} (Sentence-BERT (Reimers, 2019) in our case):",
+            "These semantic embeddings enable the model to capture the nuanced relationships between entities and facilitate reasoning over the knowledge graph.",
+            "To progressively expand the knowledge base in response to the evolving sub-queries, the structured graph gi′g_{i}^{\\prime} at each iteration ii is merged into a evolving knowledge graph GQ=(VQ,EQ)G_{Q}=(V_{Q},E_{Q}) specific to the main query QQ:",
+            "After enriching GQG_{Q} with the new knowledge, the action planner (§3.1) reassesses the current knowledge to determine the next step. Based on GQG_{Q} and the chain of previous subqueries and their associated graph information, the planner decides whether to generate another focused subquery for additional retrieval (§3.2) or to proceed with answering (§3.4) if the accumulated knowledge is deemed sufficient."
+          ]
+        },
+        {
+          "title": "3.4 Knowledge-Augmented Generation",
+          "paragraphs": [
+            "The final stage generates an answer AA to the main query QQ using the Answerer model ℳa​n​s\\mathcal{M}_{ans} conditioned on knowledge graph GQG_{Q} and subquery chain (q0,g0),…,(qi,gi)(q_{0},g_{0}),...,(q_{i},g_{i}).",
+            "If no retrieval is needed (p0=[NO_RETRIEVAL]p_{0}=\\text{{[NO\\_RETRIEVAL]}}), the answer is generated directly:",
+            "Otherwise, after iterative knowledge enrichment concludes with [SUFFICIENT] plan, the answer is generated using encoded KG fg​n​n​(GQ)f_{gnn}(G_{Q}) and subquery chain:",
+            "ℳa​n​s\\mathcal{M}_{ans} attends to relevant knowledge in GQG_{Q} and subquery chain to generate accurate, coherent answers.",
+            "Note: In this study, ℳa​n​s\\mathcal{M}_{ans} and ℳp​l​a​n\\mathcal{M}_{plan} are two roles played by the same model with different instructions (see §C.3)."
+          ]
+        }
+      ]
+    },
+    "4 Experiments": {
+      "paragraphs": [
+        "Training Data & Setting. We develop HotpotQA-SUBQ, a dataset derived from HotpotQA (Yang et al., 2018), to train our model’s action planning and answering capabilities. Our dataset creation begins with document filtering: using Claude 3.5 Sonnet (Anthropic, 2024), we identify and retain only the supporting documents necessary for answering the main query, removing irrelevant content. For each supporting document djd_{j}, we then iteratively generate a subquery qjq_{j}, considering the main query, previous subqueries, and supporting documents. During iteration jj, when more supporting documents remain, we create training samples with input {q0,g0,…,qj,gj,Q}\\{q_{0},g_{0},...,q_{j},g_{j},Q\\} and output label “[SUBQ] qj+1q_{j+1}”, where gkg_{k} represents triples extracted from document dkd_{k}, and QQ is the main query. For the final supporting document, we label the sample as “[SUFFICIENT]”. To identify queries that can be answered directly, we test our base LLM (LLaMA-2-7B) on HotpotQA’s main queries without context. For correctly answered queries, we create training samples with the main query QQ as input and “[NO_RETRIEVAL]” as the output label. Additionally, to ensure fair comparison with existing approaches, we incorporate the subset of Arc-Easy (2,147 samples) and ASQA (3,897 samples) from SelfRAG’s training data, resulting in 208k training samples in total. We place detailed training data processing, dataset statistics, and data samples in Appendix B. We use DBPedia-298, HotpotQA-SUBQ, and WikiOFGraph to train our theme classifier fc​l​sf_{cls}, distribution shifter fs​h​i​f​tf_{shift}, and text-to-triples model ft​2​tf_{t2t}, respectively, as detailed in Appendix C. We present our hyperparameter study of each component in Appendix G.",
+        "Knowledge Sources. Due to the large sizes of wiki corpora, we employ faiss (Douze et al., 2024) for efficient vector searching across both theme and dense indices. Following the SelfRAG (Asai et al., 2023), we utilize the Wikipedia 2018 (Izacard et al., 2023) by default, while specifically using the Wikipedia 2020 for PopQA to access more recent information. To optimize retrieval efficiency, we partition the index into five segments. Within each segment, we first perform theme scoping to reduce the candidate document pool KK to 250,000 documents by default. However, we skip theme scoping for PopQA since our classifier fc​l​sf_{cls}, trained on DBPedia-298 data based on old Wiki dump, performs poorly on newer Wiki 2020 dump, producing near-zero vectors for roughly one-third of recent content.",
+        "Test Datasets & Metrics & Compared Baselines. We conduct comprehensive evaluations on diverse knowledge-intensive tasks following previous studies (Asai et al., 2023; Lyu et al., 2024b). The evaluation encompasses three categories of datasets: (1) open-domain short-form generation datasets: TriviaQA (Joshi et al., 2017), PopQA (Mallen et al., 2022), and 2WikiMultihopQA (Ho et al., 2020); (2) closed-set task datasets: PubHealth (Zhang et al., 2023a) and ARC-Challenge (Clark et al., 2018); and (3) long-form generation datasets: ALCE-ASQA (Gao et al., 2023; Stelmakh et al., 2022) and ELI5 (Fan et al., 2019). For evaluation metrics, we maintain consistency with prior work (Asai et al., 2023; Mallen et al., 2022; Lyu et al., 2024b), employing “golden match” accuracy for PopQA and TriviaQA, token-level F1 score for 2WikiMultihopQA, accuracy for PubHealth and ARC-Challenge, and ROUGE-LSum alongside MAUVE score (Pillutla et al., 2021) for ASQA and ELI5. Our comparative analysis includes three baseline categories: models without retrieval augmentation, incorporating Claude 3.5 Sonnet as a state-of-the-art closed-source baseline; models with single retrieval over top-5 documents, including Claude 3.5 Sonnet, and SuRe (Kim et al., 2024b), a leading retrieve-and-summarize framework; and models with self-reflective retrieval, including leading approaches Self-RAG (Asai et al., 2023) and RPG (Lyu et al., 2024b). We place more details of metrics/datasets in Appendix D.",
+        "Inference Setting. We evaluate RAS using both our trained open-source model (RAS7​B/8​B{}_{7\\text{B}/8\\text{B}} with LLaMA-2-7B/LLaMA-3-8B and Graph Transformer (Shi et al., 2020) encoder) and the closed-source Claude-3.5-Sonnet model under varied inference settings. For RAS7​B/8​B{}_{7\\text{B}/8\\text{B}}, we maintain consistency with previous work (Asai et al., 2023; Lyu et al., 2024b) by employing zero-shot inference across all datasets. For closed-source models (e.g., RASSonnet-3.5{}_{\\text{Sonnet-3.5}}), we utilize few-shot inference with two exemplars for ASQA and ELI5, while maintaining zero-shot for the other datasets.",
+        "During inference, if the initial planner output is not [NO_RETRIEVAL], we utilize the main query QQ as the initial subquery q0q_{0}. For PopQA and TriviaQA evaluation, we follow established settings (Asai et al., 2023; Luo et al., 2023), incorporating top-five web search engine results as initial retrieved context t0t_{0}. For ASQA and ELI5, we maintain methodological consistency with prior work (Lyu et al., 2024b; Asai et al., 2023; Gao et al., 2023), utilizing their predetermined five-document context. Under these conditions, we omit plan generation and text retrieval phases, implementing static inference (Asai et al., 2023) with five fixed iterations. For remaining datasets, we establish a maximum iteration count of five. Following previous studies, we employ Contriever-MS MARCO (Izacard et al., 2021) as the primary dense retriever, with BM25 (Robertson et al., 2009) serving as the retrieval mechanism for 2WikiMultihopQA. Across all retrieval processes, we maintain a consistent top-kk document selection of five. We present more details of inference settings in Appendix E."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Main Results",
+          "paragraphs": [
+            "Our performance evaluation, presented in Table 1, demonstrates that the LLaMA-2-7B/LLaMA-3-8B model fine-tuned with RAS outperforms existing open-source solutions, including SelfRAG (Asai et al., 2023) and RPG (Lyu et al., 2024b). Notably, compared to the previous SOTA models, RAS7​B{}_{7\\text{B}} shows a 9.7% improvement in short-form question-answering and a 7.9% gain in long-form generation tasks. Additionally, when applied to closed-source Sonnet-3.5 model, RAS consistently achieves superior results compared to single retrieval RAG approaches, including retrieve-and-summarize approach SuRe (Kim et al., 2024b).",
+            "We find that sometimes (e.g., on TriviaQA and PubHealth) single-hop retrieval could not boost LLM’s performance, and even makes it worse, which demonstrates the necessity of on-demand retrieval, aligning with previous findings.",
+            "Our “role-swapping” study, where Sonnet-3.5 and RAS7​B{}_{7\\text{B}} alternately serve as action planner and answerer, reveals that performance is primarily bounded by the answerer’s inherent capabilities. For example, when Sonnet-3.5 acts as the planner with RAS7​B{}_{7\\text{B}} as the answerer, the system achieves 62.4% accuracy on the ARC-Challenge dataset. However, when Sonnet-3.5 serves as both planner and answerer, accuracy increases to 93.8%. Notably, despite having 60x fewer parameters, our trained RAS7​B{}_{7\\text{B}} performs comparably to Sonnet-3.5 as a planner, and even outperforms it sometimes.",
+            "Also, for long-form generation task, our trained model achieved notably high MAUVE scores, which can be majorly attributed to our “text-to-triple” generation step, as demonstrated by our later ablation study in Table 2."
+          ]
+        },
+        {
+          "title": "4.2 Ablations & More Analysis",
+          "paragraphs": [
+            "We study the effect of individual component in Table 2.",
+            "Effect of Iterative Planning and Retrieval. Comparing the base model with “No Planning” variant shows that iterative planning provides consistent improvements across all metrics (e.g., +8.8% on TQA, +9.0% on 2WQA). This demonstrates the importance of dynamically determining retrieval needs and generating focused sub-queries. Without planning, the model relies on single-pass retrieval, which may miss crucial information needed for complex reasoning. Also, when turning off retrieval, the performance degradation is more obvious, due to the knowledge-intensive nature of those datasets.",
+            "Effect of Graph Construction and Encoding. The impact of structured knowledge representation is evident from two ablations. First, “No Text-to-Triple” degrades performance significantly on all metrics (e.g., -9.0% on 2WQA, -22.2% MAUVE on ASQA), showing the value of essential information extraction via converting retrieved text into structured triples. Second, removing the graph encoder (“No GraphToken”) during training or inference consistently hurts performance across datasets, with particularly large drops on PubHealth (-11.2% and -10.0% respectively). This suggests that the graph structure encoding helps the model better leverage the knowledge relationships.",
+            "Effect of LoRA and Multi-task Learning. Our experiments reveal that parameter-efficient training strategies significantly impact model performance. Using only graph token optimization without LoRA leads to substantial degradation (-11.8% on average). A similar observation can be made for “No Multi-Task” (e.g., 12.3% accuracy degradation on PubHealth), indicating the significance of jointly training the model on both action planning and answer generation tasks rather than optimizing for each task separately, supporting findings from prior work (Lyu et al., 2024b). The complementary effects suggest that while graph-based knowledge representation is valuable, it needs to be combined with careful parameter tuning and multi-task learning to achieve optimal performance.",
+            "Effect of Theme Scoping. The theme-scoped retrieval shows mixed results – while removing it (“No ThemeScoping”) has minimal performance drops on TQA and PubHealth, the efficiency benefits are substantial as shown in Figure 2. This suggests theme scoping successfully narrows the search space without compromising performance.",
+            "Efficiency Analysis. Figure 2 compares the computational costs of different retrieval strategies. Theme-scoped RAG reduces processing time by approximately 60% compared to dense-only RAG by first filtering the corpus through lightweight theme classification (with 298 class dimensions). This combination of comparable performance with significantly reduced computational cost demonstrates the effectiveness of our theme-scoped retrieval approach.",
+            "Impact of Training Data Volume. Figure 3 demonstrates how training dataset size influences model performance across different tasks. Considering the computational efficiency, we sampled 2,000 instances each from TQA and 2WQA for evaluation, while maintaining the original sizes of other datasets. The results indicate that model performance generally improves with increased training data volume. Notably, our model achieves competitive performance even with limited training data - using only 5% (10K instances) of our full dataset, it surpasses previous state-of-the-art models on TQA, 2WQA, and ELI5. These results suggest both the robustness of our architectural design and the effectiveness of our data curation methodology. However, we observed an exception with the ELI5 dataset, where performance were inconsistent. This irregularity can be attributed to the inclusion of ASQA training data in our training set, following established setting from previous research (Asai et al., 2023; Lyu et al., 2024b). Among our test datasets, ASQA and ELI5 are unique in requiring long-form response generation. The periodic decline in ELI5 performance suggests that the model’s response generation began to align more closely with ASQA’s training data distribution, potentially at the expense of ELI5’s distinct characteristics.",
+            "Impact of Graph Information Abundance. Figure 4 demonstrates a strong positive correlation between graph information abundance and model performance across all tasks. Both RAS7​B{}_{7\\text{B}} and RAS8​B{}_{8\\text{B}} show consistent improvements as graph information increases, demonstrating RAS’s strong capability of effective utilizing available graph information for knowledge-intensive generation."
+          ]
+        }
+      ]
+    },
+    "5 Conclusion": {
+      "paragraphs": [
+        "We presented RAS (Retrieval-And-Structuring), a novel framework that enhances knowledge-intensive language generation through iterative retrieval and knowledge structuring. Our approach introduces key innovations including theme-scoped retrieval, action planning, dynamic knowledge structuring, and graph-augmented answering. Comprehensive experiments demonstrate RAS’s superior performance over existing approaches across diverse benchmarks. Looking ahead, RAS’s graph-based architecture enables seamless integration with external knowledge graphs and human-in-the-loop curation, making it particularly valuable for specialized domains requiring high accuracy and reliability. We discuss limitations of RAS and future work in Appendix A. Our code can be found at https://github.com/pat-jj/Retrieval-And-Structure."
+      ],
+      "subsections": []
+    },
+    "Impact Statements": {
+      "paragraphs": [
+        "The RAS framework has several potential positive impacts on both research and practical applications. First, by improving knowledge-intensive language generation through structured knowledge representation and iterative reasoning, RAS could enhance the reliability and factual accuracy of AI systems in critical domains like education, research assistance, and technical documentation. The theme-scoped retrieval mechanism also offers computational efficiency benefits, potentially reducing the energy consumption and computational resources required for large-scale knowledge retrieval tasks.",
+        "However, there are important considerations regarding potential risks and challenges. The framework’s effectiveness in knowledge structuring could potentially amplify existing biases in training data and knowledge sources. Additionally, while RAS improves retrieval efficiency, it may create barriers for low-resource languages or domains where structured knowledge bases and thematic classifications are limited. These concerns necessitate careful consideration of data sources and regular evaluation of the system’s impact across different user groups and application contexts."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Limitations & Future Work": {
+      "paragraphs": [
+        "While RAS demonstrates strong performance, several key limitations warrant consideration for future improvements:",
+        "• Knowledge Extraction Quality: The effectiveness of both planning and answer generation depends on the quality of text-to-triple extraction. Despite using a Flan-T5-based model for triple extraction, implementing a more sophisticated approach – such as a dedicated Named Entity Recognition and Relation Extraction (NER-RE) pipeline – could potentially enhance RAS’s reasoning capabilities and knowledge representation.",
+        "• Theme Scoping Limitations: The current classifier was trained on DBPedia-298, an older dataset that may not adequately represent the thematic distribution of contemporary document collections. This temporal gap particularly affects performance when processing newer corpora, as evidenced by our experiments with Wikipedia 2020 dumps. The development of a huge, up-to-date multilabel document classification dataset would likely improve the effectiveness of theme scoping and, consequently, the overall efficiency gains it provides.",
+        "• Graph Evolution Strategy: The current approach to evolving knowledge graphs could be enhanced by incorporating more sophisticated graph pruning and merging strategies. Future work could explore dynamic graph summarization techniques to maintain the most relevant information while preventing excessive graph growth during iterations.",
+        "• Cross-Domain Adaptability: While RAS performs well on the evaluated tasks, its effectiveness across highly specialized domains or multilingual settings remains to be investigated. Future research could focus on developing domain-adaptation techniques and multilingual knowledge structuring approaches.",
+        "• Interactive Refinement: The current implementation lacks mechanisms for interactive refinement of the constructed knowledge graphs. Future versions could incorporate human feedback loops to improve the quality of knowledge structuring and reasoning paths.",
+        "These limitations suggest several promising directions for future research, including improved knowledge extraction techniques, more robust theme classification approaches, and enhanced graph evolution strategies. A particularly promising direction is the integration of external knowledge graphs into RAS’s iterative loop, as its graph-based architecture naturally accommodates the incorporation of established KGs like Wikidata or domain-specific knowledge bases. This could significantly enhance the system’s reasoning capabilities by combining dynamically constructed knowledge with curated structured information. We summarize the potential future directions of extension in Figure 5.",
+        "[Figure: Figure 5: Potential Future Improvement of RAS. ]"
+      ],
+      "subsections": []
+    },
+    "Appendix B HotpotQA-SUBQ Dataset": {
+      "paragraphs": [
+        "The source of our dataset is HotpotQA (Yang et al., 2018).222We use the version hotpot_train_v1.1 from https://github.com/hotpotqa/hotpot. Our goal is to create a dataset that can let the model learn the capabilities of subquery generation and answering with intensive knowledge. We name the dataset as HotpotQA-SUBQ.",
+        "The construction of HotpotQA-SUBQ includes three steps: (1) filter out irrelevant/unnecessary “supporting docs” (§B.1), (2) generate one subquery for each supporting document (§B.2), and (3) sample labeling (§B.3).",
+        "[Figure: Figure 6: Prompt used for filtering supporting documents in HotpotQA. The prompt includes examples to demonstrate the difference between helpful and irrelevant documents. The input parts to the prompt are highlighted.]",
+        "[Figure: Figure 7: Prompt used for subquery generation from HotpotQA. The input parts to the prompt are highlighted.]",
+        "[Figure: Figure 8: Training Data Example (Action Planner – [NO_RETRIEVAL]) ]",
+        "[Figure: Figure 9: Training Data Example (Action Planner – [SUBQ]) ]",
+        "[Figure: Figure 10: Training Data Example (Action Planner – [SUFFICIENT]) ]",
+        "[Figure: Figure 11: Training Data Example (Answerer – [NO_RETRIEVAL]) ]",
+        "[Figure: Figure 12: Training Data Example (Answerer – [SUFFICIENT]) ]",
+        "[Table: Table 3: Statistics of our constructed HotpotQA-SUBQ dataset.]"
+      ],
+      "subsections": [
+        {
+          "title": "B.1 Supporting Document Filtering",
+          "paragraphs": [
+            "To identify and filter out irrelevant supporting documents from HotpotQA, we employ an instruction-based approach using Claude 3.5 Sonnet, as shown in Figure 6.",
+            "The filtering prompt is designed with clear examples that illustrate the criteria for document relevance. For each HotpotQA sample, we enumerate all supporting documents and use Claude to identify only those that contribute directly to answering the question. After filtering out irrelevant documents, we filter the question with no supporting documents. This filtering step reduces noise in the training data and helps focus the model on truly relevant information during sub-query generation.",
+            "[Figure: Figure 6: Prompt used for filtering supporting documents in HotpotQA. The prompt includes examples to demonstrate the difference between helpful and irrelevant documents. The input parts to the prompt are highlighted.]"
+          ]
+        },
+        {
+          "title": "B.2 Sub-query Generation",
+          "paragraphs": [
+            "For sub-query generation, we use the template as follows to generate one subquery per (filtered) document:",
+            "The prompt template enforces document-specificity, goal-orientation, and conciseness in sub-query generation. For iterative querying, we maintain a list of previously generated sub-queries to avoid redundancy and encourage progressive information gathering.",
+            "[Figure: Figure 7: Prompt used for subquery generation from HotpotQA. The input parts to the prompt are highlighted.]"
+          ]
+        },
+        {
+          "title": "B.3 Sample Labeling",
+          "paragraphs": [
+            "The sample labeling process transforms the filtered and subquery-augmented HotpotQA examples into training instances for both the Action Planner and Answerer components. We formalize this process in Algorithm 1.",
+            "The algorithm takes as input the filtered HotpotQA dataset 𝒟\\mathcal{D}, base language model ℳ\\mathcal{M}, and text-to-triple conversion model ft​2​tf_{t2t}. For each example, we first attempt direct answer generation using the base LLM (Line 3). If successful, we create [NO_RETRIEVAL] training instances for both the planner and answerer (Lines 4-6).",
+            "For examples requiring retrieval, we process each supporting document sequentially:",
+            "1. Convert document text to structured triples using ft​2​tf_{t2t} (Line 12)",
+            "2. For intermediate documents (i<ni<n): Construct input by concatenating previous subquery-graph pairs Label with [SUBQ] and next subquery",
+            "• Construct input by concatenating previous subquery-graph pairs",
+            "• Label with [SUBQ] and next subquery",
+            "3. For final document (i=ni=n): Include all accumulated context Label planner sample as [SUFFICIENT] Create answerer training instance with ground truth answer",
+            "• Include all accumulated context",
+            "• Label planner sample as [SUFFICIENT]",
+            "• Create answerer training instance with ground truth answer",
+            "• Construct input by concatenating previous subquery-graph pairs",
+            "• Label with [SUBQ] and next subquery",
+            "• Include all accumulated context",
+            "• Label planner sample as [SUFFICIENT]",
+            "• Create answerer training instance with ground truth answer",
+            "Convert document text to structured triples using ft​2​tf_{t2t} (Line 12)",
+            "For intermediate documents (i<ni<n):",
+            "• Construct input by concatenating previous subquery-graph pairs",
+            "• Label with [SUBQ] and next subquery",
+            "Construct input by concatenating previous subquery-graph pairs",
+            "Label with [SUBQ] and next subquery",
+            "For final document (i=ni=n):",
+            "• Include all accumulated context",
+            "• Label planner sample as [SUFFICIENT]",
+            "• Create answerer training instance with ground truth answer",
+            "Include all accumulated context",
+            "Label planner sample as [SUFFICIENT]",
+            "Create answerer training instance with ground truth answer",
+            "The input formatting function (Lines 14 and 17) follows the template:",
+            "This process generates two datasets:",
+            "• 𝒯p​l​a​n\\mathcal{T}_{plan}: Trains the Action Planner to determine retrieval needs and generate targeted subqueries",
+            "• 𝒯a​n​s\\mathcal{T}_{ans}: Trains the Answerer to synthesize final responses from accumulated graph context",
+            "𝒯p​l​a​n\\mathcal{T}_{plan}: Trains the Action Planner to determine retrieval needs and generate targeted subqueries",
+            "𝒯a​n​s\\mathcal{T}_{ans}: Trains the Answerer to synthesize final responses from accumulated graph context",
+            "Table 3 illustrates the distribution of our generated datasets. The planner dataset demonstrates a balanced distribution across three label types: 35% [SUFFICIENT], 55% [SUBQ], and 10% [NO_RETRIEVAL]. The answerer dataset incorporates both no-retrieval and sufficient cases from multiple sources. The size of the answerer dataset exceeds the combined total of no-retrieval and sufficient cases from the planner dataset for two reasons: first, we incorporated additional data from ASQA and Arc-Easy datasets; second, we included no-retrieval cases that were initially filtered out in step 1 of our process. This comprehensive approach ensures a robust training set for the answerer component.",
+            "Our labeling approach ensures that models learn both the iterative nature of complex question answering and the importance of structured knowledge representation. The complementary training objectives help develop robust reasoning capabilities while maintaining retrievability of supporting evidence."
+          ]
+        },
+        {
+          "title": "B.4 Dataset Statistics",
+          "paragraphs": []
+        },
+        {
+          "title": "B.5 Data Examples",
+          "paragraphs": [
+            "[Figure: Figure 8: Training Data Example (Action Planner – [NO_RETRIEVAL]) ]",
+            "[Figure: Figure 9: Training Data Example (Action Planner – [SUBQ]) ]",
+            "[Figure: Figure 10: Training Data Example (Action Planner – [SUFFICIENT]) ]",
+            "[Figure: Figure 11: Training Data Example (Answerer – [NO_RETRIEVAL]) ]",
+            "[Figure: Figure 12: Training Data Example (Answerer – [SUFFICIENT]) ]"
+          ]
+        }
+      ]
+    },
+    "Appendix C Training Details": {
+      "paragraphs": [
+        "[Figure: Figure 13: Example of WikiOFGraph data ]",
+        "[Figure: Figure 14: Multilabel Document Classifier Training. It shows the training metrics for the multilabel document classifier, including validation precision, recall, and F1 score.]",
+        "[Figure: Figure 17: Instruction INSTplan\\text{INST}_{\\text{plan}} for Action Planner ℳP​l​a​n\\mathcal{M}_{Plan}.]",
+        "[Figure: Figure 18: Instruction INSTans\\text{INST}_{\\text{ans}} for Answer ℳA​n​s\\mathcal{M}_{Ans}.]",
+        "[Figure: Figure 19: Training loss comparison over one epoch. The plot compares RAS-7B (green) and RAS-8B (orange) training trajectories. Two additional RAS-7B variants are shown: “continual”: a continual learning approach where Answerer training precedes Action Planner training, and “ptune”: a parameter-efficient variant that only tunes graph tokens without LoRA. The lower and more stable loss curves of the standard RAS variants demonstrate the effectiveness of joint training with LoRA. We use the last 100 steps for loss smoothing.]"
+      ],
+      "subsections": [
+        {
+          "title": "C.1 Classifier & Shifter Training for Theme Scoping",
+          "paragraphs": [
+            "Classifier Training. For theme classification, we trained a multilabel document classifier on the DBPedia-298 dataset (Lehmann et al., 2015) using a two-stage architecture. The first stage uses the nomic-embed-text-v1 encoder model (Nussbaum et al., 2024) to generate document embeddings, followed by a classification head consisting of a two-layer neural network. The training size and the validation size are 240,932 and 36,008, respectively.",
+            "The classifier consists of:",
+            "• An encoder based on nomic-embed-text-v1 for generating document embeddings",
+            "• A classification head with: Input layer: embedding dimension → 512 units ReLU activation Dropout (p=0.1) Output layer: 512 → number of labels (298) Sigmoid activation for multilabel outputs",
+            "– Input layer: embedding dimension → 512 units",
+            "– ReLU activation",
+            "– Dropout (p=0.1)",
+            "– Output layer: 512 → number of labels (298)",
+            "– Sigmoid activation for multilabel outputs",
+            "– Input layer: embedding dimension → 512 units",
+            "– ReLU activation",
+            "– Dropout (p=0.1)",
+            "– Output layer: 512 → number of labels (298)",
+            "– Sigmoid activation for multilabel outputs",
+            "An encoder based on nomic-embed-text-v1 for generating document embeddings",
+            "A classification head with:",
+            "– Input layer: embedding dimension → 512 units",
+            "– ReLU activation",
+            "– Dropout (p=0.1)",
+            "– Output layer: 512 → number of labels (298)",
+            "– Sigmoid activation for multilabel outputs",
+            "Input layer: embedding dimension → 512 units",
+            "ReLU activation",
+            "Dropout (p=0.1)",
+            "Output layer: 512 → number of labels (298)",
+            "Sigmoid activation for multilabel outputs",
+            "We jointly trained both the encoder and classification head with different learning rates: This dual learning rate strategy allows the model to benefit from the pretrained knowledge in the encoder while optimizing the classification head for the specific multilabel task. The lower learning rate for the encoder helps prevent catastrophic forgetting of the pretrained representations.",
+            "• Classification head: Trained with a higher learning rate (2e-4) to allow faster adaptation to the classification task",
+            "• Text Encoder: Fine-tuned with a lower learning rate (2e-5) to preserve pretrained knowledge while making subtle adjustments for the domain",
+            "Classification head: Trained with a higher learning rate (2e-4) to allow faster adaptation to the classification task",
+            "Text Encoder: Fine-tuned with a lower learning rate (2e-5) to preserve pretrained knowledge while making subtle adjustments for the domain",
+            "The model was evaluated using micro-averaged metrics on the validation set during training, with monitoring of F1 score, precision, and recall, as shown in Figure 16. We select the best classifier model based on the best validation F1 score achieved during training.",
+            "Distribution Shifter Training. The theme distribution shifter maps query theme distributions to expected document theme distributions. Training involves two phases:",
+            "Using our constructed HotpotQA-SUBQ dataset (in Appendix B) with 204,638 query-doc pairs (where we set training-validation ratio as 9:1):",
+            "• Input Generation: Process all subqueries and supporting documents through the trained theme classifier to obtain their Posterior Probability Distributions (PPDs)",
+            "• Pairing: Each subquery is paired with its corresponding supporting document, creating query-document PPD pairs",
+            "• Data Structure: The labeled dataset consists of: Input: Query PPDs (298-dimensional probability vectors) Target: Corresponding document PPDs (298-dimensional probability vectors)",
+            "– Input: Query PPDs (298-dimensional probability vectors)",
+            "– Target: Corresponding document PPDs (298-dimensional probability vectors)",
+            "– Input: Query PPDs (298-dimensional probability vectors)",
+            "– Target: Corresponding document PPDs (298-dimensional probability vectors)",
+            "Input Generation: Process all subqueries and supporting documents through the trained theme classifier to obtain their Posterior Probability Distributions (PPDs)",
+            "Pairing: Each subquery is paired with its corresponding supporting document, creating query-document PPD pairs",
+            "Data Structure: The labeled dataset consists of:",
+            "– Input: Query PPDs (298-dimensional probability vectors)",
+            "– Target: Corresponding document PPDs (298-dimensional probability vectors)",
+            "Input: Query PPDs (298-dimensional probability vectors)",
+            "Target: Corresponding document PPDs (298-dimensional probability vectors)",
+            "Train a neural network to map query PPDs to document PPDs: Performance is tracked using validation KL divergence, Jensen-Shannon divergence, and Wasserstein distance to ensure proper distribution alignment, as shown in Figure 16.",
+            "• Architecture: A three-layer MLP with: Input layer: 298 → 512 units Hidden layer: 512 → 256 units Output layer: 256 → 298 units ReLU activations and dropout (p=0.2) between layers Softmax activation for final output",
+            "– Input layer: 298 → 512 units",
+            "– Hidden layer: 512 → 256 units",
+            "– Output layer: 256 → 298 units",
+            "– ReLU activations and dropout (p=0.2) between layers",
+            "– Softmax activation for final output",
+            "• Training Objectives: Multiple distribution alignment metrics: KL divergence loss (primary objective) Jensen-Shannon divergence monitoring Wasserstein distance monitoring L1 and L2 distance monitoring",
+            "– KL divergence loss (primary objective)",
+            "– Jensen-Shannon divergence monitoring",
+            "– Wasserstein distance monitoring",
+            "– L1 and L2 distance monitoring",
+            "• Training Configuration: Optimizer: Adam with learning rate 1e-3 Batch size: 32 Early stopping based on validation loss Numerical stability ensured through epsilon addition (1e-15)",
+            "– Optimizer: Adam with learning rate 1e-3",
+            "– Batch size: 32",
+            "– Early stopping based on validation loss",
+            "– Numerical stability ensured through epsilon addition (1e-15)",
+            "– Input layer: 298 → 512 units",
+            "– Hidden layer: 512 → 256 units",
+            "– Output layer: 256 → 298 units",
+            "– ReLU activations and dropout (p=0.2) between layers",
+            "– Softmax activation for final output",
+            "– KL divergence loss (primary objective)",
+            "– Jensen-Shannon divergence monitoring",
+            "– Wasserstein distance monitoring",
+            "– L1 and L2 distance monitoring",
+            "– Optimizer: Adam with learning rate 1e-3",
+            "– Batch size: 32",
+            "– Early stopping based on validation loss",
+            "– Numerical stability ensured through epsilon addition (1e-15)",
+            "Architecture: A three-layer MLP with:",
+            "– Input layer: 298 → 512 units",
+            "– Hidden layer: 512 → 256 units",
+            "– Output layer: 256 → 298 units",
+            "– ReLU activations and dropout (p=0.2) between layers",
+            "– Softmax activation for final output",
+            "Input layer: 298 → 512 units",
+            "Hidden layer: 512 → 256 units",
+            "Output layer: 256 → 298 units",
+            "ReLU activations and dropout (p=0.2) between layers",
+            "Softmax activation for final output",
+            "Training Objectives: Multiple distribution alignment metrics:",
+            "– KL divergence loss (primary objective)",
+            "– Jensen-Shannon divergence monitoring",
+            "– Wasserstein distance monitoring",
+            "– L1 and L2 distance monitoring",
+            "KL divergence loss (primary objective)",
+            "Jensen-Shannon divergence monitoring",
+            "Wasserstein distance monitoring",
+            "L1 and L2 distance monitoring",
+            "Training Configuration:",
+            "– Optimizer: Adam with learning rate 1e-3",
+            "– Batch size: 32",
+            "– Early stopping based on validation loss",
+            "– Numerical stability ensured through epsilon addition (1e-15)",
+            "Optimizer: Adam with learning rate 1e-3",
+            "Batch size: 32",
+            "Early stopping based on validation loss",
+            "Numerical stability ensured through epsilon addition (1e-15)"
+          ]
+        },
+        {
+          "title": "C.2 Text-to-Triples Model Training",
+          "paragraphs": [
+            "For our text-to-triple conversion model, we fine-tuned a Flan-T5-Large model (Chung et al., 2024) to transform raw text passages into structured knowledge triples. The model processes input text sequences up to 512 tokens in length and generates structured triples in a standardized format “(S >> subject|| P>> predicate|| O>> object)”. 333Our fine-tuned ft​2​tf_{t2t} can be found at https://huggingface.co/pat-jj/text2triple-flan-t5 and https://huggingface.co/pat-jj/text2graph-llama-3.2-3b",
+            "Our training dataset WikiOFGraph (Kim et al., 2024a), curated by ChatGPT, comprises 5,851,776 text-triple pairs, with an additional 5,000 samples reserved for validation. Each training instance consists of a natural language text passage paired with its corresponding set of comma-separated triples. For example:",
+            "We implemented the training using the AdamW optimizer with a learning rate of 2e-5, incorporating linear warmup and decay schedules. The training process ran for 500,000 steps with a batch size of 32 per GPU and gradient accumulation over 4 steps. To optimize training efficiency and memory usage, we employed mixed-precision training using bfloat16 and applied weight decay at 0.01. The maximum source and target sequence lengths were set to 512 and 256 tokens respectively.",
+            "For evaluation, we primarily relied on ROUGE-1, ROUGE-2, and ROUGE-L scores to assess the quality of triple generation. We supplemented these metrics with custom triple matching accuracy measures that consider subject matching, predicate normalization, and object entity alignment. Validation metrics were computed at 5,000-step intervals throughout training.",
+            "The training curves for various metrics are shown in Figure 16, demonstrating steady improvement in the model’s ability to extract structured knowledge from text. The training of this model was conducted on eight NVIDIA RTX 6000 with 48GB memory.",
+            "[Figure: Figure 13: Example of WikiOFGraph data ]",
+            "[Figure: Figure 14: Multilabel Document Classifier Training. It shows the training metrics for the multilabel document classifier, including validation precision, recall, and F1 score.]"
+          ]
+        },
+        {
+          "title": "C.3 Action Planner & Answerer Multi-task Training",
+          "paragraphs": [
+            "We employ GraphLLM (Perozzi et al., 2024; He et al., 2024) as our foundational model architecture and utilize our constructed HotpotQA-SUBQ dataset to train a unified model capable of performing both graph-conditioned action planning and answer generation through multitask learning.",
+            "Since the Action Planner and Answerer share an identical architectural foundation, as illustrated in Figure 1, we differentiate their functionality through specialized instruction sets. For the Action Planner ℳP​l​a​n\\mathcal{M}_{Plan}, we employ the following instruction template:",
+            "For the Answerer ℳA​n​s\\mathcal{M}_{Ans}, we utilize this distinct instruction set:",
+            "For graph encoding, we implement Graph Transformer (Shi et al., 2020), selected for its robust capability in handling non-fully-connected graphs—a common characteristic of text-extracted triples. Our base language models comprise LLaMA-2-7B and LLaMA-3-8B, chosen both to maintain consistency with previous research (Asai et al., 2023; Lyu et al., 2024b) and to investigate our framework’s performance scaling across different model capacities.",
+            "Our implementation of GraphLLM differs from G-Retriever (He et al., 2024) primarily due to the distinct nature of our graph structures. While G-Retriever operates on single interconnected graphs, our framework processes multiple potentially disconnected subgraphs, each corresponding to different subqueries. To address this architectural difference, we adopt a sequential encoding strategy: rather than encoding the entire graph at once, we process each subgraph individually using Graph Transformer, followed by mean pooling across all subgraph embeddings to produce the final encoded representation.",
+            "The training process utilizes 4 NVIDIA RTX 6000 Ada Generation GPUs, each with 48GB memory. We train all models for 2 epochs using a batch size of 2 and gradient accumulation steps of 2, implementing a peak learning rate of 1e-5 with a 0.15 warmup ratio and 0.01 decay rate. The maximum sequence lengths are set to 300 tokens for generation and 2,500 tokens for input, with training conducted in BFloat16 precision.",
+            "[Figure: Figure 17: Instruction INSTplan\\text{INST}_{\\text{plan}} for Action Planner ℳP​l​a​n\\mathcal{M}_{Plan}.]",
+            "[Figure: Figure 18: Instruction INSTans\\text{INST}_{\\text{ans}} for Answer ℳA​n​s\\mathcal{M}_{Ans}.]",
+            "[Figure: Figure 19: Training loss comparison over one epoch. The plot compares RAS-7B (green) and RAS-8B (orange) training trajectories. Two additional RAS-7B variants are shown: “continual”: a continual learning approach where Answerer training precedes Action Planner training, and “ptune”: a parameter-efficient variant that only tunes graph tokens without LoRA. The lower and more stable loss curves of the standard RAS variants demonstrate the effectiveness of joint training with LoRA. We use the last 100 steps for loss smoothing.]"
+          ]
+        }
+      ]
+    },
+    "Appendix D Evaluation Datasets & Metrics": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "D.1 Test Datasets",
+          "paragraphs": [
+            "We evaluate RAS on diverse benchmark datasets spanning short-form QA, closed-set tasks, and long-form generation in the zero-shot setting, aligning with (Asai et al., 2023; Lyu et al., 2024b). Below we describe each dataset:",
+            "Short-form Generation Datasets:",
+            "• TriviaQA-unfiltered (TQA) (Joshi et al., 2017): A large-scale QA dataset containing 11,313 question-answer pairs in our test set. The questions are sourced from trivia enthusiasts and cover diverse topics.",
+            "• 2WikiMultiHopQA (2WQA) (Ho et al., 2020): A multi-hop question answering dataset (with 12,576 samples in test set) that requires models to combine information from multiple Wikipedia articles to answer questions.",
+            "• PopQA (Mallen et al., 2022): A dataset focusing on questions about long-tail entities, containing 1,399 queries where the monthly Wikipedia page views are less than 100. These questions test models’ ability to handle queries about less common entities.",
+            "TriviaQA-unfiltered (TQA) (Joshi et al., 2017): A large-scale QA dataset containing 11,313 question-answer pairs in our test set. The questions are sourced from trivia enthusiasts and cover diverse topics.",
+            "2WikiMultiHopQA (2WQA) (Ho et al., 2020): A multi-hop question answering dataset (with 12,576 samples in test set) that requires models to combine information from multiple Wikipedia articles to answer questions.",
+            "PopQA (Mallen et al., 2022): A dataset focusing on questions about long-tail entities, containing 1,399 queries where the monthly Wikipedia page views are less than 100. These questions test models’ ability to handle queries about less common entities.",
+            "Closed-set Tasks:",
+            "• PubHealth (Pub) (Zhang et al., 2023a): A dataset for verifying health-related claims. Models must classify statements as ”true” or ”false” based on scientific evidence. The dataset contains 987 test samples.",
+            "• ARC-Challenge (ARC) (Clark et al., 2018): A multiple-choice science question dataset designed to be challenging for models, requiring multi-hop reasoning and background knowledge. The dataset contains 1,172 test samples.",
+            "PubHealth (Pub) (Zhang et al., 2023a): A dataset for verifying health-related claims. Models must classify statements as ”true” or ”false” based on scientific evidence. The dataset contains 987 test samples.",
+            "ARC-Challenge (ARC) (Clark et al., 2018): A multiple-choice science question dataset designed to be challenging for models, requiring multi-hop reasoning and background knowledge. The dataset contains 1,172 test samples.",
+            "Long-form Generation Datasets:",
+            "• ASQA (Stelmakh et al., 2022): A long-form question answering dataset that requires models to generate comprehensive answers with proper citation of sources. Models must balance information completeness with factual accuracy. The dataset contains 948 test samples.",
+            "• ELI5 (Fan et al., 2019): A dataset derived from the ”Explain Like I’m Five” subreddit, containing questions seeking straightforward explanations of complex topics. The dataset contains 1,000 test samples.",
+            "ASQA (Stelmakh et al., 2022): A long-form question answering dataset that requires models to generate comprehensive answers with proper citation of sources. Models must balance information completeness with factual accuracy. The dataset contains 948 test samples.",
+            "ELI5 (Fan et al., 2019): A dataset derived from the ”Explain Like I’m Five” subreddit, containing questions seeking straightforward explanations of complex topics. The dataset contains 1,000 test samples."
+          ]
+        },
+        {
+          "title": "D.2 Evaluation Metrics",
+          "paragraphs": [
+            "We employ different evaluation metrics appropriate for each task category:",
+            "Short-form Generation:",
+            "• For PopQA and TriviaQA, we use the ”golden match” metric (Asai et al., 2023; Min et al., 2019; Guu et al., 2020)444Implementation aligned with https://github.com/AkariAsai/self-rag/blob/main/retrieval_lm/metrics.py, where a prediction pp is considered correct if it contains any normalized version of the ground truth answers G={g1,…,gn}G=\\{g_{1},...,g_{n}\\}: where norm​(⋅)\\text{norm}(\\cdot) normalizes text by lowercasing, removing articles and punctuation.",
+            "• For 2WikiMultiHopQA, we follow RPG (Lyu et al., 2024b)555Implementation aligned with https://github.com/haruhi-sudo/RPG/blob/main/retriever/src/evaluation.py to use token-level F1 score between prediction pp and ground truth gg: where precision and recall are computed over normalized token overlap:",
+            "For PopQA and TriviaQA, we use the ”golden match” metric (Asai et al., 2023; Min et al., 2019; Guu et al., 2020)444Implementation aligned with https://github.com/AkariAsai/self-rag/blob/main/retrieval_lm/metrics.py, where a prediction pp is considered correct if it contains any normalized version of the ground truth answers G={g1,…,gn}G=\\{g_{1},...,g_{n}\\}:",
+            "where norm​(⋅)\\text{norm}(\\cdot) normalizes text by lowercasing, removing articles and punctuation.",
+            "For 2WikiMultiHopQA, we follow RPG (Lyu et al., 2024b)555Implementation aligned with https://github.com/haruhi-sudo/RPG/blob/main/retriever/src/evaluation.py to use token-level F1 score between prediction pp and ground truth gg:",
+            "where precision and recall are computed over normalized token overlap:",
+            "Closed-set Tasks: For both PubHealth and ARC-Challenge, we use accuracy (Asai et al., 2023), computed as:",
+            "where NN is the total number of examples.",
+            "Long-form Generation: For ASQA and ELI5, we use multiple metrics666Implementation aligned with https://github.com/princeton-nlp/ALCE/blob/main/eval.py:",
+            "• ROUGE-L score to measure the longest common subsequence between prediction and reference (Lin, 2004)",
+            "• MAUVE score (Pillutla et al., 2021) to test the generation fluency by comparing the distribution of generated text against human references",
+            "ROUGE-L score to measure the longest common subsequence between prediction and reference (Lin, 2004)",
+            "MAUVE score (Pillutla et al., 2021) to test the generation fluency by comparing the distribution of generated text against human references",
+            "All scores are reported as percentages, multiplied by 100."
+          ]
+        }
+      ]
+    },
+    "Appendix E Inference & Evaluation Details": {
+      "paragraphs": [
+        "We evaluated RAS using both closed-source and open-source language models. For closed-source evaluation, we used Claude-3.5-Sonnet (Sonnet-3.5) as our base model. For open-source evaluation, we tested with both LLaMA-2-7B and LLaMA-3-8B, as shown in the performance table (Table 1).",
+        "For the open-source models, we first fine-tuned the GraphLLM architecture on our HotpotQA-SUBQ dataset (see Section C.3). We then conducted zero-shot knowledge-intensive generation tests. With Claude-3.5-Sonnet, we used few-shot prompting for both action planning and answer generation phases. Below, we detail our approach for each model type.",
+        "[Figure: Figure 20: Few-shot prompt for text-to-triples transformation with closed-source LLM. ]",
+        "[Figure: Figure 21: Few-shot prompt for action planning with closed-source LLM. ]",
+        "[Figure: Figure 22: Few-shot prompt for answer generation with closed-source LLM. ]",
+        "[Table: Table 4: Task-specific instructions. For short-form QA, we do not use instructions and use the original questions only.]"
+      ],
+      "subsections": [
+        {
+          "title": "E.1 Closed-Source Model Settings",
+          "paragraphs": [
+            "For Text-to-Triple Conversion (Figure 20), we instruct the model to extract structured knowledge triples following specific formatting rules. The prompt precisely defines the triple format as (S>s​u​b​j​e​c​t|P>p​r​e​d​i​c​a​t​e|O>o​b​j​e​c​t)(S\\mathbin{>}subject\\mathbin{|}P\\mathbin{>}predicate\\mathbin{|}O\\mathbin{>}object) and provides comprehensive guidelines to ensure consistent knowledge representation. Key rules include extracting maximal meaningful relationships, maintaining original entity casing, avoiding pronoun usage, and ensuring clear predicate specification. The example demonstrates the conversion of a biographical text into structured triples, showing how complex information about an individual’s life, career, and temporal details can be systematically decomposed into atomic facts. This standardized format enables reliable knowledge accumulation and reasoning in subsequent stages of the RAS framework.",
+            "For Action Planning (Figure 21), we design a comprehensive prompt that guides the model in making strategic decisions about information retrieval needs. The prompt instructs the model to output one of three labels based on careful analysis of the current knowledge state: (1) [NO_RETRIEVAL] when the question can be answered directly, either due to the model’s inherent knowledge or the question’s nature, (2) [SUBQ] accompanied by a focused subquery when additional information is needed, or (3) [SUFFICIENT] when the accumulated knowledge is adequate to answer the question. The prompt includes diverse examples demonstrating different scenarios:",
+            "(1) Generating follow-up queries based on partial information (2) Creating new queries when relevant information is missing (3) Recognizing when accumulated information is sufficient (4) Identifying questions that don’t require external knowledge (5) Handling common knowledge questions",
+            "A key feature of the prompt is its emphasis on query efficiency - it explicitly prohibits generating redundant subqueries that might retrieve already-known information. This design helps maintain the system’s efficiency while ensuring comprehensive knowledge gathering.",
+            "For Answer Generation (Figure 22), we design a prompt that focuses on synthesizing precise answers from structured knowledge graphs. The prompt emphasizes selective use of retrieved information - instructing the model to utilize subqueries and graph information only when relevant to the question at hand. A distinctive feature of this prompt is its requirement for definitive answers even under uncertainty or incomplete information, ensuring the model always provides a response.",
+            "The prompt includes carefully selected examples demonstrating two key scenarios: direct fact retrieval (Nobel Prize winner) and complex reasoning across multiple knowledge pieces (athlete’s sport classification). These examples illustrate how to effectively combine information from multiple subqueries and their associated graph information to construct accurate answers. The prompt strictly enforces concise answer generation, requiring only the essential information without additional explanation or commentary.",
+            "In addition, for ASQA and ELI5 with closed-source models (RASSonnet-3.5{}_{\\text{Sonnet-3.5}} and all the other baselines (e.g., SuRe) using Sonnet-3.5), we conduct few-shot inference with two in-context learning demonstrations, aligning with previous study’s (Gao et al., 2023) implementation.777https://github.com/princeton-nlp/ALCE/blob/main/run.py888Exemplars can be found at https://github.com/princeton-nlp/ALCE/tree/main/prompts",
+            "[Figure: Figure 20: Few-shot prompt for text-to-triples transformation with closed-source LLM. ]",
+            "[Figure: Figure 21: Few-shot prompt for action planning with closed-source LLM. ]",
+            "[Figure: Figure 22: Few-shot prompt for answer generation with closed-source LLM. ]"
+          ]
+        },
+        {
+          "title": "E.2 Open-Source Model Settings",
+          "paragraphs": [
+            "For inference with open-source model, we use our GraphLLM trained by Hotpot-SUBQ (see Appendix C.3), we use 8 NVIDIA RTX 6000 Ada Generation with 48GB memory and CUDA version 12.4. We use Python 3.10, PyTorch 2.1.2, and torch-geometric 2.6.1 throughout all experiments.",
+            "For more efficient text retrieval, we split both theme index and dense index of the corpus into eight splits, and load them on eight GPUs with faiss-gpu 1.7.2.999All the Wikipedia dumps (2018, 2020) we used are downloaded from https://github.com/facebookresearch/atlas",
+            "We set maximum new tokens as 100 for PopQA, TriviaQA, and 2WikiMultihopQA, as 50 for PubHealth and ARC-Challenge, and as 300 for ASQA and ELI5, aligning with previous study (Asai et al., 2023; Lyu et al., 2024b). All the generation are configured with batch size of 1.",
+            "As we always set the main query as the first subquery, we pre-extract the triples from the context at the first iteration using our Flan-T5-based text-to-triple model for batch triple extraction. Notably, when we experimented with using Claude 3.5 Sonnet for triple extraction using the prompt from Figure 20, we observed an additional 3% average performance gain. This suggests room for improvement in our triple extraction approach - one potential direction would be training a larger model like LLaMA-2-7B on the WikiOFGraph dataset to achieve higher-quality triple extraction.",
+            "We use exact same instructions for action planner and answerer as we used in training phase, as shown in Figures 17 and 18."
+          ]
+        },
+        {
+          "title": "E.3 Instructions",
+          "paragraphs": [
+            "We use the following task-specific instructions for zero-shot inference:"
+          ]
+        }
+      ]
+    },
+    "Appendix F Qualitative Examples": {
+      "paragraphs": [
+        "In this section, we show some qualitative examples and running examples of RAS.",
+        "[Figure: Figure 23: An inference example in PopQA dataset.]",
+        "[Figure: Figure 24: An inference example in TriviaQA dataset.]",
+        "[Figure: Figure 25: Examples of long-form generation on ASQA and ELI5.]",
+        "[Figure: Figure 26: Running Example of RAS for Demonstration.]"
+      ],
+      "subsections": []
+    },
+    "Appendix G Hyperparameter Study": {
+      "paragraphs": [
+        "[Table: Table 5: Summary of hyper-parameter study for the experimental setup. We highlight the setting used in experiments.]",
+        "[Table: Table 6: Notation used throughout the paper]"
+      ],
+      "subsections": []
+    },
+    "Appendix H Notation Table": {
+      "paragraphs": [
+        "[Table: Table 6: Notation used throughout the paper]"
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "Anthropic (2024) Anthropic. Introducing claude 3.5 sonnet. https://www.anthropic.com/news/claude-3-5-sonnet, 2024. Accessed: 2025-01-06.",
+    "Asai et al. (2023) Asai, A., Wu, Z., Wang, Y., Sil, A., and Hajishirzi, H. Self-rag: Learning to retrieve, generate, and critique through self-reflection. In The Twelfth International Conference on Learning Representations, 2023.",
+    "Brown et al. (2020) Brown, T., Mann, B., Ryder, N., Subbiah, M., Kaplan, J. D., Dhariwal, P., Neelakantan, A., Shyam, P., Sastry, G., Askell, A., et al. Language models are few-shot learners. Advances in neural information processing systems, 33:1877–1901, 2020.",
+    "Chowdhery et al. (2023) Chowdhery, A., Narang, S., Devlin, J., Bosma, M., Mishra, G., Roberts, A., Barham, P., Chung, H. W., Sutton, C., Gehrmann, S., et al. Palm: Scaling language modeling with pathways. Journal of Machine Learning Research, 24(240):1–113, 2023.",
+    "Chung et al. (2024) Chung, H. W., Hou, L., Longpre, S., Zoph, B., Tay, Y., Fedus, W., Li, Y., Wang, X., Dehghani, M., Brahma, S., et al. Scaling instruction-finetuned language models. Journal of Machine Learning Research, 25(70):1–53, 2024.",
+    "Clark et al. (2018) Clark, P., Cowhey, I., Etzioni, O., Khot, T., Sabharwal, A., Schoenick, C., and Tafjord, O. Think you have solved question answering? try arc, the ai2 reasoning challenge. arXiv preprint arXiv:1803.05457, 2018.",
+    "Devlin et al. (2018) Devlin, J., Chang, M.-W., Lee, K., and Toutanova, K. Bert: Pre-training of deep bidirectional transformers for language understanding. arXiv preprint arXiv:1810.04805, 2018.",
+    "Douze et al. (2024) Douze, M., Guzhva, A., Deng, C., Johnson, J., Szilvasy, G., Mazaré, P.-E., Lomeli, M., Hosseini, L., and Jégou, H. The faiss library. arXiv preprint arXiv:2401.08281, 2024.",
+    "Edge et al. (2024) Edge, D., Trinh, H., Cheng, N., Bradley, J., Chao, A., Mody, A., Truitt, S., and Larson, J. From local to global: A graph rag approach to query-focused summarization. arXiv preprint arXiv:2404.16130, 2024.",
+    "Es et al. (2024) Es, S., James, J., Espinosa Anke, L., and Schockaert, S. RAGAs: Automated evaluation of retrieval augmented generation. In Aletras, N. and De Clercq, O. (eds.), Proceedings of the 18th Conference of the European Chapter of the Association for Computational Linguistics: System Demonstrations, pp. 150–158, St. Julians, Malta, March 2024. Association for Computational Linguistics. URL https://aclanthology.org/2024.eacl-demo.16/.",
+    "Fan et al. (2019) Fan, A., Jernite, Y., Perez, E., Grangier, D., Weston, J., and Auli, M. Eli5: Long form question answering. arXiv preprint arXiv:1907.09190, 2019.",
+    "Gao et al. (2023) Gao, T., Yen, H., Yu, J., and Chen, D. Enabling large language models to generate text with citations. arXiv preprint arXiv:2305.14627, 2023.",
+    "Guan et al. (2024) Guan, J., Wu, W., Wen, Z., Xu, P., Wang, H., and Huang, M. Amor: A recipe for building adaptable modular knowledge agents through process feedback. arXiv preprint arXiv:2402.01469, 2024.",
+    "Gutiérrez et al. (2024) Gutiérrez, B. J., Shu, Y., Gu, Y., Yasunaga, M., and Su, Y. Hipporag: Neurobiologically inspired long-term memory for large language models. arXiv preprint arXiv:2405.14831, 2024.",
+    "Guu et al. (2020) Guu, K., Lee, K., Tung, Z., Pasupat, P., and Chang, M. Retrieval augmented language model pre-training. In International conference on machine learning, pp. 3929–3938. PMLR, 2020.",
+    "He et al. (2024) He, X., Tian, Y., Sun, Y., Chawla, N. V., Laurent, T., LeCun, Y., Bresson, X., and Hooi, B. G-retriever: Retrieval-augmented generation for textual graph understanding and question answering. arXiv preprint arXiv:2402.07630, 2024.",
+    "Ho et al. (2020) Ho, X., Nguyen, A.-K. D., Sugawara, S., and Aizawa, A. Constructing a multi-hop qa dataset for comprehensive evaluation of reasoning steps. arXiv preprint arXiv:2011.01060, 2020.",
+    "Hogan et al. (2021) Hogan, A., Blomqvist, E., Cochez, M., d’Amato, C., Melo, G. D., Gutierrez, C., Kirrane, S., Gayo, J. E. L., Navigli, R., Neumaier, S., et al. Knowledge graphs. ACM Computing Surveys (Csur), 54(4):1–37, 2021.",
+    "Izacard & Grave (2021) Izacard, G. and Grave, E. Leveraging passage retrieval with generative models for open domain question answering. In Merlo, P., Tiedemann, J., and Tsarfaty, R. (eds.), Proceedings of the 16th Conference of the European Chapter of the Association for Computational Linguistics: Main Volume, pp. 874–880, Online, April 2021. Association for Computational Linguistics. doi: 10.18653/v1/2021.eacl-main.74. URL https://aclanthology.org/2021.eacl-main.74.",
+    "Izacard et al. (2021) Izacard, G., Caron, M., Hosseini, L., Riedel, S., Bojanowski, P., Joulin, A., and Grave, E. Unsupervised dense information retrieval with contrastive learning. arXiv preprint arXiv:2112.09118, 2021.",
+    "Izacard et al. (2023) Izacard, G., Lewis, P., Lomeli, M., Hosseini, L., Petroni, F., Schick, T., Dwivedi-Yu, J., Joulin, A., Riedel, S., and Grave, E. Atlas: Few-shot learning with retrieval augmented language models. Journal of Machine Learning Research, 24(251):1–43, 2023.",
+    "Ji et al. (2023) Ji, Z., Yu, T., Xu, Y., Lee, N., Ishii, E., and Fung, P. Towards mitigating llm hallucination via self reflection. In Findings of the Association for Computational Linguistics: EMNLP 2023, pp. 1827–1843, 2023.",
+    "Jiang et al. (2024) Jiang, P., Cao, L., Xiao, C., Bhatia, P., Sun, J., and Han, J. Kg-fit: Knowledge graph fine-tuning upon open-world knowledge. In The Thirty-Eighth Annual Conference on Neural Information Processing Systems, 2024.",
+    "Jiang et al. (2023) Jiang, Z., Xu, F. F., Gao, L., Sun, Z., Liu, Q., Dwivedi-Yu, J., Yang, Y., Callan, J., and Neubig, G. Active retrieval augmented generation. arXiv preprint arXiv:2305.06983, 2023.",
+    "Joshi et al. (2017) Joshi, M., Choi, E., Weld, D. S., and Zettlemoyer, L. Triviaqa: A large scale distantly supervised challenge dataset for reading comprehension. arXiv preprint arXiv:1705.03551, 2017.",
+    "Ju et al. (2022) Ju, M., Yu, W., Zhao, T., Zhang, C., and Ye, Y. Grape: Knowledge graph enhanced passage reader for open-domain question answering. arXiv preprint arXiv:2210.02933, 2022.",
+    "Khattab et al. (2023) Khattab, O., Santhanam, K., Li, X. L., Hall, D., Liang, P., Potts, C., and Zaharia, M. Demonstrate-search-predict: Composing retrieval and language models for knowledge-intensive nlp. arXiv preprint arXiv:2212.14024, 2023.",
+    "Kim et al. (2024a) Kim, D., Kang, D., Ryu, S., and Lee, G. G. Ontology-free general-domain knowledge graph-to-text generation dataset synthesis using large language model. arXiv preprint arXiv:2409.07088, 2024a.",
+    "Kim et al. (2024b) Kim, J., Nam, J., Mo, S., Park, J., Lee, S.-W., Seo, M., Ha, J.-W., and Shin, J. Sure: Summarizing retrievals using answer candidates for open-domain qa of llms. arXiv preprint arXiv:2404.13081, 2024b.",
+    "Lehmann et al. (2015) Lehmann, J., Isele, R., Jakob, M., Jentzsch, A., Kontokostas, D., Mendes, P. N., Hellmann, S., Morsey, M., Van Kleef, P., Auer, S., et al. Dbpedia–a large-scale, multilingual knowledge base extracted from wikipedia. Semantic web, 6(2):167–195, 2015.",
+    "Lewis et al. (2020) Lewis, P., Perez, E., Piktus, A., Petroni, F., Karpukhin, V., Goyal, N., Küttler, H., Lewis, M., Yih, W.-t., Rocktäschel, T., et al. Retrieval-augmented generation for knowledge-intensive nlp tasks. Advances in Neural Information Processing Systems, 33:9459–9474, 2020.",
+    "Lin (2004) Lin, C.-Y. Rouge: A package for automatic evaluation of summaries. In Text summarization branches out, pp. 74–81, 2004.",
+    "Ling et al. (2024) Ling, Z., Fang, Y., Li, X., Huang, Z., Lee, M., Memisevic, R., and Su, H. Deductive verification of chain-of-thought reasoning. Advances in Neural Information Processing Systems, 36, 2024.",
+    "Liu et al. (2021) Liu, X., Ji, K., Fu, Y., Tam, W. L., Du, Z., Yang, Z., and Tang, J. P-tuning v2: Prompt tuning can be comparable to fine-tuning universally across scales and tasks. arXiv preprint arXiv:2110.07602, 2021.",
+    "Luo et al. (2023) Luo, H., Chuang, Y.-S., Gong, Y., Zhang, T., Kim, Y., Wu, X., Fox, D., Meng, H., and Glass, J. Sail: Search-augmented instruction learning. arXiv preprint arXiv:2305.15225, 2023.",
+    "Lyu et al. (2024a) Lyu, Y., Li, Z., Niu, S., Xiong, F., Tang, B., Wang, W., Wu, H., Liu, H., Xu, T., and Chen, E. Crud-rag: A comprehensive chinese benchmark for retrieval-augmented generation of large language models, 2024a. URL https://arxiv.org/abs/2401.17043.",
+    "Lyu et al. (2024b) Lyu, Y., Niu, Z., Xie, Z., Zhang, C., Xu, T., Wang, Y., and Chen, E. Retrieve-plan-generation: An iterative planning and answering framework for knowledge-intensive llm generation. In Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing, pp. 4683–4702, 2024b.",
+    "Mallen et al. (2022) Mallen, A., Asai, A., Zhong, V., Das, R., Khashabi, D., and Hajishirzi, H. When not to trust language models: Investigating effectiveness of parametric and non-parametric memories. arXiv preprint arXiv:2212.10511, 2022.",
+    "Maynez et al. (2020) Maynez, J., Narayan, S., Bohnet, B., and McDonald, R. On faithfulness and factuality in abstractive summarization. In Jurafsky, D., Chai, J., Schluter, N., and Tetreault, J. (eds.), Proceedings of the 58th Annual Meeting of the Association for Computational Linguistics, pp. 1906–1919, Online, July 2020. Association for Computational Linguistics. doi: 10.18653/v1/2020.acl-main.173. URL https://aclanthology.org/2020.acl-main.173.",
+    "Min et al. (2019) Min, S., Chen, D., Hajishirzi, H., and Zettlemoyer, L. A discrete hard em approach for weakly supervised question answering. arXiv preprint arXiv:1909.04849, 2019.",
+    "Nussbaum et al. (2024) Nussbaum, Z., Morris, J. X., Duderstadt, B., and Mulyar, A. Nomic embed: Training a reproducible long context text embedder. arXiv preprint arXiv:2402.01613, 2024.",
+    "Perozzi et al. (2024) Perozzi, B., Fatemi, B., Zelle, D., Tsitsulin, A., Kazemi, M., Al-Rfou, R., and Halcrow, J. Let your graph do the talking: Encoding structured data for llms. arXiv preprint arXiv:2402.05862, 2024.",
+    "Pillutla et al. (2021) Pillutla, K., Swayamdipta, S., Zellers, R., Thickstun, J., Welleck, S., Choi, Y., and Harchaoui, Z. Mauve: Measuring the gap between neural text and human text using divergence frontiers. Advances in Neural Information Processing Systems, 34:4816–4828, 2021.",
+    "Press et al. (2022) Press, O., Zhang, M., Min, S., Schmidt, L., Smith, N. A., and Lewis, M. Measuring and narrowing the compositionality gap in language models. arXiv preprint arXiv:2210.03350, 2022.",
+    "Rae et al. (2021) Rae, J. W., Borgeaud, S., Cai, T., Millican, K., Hoffmann, J., Song, F., Aslanides, J., Henderson, S., Ring, R., Young, S., et al. Scaling language models: Methods, analysis & insights from training gopher. arXiv preprint arXiv:2112.11446, 2021.",
+    "Reimers (2019) Reimers, N. Sentence-bert: Sentence embeddings using siamese bert-networks. arXiv preprint arXiv:1908.10084, 2019.",
+    "Robertson et al. (2009) Robertson, S., Zaragoza, H., et al. The probabilistic relevance framework: Bm25 and beyond. Foundations and Trends® in Information Retrieval, 3(4):333–389, 2009.",
+    "Shao et al. (2023) Shao, Z., Gong, Y., Shen, Y., Huang, M., Duan, N., and Chen, W. Enhancing retrieval-augmented large language models with iterative retrieval-generation synergy. arXiv preprint arXiv:2305.15294, 2023.",
+    "Shi et al. (2020) Shi, Y., Huang, Z., Feng, S., Zhong, H., Wang, W., and Sun, Y. Masked label prediction: Unified message passing model for semi-supervised classification. arXiv preprint arXiv:2009.03509, 2020.",
+    "Stelmakh et al. (2022) Stelmakh, I., Luan, Y., Dhingra, B., and Chang, M.-W. Asqa: Factoid questions meet long-form answers. arXiv preprint arXiv:2204.06092, 2022.",
+    "Sun et al. (2019) Sun, Y., Wang, S., Li, Y., Feng, S., Chen, X., Zhang, H., Tian, X., Zhu, D., Tian, H., and Wu, H. Ernie: Enhanced representation through knowledge integration. arXiv preprint arXiv:1904.09223, 2019.",
+    "Wang et al. (2021) Wang, X., Wang, H., and Yang, D. Measure and improve robustness in nlp models: A survey. arXiv preprint arXiv:2112.08313, 2021.",
+    "Xu et al. (2023) Xu, F., Shi, W., and Choi, E. Recomp: Improving retrieval-augmented lms with compression and selective augmentation. arXiv preprint arXiv:2310.04408, 2023.",
+    "Yang et al. (2018) Yang, Z., Qi, P., Zhang, S., Bengio, Y., Cohen, W. W., Salakhutdinov, R., and Manning, C. D. Hotpotqa: A dataset for diverse, explainable multi-hop question answering. arXiv preprint arXiv:1809.09600, 2018.",
+    "Yao et al. (2023) Yao, S., Zhao, J., Yu, D., Du, N., Shafran, I., Narasimhan, K., and Cao, Y. ReAct: Synergizing reasoning and acting in language models. arXiv:2210.03629, 2023.",
+    "Yasunaga et al. (2021) Yasunaga, M., Ren, H., Bosselut, A., Liang, P., and Leskovec, J. Qa-gnn: Reasoning with language models and knowledge graphs for question answering. arXiv preprint arXiv:2104.06378, 2021.",
+    "Yasunaga et al. (2022) Yasunaga, M., Bosselut, A., Ren, H., Zhang, X., Manning, C. D., Liang, P. S., and Leskovec, J. Deep bidirectional language-knowledge graph pretraining. Advances in Neural Information Processing Systems, 35:37309–37323, 2022.",
+    "Yu (2022) Yu, W. Retrieval-augmented generation across heterogeneous knowledge. In Proceedings of the 2022 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies: Student Research Workshop, pp. 52–58, 2022.",
+    "Yu et al. (2022) Yu, W., Zhu, C., Li, Z., Hu, Z., Wang, Q., Ji, H., and Jiang, M. A survey of knowledge-enhanced text generation. ACM Computing Survey (CSUR), 2022.",
+    "Zhang et al. (2023a) Zhang, T., Luo, H., Chuang, Y.-S., Fang, W., Gaitskell, L., Hartvigsen, T., Wu, X., Fox, D., Meng, H., and Glass, J. Interpretable unified language checking. arXiv preprint arXiv:2304.03728, 2023a.",
+    "Zhang et al. (2023b) Zhang, Y., Li, Y., Cui, L., Cai, D., Liu, L., Fu, T., Huang, X., Zhao, E., Zhang, Y., Chen, Y., et al. Siren’s song in the ai ocean: a survey on hallucination in large language models. arXiv preprint arXiv:2309.01219, 2023b.",
+    "Zhu et al. (2024) Zhu, Y., Ren, C., Xie, S., Liu, S., Ji, H., Wang, Z., Sun, T., He, L., Li, Z., Zhu, X., and Pan, C. REALM: Rag-driven enhancement of multimodal electronic health records analysis via large language models. arXiv:2402.07016, 2024."
+  ]
+}

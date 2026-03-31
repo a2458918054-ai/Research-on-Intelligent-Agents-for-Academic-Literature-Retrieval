@@ -1,0 +1,330 @@
+{
+  "title": "ParallelComp: Parallel Long-Context Compressor for Length Extrapolation",
+  "authors": "Jing XiongJianghan ShenChuanyang ZhengZhongwei WanChenyang ZhaoChiwun YangFanghua YeHongxia YangLingpeng KongNgai Wong",
+  "abstract": "Efficiently handling long contexts is crucial for large language models (LLMs). While rotary position embeddings (RoPEs) enhance length generalization, effective length extrapolation remains challenging and often requires costly fine-tuning. In contrast, recent training-free approaches suffer from the attention sink phenomenon, leading to severe performance degradation. In this paper, we introduce ParallelComp, a novel training-free method for long-context extrapolation that extends LLMs’ context length from 4K to 128K while maintaining high throughput and preserving perplexity, and integrates seamlessly with Flash Attention. Our analysis offers new insights into attention biases in parallel attention mechanisms and provides practical solutions to tackle these challenges. To mitigate the attention sink issue, we propose an attention calibration strategy that reduces biases, ensuring more stable long-range attention. Additionally, we introduce a chunk eviction strategy to efficiently manage ultra-long contexts on a single A100 80GB GPU. To further enhance efficiency, we propose a parallel KV cache eviction technique, which improves chunk throughput by 1.76×, thereby achieving a 23.50× acceleration in the prefilling stage with negligible performance loss due to attention calibration. Furthermore, ParallelComp achieves 91.17% of GPT-4’s performance on long-context tasks using an 8B model trained on 8K-length context, outperforming powerful closed-source models such as Claude-2 and Kimi-Chat.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Processing long contexts is a fundamental capability of large language models (LLMs) (Achiam et al., 2023; Touvron et al., 2023; Dubey et al., 2024). Rotary position embeddings (RoPEs) (Su, 2023) are adopted to train LLMs due to their ability to encode relative positions. However, achieving length extrapolation through retraining or fine-tuning the entire model remains a challenging problem (Press et al., 2022; Chi et al., 2022; Peng et al., 2023; Fu et al., 2024), especially in resource-constrained situations.",
+        "To address this, many researchers explored training-free approaches for context length extrapolation. One prominent direction involves modifying positional encodings to facilitate length extrapolation (LocalLLaMA, 2023b, a; An et al., 2024). Another promising strategy employs text chunking techniques (An et al., 2024; Xiao et al., 2024; Ratner et al., 2022; Zhu et al., 2024), which form a type of parallel attention mechanism. These methods often build upon the classic RoPE mechanism to enhance the model’s length extrapolation capability. However, both approaches suffer from the attention sink phenomenon (Liu et al., 2024; Xiao et al., 2023; Han et al., 2024; Gu et al., 2024), where high attention scores tend to be assigned to the first few tokens or the last few tokens in the input sequence, making the model fail to capture essential contextual information. Figure 1 illustrates this phenomenon and contrasts the attention distributions in normal and parallel attention. In the upper part of Figure 1, we observe the distribution of attention scores across tokens. In the normal attention distribution (left), the attention is heavily skewed towards the first and last few tokens, a common issue that limits the model’s ability to capture long-range dependencies. In contrast, the parallel attention distribution (right) attempts to spread the attention more evenly, but it still shows noticeable patterns of concentration in certain regions, indicating room for improvement in handling long-contexts effectively. The corresponding heatmaps (c) and (d) further reveal the attention matrices for both normal and parallel attention, where (c) shows the typical concentration of attention in the initial tokens, and (d) illustrates the fragmentation and partial concentration in parallel attention. In this paper, we focus on the unique phenomenon of attention sink in parallel attention for length extrapolation and explore solution to tackle this challenge.",
+        "Apart from the attention sink phenomenon, we also observe some unique biases in parallel attention. The impact of these attention biases on the model’s length extrapolation ability is still under exploration. To promote the understanding of the effects of special attention biases on parallel attention, we propose the following questions in this paper: Q1: What types of attention patterns can be summarized? Q2: Is there any difference between the attention bias in parallel attention and the attention bias in classical attention? Q3: Can the calibration strategy alleviate attention bias?",
+        "To address the above questions, we propose ParallelComp, a parallel long-context compression method to extrapolate length. While maintaining high throughput, we extrapolate the length from 4k to 128k on a single GPU, without increasing perplexity. Overall, our contributions are as follows:",
+        "• We propose ParallelComp, a novel training-free method that enables efficient length extrapolation for LLMs. Our approach extrapolates from a 4K context length to up to 128K tokens on a A100 80GB GPU.",
+        "• We conduct a detailed analysis of the unique attention biases in parallel attention mechanisms and introduce an attention calibration strategy that effectively alleviates these biases, recovering the performance loss.",
+        "• Our chunk eviction strategy enables parallel attention to handle contexts exceeding 128K on a single A100, while parallel KV cache eviction further enhances chunk throughput by 1.76x, thereby achieving a 23.50x acceleration in the prefilling stage with negligible performance loss due to attention calibration.",
+        "• Experiments show that ParallelComp achieves 91.17% of GPT-4’s performance on ultra-long context tasks with an 8B model trained on 8K-length context, surpassing powerful closed-source models such as Claude-2 and Kimi-Chat."
+      ],
+      "subsections": []
+    },
+    "2 Related Work": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Positional Encoding.",
+          "paragraphs": [
+            "Existing absolute positional encoding (APE) (Vaswani, 2017; Devlin, 2018) incorporates either fixed or learnable positional encodings into input representations through vector addition. However, APE faces challenges when dealing with long contexts. To overcome these limitations, relative positional encoding (RPE) methods—such as rotary and additive positional encodings (Su, 2023; Su et al., 2024; Press et al., 2021)—are developed to offer improved generalization in longer contexts. In addition, some data-dependent positional encoding methods (Golovneva et al., 2024; Zheng et al., 2024) are gaining widespread attention. These positional encodings are generated based on the input data.",
+            "Some reecent works (Press et al., 2022; Chi et al., 2022; Li et al., 2023) also focus on designing better positional encodings to enhance the pre-trained model’s capability for length extrapolation. Another line of works (Peng et al., 2023; bloc97, 2023; Chen et al., 2023a) focus on enhancing the LLM’s length extrapolation capability by fine-tuning.",
+            "Furthermore, there are two categories of training-free extrapolation methods. The first category, such as LocalLLaMA (2023b); Chen et al. (2023b); LocalLLaMA (2023a); Chen et al. (2024), directly modifies positional encodings to enable extrapolation or interpolation, aiming to enhance the model’s length extrapolation capability. The second category (An et al., 2024; Xiao et al., 2024; Ratner et al., 2022; Zhu et al., 2024) achieves extrapolation solely by reusing positional encodings. In this work, we focus primarily on the training-free setting."
+          ]
+        },
+        {
+          "title": "Attention Sink.",
+          "paragraphs": [
+            "A series of studies (Gu et al., 2024; Xiao et al., 2023; Liu et al., 2024) reveal the phenomenon of attention sink, where certain tokens in the sequence (referred to as sink tokens) consistently receive abnormally high attention scores. When the sequence length increases, the attention scores in the middle of the sequence are significantly lower compared to the beginning and the end. This often prevents the model from focusing on the correct parts of long sequences. Xiao et al. (2023) attributes this phenomenon to the softmax function, which forces the query to assign attention scores to all preceding tokens, even when the preceding tokens lack essential information, resulting in high scores being assigned to initial tokens. Gu et al. (2024) proposes a simple solution by replacing the softmax attention with alternative attention mechanisms (e.g., unnormalized sigmoid attention) to alleviate this dependency. Chen et al. (2024) alleviates this phenomenon by simply removing certain low-frequency components from RoPE. Yu et al. (2024) deals with this issue by calibrating the attention distribution. In our work, we focus primarily on three phenomena of attention bias within parallel attention: the attention sink at the beginning of the input, the attention sink at the end of the input (i.e. recency bias Peysakhovich & Lerer 2023), and the scattered attention in the middle of the input (Yu et al., 2024). These biases provide insights into how LLMs utilize parallel contextual information."
+          ]
+        }
+      ]
+    },
+    "3 Method": {
+      "paragraphs": [
+        "In this section, we introduce ParallelComp, our proposed approach for achieving efficient long-context inference. Then we introduce its unique bias phenomenon. Figure 2 offers a high-level overview of ParallelComp."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 ParallelComp",
+          "paragraphs": [
+            "Inspired by previous studies (Chen et al., 2023c; An et al., 2024), we split the text into chunks according to the model’s maximum context size and concatenate them with the input query for parallel encoding. This step is typically performed using local attention. For a given input sequence X∈ℝN×dX\\in\\mathbb{R}^{N\\times d}, the sequence is divided into C=⌈N/w⌉C=\\lceil N/w\\rceil chunks, each containing at most ww tokens (the maximum context length of each chunk). Let fQ​(⋅)f_{Q}(\\cdot), fK​(⋅)f_{K}(\\cdot), and fV​(⋅)f_{V}(\\cdot) represent the linear transformation functions for query, key, and value projections, respectively. Then, the attention computation is performed parallelly within each chunk111We use multi-head attention in implementation but omit the head information for simplicity in our description.:",
+            "where Xc∈ℝw×dX^{c}\\in\\mathbb{R}^{w\\times d} represents the cc-th chunk of the input sequence and A𝔩c∈ℝw×wA^{c}_{\\mathfrak{l}}\\in\\mathbb{R}^{w\\times w} is the corresponding attention matrix. The feature update is performed for each chunk:",
+            "where Fc∈ℝw×dF^{c}\\in\\mathbb{R}^{w\\times d} is the updated feature for the cc-th chunk.",
+            "Below, we discuss how to design chunk eviction strategies and parallel KV cache eviction strategies to maintain high throughput while minimizing redundant computations.",
+            "To ensure that the computation of parallel attention can be performed on a single 80GB A100 GPU, we design a chunk eviction strategy to control memory overhead as shown in Figure 2 step 3. Inspired by Ye et al. (2023), we introduce a chunk eviction mechanism that leverages the self-information of the query tokens XqX^{q} to further enhance parallel processing efficiency. This mechanism utilizes an online priority queue to manage memory, retaining only the most relevant chunks, thereby enhancing language modeling. For a given chunk cc, the self-information score for the query tokens XqX^{q} is calculated as follows:",
+            "where XcX^{c} represents the context of chunk cc and XqX^{q} corresponds to the chunk of the query. Chunks with lower self-information scores are considered more relevant and are retained. The set of indices cc corresponding to the selected chunks is denoted by:",
+            "where τ\\tau is a threshold that determines whether a chunk will be selected or not. The selected set of chunks is stored in a fixed-size priority queue to ensure that the prefilling stage remains within the memory limit.",
+            "To further increase the throughput of chunks, we design a KV cache eviction strategy as shown in Figure 2 step 2. We utilize Flash Attention to perform fast attention computation. Since it is hard to obtain the complete attention distribution from Flash Attention (Dao, 2023), we use the local attention of XqX^{q} to quickly estimate tokens with relatively low attention scores and evict them in advance before sending them into Flash Attention:",
+            "where Sc∈ℝwS_{c}\\in\\mathbb{R}^{w} represents the cumulative attention score for each token in the chunk and A𝔩cA^{c}_{\\mathfrak{l}} is the local attention score between the ii-th token of the query XqX^{q} and the jj-th token of the chunk XcX^{c}, wqw_{q} denotes the length of the query sequence. The cumulative attention score aggregates the attention distributions from each token in the query to each token in the chunk, thereby measuring the relevance of each token in the chunk to the query XqX^{q}. Tokens with low cumulative attention scores within the chunk are evicted, and the retained tokens are used to form the compressed KV cache.",
+            "where KxK_{x} and VxV_{x} represent the KV cache of the input chunk, and RlR_{l} denotes the set of indices corresponding to the evicted tokens with low attention scores. The notation [⋅][\\cdot] indicates indexing into KxK_{x} and VxV_{x} to evict only the tokens corresponding to the indices in RlR_{l}. KrK_{r} and VrV_{r} denote the retained KV cache. The compression strategy of the KV cache typically helps reduce memory overhead while increasing chunk throughput, but it often exacerbates attention bias. Next, we introduce a simple and effective strategy to calibrate attention distribution.",
+            "To alleviate the attention bias exacerbated by Parallel KV Cache Eviction, we design another token eviction strategy using Eq. 5. Specifically, we evict tokens with excessively high attention scores. Let RhR_{h} correspond to those with extremely high attention scores exceeding λ\\lambda (a manually-set threshold), then we have:",
+            "Evicting tokens with exceptionally high scores guarantees that the segmented computation of softmax in Flash Attention can produce calibrated attention distributions. We will thoroughly investigate the impact of this calibration method on the attention distribution in Section 4.",
+            "After obtaining the attention outputs for each chunk, we concatenate the key-value (KV) caches from all chunks into a unified representation. Specifically, the concatenated KV cache is given by:",
+            "where KXcK^{X^{c}} and VXcV^{X^{c}} are the key and value projections of the cc-th chunk.",
+            "Next, we perform a global attention operation. This global attention enables the model to aggregate information across all chunks, ensuring that global dependencies are captured. The global attention computation for XqX^{q} is given by:",
+            "where A𝔤∈ℝwq×(C⋅w+wq)A_{\\mathfrak{g}}\\in\\mathbb{R}^{w_{q}\\times(C\\cdot w+w_{q})} is the global attention score matrix for the query chunk. The corresponding output of the global attention is computed as:",
+            "where F𝔤∈ℝwq×dF_{\\mathfrak{g}}\\in\\mathbb{R}^{w_{q}\\times d} represents the globally updated features for the query chunk. Finally, the updated global representation is passed through the feedforward and autoregressive decoding stages, enabling the model to generate outputs while leveraging information from all chunks efficiently."
+          ]
+        },
+        {
+          "title": "Parallel Attention.",
+          "paragraphs": [
+            "Inspired by previous studies (Chen et al., 2023c; An et al., 2024), we split the text into chunks according to the model’s maximum context size and concatenate them with the input query for parallel encoding. This step is typically performed using local attention. For a given input sequence X∈ℝN×dX\\in\\mathbb{R}^{N\\times d}, the sequence is divided into C=⌈N/w⌉C=\\lceil N/w\\rceil chunks, each containing at most ww tokens (the maximum context length of each chunk). Let fQ​(⋅)f_{Q}(\\cdot), fK​(⋅)f_{K}(\\cdot), and fV​(⋅)f_{V}(\\cdot) represent the linear transformation functions for query, key, and value projections, respectively. Then, the attention computation is performed parallelly within each chunk111We use multi-head attention in implementation but omit the head information for simplicity in our description.:",
+            "where Xc∈ℝw×dX^{c}\\in\\mathbb{R}^{w\\times d} represents the cc-th chunk of the input sequence and A𝔩c∈ℝw×wA^{c}_{\\mathfrak{l}}\\in\\mathbb{R}^{w\\times w} is the corresponding attention matrix. The feature update is performed for each chunk:",
+            "where Fc∈ℝw×dF^{c}\\in\\mathbb{R}^{w\\times d} is the updated feature for the cc-th chunk.",
+            "Below, we discuss how to design chunk eviction strategies and parallel KV cache eviction strategies to maintain high throughput while minimizing redundant computations."
+          ]
+        },
+        {
+          "title": "Chunk Eviction.",
+          "paragraphs": [
+            "To ensure that the computation of parallel attention can be performed on a single 80GB A100 GPU, we design a chunk eviction strategy to control memory overhead as shown in Figure 2 step 3. Inspired by Ye et al. (2023), we introduce a chunk eviction mechanism that leverages the self-information of the query tokens XqX^{q} to further enhance parallel processing efficiency. This mechanism utilizes an online priority queue to manage memory, retaining only the most relevant chunks, thereby enhancing language modeling. For a given chunk cc, the self-information score for the query tokens XqX^{q} is calculated as follows:",
+            "where XcX^{c} represents the context of chunk cc and XqX^{q} corresponds to the chunk of the query. Chunks with lower self-information scores are considered more relevant and are retained. The set of indices cc corresponding to the selected chunks is denoted by:",
+            "where τ\\tau is a threshold that determines whether a chunk will be selected or not. The selected set of chunks is stored in a fixed-size priority queue to ensure that the prefilling stage remains within the memory limit."
+          ]
+        },
+        {
+          "title": "Parallel KV Cache Eviction.",
+          "paragraphs": [
+            "To further increase the throughput of chunks, we design a KV cache eviction strategy as shown in Figure 2 step 2. We utilize Flash Attention to perform fast attention computation. Since it is hard to obtain the complete attention distribution from Flash Attention (Dao, 2023), we use the local attention of XqX^{q} to quickly estimate tokens with relatively low attention scores and evict them in advance before sending them into Flash Attention:",
+            "where Sc∈ℝwS_{c}\\in\\mathbb{R}^{w} represents the cumulative attention score for each token in the chunk and A𝔩cA^{c}_{\\mathfrak{l}} is the local attention score between the ii-th token of the query XqX^{q} and the jj-th token of the chunk XcX^{c}, wqw_{q} denotes the length of the query sequence. The cumulative attention score aggregates the attention distributions from each token in the query to each token in the chunk, thereby measuring the relevance of each token in the chunk to the query XqX^{q}. Tokens with low cumulative attention scores within the chunk are evicted, and the retained tokens are used to form the compressed KV cache.",
+            "where KxK_{x} and VxV_{x} represent the KV cache of the input chunk, and RlR_{l} denotes the set of indices corresponding to the evicted tokens with low attention scores. The notation [⋅][\\cdot] indicates indexing into KxK_{x} and VxV_{x} to evict only the tokens corresponding to the indices in RlR_{l}. KrK_{r} and VrV_{r} denote the retained KV cache. The compression strategy of the KV cache typically helps reduce memory overhead while increasing chunk throughput, but it often exacerbates attention bias. Next, we introduce a simple and effective strategy to calibrate attention distribution."
+          ]
+        },
+        {
+          "title": "Attention Calibration.",
+          "paragraphs": [
+            "To alleviate the attention bias exacerbated by Parallel KV Cache Eviction, we design another token eviction strategy using Eq. 5. Specifically, we evict tokens with excessively high attention scores. Let RhR_{h} correspond to those with extremely high attention scores exceeding λ\\lambda (a manually-set threshold), then we have:",
+            "Evicting tokens with exceptionally high scores guarantees that the segmented computation of softmax in Flash Attention can produce calibrated attention distributions. We will thoroughly investigate the impact of this calibration method on the attention distribution in Section 4."
+          ]
+        },
+        {
+          "title": "Global Attention.",
+          "paragraphs": [
+            "After obtaining the attention outputs for each chunk, we concatenate the key-value (KV) caches from all chunks into a unified representation. Specifically, the concatenated KV cache is given by:",
+            "where KXcK^{X^{c}} and VXcV^{X^{c}} are the key and value projections of the cc-th chunk.",
+            "Next, we perform a global attention operation. This global attention enables the model to aggregate information across all chunks, ensuring that global dependencies are captured. The global attention computation for XqX^{q} is given by:",
+            "where A𝔤∈ℝwq×(C⋅w+wq)A_{\\mathfrak{g}}\\in\\mathbb{R}^{w_{q}\\times(C\\cdot w+w_{q})} is the global attention score matrix for the query chunk. The corresponding output of the global attention is computed as:",
+            "where F𝔤∈ℝwq×dF_{\\mathfrak{g}}\\in\\mathbb{R}^{w_{q}\\times d} represents the globally updated features for the query chunk. Finally, the updated global representation is passed through the feedforward and autoregressive decoding stages, enabling the model to generate outputs while leveraging information from all chunks efficiently."
+          ]
+        },
+        {
+          "title": "3.2 Parallel Attention Bias",
+          "paragraphs": [
+            "In this section, we provide a theoretical framework for understanding Parallel Attention Bias, extending the concept of attention collapse (Dong et al., 2021) to parallel attention mechanisms described in Section 3.1. Specifically, we analyze the sparsity behavior of the local attention matrices computed over parallel chunks and its implications for efficiency and accuracy.",
+            "Consider the following setup:",
+            "• Part 1: For any ϵ>0\\epsilon>0, the sparsity threshold of effective entries in A𝔩cA^{c}_{\\mathfrak{l}} increases with ww. ϵ\\epsilon is a user-defined threshold that controls sparsity in the attention matrix. With more chunks (CC), ϵ\\epsilon affects the balance between retaining information within each chunk and computational efficiency.",
+            "• Part 2: The number of effective entries kk in each row of A𝔩cA^{c}_{\\mathfrak{l}} is upper-bounded as: where RR represents the rank of the sparse attention matrix, which determines the effective dimensionality of retained attention entries, and δ\\delta is a probability bound controlling the confidence level of the sparsity constraint.",
+            "• Part 3: With high probability (1−δ1-\\delta), the number of ineffective entries in each row satisfies:",
+            "Part 1: For any ϵ>0\\epsilon>0, the sparsity threshold of effective entries in A𝔩cA^{c}_{\\mathfrak{l}} increases with ww. ϵ\\epsilon is a user-defined threshold that controls sparsity in the attention matrix. With more chunks (CC), ϵ\\epsilon affects the balance between retaining information within each chunk and computational efficiency.",
+            "Part 2: The number of effective entries kk in each row of A𝔩cA^{c}_{\\mathfrak{l}} is upper-bounded as:",
+            "where RR represents the rank of the sparse attention matrix, which determines the effective dimensionality of retained attention entries, and δ\\delta is a probability bound controlling the confidence level of the sparsity constraint.",
+            "Part 3: With high probability (1−δ1-\\delta), the number of ineffective entries in each row satisfies:",
+            "Proof sketch of Part 1: From the softmax scaling property, the sparsity threshold for effective entries in A𝔩cA^{c}_{\\mathfrak{l}} can be bounded as:",
+            "This inequality shows that as ww increases, the threshold for retaining effective entries becomes stricter, limiting the number of such entries. Proof sketch of Part 2: Rearranging the above inequality, we derive an upper bound on kk, the number of effective entries:",
+            "This implies that the number of effective entries in each row of the attention matrix is given by w−kw-k. Proof sketch of Part 3: Substituting the bound of kk into the definition of |𝒮ϵ(c)||\\mathcal{S}_{\\epsilon}^{(c)}|, the number of ineffective entries, we find:",
+            "Finally, observing that R=O​(log⁡(w))R=O(\\sqrt{\\log(w)}) ensures that the sparsity growth is bounded as w→∞w\\to\\infty. Appendix A provides a more detailed proof. ∎",
+            "Theorem 3.1 highlights the inevitability of attention collapse in parallel attention mechanisms. Despite dividing the input sequence into CC smaller chunks, the effective number of attention entries within each chunk diminishes as the chunk size ww increases. Key observations include: i) Each local attention matrix A𝔩cA^{c}_{\\mathfrak{l}} exhibits sparsity behavior similar to the global attention matrix, with most entries becoming negligible for large ww. ii) When a super-long matrix is input into attention in parallel, attention bias inevitably occurs. The attention mechanism repeatedly focuses on a small number of tokens due to its inherent limitations, even with more information provided. Selecting an appropriate sparsity parameter ϵ\\epsilon can mitigate this issue. iii) Dividing the input into chunks reduces computational overhead while maintaining sparsity within each chunk."
+          ]
+        },
+        {
+          "title": "Theoretical Insights into Parallel Attention Bias.",
+          "paragraphs": [
+            "In this section, we provide a theoretical framework for understanding Parallel Attention Bias, extending the concept of attention collapse (Dong et al., 2021) to parallel attention mechanisms described in Section 3.1. Specifically, we analyze the sparsity behavior of the local attention matrices computed over parallel chunks and its implications for efficiency and accuracy.",
+            "Consider the following setup:",
+            "• Part 1: For any ϵ>0\\epsilon>0, the sparsity threshold of effective entries in A𝔩cA^{c}_{\\mathfrak{l}} increases with ww. ϵ\\epsilon is a user-defined threshold that controls sparsity in the attention matrix. With more chunks (CC), ϵ\\epsilon affects the balance between retaining information within each chunk and computational efficiency.",
+            "• Part 2: The number of effective entries kk in each row of A𝔩cA^{c}_{\\mathfrak{l}} is upper-bounded as: where RR represents the rank of the sparse attention matrix, which determines the effective dimensionality of retained attention entries, and δ\\delta is a probability bound controlling the confidence level of the sparsity constraint.",
+            "• Part 3: With high probability (1−δ1-\\delta), the number of ineffective entries in each row satisfies:",
+            "Part 1: For any ϵ>0\\epsilon>0, the sparsity threshold of effective entries in A𝔩cA^{c}_{\\mathfrak{l}} increases with ww. ϵ\\epsilon is a user-defined threshold that controls sparsity in the attention matrix. With more chunks (CC), ϵ\\epsilon affects the balance between retaining information within each chunk and computational efficiency.",
+            "Part 2: The number of effective entries kk in each row of A𝔩cA^{c}_{\\mathfrak{l}} is upper-bounded as:",
+            "where RR represents the rank of the sparse attention matrix, which determines the effective dimensionality of retained attention entries, and δ\\delta is a probability bound controlling the confidence level of the sparsity constraint.",
+            "Part 3: With high probability (1−δ1-\\delta), the number of ineffective entries in each row satisfies:",
+            "Proof sketch of Part 1: From the softmax scaling property, the sparsity threshold for effective entries in A𝔩cA^{c}_{\\mathfrak{l}} can be bounded as:",
+            "This inequality shows that as ww increases, the threshold for retaining effective entries becomes stricter, limiting the number of such entries. Proof sketch of Part 2: Rearranging the above inequality, we derive an upper bound on kk, the number of effective entries:",
+            "This implies that the number of effective entries in each row of the attention matrix is given by w−kw-k. Proof sketch of Part 3: Substituting the bound of kk into the definition of |𝒮ϵ(c)||\\mathcal{S}_{\\epsilon}^{(c)}|, the number of ineffective entries, we find:",
+            "Finally, observing that R=O​(log⁡(w))R=O(\\sqrt{\\log(w)}) ensures that the sparsity growth is bounded as w→∞w\\to\\infty. Appendix A provides a more detailed proof. ∎"
+          ]
+        },
+        {
+          "title": "Discussion.",
+          "paragraphs": [
+            "Theorem 3.1 highlights the inevitability of attention collapse in parallel attention mechanisms. Despite dividing the input sequence into CC smaller chunks, the effective number of attention entries within each chunk diminishes as the chunk size ww increases. Key observations include: i) Each local attention matrix A𝔩cA^{c}_{\\mathfrak{l}} exhibits sparsity behavior similar to the global attention matrix, with most entries becoming negligible for large ww. ii) When a super-long matrix is input into attention in parallel, attention bias inevitably occurs. The attention mechanism repeatedly focuses on a small number of tokens due to its inherent limitations, even with more information provided. Selecting an appropriate sparsity parameter ϵ\\epsilon can mitigate this issue. iii) Dividing the input into chunks reduces computational overhead while maintaining sparsity within each chunk."
+          ]
+        }
+      ]
+    },
+    "4 Empirical Study of Parallel Attention Bias": {
+      "paragraphs": [
+        "In this section, we investigate the attention sink phenomenon in parallel attention mechanisms and compare its similarities and differences with the regular attention sink phenomenon. Specifically, we explore the following question:"
+      ],
+      "subsections": [
+        {
+          "title": "Q1: What types of attention patterns can be summarized?",
+          "paragraphs": [
+            "In summary, three main types of attention patterns emerge, as illustrated in Figure 3: U-shape, Mountain-shape, and Uniform-shape."
+          ]
+        },
+        {
+          "title": "Observations.",
+          "paragraphs": [
+            "These attention distributions give rise to three corresponding biases: i) Attention sink, where focus is concentrated on the initial few tokens. ii) Recency bias, where attention is more strongly concentrated at the tail. iii) Middle bias, where attention is disproportionately focused on a few tokens in the middle of a sequence. iv) These biases manifest in a wavelike pattern, with RhR_{h} containing three token types (Rs,Rm,RrR_{s},R_{m},R_{r}) corresponding to these biases."
+          ]
+        },
+        {
+          "title": "Q2: Is there any difference between the attention bias in parallel attention and the attention bias in classical attention?",
+          "paragraphs": [
+            "In this part, we provide a detailed analysis of some bias phenomena in parallel attention mechanisms. We observe in Figure 4 that there are relatively more peaks within the contexts."
+          ]
+        },
+        {
+          "title": "Observations.",
+          "paragraphs": [
+            "i) Similar to the blue local attention, the yellow curve shows the U-shaped attention sink phenomenon repeatedly appearing. ii) Parallel attention and local attention both exhibit severe recency bias, but the effect is significantly mitigated in parallel attention compared to local attention. iii) When computing global attention A​𝔤A{\\mathfrak{g}}, the model suffers from the most severe recency bias, though it is still less pronounced than within A𝔩cA^{c}_{\\mathfrak{l}} (blue line). iv) Compared to the classical attention distribution, i.e., the local attention, the peaks of A​𝔤A{\\mathfrak{g}} within the chunk are significantly weakened, indicating that global attention can significantly mitigate recency bias. In other words, the parallel attention mechanism itself can mitigate attention bias."
+          ]
+        },
+        {
+          "title": "Q3: Can the calibration strategy alleviate attention bias?",
+          "paragraphs": [
+            "By evicting different types of RhR_{h} at different layers, we have the following observations:"
+          ]
+        },
+        {
+          "title": "Observations.",
+          "paragraphs": [
+            "i): From Figure 5, we can see that KV cache eviction exacerbates the bias phenomenon. However, parallel KV cache eviction can achieve a more stable distribution. ii): Evicting sink bias tokens in the early layers may exacerbate attention bias, but evicting them in the deeper layers can mitigate this attention bias. iii): Evicting recency bias tokens in the intermediate layers can mitigate attention bias, while evicting recency bias tokens in the deeper layers redistributes the attention scores obtained by the recency bias tokens to the intermediate tokens. iv): Simultaneously evicting sink bias and recency bias tokens can alleviate attention bias in the intermediate layers (Layer 16). v): From Figure 6, by evicting tokens with abnormally high attention scores, the model can mitigate attention bias, which means it can also alleviate the performance loss. We will further validate this in our experiments."
+          ]
+        }
+      ]
+    },
+    "5 Experiment": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "5.1 Experimental Settings",
+          "paragraphs": [
+            "We compare our method with existing length extrapolation approaches, including Position Interpolation (PI) (Chen et al., 2023b), NTK-Aware (LocalLLaMA, 2023b), ChunkLlama (An et al., 2024), AttenCalibration (Yu et al., 2024), and InfLLM (Xiao et al., 2024), on LongBench (Bai et al., 2023) and InfiniteBench (Zhang et al., 2024), evaluating them on Llama2-7B-chat-hf (Touvron et al., 2023) and Llama-3-8B-Instruction (AI, 2024). We also compare our method with the following open-source and closed-source models that have been trained on long-context data: ChatGLM-3-6B-128K (GLM et al., 2024), Kimi-Chat (AI, 2023), Yi-6B-200K (01.AI, 2023a), Yi-34B-200K (01.AI, 2023b), Claude-2 (Anthropic, 2023), Yarn-Mistral-7b-128k (Peng et al., 2023), and GPT-4 (Achiam et al., 2023). Since AttenCalibration only calibrates the attention distribution and lacks length extrapolation capability, we implemented NTK-aware technology for it to achieve length extrapolation (AttenCalibration-NTK). We describe our hyperparameters in the Appendix C."
+          ]
+        },
+        {
+          "title": "Models, Baselines, and Tasks",
+          "paragraphs": [
+            "We compare our method with existing length extrapolation approaches, including Position Interpolation (PI) (Chen et al., 2023b), NTK-Aware (LocalLLaMA, 2023b), ChunkLlama (An et al., 2024), AttenCalibration (Yu et al., 2024), and InfLLM (Xiao et al., 2024), on LongBench (Bai et al., 2023) and InfiniteBench (Zhang et al., 2024), evaluating them on Llama2-7B-chat-hf (Touvron et al., 2023) and Llama-3-8B-Instruction (AI, 2024). We also compare our method with the following open-source and closed-source models that have been trained on long-context data: ChatGLM-3-6B-128K (GLM et al., 2024), Kimi-Chat (AI, 2023), Yi-6B-200K (01.AI, 2023a), Yi-34B-200K (01.AI, 2023b), Claude-2 (Anthropic, 2023), Yarn-Mistral-7b-128k (Peng et al., 2023), and GPT-4 (Achiam et al., 2023). Since AttenCalibration only calibrates the attention distribution and lacks length extrapolation capability, we implemented NTK-aware technology for it to achieve length extrapolation (AttenCalibration-NTK). We describe our hyperparameters in the Appendix C."
+          ]
+        },
+        {
+          "title": "5.2 Length Extrapolation Settings",
+          "paragraphs": [
+            "We present our method in Table 1, showing the performance of several strong baselines on LongBench. We have the following main findings: i): Our method is the only one that surpasses FullKV (i.e., the baseline without any length extrapolation) across different backbones. ii): Section 4 reveals that parallel KV cache compression exacerbates attention bias. However, combining it with the eviction RhR_{h} method to calibrate the attention distribution, i.e., Ours-calibration-compression, can significantly restore the performance to that of the original KV cache size. iii): Chunk-based length extrapolation methods, such as InfLLM and ChunkLlama, generally perform better than position encoding-based methods such as Dynamic-PI and NTK-Aware. iv): Directly calibrating the attention distribution for NTK-aware length extrapolation methods, namely AttenCalibration-NTK, achieves good performance only on longest datasets, such as NtrvQA, GovReport, and RB-P.",
+            "We evaluate the performance under extremely long contexts in Table 2, comparing it with several powerful open-source and closed-source models. These models are trained on context lengths exceeding 128K, and thus do not require additional extrapolation capabilities to handle ultra-long contexts. We have the following findings: i): Our method performs exceptionally well on needle-in-a-haystack retrieval tasks (R.PK, R.Num, R.KV), being the only model capable of achieving over 90% accuracy across all tasks, surpassing even the strongest closed-source model, GPT-4. ii): Position encoding-based length extrapolation methods, such as NTK-Aware, Dynamic-PI, generally struggle to achieve good performance on tasks with ultra-long contexts compared to chunk-based extrapolation approaches. iii): Our training-free extrapolation method, using an 8K window, is the only approach that surpasses the powerful closed-source models Kimi-Chat and Claude-2, achieving 91.17% of GPT-4’s performance on ultra-long contexts with an 8B model.",
+            "We present the results of perplexity (PPL) calculations on the NarrativeQA test set in Table 3, which reflect the model’s performance in long-context language modeling. i): Chunk-based position extrapolation methods (ChunkLlama, InfLLM, and Ours) achieve significantly lower PPL compared to position encoding-based methods (Dynamic-PI and NTK-Aware). ii): Position encoding-based methods start to collapse in performance for language modeling when the length exceeds 32k. iii): As the number of chunks increases (from 2K to 128K), our method still demonstrates consistent perplexity stability across different lengths."
+          ]
+        },
+        {
+          "title": "Main Results",
+          "paragraphs": [
+            "We present our method in Table 1, showing the performance of several strong baselines on LongBench. We have the following main findings: i): Our method is the only one that surpasses FullKV (i.e., the baseline without any length extrapolation) across different backbones. ii): Section 4 reveals that parallel KV cache compression exacerbates attention bias. However, combining it with the eviction RhR_{h} method to calibrate the attention distribution, i.e., Ours-calibration-compression, can significantly restore the performance to that of the original KV cache size. iii): Chunk-based length extrapolation methods, such as InfLLM and ChunkLlama, generally perform better than position encoding-based methods such as Dynamic-PI and NTK-Aware. iv): Directly calibrating the attention distribution for NTK-aware length extrapolation methods, namely AttenCalibration-NTK, achieves good performance only on longest datasets, such as NtrvQA, GovReport, and RB-P."
+          ]
+        },
+        {
+          "title": "Extrapolating beyond 128K context lengths.",
+          "paragraphs": [
+            "We evaluate the performance under extremely long contexts in Table 2, comparing it with several powerful open-source and closed-source models. These models are trained on context lengths exceeding 128K, and thus do not require additional extrapolation capabilities to handle ultra-long contexts. We have the following findings: i): Our method performs exceptionally well on needle-in-a-haystack retrieval tasks (R.PK, R.Num, R.KV), being the only model capable of achieving over 90% accuracy across all tasks, surpassing even the strongest closed-source model, GPT-4. ii): Position encoding-based length extrapolation methods, such as NTK-Aware, Dynamic-PI, generally struggle to achieve good performance on tasks with ultra-long contexts compared to chunk-based extrapolation approaches. iii): Our training-free extrapolation method, using an 8K window, is the only approach that surpasses the powerful closed-source models Kimi-Chat and Claude-2, achieving 91.17% of GPT-4’s performance on ultra-long contexts with an 8B model."
+          ]
+        },
+        {
+          "title": "Language Modeling.",
+          "paragraphs": [
+            "We present the results of perplexity (PPL) calculations on the NarrativeQA test set in Table 3, which reflect the model’s performance in long-context language modeling. i): Chunk-based position extrapolation methods (ChunkLlama, InfLLM, and Ours) achieve significantly lower PPL compared to position encoding-based methods (Dynamic-PI and NTK-Aware). ii): Position encoding-based methods start to collapse in performance for language modeling when the length exceeds 32k. iii): As the number of chunks increases (from 2K to 128K), our method still demonstrates consistent perplexity stability across different lengths."
+          ]
+        },
+        {
+          "title": "5.3 Ablation of Attention Bias",
+          "paragraphs": [
+            "We present in Table 4 the impact of evicting different bias tokens at various layers on different tasks. We have the following observations: i): The RsR_{s} in the shallow layers (1-8) is crucial for retrieval tasks. Without these tokens, the model’s performance will be significantly impaired. ii): The RrR_{r} in the deeper layers (layers 17-24 and 25-32) is crucial for the model’s coding abilities. Evicting these tokens will lead to a decline in coding performance. iii): Shallow RmR_{m} (layers 1-8) damages the model’s understanding ability, and evicting them can improve the model’s performance. iv): RrR_{r} in the early layers (layers 1-8) is important for the model’s in-context learning ability. For a detailed analysis of this phenomenon, please refer to Appendix B."
+          ]
+        },
+        {
+          "title": "5.4 Throughput Analysis",
+          "paragraphs": [
+            "We mainly focus on the throughput of chunks during context parallelism. Therefore, we compare the maximum number of parallel chunks and the memory usage before and after parallel KV cache compression. Table 5 presents the memory usage of the model using the parallel KV cache eviction strategy. On a single GPU, by compressing the KV cache size of each chunk to half of its original size, we achieve a 1.76x improvement in chunk throughput, thereby achieving a 23.50x acceleration in the prefill stage with negligible performance loss."
+          ]
+        }
+      ]
+    },
+    "6 Conclusion": {
+      "paragraphs": [
+        "In this paper, we propose ParallelComp, a training-free approach to enhance the long-context extrapolation capability of LLMs. By leveraging parallel attention mechanisms and an efficient compression strategy, our method effectively mitigates attention bias while maintaining high efficiency. Experimental results on LongBench and InfiniteBench show that ParallelComp achieves strong performance, surpassing existing extrapolation methods and handling context lengths up to 128K tokens. Notably, our approach achieves 91.17% of GPT-4’s performance on ultra-long context tasks with an 8B model, demonstrating its effectiveness with lower memory overhead. ParallelComp provides a scalable and efficient solution to training-free extension of context lengths in LLMs, enabling lossless improvement in throughput while reducing latency during the prefill stage."
+      ],
+      "subsections": []
+    },
+    "Impact Statement": {
+      "paragraphs": [
+        "This paper presents work whose goal is to advance the field of Machine Learning. There are many potential societal consequences of our work, none which we feel must be specifically highlighted here."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Proof for Parallel Attention Collapse": {
+      "paragraphs": [
+        "[Table: Table 6: Bias Token Eviction Ablation. Sink-eviction-layer-1-8 typically means evicting sink bias tokens in layers 1 to 8, and other naming conventions follow the same pattern. Ours-calibration refers to the approach where layers 9-16 adopt the recency bias token eviction method, while layers 1-8 evict middle bias tokens, and layers 25-32 evict sink bias tokens.]"
+      ],
+      "subsections": []
+    },
+    "Appendix B Ablation Study": {
+      "paragraphs": [
+        "In this section, we analyze the impact of different attention biases on the LongBench dataset. As shown in Table 6, the exceptionally low performance of Recency-eviction-layer-1-8 on both in-context learning tasks, TREC and TriviaQA, as well as SAMSum, indicates that the recency bias tokens in the model’s early layers are crucial for developing in-context learning abilities."
+      ],
+      "subsections": []
+    },
+    "Appendix C Hyperparameter": {
+      "paragraphs": [
+        "The Dynamic-PI method interpolates dynamically according to the length of the input token. NTK-Aware refer to (LocalLLaMA, 2023b) and the maximum length is set to 280k. ChunkLlama, InfLLM and AttenCalibration-NTK use hyperparameters from open source repositories. About our method, when performing parallel KV Cache compression, we use last 8 token’s cumulative attention scores to compress the KV cache size within each chunk to 2000. On Longbench, we retain 3 chunks from the priority queue, while on InfiniteBench, we retain 1 chunk for retrieval tasks and 3 chunks for other tasks from the priority queue. In our setup, the total number of chunks processed in parallel and the chunks in the priority queue is 23. In all datasets, the context length of each chunk, including the query, is the maximum pre-training length of the model. τ\\tau is set to 0.1 for llama2 and 0.3 for llama3. RsR_{s} is obtained from the first 200 tokens of the chunk, RrR_{r} is obtained from the last 200 tokens of the chunk, and the remaining part of the chunk obtains RmR_{m}. All experiments are performed on 80G A100.",
+        ""
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "01.AI (2023a) 01.AI. Yi-34b-200k, 2023a. URL https://huggingface.co/01-ai/Yi-34B-200K. Accessed: 2025-01-25.",
+    "01.AI (2023b) 01.AI. Yi-6b-200k, 2023b. URL https://huggingface.co/01-ai/Yi-6B-200K. Accessed: 2025-01-25.",
+    "Achiam et al. (2023) Achiam, J., Adler, S., Agarwal, S., Ahmad, L., Akkaya, I., Aleman, F. L., Almeida, D., Altenschmidt, J., Altman, S., Anadkat, S., et al. Gpt-4 technical report. arXiv preprint arXiv:2303.08774, 2023.",
+    "AI (2023) AI, M. Kimi chat, 2023. URL https://kimi.moonshot.cn/. Accessed: 2025-01-25.",
+    "AI (2024) AI, M. Llama 3: A family of large language models. https://llama.meta.com, 2024. URL https://llama.meta.com. Instruction-tuned version.",
+    "An et al. (2024) An, C., Huang, F., Zhang, J., Gong, S., Qiu, X., Zhou, C., and Kong, L. Training-free long-context scaling of large language models. arXiv preprint arXiv:2402.17463, 2024.",
+    "Anthropic (2023) Anthropic. Model card and evaluations for claude models, 2023. URL https://www.anthropic.com. Accessed: 2025-01-25.",
+    "Bai et al. (2023) Bai, Y., Lv, X., Zhang, J., Lyu, H., Tang, J., Huang, Z., Du, Z., Liu, X., Zeng, A., Hou, L., et al. Longbench: A bilingual, multitask benchmark for long context understanding. arXiv preprint arXiv:2308.14508, 2023.",
+    "bloc97 (2023) bloc97. Add ntk-aware interpolation ”by parts” correction. https://github.com/jquesnelle/scaled-rope/pull/1, 2023. Accessed: 2025-01-12.",
+    "Chen et al. (2023a) Chen, G., Li, X., Meng, Z., Liang, S., and Bing, L. Clex: Continuous length extrapolation for large language models. arXiv preprint arXiv:2310.16450, 2023a.",
+    "Chen et al. (2023b) Chen, S., Wong, S., Chen, L., and Tian, Y. Extending context window of large language models via positional interpolation. arXiv preprint arXiv:2306.15595, 2023b.",
+    "Chen et al. (2023c) Chen, Y., Qian, S., Tang, H., Lai, X., Liu, Z., Han, S., and Jia, J. Longlora: Efficient fine-tuning of long-context large language models. arXiv preprint arXiv:2309.12307, 2023c.",
+    "Chen et al. (2024) Chen, Y., Lv, A., Luan, J., Wang, B., and Liu, W. Hope: A novel positional encoding without long-term decay for enhanced context awareness and extrapolation. arXiv preprint arXiv:2410.21216, 2024.",
+    "Chi et al. (2022) Chi, T.-C., Fan, T.-H., Ramadge, P. J., and Rudnicky, A. Kerple: Kernelized relative positional embedding for length extrapolation. Advances in Neural Information Processing Systems, 35:8386–8399, 2022.",
+    "Dao (2023) Dao, T. Flashattention-2: Faster attention with better parallelism and work partitioning. arXiv preprint arXiv:2307.08691, 2023.",
+    "Devlin (2018) Devlin, J. Bert: Pre-training of deep bidirectional transformers for language understanding. arXiv preprint arXiv:1810.04805, 2018.",
+    "Dong et al. (2021) Dong, Y., Cordonnier, J.-B., and Loukas, A. Attention is not all you need: Pure attention loses rank doubly exponentially with depth. In International Conference on Machine Learning, pp. 2793–2803. PMLR, 2021.",
+    "Dubey et al. (2024) Dubey, A., Jauhri, A., Pandey, A., Kadian, A., Al-Dahle, A., Letman, A., Mathur, A., Schelten, A., Yang, A., Fan, A., et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783, 2024.",
+    "Fu et al. (2024) Fu, Y., Panda, R., Niu, X., Yue, X., Hajishirzi, H., Kim, Y., and Peng, H. Data engineering for scaling language models to 128k context. arXiv preprint arXiv:2402.10171, 2024.",
+    "GLM et al. (2024) GLM, T., Zeng, A., Xu, B., Wang, B., Zhang, C., Yin, D., Zhang, D., Rojas, D., Feng, G., Zhao, H., et al. Chatglm: A family of large language models from glm-130b to glm-4 all tools. arXiv preprint arXiv:2406.12793, 2024.",
+    "Golovneva et al. (2024) Golovneva, O., Wang, T., Weston, J., and Sukhbaatar, S. Contextual position encoding: Learning to count what’s important. arXiv preprint arXiv:2405.18719, 2024.",
+    "Gu et al. (2024) Gu, X., Pang, T., Du, C., Liu, Q., Zhang, F., Du, C., Wang, Y., and Lin, M. When attention sink emerges in language models: An empirical view. arXiv preprint arXiv:2410.10781, 2024.",
+    "Han et al. (2024) Han, C., Wang, Q., Peng, H., Xiong, W., Chen, Y., Ji, H., and Wang, S. Lm-infinite: Zero-shot extreme length generalization for large language models. In Proceedings of the 2024 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers), pp. 3991–4008, 2024.",
+    "Kočiskỳ et al. (2018) Kočiskỳ, T., Schwarz, J., Blunsom, P., Dyer, C., Hermann, K. M., Melis, G., and Grefenstette, E. The narrativeqa reading comprehension challenge. Transactions of the Association for Computational Linguistics, 6:317–328, 2018.",
+    "Li et al. (2023) Li, S., You, C., Guruganesh, G., Ainslie, J., Ontanon, S., Zaheer, M., Sanghai, S., Yang, Y., Kumar, S., and Bhojanapalli, S. Functional interpolation for relative positions improves long context transformers, 2023.",
+    "Liu et al. (2024) Liu, N. F., Lin, K., Hewitt, J., Paranjape, A., Bevilacqua, M., Petroni, F., and Liang, P. Lost in the middle: How language models use long contexts. Transactions of the Association for Computational Linguistics, 12:157–173, 2024.",
+    "LocalLLaMA (2023a) LocalLLaMA. Dynamically scaled rope further increases performance of long context llama with zero fine-tuning, July 2023a. URL https://www.reddit.com/r/LocalLLaMA/comments/14mrgpr/dynamically_scaled_rope_further_increases/.",
+    "LocalLLaMA (2023b) LocalLLaMA. Ntk-aware scaled rope allows llama models to have extended (8k+) context size without any fine-tuning and minimal perplexity degradation., June 2023b. URL https://www.reddit.com/r/LocalLLaMA/comments/14lz7j5/ntkaware_scaled_rope_allows_llama_models_to_have/.",
+    "Peng et al. (2023) Peng, B., Quesnelle, J., Fan, H., and Shippole, E. Yarn: Efficient context window extension of large language models. arXiv preprint arXiv:2309.00071, 2023.",
+    "Peysakhovich & Lerer (2023) Peysakhovich, A. and Lerer, A. Attention sorting combats recency bias in long context language models. arXiv preprint arXiv:2310.01427, 2023.",
+    "Press et al. (2021) Press, O., Smith, N. A., and Lewis, M. Train short, test long: Attention with linear biases enables input length extrapolation. arXiv preprint arXiv:2108.12409, 2021.",
+    "Press et al. (2022) Press, O., Smith, N. A., and Lewis, M. Train short, test long: Attention with linear biases enables input length extrapolation, 2022.",
+    "Ratner et al. (2022) Ratner, N., Levine, Y., Belinkov, Y., Ram, O., Magar, I., Abend, O., Karpas, E., Shashua, A., Leyton-Brown, K., and Shoham, Y. Parallel context windows for large language models. arXiv preprint arXiv:2212.10947, 2022.",
+    "Su (2023) Su, J. Rectified rotary position embeddings. https://github.com/bojone/rerope, 2023.",
+    "Su et al. (2024) Su, J., Ahmed, M., Lu, Y., Pan, S., Bo, W., and Liu, Y. Roformer: Enhanced transformer with rotary position embedding. Neurocomputing, 568:127063, 2024.",
+    "Touvron et al. (2023) Touvron, H., Lavril, T., Izacard, G., Martinet, X., Lachaux, M.-A., Lacroix, T., Rozière, B., Goyal, N., Hambro, E., Azhar, F., et al. Llama: Open and efficient foundation language models. arXiv preprint arXiv:2302.13971, 2023.",
+    "Vaswani (2017) Vaswani, A. Attention is all you need. Advances in Neural Information Processing Systems, 2017.",
+    "Xiao et al. (2024) Xiao, C., Zhang, P., Han, X., Xiao, G., Lin, Y., Zhang, Z., Liu, Z., and Sun, M. Infllm: Training-free long-context extrapolation for llms with an efficient context memory. In The Thirty-eighth Annual Conference on Neural Information Processing Systems, 2024.",
+    "Xiao et al. (2023) Xiao, G., Tian, Y., Chen, B., Han, S., and Lewis, M. Efficient streaming language models with attention sinks, 2023.",
+    "Ye et al. (2023) Ye, J., Wu, Z., Feng, J., Yu, T., and Kong, L. Compositional exemplars for in-context learning. arXiv preprint arXiv:2302.05698, 2023.",
+    "Yu et al. (2024) Yu, Z., Wang, Z., Fu, Y., Shi, H., Shaikh, K., and Lin, Y. C. Unveiling and harnessing hidden attention sinks: Enhancing large language models without training through attention calibration. arXiv preprint arXiv:2406.15765, 2024.",
+    "Zhang et al. (2024) Zhang, X., Chen, Y., Hu, S., Xu, Z., Chen, J., Hao, M., Han, X., Thai, Z., Wang, S., Liu, Z., et al. infinite bench: Extending long context evaluation beyond 100k tokens. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pp. 15262–15277, 2024.",
+    "Zheng et al. (2024) Zheng, C., Gao, Y., Shi, H., Huang, M., Li, J., Xiong, J., Ren, X., Ng, M., Jiang, X., Li, Z., et al. Dape: Data-adaptive positional encoding for length extrapolation. In The Thirty-eighth Annual Conference on Neural Information Processing Systems, 2024.",
+    "Zhu et al. (2024) Zhu, Y., Gu, J.-C., Sikora, C., Ko, H., Liu, Y., Lin, C.-C., Shu, L., Luo, L., Meng, L., Liu, B., et al. Accelerating inference of retrieval-augmented generation via sparse context selection. arXiv preprint arXiv:2405.16178, 2024."
+  ]
+}

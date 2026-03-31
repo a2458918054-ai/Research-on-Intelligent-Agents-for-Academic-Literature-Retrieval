@@ -1,0 +1,334 @@
+{
+  "title": "QuOTE: Question-Oriented Text Embeddings",
+  "authors": "Andrew Neeseraneeser24@vt.eduVirginia TechUSA,Kaylen Latimerlatime.kaylen22@svvsd.orgSt. Vrain Valley SchoolsUSA,Aadyant Khatriaadyant@vt.eduVirginia TechUSA,Chris Latimerchris.latimer@vectorize.ioVectorize.ioUSAandNaren Ramakrishnannaren@vt.eduVirginia TechUSA",
+  "abstract": "We present QuOTE (Question-Oriented Text Embeddings), a novel enhancement to retrieval-augmented generation (RAG) systems, aimed at improving document representation for accurate and nuanced retrieval. Unlike traditional RAG pipelines, which rely on embedding raw text chunks, QuOTE augments chunks with hypothetical questions that the chunk can potentially answer, enriching the representation space. This better aligns document embeddings with user query semantics, and helps address issues such as ambiguity and context-dependent relevance. Through extensive experiments across diverse benchmarks, we demonstrate that QuOTE significantly enhances retrieval accuracy, including in multi-hop question-answering tasks. Our findings highlight the versatility of question generation as a fundamental indexing strategy, opening new avenues for integrating question generation into retrieval-based AI pipelines.",
+  "sections": {
+    "1. Introduction": {
+      "paragraphs": [
+        "Retrieval-augmented generation (RAG (Wu et al., 2024; Wang et al., 2024; Zhao et al., 2024)) serves as a significant contribution to the deployment and acceptance of LLMs in practice. Given a user’s prompt, RAG retrieves relevant information from a document collection, augments (prefixes) it to the user’s prompt, thus helping ensure that any generated content can be accurate, pertinent, and grounded in up-to-date information. In a typical RAG implementation, at pre-query time, the corpus is broken down into chunks, which are stored as vector embeddings. At query time, these chunks are searched and used to augment the user’s prompt. Several variants of RAG have been proposed over the years (Jiang et al., 2024; Cheng et al., 2024; Anantha et al., 2023) to address specific use cases and challenges.",
+        "RAG has helped reinforce the criticality of information retrieval (IR) as a vital component of modern NLP and AI pipelines. Despite this resurgence, much of the focus has been on enhancing the G (generation) component, often leaving advancements in the R (retrieval) aspect comparatively underexplored. Recently, some notable efforts have emerged to address this imbalance.",
+        "For example, Anthropic introduced contextual retrieval (ant, [n. d.]) where each chunk is augmented with additional context before embedding; this approach is claimed to reduce incorrect chunk retrieval rates by up to 67%. Similarly, recent works have explored prompt caching (Gim et al., 2024), a strategy to reuse previously retrieved or generated results to optimize latency and computation costs in iterative or repetitive query scenarios.",
+        "Our work aligns with this vein of ‘advancing R for G’, particularly focusing on improving the modeling of document chunks as they are embedded. One of our key insights is that documents can often be more effectively represented by the questions they can answer, rather than solely by their direct content. To this end, for each chunk, we propose generating a set of questions that the chunk is likely to answer, embedding these alongside the original content. We refer to such embeddings as Question-Oriented Text Embeddings (QuOTE). See Fig. 1 for how QuOTE works.",
+        "This paper makes the following contributions.",
+        "(1) We demonstrate that the idea of embedding (hypothetical) questions along with text chunks significantly enhances retrieval performance, particularly in scenarios where nuanced understanding of the content is required. This idea holds promise beyond RAG by opening up the possibility of question generation as a fundamental indexing strategy.",
+        "(2) We prioritize retrieval performance rather than generation quality in our evaluation, and conduct an exhaustive empirical analysis of QuOTE with multiple language models, several key datasets, a range of query workloads, and compare it versus other RAG benchmarks. This gives insight into specific regions of the configuration space where QuOTE performs best and future directions of research.",
+        "(3) Beyond empirical results, we characterize the features of RAG settings where (and why) QuOTE works, and how we can anticipate performance improvements prior to embarking on QuOTE-style indexing for given corpora."
+      ],
+      "subsections": []
+    },
+    "2. Related Work": {
+      "paragraphs": [
+        "Many studies have highlighted the impact of key design choices for the success of a RAG implementation (Şakar and Emekci, 2024; Rangan and Yin, 2024; Siriwardhana et al., 2023)."
+      ],
+      "subsections": [
+        {
+          "title": "2.1. Dense vs Sparse Retrievers",
+          "paragraphs": [
+            "The debate between dense and sparse retrievers continues into RAG research (Chen et al., 2021; Sciavolino et al., 2021). Dense retrievers, such as those based on vector embeddings, excel at capturing semantic similarity, making them particularly effective for nuanced queries. However, sparse retrievers like BM25 and TF-IDF continue to dominate in scenarios where explicit token matches, such as named entities, acronyms, or abbreviations, are critical to relevance. This distinction has led to hybrid approaches in many RAG systems, which combine dense and sparse retrievers. For example, a typical implementation involves first running a keyword-based sparse retrieval to gather an initial pool of relevant chunks, followed by a dense retrieval to refine the results."
+          ]
+        },
+        {
+          "title": "2.2. Retrievers vs Rerankers",
+          "paragraphs": [
+            "Many RAG systems employ a two-step pipeline: a fast retriever selects the top-k candidate chunks, and a reranker, typically a computationally intensive cross-encoder, reorders these candidates for final use. While rerankers generally improve the quality of retrieved results, recent research (Jacob et al., 2024) cautions against extending reranking to larger candidate sets. Beyond a certain threshold, performance tends to plateau and may even degrade, likely due to noise introduced in larger retrieval pools. These findings underscore the importance of balancing efficiency and effectiveness in the retrieval-reranking pipeline."
+          ]
+        },
+        {
+          "title": "2.3. Exact search vs Approximate Nearest Neighbors (ANN)",
+          "paragraphs": [
+            "Approximate nearest neighbor (ANN) techniques (Indyk and Motwani, 1998) have become the de facto standard for scalable dense retrieval due to their ability to handle large corpora efficiently. However, exact search methods, while computationally more demanding, offer greater precision in certain use cases, such as high-stakes QA tasks. Several studies (Xiong et al., 2020; Malkov et al., 2014) compare these approaches, highlighting trade-offs in latency, accuracy, and robustness to query variations. For instance, ANN methods may struggle with long-tail queries or datasets containing subtle semantic distinctions."
+          ]
+        },
+        {
+          "title": "2.4. Distractions vs Noise in RAG",
+          "paragraphs": [
+            "Cuconasu et al. (Cuconasu et al., 2024) study the performance of RAG for QA tasks in the presence of so-called distracting and noise documents. Distracting documents are those with high retrieval scores, but that do not contain the answer; noise documents are picked at random from the corpus. The interesting finding from this study was that while distracting documents lead to performance deterioration as expected, noise documents lead to improved performance, presumably due to better reliance on pretrained reasoning. However, these findings are somewhat questioned by recent work (Leto et al., 2024), which suggests that noise documents can degrade system reliability in certain settings, calling for further investigation."
+          ]
+        },
+        {
+          "title": "2.5. Real vs Hypothetical Embeddings",
+          "paragraphs": [
+            "Contextual retrieval techniques, such as Anthropic’s approach to augmenting chunks with additional information before embedding, have emerged as promising ways to reduce retrieval errors. Similarly, Hypothetical Document Embeddings (HyDE) (Gao et al., 2022) involve generating synthetic text based on the query and embedding it alongside real documents. These methods aim to capture query-specific nuances, resulting in more robust retrieval in open-domain and QA contexts. Our work builds on these approaches by leveraging question-based chunk representations for improved relevance."
+          ]
+        },
+        {
+          "title": "2.6. Supporting Asymmetric QA Tasks",
+          "paragraphs": [
+            "In many QA scenarios, particularly in customer support and enterprise search, there exists a fundamental asymmetry: user queries are often brief, while answers require detailed, structured information. RAG systems addressing this imbalance have incorporated techniques such as hierarchical retrieval (Liu et al., 2021), multi-hop reasoning (Mavi et al., 2022), and weighted retrieval pipelines (Khanda, 2024) to bridge this gap. Recent efforts in this domain include query-expansion strategies (Wang et al., 2023) and retrieval conditioning (Zamani et al., 2022) to better align user intent with document granularity."
+          ]
+        },
+        {
+          "title": "2.7. Neural Information Retrieval",
+          "paragraphs": [
+            "Neural information retrieval methods aim to model complex semantic relationships and contextual relevance more effectively than traditional approaches. While approaches like ColBERT (Khattab and Zaharia, 2020) and DPR (Reichman and Heck, 2024) have made significant strides in dense retrieval, they continue to struggle with nuanced information seeking behaviors, involving hierarchical relationships, managing distributed information across multiple documents, and dealing with context-dependent relevance ranking."
+          ]
+        },
+        {
+          "title": "2.8. End-to-End RAG Systems",
+          "paragraphs": [
+            "Fully integrated, end-to-end RAG systems (e.g., from companies like Vectorize.io) are becoming increasingly popular for tasks requiring seamless interaction between retrieval and generation. Recent work (Salemi and Zamani, 2024) has focused on optimizing these systems for efficiency, scalability, and robustness. End-to-end designs often integrate prompt caching, hybrid retrieval, and adaptive reranking to achieve state-of-the-art performance across diverse NLP tasks."
+          ]
+        }
+      ]
+    },
+    "3. QuOTE": {
+      "paragraphs": [
+        "QuOTE can be viewed in the lineage of query reformulation (Song and Zheng, 2024) and multi-hop reasoning (Li et al., 2023), but takes a unique perspective by focusing on question generation as a fundamental indexing strategy. As discussed earlier, the naive RAG approach can fail to capture the intent behind user queries, especially when queries are succinct (e.g., entity lookups) or require extracting specific details from a chunk. In QuOTE we transform each chunk of text into multiple (question + chunk) representations capturing a range of opportunities for retrieval. Note that each generated question (plus chunk) is then stored as a separate “document” or embedding in the vector database.",
+        "See Algorithm 1 for pseudocode to illustrate how QuOTE builds an index, and Algorithm 2 for how it is queried. We next describe key stages of the pipeline (see Fig. 1):"
+      ],
+      "subsections": [
+        {
+          "title": "3.1. Question Generation at Pre-Query Time",
+          "paragraphs": [
+            "We split the corpus into smaller passages (or chunks). For each chunk, we prompt an LLM to generate a set of questions that the chunk can answer. While question generation is a well studied topic in NLP (Heilman and Smith, 2009; Zhuang et al., 2023; Heilman and Smith, 2010). The quality and diversity of generated questions play a significant role in QuOTE’s effectiveness. We use an LLM with prompt engineering (see Section 5.1) to create a representative set of questions with specificity and coverage. By creating multiple question-based embeddings for each chunk, QuOTE better captures diverse user queries that reference the same text in different ways. If a user’s query is similar (semantically) to one of the chunk-generated questions, that chunk becomes more likely to rank highly, leading to more accurate retrieval."
+          ]
+        },
+        {
+          "title": "3.2. Embedding",
+          "paragraphs": [
+            "Instead of storing just the original chunk embedding, we store each generated question (along with the original chunk) in the vector database. In Section 5.2 we demonstrate that the performance of QuOTE is agnostic to the choice of embedding model."
+          ]
+        },
+        {
+          "title": "3.3. Retrieval and Deduplication at Query Time",
+          "paragraphs": [
+            "During query time, multiple retrieved “documents” often reference the same underlying chunk. Hence, a deduplication step is necessary to ensure we select the top-k distinct chunks, avoiding wasted slots. To this purpose we ‘over-retrieve’ top-k×Mk\\times M results (for some value of MM) from the question-based embeddings. (Note that this de-duplication step is unique to the QuOTE pipeline and is not a feature in classical RAG pipelines.)"
+          ]
+        }
+      ]
+    },
+    "4. Datasets and Metrics": {
+      "paragraphs": [
+        "While there exist a variety of datasets for RAG evaluation (see Table 1) not all are geared toward evaluating retrieval performance as distinct from generation, which is our focus here. For instance, QA datasets where we are evaluated against the quality of the generated answer, or where the original ground truth chunks are not available, do not support assessing the performance of QuOTE in helping improve retrieval of relevant chunks. Accordingly, we focus on three benchmark datasets commonly used for question answering: Natural Questions (NQ) (Kwiatkowski et al., 2019), SQuAD (Rajpurkar, 2016; Rajpurkar et al., 2018), and MultiHop-RAG (Tang and Yang, 2024). These datasets vary in complexity, domain coverage, and the style of questions, providing a broad platform to test the retrieval capabilities of our approach."
+      ],
+      "subsections": [
+        {
+          "title": "4.1. Natural Questions (NQ)",
+          "paragraphs": [
+            "The Natural Questions (NQ) dataset (Kwiatkowski et al., 2019) is a large-scale benchmark, with questions directly sourced from real user queries and answers keyed to Wikipedia articles. The dataset is split into approximately 307k training examples and roughly 7.8k each in the development and test sets. For each query, the dataset provides the relevant passages (long answer) and the precise phrases or entities (short answer) where the answer resides.",
+            "One non-trivial issue pertains to multiple, highly similar passages in the same article. For example, consider passages about the song “’Heroes”’ by David Bowie from the Wikipedia article titled “Heroes (David Bowie song)”. This article has two passages that are nearly identical, differing only in minor wording (e.g., “in the UK” vs. “in the United Kingdom”). These slight variations do not change the factual content but result in multiple, nearly duplicate contexts.",
+            "Such minor differences unnecessarily fragment the dataset into multiple contexts, each labeled as distinct. This discrepancy complicates retrieval-based evaluations because systems are penalized if they return an almost-correct chunk that differs by only a few words from the one labeled as ground-truth.",
+            "To address this issue, we merge highly similar chunks based on a text-similarity threshold, combining their respective questions into a single context group. This merging strategy reduces noise and ensures that semantically equivalent passages (or chunks) are treated as one, allowing retrieval mechanisms to focus on true distinctions in content rather than trivial rephrasings."
+          ]
+        },
+        {
+          "title": "4.2. SQuAD",
+          "paragraphs": [
+            "The Stanford Question Answering Dataset (SQuAD) (Rajpurkar, 2016) is widely recognized as a benchmark for reading comprehension and extractive QA. Each question is associated with an exact answer span in the corresponding article, ideal for our extractive evaluation purposes. "
+          ]
+        },
+        {
+          "title": "4.3. MultiHop-RAG",
+          "paragraphs": [
+            "MultiHop-RAG (Tang and Yang, 2024) is specifically designed to test multi-hop question answering. Unlike SQuAD and NQ, which pair each question with a single relevant paragraph or article, MultiHop-RAG associates multiple ground-truth documents with each query. For instance, a query such as: “Which company is being scrutinized by multiple news outlets for anticompetitive practices and is also suspected of foul play by individuals in other reports?” will require cross-referencing two or more articles to gather the necessary evidence."
+          ]
+        },
+        {
+          "title": "4.4. Evaluation Metrics",
+          "paragraphs": [
+            "For Natural Questions (NQ) and SQuAD, each query typically has a single correct Wikipedia article and a specific paragraph in that article as ground truth. We use the following metrics aimed at capturing whether QuOTE can precisely isolate the article along with the correct answer span.",
+            "• Context Accuracy (C@k): The fraction of queries for which the correct paragraph-level context is retrieved within the top-kk results. If a system retrieves the exact paragraph containing the short answer at any rank ≤k\\leq k, we consider it a successful retrieval.",
+            "• Title Accuracy (T@k): The fraction of queries for which the correct article-level title is found among the top-kk results. This is a coarser (i.e., easier) measure compared to paragraph-level context accuracy but still offers insight into whether the system can identify the right document (for instance, the correct Wikipedia page).",
+            "Context Accuracy (C@k): The fraction of queries for which the correct paragraph-level context is retrieved within the top-kk results. If a system retrieves the exact paragraph containing the short answer at any rank ≤k\\leq k, we consider it a successful retrieval.",
+            "Title Accuracy (T@k): The fraction of queries for which the correct article-level title is found among the top-kk results. This is a coarser (i.e., easier) measure compared to paragraph-level context accuracy but still offers insight into whether the system can identify the right document (for instance, the correct Wikipedia page).",
+            "MultiHop-RAG queries can reference multiple relevant documents. Consequently, we employ:",
+            "• Full Match Accuracy (Full@k): All evidence pieces required by the query must be found within the top-kk retrieved results. If even one piece of critical evidence is missing, the query is marked as a failure under this measure.",
+            "• Partial Match Accuracy (Part@k): Because missing one or more documents can still lead to a partially correct answer, we measure the percentage of required evidence found in the top-kk results. This measure highlights how retrieval errors degrade performance. For instance, a system might retrieve 2 of the 3 needed documents (66.7% partial match), which can be useful for partial downstream reasoning but might not yield the fully correct answer.",
+            "Full Match Accuracy (Full@k): All evidence pieces required by the query must be found within the top-kk retrieved results. If even one piece of critical evidence is missing, the query is marked as a failure under this measure.",
+            "Partial Match Accuracy (Part@k): Because missing one or more documents can still lead to a partially correct answer, we measure the percentage of required evidence found in the top-kk results. This measure highlights how retrieval errors degrade performance. For instance, a system might retrieve 2 of the 3 needed documents (66.7% partial match), which can be useful for partial downstream reasoning but might not yield the fully correct answer.",
+            "This two-level evaluation (full vs. partial) captures the difficulty of multi-hop retrieval where multiple documents must be combined to arrive at a final answer."
+          ]
+        }
+      ]
+    },
+    "5. Evaluation": {
+      "paragraphs": [
+        "We conduct a comprehensive evaluation to answer the below questions:",
+        "(1) (Section 5.1) Is QuOTE able to automatically generate questions that improve the performance of retrieval-augmented generation?",
+        "(2) (Section 5.2) How sensitive is QuOTE performance to the choice of embedding model?",
+        "(3) (Section 5.3) How many questions must be generated for QuOTE to be effective?",
+        "(4) (Section 5.4) How does QuOTE compare to HyDE, the state-of-the-art approach to query enrichment?",
+        "(5) (Section 5.5) How negligible or significant is QuOTE’s deduplication overhead?",
+        "(6) (Section 5.6) Because QuoTE uses an LLM for question generation as well as for answer generation, can we employ a cheaper model for question generation and does this significantly affect performance?",
+        "(7) (Section 5.7) Can we characterize the properties of contexts for which QuOTE has selective superiority?"
+      ],
+      "subsections": [
+        {
+          "title": "5.1. Effect of Different Prompts to Generate Questions",
+          "paragraphs": [
+            "A central consideration for QuOTE-style indexing is how the prompt itself influences the quality of generated questions. We compare two main prompt templates: We compare the performance of both these prompts with a naive RAG implementation. As Table 3 shows, the Complex Prompt achieves the highest Top-1 Context Accuracy overall. Title Accuracy metrics remain near-perfect across all methods beyond Top-1, indicating that differences among prompts are most pronounced at the paragraph selection level. These observations suggest that more advanced prompting yields modest but meaningful improvements in precisely identifying relevant questions for specific passages.",
+            "• Basic Prompt: Instructs the model to “Generate enough questions to properly capture all the important parts of the text”. The questions are short, direct, and do not include advanced reasoning cues.",
+            "• Complex Prompt: Adds instructions for more detailed or multi-hop reasoning. In MultiHop-RAG, for example, the complex prompt explicitly requests multi-hop questions referencing multiple pieces of information. In SQuAD or NQ, it encourages short factual queries without referencing the text directly, thereby aiming for more robust coverage of the chunk’s content.",
+            "Basic Prompt: Instructs the model to “Generate enough questions to properly capture all the important parts of the text”. The questions are short, direct, and do not include advanced reasoning cues.",
+            "Complex Prompt: Adds instructions for more detailed or multi-hop reasoning. In MultiHop-RAG, for example, the complex prompt explicitly requests multi-hop questions referencing multiple pieces of information. In SQuAD or NQ, it encourages short factual queries without referencing the text directly, thereby aiming for more robust coverage of the chunk’s content."
+          ]
+        },
+        {
+          "title": "5.2. QuOTE Performance vis-a-vis Embedding Model",
+          "paragraphs": [
+            "Table 4 compares Naive vs. QuOTE modes on three datasets—SQuAD (single-hop), NQ (single-hop), and MultiHop-RAG (multi-hop) across a range of datasets. We report Top-kk context/title accuracy for SQuAD and NQ, and full/partial match for MultiHop. Despite large differences in baseline quality (e.g., jinaai vs. WhereIsAI vs. Alibaba), note that QuOTE generally improves retrieval metrics (especially Top-1 Context Accuracy or Full@20) regardless of the underlying embedding model. QuOTE often raises Top-1 Context Accuracy by 5–17 points on SQuAD and 1–3 points on NQ, and can improve Full@20 by up to several points in MultiHop-RAG. MultiHop-RAG remains challenging, as even large gains may yield relatively modest absolute numbers (e.g., 9% or 10% full match at k=5k=5). However, QuOTE still outperforms or closely matches a naive approach across all embedding models."
+          ]
+        },
+        {
+          "title": "5.3. Effect of Number of Questions",
+          "paragraphs": [
+            "One key factor in question-oriented retrieval is deciding how many questions an LLM should generate for each chunk of text. Generating too few may overlook critical details, while generating too many can introduce redundancy or noise. We therefore tested multiple settings across our three datasets (Natural Questions, SQuAD, and MultiHop-RAG), varying the number of questions (1, 5, 10, 15, 20, 30) and also including an ‘LLM decides’ setting. In each case, we measure how Context Accuracy and Title Accuracy changes, or in the case of MultiHop-RAG, how Full Match and Partial Match scores are affected.",
+            "To systematically investigate the effect of varying the number of generated questions, we parameterize our LLM prompt to either generate:",
+            "• Fixed # Questions: If a desired quantity num_questions is provided, the prompt includes a directive such as:",
+            "• An LLM Decides # Questions: Here, the LLM is simply instructed to:",
+            "Fixed # Questions: If a desired quantity num_questions is provided, the prompt includes a directive such as:",
+            "An LLM Decides # Questions: Here, the LLM is simply instructed to:",
+            "Table 5 shows that as the number of generated questions per chunk increases from 5 to around 10 or 20, Top-1 Context Accuracy rises from about 73% to as high as 76%, and Top-5 surpasses 97% in most settings. Title Accuracy also remains consistently high, crossing 99% even at Top-1 for 10+ questions. Interestingly, letting the LLM decide how many questions to generate (“LLM Decides”) yields a strong Top-1 Context Accuracy of 76.17% and Top-1 Title Accuracy of 99.30%.",
+            "• Naive vs. 10 questions. A naive approach (66.60% Top-1 Context) significantly lags behind generating 10 questions (74.91% Top-1), showing that question augmentation dramatically helps correct chunk retrieval.",
+            "• Diminishing returns. Beyond 10–15 questions, the gains in Top-1 Context Accuracy plateau around 74–76%. For instance, 20 questions achieve 76.66%, comparable to 10 questions at 74.91%.",
+            "Naive vs. 10 questions. A naive approach (66.60% Top-1 Context) significantly lags behind generating 10 questions (74.91% Top-1), showing that question augmentation dramatically helps correct chunk retrieval.",
+            "Diminishing returns. Beyond 10–15 questions, the gains in Top-1 Context Accuracy plateau around 74–76%. For instance, 20 questions achieve 76.66%, comparable to 10 questions at 74.91%.",
+            "We observe a similar pattern in Natural Questions (Table 5). The naive approach (and letting the LLM decide automatically) both hover around 61–64% Top-1 Context Accuracy. Generating 15 or 20 questions per chunk can push Top-1 Context Accuracy slightly higher, surpassing 64%. In general, Title Accuracy improves more noticeably, approaching or exceeding 79% at Top-1 when 15+ questions are used.",
+            "• Moderate Gains. Unlike SQuAD, the gains from adding more questions in NQ are more modest (e.g., from 61% to 65% in Top-1 Context Accuracy).",
+            "• Title Accuracy. By contrast, Title Accuracy climbs above 79% at Top-1 (with 15–20 questions), indicating that question generation consistently helps the system find the right article, even if the precise paragraph-level retrieval remains challenging.",
+            "Moderate Gains. Unlike SQuAD, the gains from adding more questions in NQ are more modest (e.g., from 61% to 65% in Top-1 Context Accuracy).",
+            "Title Accuracy. By contrast, Title Accuracy climbs above 79% at Top-1 (with 15–20 questions), indicating that question generation consistently helps the system find the right article, even if the precise paragraph-level retrieval remains challenging.",
+            "Because MultiHop-RAG tasks require retrieving all relevant documents, we track both Full Match Accuracy and Partial Match Statistics. As seen in Table 5:",
+            "• Full Match Accuracy. Baseline naive retrieval (LLM Naive) achieves only about 10% at k=5k=5 and 37% at k=20k=20. Using question generation with 5 or 10 questions can improve the k=5k=5 Full Match from 10–12% to 15–16%, and from 19% to 24–25% at k=10k=10. Even at higher kk values (15 or 20), best-case Full Match remains in the 30–35% range, underscoring the challenge of truly multi-hop retrieval. Interestingly, letting the LLM decide (without specifying a question count) yields 18% at k=5k=5 and 35% at k=20k=20.",
+            "• Partial Match. We also evaluate the average percentage of required evidence retrieved. Generating around 5–20 questions consistently pushes partial match rates above 50–60% at k=15k=15 or k=20k=20, compared to 35–45% with naive retrieval. This indicates that even when the system does not achieve a complete full match, it still locates some of the essential documents for partial reasoning.",
+            "Full Match Accuracy. Baseline naive retrieval (LLM Naive) achieves only about 10% at k=5k=5 and 37% at k=20k=20. Using question generation with 5 or 10 questions can improve the k=5k=5 Full Match from 10–12% to 15–16%, and from 19% to 24–25% at k=10k=10. Even at higher kk values (15 or 20), best-case Full Match remains in the 30–35% range, underscoring the challenge of truly multi-hop retrieval. Interestingly, letting the LLM decide (without specifying a question count) yields 18% at k=5k=5 and 35% at k=20k=20.",
+            "Partial Match. We also evaluate the average percentage of required evidence retrieved. Generating around 5–20 questions consistently pushes partial match rates above 50–60% at k=15k=15 or k=20k=20, compared to 35–45% with naive retrieval. This indicates that even when the system does not achieve a complete full match, it still locates some of the essential documents for partial reasoning.",
+            "These findings confirm that, while multi-hop queries remain significantly harder, carefully chosen question sets (i.e., 10–20 questions) yield noticeable improvements over a naive approach.",
+            "• Generating more questions typically improves retrieval performance, but returns diminish beyond about 10–15 questions per chunk.",
+            "• Even a moderate number of questions (5–10) can outperform naive retrieval by a wide margin in both single-hop (NQ, SQuAD) and multi-hop (RAG) settings.",
+            "• In multi-hop scenarios, partial match is also improved by question generation, indicating that the system at least retrieves some relevant documents more reliably.",
+            "Generating more questions typically improves retrieval performance, but returns diminish beyond about 10–15 questions per chunk.",
+            "Even a moderate number of questions (5–10) can outperform naive retrieval by a wide margin in both single-hop (NQ, SQuAD) and multi-hop (RAG) settings.",
+            "In multi-hop scenarios, partial match is also improved by question generation, indicating that the system at least retrieves some relevant documents more reliably.",
+            "Overall, most datasets show a sweet spot around 10–15 questions, balancing coverage with potential redundancy. Although letting the LLM fully decide the number of questions can yield strong results in certain cases (e.g., SQuAD), the performance varies by dataset. Consequently, the optimal question count appears to depend on domain complexity and the specifics of the QA task."
+          ]
+        },
+        {
+          "title": "SQuAD",
+          "paragraphs": [
+            "Table 5 shows that as the number of generated questions per chunk increases from 5 to around 10 or 20, Top-1 Context Accuracy rises from about 73% to as high as 76%, and Top-5 surpasses 97% in most settings. Title Accuracy also remains consistently high, crossing 99% even at Top-1 for 10+ questions. Interestingly, letting the LLM decide how many questions to generate (“LLM Decides”) yields a strong Top-1 Context Accuracy of 76.17% and Top-1 Title Accuracy of 99.30%.",
+            "• Naive vs. 10 questions. A naive approach (66.60% Top-1 Context) significantly lags behind generating 10 questions (74.91% Top-1), showing that question augmentation dramatically helps correct chunk retrieval.",
+            "• Diminishing returns. Beyond 10–15 questions, the gains in Top-1 Context Accuracy plateau around 74–76%. For instance, 20 questions achieve 76.66%, comparable to 10 questions at 74.91%.",
+            "Naive vs. 10 questions. A naive approach (66.60% Top-1 Context) significantly lags behind generating 10 questions (74.91% Top-1), showing that question augmentation dramatically helps correct chunk retrieval.",
+            "Diminishing returns. Beyond 10–15 questions, the gains in Top-1 Context Accuracy plateau around 74–76%. For instance, 20 questions achieve 76.66%, comparable to 10 questions at 74.91%."
+          ]
+        },
+        {
+          "title": "Natural Questions (NQ)",
+          "paragraphs": [
+            "We observe a similar pattern in Natural Questions (Table 5). The naive approach (and letting the LLM decide automatically) both hover around 61–64% Top-1 Context Accuracy. Generating 15 or 20 questions per chunk can push Top-1 Context Accuracy slightly higher, surpassing 64%. In general, Title Accuracy improves more noticeably, approaching or exceeding 79% at Top-1 when 15+ questions are used.",
+            "• Moderate Gains. Unlike SQuAD, the gains from adding more questions in NQ are more modest (e.g., from 61% to 65% in Top-1 Context Accuracy).",
+            "• Title Accuracy. By contrast, Title Accuracy climbs above 79% at Top-1 (with 15–20 questions), indicating that question generation consistently helps the system find the right article, even if the precise paragraph-level retrieval remains challenging.",
+            "Moderate Gains. Unlike SQuAD, the gains from adding more questions in NQ are more modest (e.g., from 61% to 65% in Top-1 Context Accuracy).",
+            "Title Accuracy. By contrast, Title Accuracy climbs above 79% at Top-1 (with 15–20 questions), indicating that question generation consistently helps the system find the right article, even if the precise paragraph-level retrieval remains challenging."
+          ]
+        },
+        {
+          "title": "MultiHop-RAG",
+          "paragraphs": [
+            "Because MultiHop-RAG tasks require retrieving all relevant documents, we track both Full Match Accuracy and Partial Match Statistics. As seen in Table 5:",
+            "• Full Match Accuracy. Baseline naive retrieval (LLM Naive) achieves only about 10% at k=5k=5 and 37% at k=20k=20. Using question generation with 5 or 10 questions can improve the k=5k=5 Full Match from 10–12% to 15–16%, and from 19% to 24–25% at k=10k=10. Even at higher kk values (15 or 20), best-case Full Match remains in the 30–35% range, underscoring the challenge of truly multi-hop retrieval. Interestingly, letting the LLM decide (without specifying a question count) yields 18% at k=5k=5 and 35% at k=20k=20.",
+            "• Partial Match. We also evaluate the average percentage of required evidence retrieved. Generating around 5–20 questions consistently pushes partial match rates above 50–60% at k=15k=15 or k=20k=20, compared to 35–45% with naive retrieval. This indicates that even when the system does not achieve a complete full match, it still locates some of the essential documents for partial reasoning.",
+            "Full Match Accuracy. Baseline naive retrieval (LLM Naive) achieves only about 10% at k=5k=5 and 37% at k=20k=20. Using question generation with 5 or 10 questions can improve the k=5k=5 Full Match from 10–12% to 15–16%, and from 19% to 24–25% at k=10k=10. Even at higher kk values (15 or 20), best-case Full Match remains in the 30–35% range, underscoring the challenge of truly multi-hop retrieval. Interestingly, letting the LLM decide (without specifying a question count) yields 18% at k=5k=5 and 35% at k=20k=20.",
+            "Partial Match. We also evaluate the average percentage of required evidence retrieved. Generating around 5–20 questions consistently pushes partial match rates above 50–60% at k=15k=15 or k=20k=20, compared to 35–45% with naive retrieval. This indicates that even when the system does not achieve a complete full match, it still locates some of the essential documents for partial reasoning.",
+            "These findings confirm that, while multi-hop queries remain significantly harder, carefully chosen question sets (i.e., 10–20 questions) yield noticeable improvements over a naive approach.",
+            "• Generating more questions typically improves retrieval performance, but returns diminish beyond about 10–15 questions per chunk.",
+            "• Even a moderate number of questions (5–10) can outperform naive retrieval by a wide margin in both single-hop (NQ, SQuAD) and multi-hop (RAG) settings.",
+            "• In multi-hop scenarios, partial match is also improved by question generation, indicating that the system at least retrieves some relevant documents more reliably.",
+            "Generating more questions typically improves retrieval performance, but returns diminish beyond about 10–15 questions per chunk.",
+            "Even a moderate number of questions (5–10) can outperform naive retrieval by a wide margin in both single-hop (NQ, SQuAD) and multi-hop (RAG) settings.",
+            "In multi-hop scenarios, partial match is also improved by question generation, indicating that the system at least retrieves some relevant documents more reliably.",
+            "Overall, most datasets show a sweet spot around 10–15 questions, balancing coverage with potential redundancy. Although letting the LLM fully decide the number of questions can yield strong results in certain cases (e.g., SQuAD), the performance varies by dataset. Consequently, the optimal question count appears to depend on domain complexity and the specifics of the QA task."
+          ]
+        },
+        {
+          "title": "5.4. Comparison with HyDE",
+          "paragraphs": [
+            "A popular technique for query enrichment is HyDE, which generates a hypothetical document at query time before embedding it and retrieving relevant chunks. Although HyDE can improve coverage, it requires an LLM call for each incoming query, introducing significant latency. In contrast, QuOTE moves question generation to index time, incurring a one-time cost but speeding up the overall querying process. We compare Naive RAG (no query transformations), HyDE, and QuOTE on all three benchmarks. For SQuAD and NQ we showcase Top-1 Context Accuracy and for MultiHop-RAG (multi-hop), because queries need multiple pieces of evidence, we focus on Full Match at k=20k=20.",
+            "Table 6 shows that while HyDE sometimes boosts accuracy compared to a Naive approach, its per-query LLM calls lead to a drastic rise in average retrieval time (+𝟏​–​2​ seconds\\mathbf{+1}\\text{--}2\\text{ seconds} per query). By contrast, QuOTE often equals or surpasses Naive’s retrieval accuracy with only a modest query-time overhead, as most of its work is done in the indexing phase.",
+            "Overall, these findings illustrate that while HyDE can be valuable in certain multi-hop or complex queries, it incurs a substantial latency cost. In fact, HyDE can be viewed as primarily a test-time compute innovation. QuOTE offers significant advantages: higher retrieval accuracy than Naive in most cases, a one-time, amortized cost for question generation, and dramatic query latency improvements over HyDE."
+          ]
+        },
+        {
+          "title": "5.5. Effect of Deduplication",
+          "paragraphs": [
+            "Deduplication is essential in QuOTE because each chunk can be indexed multiple times—once per generated question—leading to redundant matches at query time. Again, We compare Naive RAG, HyDE and QuOTE. When k=1k=1, deduplication is unnecessary, as only one chunk is retrieved. However, when k∈{5,10,20}k\\in\\{5,10,20\\}, QuOTE systems fetch more than kk results from the vector index (e.g., k×5k\\times 5) and then deduplicate by original chunk text. This extra step introduces a small overhead, but we find that QuOTE remains much faster than HyDE (which invokes an LLM at each query) and substantially outperforms Naive in Top-1 Context Accuracy.",
+            "Table 7 shows a head-to-head comparison of the three approaches on a SQuAD subset. Each approach processes 923 queries for all benchmarks, we see that Naive is the fastest and QuOTE the most accurate. The added overhead incurred by QuOTE over Naive small relative to the cost of per-query generation in HyDE. Hence, QuOTE obtains both superior accuracy and faster query times than HyDE, while incurring a one-time cost for indexing. In settings where repeated queries are common, paying a higher index-time cost can significantly improve responsiveness and end-user experience."
+          ]
+        },
+        {
+          "title": "5.6. Can we use a Cheaper LLM for Question Generation?",
+          "paragraphs": [
+            "An important practical consideration in RAG-based pipelines is whether cheaper, smaller models can generate effective questions for indexing, or if premium, large-scale LLMs (e.g., GPT-4) are necessary. To investigate, we experimented with a variety of local language models (e.g., gemma2-9b, llama3-8b, and qwen2.5-7b), as well as gpt-4o-mini, gpt-4o, and a baseline Naive approach that relies solely on the chunk text without question generation. All runs were conducted on a SQuAD-based subset. Table 8 summarizes the results in terms of Top-kk Context Accuracy and Top-kk Title Accuracy.",
+            "We observe that even smaller models such as llama3.2-3b achieve over 70% Top-1 Context Accuracy—only a few percentage points behind the more capable gpt-4o-mini or gpt-4o models. For nearly all models, Top-1 Title Accuracy remains around or above 98%, indicating that the question generation step—regardless of the model size—helps QuOTE hone in on the correct article. Once we allow for more retrieved chunks (Top-10 or Top-20), nearly all approaches exceed 98–99% Context Accuracy. This suggests that question augmentation significantly reduces misalignment with relevant passages. The main trade-off is that gpt-4o and gpt-4o-mini exhibit slightly higher Top-1 Context Accuracy (up to ∼76%\\sim 76\\%) compared to cheaper models (70–74%); however, local LLMs still offer near-parity in mid- to high-kk retrieval settings with notably lower inference cost."
+          ]
+        },
+        {
+          "title": "5.7. Effect of the Number of Contexts on Retrieval Accuracy",
+          "paragraphs": [
+            "Analysis of the impact of the number of contexts on retrieval performance reveals distinct patterns between SQuAD and NQ, reflecting their fundamentally different dataset characteristics.",
+            "SQuAD exhibits a rich context structure, with 442 titles having a mean of 42.74 contexts per title (median=36). This substantial density, ranging from 5 to 149 contexts per title, creates significant potential for confusion with naive retrieval approaches, particularly when similar passages exist within the same document.",
+            "In stark contrast, NQ presents a much sparser context landscape. Across its 48,525 titles, NQ maintains a mean of just 1.52 contexts per title, with a median of 1, indicating that most titles have unique contexts.",
+            "These structural differences manifest clearly in QuOTE’s relative performance gains (Figure 4). For SQuAD, we observe a steady increase in QuOTE’s advantage as the number of contexts grows. Starting from around 8% improvement in a small number of contexts, it increases consistently to about 16% at moderate number of contexts, and continues to improve to exceed the improvement 20% for a larger number of contexts. This steady improvement trend aligns with the increasing challenge of disambiguating similar contexts in longer documents.",
+            "NQ shows a more constrained but generally positive pattern, reflecting its simpler context structure. The improvements start at about 6% for a small number of contexts and reach peaks of approximately 18% for a moderate number of contexts. Although the magnitude of the improvements varies, QuOTE consistently enhances the retrieval accuracy in most contexts, although its impact is more variable than in SQuAD.",
+            "These insights demonstrate how dataset characteristics fundamentally influence QuOTE’s effectiveness. For collections with many contexts per document like SQuAD, QuOTE provides increasingly valuable disambiguation as document length grows. For collections like NQ where most documents contain just a single relevant chunk, QuOTE still provides consistent benefits, though the magnitude varies with the number of contexts."
+          ]
+        }
+      ]
+    },
+    "6. Discussion": {
+      "paragraphs": [
+        "This work has demonstrated how the use of questions to augment representations of documents can yield significant improvement in information retrieval for RAG applications. The need for deduplication introduced by our approach does not incur a significant overhead and can instead improve retrieval quality across a range of benchmarks.",
+        "There are several possible directions of future work. One promising direction is the development of a self-improving indexing strategy, possibly with an LLM fine-tuning approach, that adapts over time. Specifically, we could monitor user queries and their corresponding feedback (e.g., whether the user found the retrieved context helpful) and selectively ingest new or corrected query–context pairs into the index.",
+        "A second direction of future research involves developing prompt optimization frameworks (e.g., through automated prompt search or via reinforcement learning) to improve question-generation quality. By systematically tuning prompts, we may generate more precise and context-rich questions for each chunk.",
+        "Finally, we can imagine embedding some documents as-is and others with our augmented questions, developing a hybrid approach to RAG. To support the design of such systems, we intend to explore the development of scaling laws w.r.t. all the parameters studied here. "
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {},
+  "references": [
+    "(1)",
+    "ant ([n. d.]) [n. d.]. Anthropic Contextual Retrieval. https://www.anthropic.com/news/contextual-retrieval.",
+    "Anantha et al. (2023) Raviteja Anantha, Tharun Bethi, Danil Vodianik, and Srinivas Chappidi. 2023. Context tuning for retrieval augmented generation. arXiv preprint arXiv:2312.05708 (2023).",
+    "Chen et al. (2021) Xilun Chen, Kushal Lakhotia, Barlas Oğuz, Anchit Gupta, Patrick Lewis, Stan Peshterliev, Yashar Mehdad, Sonal Gupta, and Wen-tau Yih. 2021. Salient phrase aware dense retrieval: can a dense retriever imitate a sparse one? arXiv preprint arXiv:2110.06918 (2021).",
+    "Cheng et al. (2024) Xin Cheng, Xun Wang, Xingxing Zhang, Tao Ge, Si-Qing Chen, Furu Wei, Huishuai Zhang, and Dongyan Zhao. 2024. xRAG: Extreme Context Compression for Retrieval-augmented Generation with One Token. arXiv preprint arXiv:2405.13792 (2024).",
+    "Cuconasu et al. (2024) Florin Cuconasu, Giovanni Trappolini, Federico Siciliano, Simone Filice, Cesare Campagnano, Yoelle Maarek, Nicola Tonellotto, and Fabrizio Silvestri. 2024. The power of noise: Redefining retrieval for rag systems. In Proceedings of the 47th International ACM SIGIR Conference on Research and Development in Information Retrieval. 719–729.",
+    "Fan et al. (2019) Angela Fan, Yacine Jernite, Ethan Perez, David Grangier, Jason Weston, and Michael Auli. 2019. ELI5: Long form question answering. arXiv preprint arXiv:1907.09190 (2019).",
+    "Gao et al. (2022) Luyu Gao, Xueguang Ma, Jimmy Lin, and Jamie Callan. 2022. Precise Zero-Shot Dense Retrieval without Relevance Labels. arXiv preprint arXiv:2212.10496 (2022).",
+    "Gim et al. (2024) In Gim, Guojun Chen, Seung-seob Lee, Nikhil Sarda, Anurag Khandelwal, and Lin Zhong. 2024. Prompt cache: Modular attention reuse for low-latency inference. Proceedings of Machine Learning and Systems 6 (2024), 325–338.",
+    "Heilman and Smith (2009) Michael Heilman and Noah A. Smith. 2009. Ranking Automatically Generated Questions as a Shared Task. In Proceedings of the AIED Workshop on Question Generation. Brighton, UK.",
+    "Heilman and Smith (2010) Michael Heilman and Noah A. Smith. 2010. Good Question! Statistical Ranking for Question Generation. In Proceedings of the North American Chapter of the Association for Computational Linguistics (NAACL). Los Angeles, CA.",
+    "Indyk and Motwani (1998) Piotr Indyk and Rajeev Motwani. 1998. Approximate nearest neighbors: towards removing the curse of dimensionality. In Proceedings of the thirtieth annual ACM symposium on Theory of computing. 604–613.",
+    "Jacob et al. (2024) Mathew Jacob, Erik Lindgren, Matei Zaharia, Michael Carbin, Omar Khattab, and Andrew Drozdov. 2024. Drowning in Documents: Consequences of Scaling Reranker Inference. arXiv preprint arXiv:2411.11767 (2024).",
+    "Jiang et al. (2024) Ziyan Jiang, Xueguang Ma, and Wenhu Chen. 2024. Longrag: Enhancing retrieval-augmented generation with long-context llms. arXiv preprint arXiv:2406.15319 (2024).",
+    "Joshi et al. (2017) Mandar Joshi, Eunsol Choi, Daniel S Weld, and Luke Zettlemoyer. 2017. Triviaqa: A large scale distantly supervised challenge dataset for reading comprehension. arXiv preprint arXiv:1705.03551 (2017).",
+    "Khanda (2024) Rajat Khanda. 2024. Agentic AI-Driven Technical Troubleshooting for Enterprise Systems: A Novel Weighted Retrieval-Augmented Generation Paradigm. arXiv preprint arXiv:2412.12006 (2024).",
+    "Khattab and Zaharia (2020) Omar Khattab and Matei Zaharia. 2020. Colbert: Efficient and effective passage search via contextualized late interaction over bert. In Proceedings of the 43rd International ACM SIGIR conference on research and development in Information Retrieval. 39–48.",
+    "Kwiatkowski et al. (2019) Tom Kwiatkowski, Jennimaria Palomaki, Olivia Redfield, Michael Collins, Ankur Parikh, Chris Alberti, Danielle Epstein, Illia Polosukhin, Jacob Devlin, Kenton Lee, et al. 2019. Natural questions: a benchmark for question answering research. Transactions of the Association for Computational Linguistics 7 (2019), 453–466.",
+    "Leto et al. (2024) Alexandria Leto, Cecilia Aguerrebere, Ishwar Bhati, Ted Willke, Mariano Tepper, and Vy Ai Vo. 2024. Toward Optimal Search and Retrieval for RAG. arXiv preprint arXiv:2411.07396 (2024).",
+    "Li et al. (2023) Jiawei Li, Mucheng Ren, Yang Gao, and Yizhe Yang. 2023. Ask to Understand: Question Generation for Multi-hop Question Answering. In China National Conference on Chinese Computational Linguistics. Springer, 19–36.",
+    "Liu et al. (2021) Ye Liu, Kazuma Hashimoto, Yingbo Zhou, Semih Yavuz, Caiming Xiong, and Philip S Yu. 2021. Dense hierarchical retrieval for open-domain question answering. arXiv preprint arXiv:2110.15439 (2021).",
+    "Malkov et al. (2014) Yury Malkov, Alexander Ponomarenko, Andrey Logvinov, and Vladimir Krylov. 2014. Approximate nearest neighbor algorithm based on navigable small world graphs. Information Systems 45 (2014), 61–68.",
+    "Mavi et al. (2022) Vaibhav Mavi, Anubhav Jangra, and Adam Jatowt. 2022. Multi-hop Question Answering. arXiv preprint arXiv:2204.09140 (2022). https://doi.org/10.48550/arXiv.2204.09140 Published at Foundations and Trends in Information Retrieval.",
+    "Rajpurkar (2016) P Rajpurkar. 2016. Squad: 100,000+ questions for machine comprehension of text. arXiv preprint arXiv:1606.05250 (2016).",
+    "Rajpurkar et al. (2018) Pranav Rajpurkar, Robin Jia, and Percy Liang. 2018. Know what you don’t know: Unanswerable questions for SQuAD. arXiv preprint arXiv:1806.03822 (2018).",
+    "Rangan and Yin (2024) Keshav Rangan and Yiqiao Yin. 2024. A fine-tuning enhanced RAG system with quantized influence measure as AI judge. Scientific Reports 14, 1 (2024), 27446.",
+    "Reichman and Heck (2024) Benjamin Reichman and Larry Heck. 2024. Dense Passage Retrieval: Is it Retrieving?. In Findings of the Association for Computational Linguistics: EMNLP 2024. 13540–13553.",
+    "Şakar and Emekci (2024) Tolga Şakar and Hakan Emekci. 2024. Maximizing RAG efficiency: A comparative analysis of RAG methods. Natural Language Processing (2024), 1–25.",
+    "Salemi and Zamani (2024) Alireza Salemi and Hamed Zamani. 2024. Evaluating Retrieval Quality in Retrieval-Augmented Generation. In Proceedings of the 47th International ACM SIGIR Conference on Research and Development in Information Retrieval (Washington DC, USA) (SIGIR ’24). Association for Computing Machinery, New York, NY, USA, 2395–2400. https://doi.org/10.1145/3626772.3657957",
+    "Schulz et al. (2017) Hannes Schulz, Jeremie Zumer, Layla El Asri, and Shikhar Sharma. 2017. A frame tracking model for memory-enhanced dialogue systems. arXiv preprint arXiv:1706.01690 (2017).",
+    "Sciavolino et al. (2021) Christopher Sciavolino, Zexuan Zhong, Jinhyuk Lee, and Danqi Chen. 2021. Simple entity-centric questions challenge dense retrievers. arXiv preprint arXiv:2109.08535 (2021).",
+    "Siriwardhana et al. (2023) Shamane Siriwardhana, Rivindu Weerasekera, Elliott Wen, Tharindu Kaluarachchi, Rajib Rana, and Suranga Nanayakkara. 2023. Improving the domain adaptation of retrieval augmented generation (RAG) models for open domain question answering. Transactions of the Association for Computational Linguistics 11 (2023), 1–17.",
+    "Song and Zheng (2024) Mingyang Song and Mao Zheng. 2024. A Survey of Query Optimization in Large Language Models. arXiv preprint arXiv:2412.17558 (2024).",
+    "Tang and Yang (2024) Yixuan Tang and Yi Yang. 2024. Multihop-rag: Benchmarking retrieval-augmented generation for multi-hop queries. arXiv preprint arXiv:2401.15391 (2024).",
+    "Wang et al. (2023) Liang Wang, Nan Yang, and Furu Wei. 2023. Query2doc: Query expansion with large language models. arXiv preprint arXiv:2303.07678 (2023).",
+    "Wang et al. (2024) Xiaohua Wang, Zhenghua Wang, Xuan Gao, Feiran Zhang, Yixin Wu, Zhibo Xu, Tianyuan Shi, Zhengyuan Wang, Shizheng Li, Qi Qian, et al. 2024. Searching for best practices in retrieval-augmented generation. In Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing. 17716–17736.",
+    "Wu et al. (2024) Shangyu Wu, Ying Xiong, Yufei Cui, Haolun Wu, Can Chen, Ye Yuan, Lianming Huang, Xue Liu, Tei-Wei Kuo, Nan Guan, et al. 2024. Retrieval-augmented generation for natural language processing: A survey. arXiv preprint arXiv:2407.13193 (2024).",
+    "Xiong et al. (2020) Lee Xiong, Chenyan Xiong, Ye Li, Kwok-Fung Tang, Jialin Liu, Paul Bennett, Junaid Ahmed, and Arnold Overwijk. 2020. Approximate nearest neighbor negative contrastive learning for dense text retrieval. arXiv preprint arXiv:2007.00808 (2020).",
+    "Yang et al. (2018) Zhilin Yang, Peng Qi, Saizheng Zhang, Yoshua Bengio, William W Cohen, Ruslan Salakhutdinov, and Christopher D Manning. 2018. HotpotQA: A dataset for diverse, explainable multi-hop question answering. arXiv preprint arXiv:1809.09600 (2018).",
+    "Zamani et al. (2022) Hamed Zamani, Michael Bendersky, Donald Metzler, Honglei Zhuang, and Xuanhui Wang. 2022. Stochastic retrieval-conditioned reranking. In Proceedings of the 2022 ACM SIGIR International Conference on Theory of Information Retrieval. 81–91.",
+    "Zhao et al. (2024) Penghao Zhao, Hailin Zhang, Qinhan Yu, Zhengren Wang, Yunteng Geng, Fangcheng Fu, Ling Yang, Wentao Zhang, and Bin Cui. 2024. Retrieval-augmented generation for ai-generated content: A survey. arXiv preprint arXiv:2402.19473 (2024).",
+    "Zhuang et al. (2023) Yuchen Zhuang, Yue Yu, Kuan Wang, Haotian Sun, and Chao Zhang. 2023. Toolqa: A dataset for llm question answering with external tools. Advances in Neural Information Processing Systems 36 (2023), 50117–50143."
+  ]
+}

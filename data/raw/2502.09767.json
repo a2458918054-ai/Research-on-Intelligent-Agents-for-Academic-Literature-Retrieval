@@ -1,0 +1,469 @@
+{
+  "title": "Non-Markovian Discrete Diffusion with Causal Language Models",
+  "authors": "Yangtian ZhangSizhuang HeDaniel LevineLawrence ZhaoDavid ZhangSyed A RizviEmanuele ZappalaRex YingDavid van Dijk",
+  "abstract": "Discrete diffusion models have emerged as a flexible and controllable paradigm for structured sequence modeling, yet they still lag behind causal language models in expressiveness. To bridge the gap between two paradigms, we introduce CaDDi, a causal discrete diffusion model that unifies sequential and temporal modeling within a non-Markovian diffusion framework. Unlike conventional diffusion models that operate step by step with no access to prior states, CaDDi integrates the temporal trajectory, enabling more expressive and controllable generation. Our approach also treats causal language models as a special case, allowing seamless adoption of pretrained large language models (LLMs) for discrete diffusion without the need for architectural modifications. Empirically, we demonstrate that CaDDi outperforms state-of-the-art discrete diffusion models on both natural language and biological sequence tasks, narrowing the gap between diffusion-based methods and large-scale autoregressive transformers.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Autoregressive transformers have become a dominant approach for sequence modeling (Vaswani, 2017; Chowdhery et al., 2023; Touvron et al., 2023a), achieving state-of-the-art performance in many natural language and biological tasks. Their left-to-right decoding paradigm simplifies training via next-token prediction and is supported by large-scale pretraining, unlocking broad linguistic (or domain) knowledge. However, these models can be less flexible for bidirectional or partially specified generation, such as text infilling or prompting from arbitrary locations.",
+        "By contrast, discrete diffusion models (Dieleman et al., 2022; Austin et al., 2023; Gulrajani & Hashimoto, 2024; Gat et al., 2024) naturally accommodate controllable generation scenarios where tokens can be iteratively refined and sampled in a bidirectional manner (Shen et al., 2023). Recent advances have extended discrete diffusion to continuous time (Campbell et al., 2022; Shi et al., 2024), improved its training objectives (Lou et al., 2024; Sahoo et al., 2024; Schiff et al., 2024), and accelerated inference (Park et al., 2024; Liu et al., 2024). Yet, these models often lag behind autoregressive approaches in generation quality (Zheng et al., 2024), due in part to their reliance on a single latent state for denoising—leading to fragile inference where small decoding errors can accumulate over time (Xu et al., 2024; Zheng et al., 2024; Hu & Ommer, 2024).",
+        "In this work, we aim to bridge the gap between both paradigms. Specifically, we extend the non-Markovian diffusion process of Gu et al. (2024) to the discrete domain, allowing each denoising step to use information from the entire generative trajectory rather than from a single state. This holistic view mitigates error accumulation and makes the backward (denoising) process naturally align with causal language modeling. Leveraging this insight, we propose CaDDi, a causal discrete diffusion model that unifies sequential (left-to-right) and temporal (multi-step) dimensions in a single transformer architecture. As a result, CaDDi can be trained efficiently via a simple next-token prediction loss—similar to a causal language model—while preserving the bidirectional control and iterative refinement of diffusion.",
+        "Additionally, we show that CaDDi can be viewed as a generalization of traditional autoregressive models (T=1T=1 is the special case), making it straightforward to fine-tune a pretrained LLM for discrete diffusion. Such adaptation unlocks flexible generation modes (e.g., text infilling) without sacrificing the rich knowledge encoded by large-scale pretraining. Finally, CaDDi can be further accelerated at inference via semi-speculative decoding.",
+        "In summary, our key contributions are:",
+        "• We first extend the non-Markovian diffusion process to the discrete space, where the model integrates the generative trajectory of the preceding states, enabling a more robust inference paradigm.",
+        "• We propose CaDDi, a causal discrete diffusion model that unifies sequential and temporal modeling within a non-Markovian diffusion framework. CaDDi generalizes traditional causal language models as a special case and can seamlessly adopt pretrained LLMs for discrete diffusion, enabling more controllable and structured generation.",
+        "• Quantitative results show that CaDDi surpasses recent discrete diffusion models on both biological sequences and natural language tasks. Additionally, it provides greater control over generation compared to standard autoregressive models, making it a powerful alternative for structured sequence modeling."
+      ],
+      "subsections": []
+    },
+    "2 Preliminary": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "2.1 Variational Perspective of Diffusion Models",
+          "paragraphs": [
+            "Diffusion models can be viewed as a special class of hierarchical variational autoencoders (HVAEs), where the latent variables consist of progressively corrupted versions of the original data. HVAEs are trained by maximizing the evidence lower bound (ELBO) on the data log-likelihood. Concretely, let 𝐱0\\mathbf{x}_{0} be the original data and 𝐱1:T\\mathbf{x}_{1:T} be the latent variables at timesteps 1,…,T1,\\dots,T. The ELBO objective can be written as:",
+            "where qϕ​(𝐱1:T∣𝐱0)q_{\\phi}(\\mathbf{x}_{1:T}\\mid\\mathbf{x}_{0}) is the variational posterior distribution, and pθ​(𝐱t−1∣𝐱t:T)p_{\\theta}(\\mathbf{x}_{t-1}\\mid\\mathbf{x}_{t:T}) is the generative (reverse) model.",
+            "Traditional diffusion models (viewed as a special case of HVAEs) make the following Markovian assumptions: Enforcing the reverse process to be Markovian simplifies the sampling process: at each timestep, the model only conditions on the current latent variable 𝐱t\\mathbf{x}_{t} to predict 𝐱t−1\\mathbf{x}_{t-1}. While this constraint facilitates efficient generation, it can limit the model’s capacity to capture long-range dependencies within the latent chain.",
+            "• Forward Process: A non-learnable Markov chain qϕ​(𝐱1:T∣𝐱0)=∏t=1Tq​(𝐱t∣𝐱t−1)q_{\\phi}\\bigl{(}\\mathbf{x}_{1:T}\\mid\\mathbf{x}_{0}\\bigr{)}=\\prod_{t=1}^{T}q\\bigl{(}\\mathbf{x}_{t}\\mid\\mathbf{x}_{t-1}\\bigr{)}.",
+            "• Reverse Process: A learnable Markov chain pθ​(𝐱t−1∣𝐱t:T)=pθ​(𝐱t−1∣𝐱t)p_{\\theta}\\bigl{(}\\mathbf{x}_{t-1}\\mid\\mathbf{x}_{t:T}\\bigr{)}\\!=\\!p_{\\theta}\\bigl{(}\\mathbf{x}_{t-1}\\mid\\mathbf{x}_{t}\\bigr{)}.",
+            "Forward Process: A non-learnable Markov chain qϕ​(𝐱1:T∣𝐱0)=∏t=1Tq​(𝐱t∣𝐱t−1)q_{\\phi}\\bigl{(}\\mathbf{x}_{1:T}\\mid\\mathbf{x}_{0}\\bigr{)}=\\prod_{t=1}^{T}q\\bigl{(}\\mathbf{x}_{t}\\mid\\mathbf{x}_{t-1}\\bigr{)}.",
+            "Reverse Process: A learnable Markov chain pθ​(𝐱t−1∣𝐱t:T)=pθ​(𝐱t−1∣𝐱t)p_{\\theta}\\bigl{(}\\mathbf{x}_{t-1}\\mid\\mathbf{x}_{t:T}\\bigr{)}\\!=\\!p_{\\theta}\\bigl{(}\\mathbf{x}_{t-1}\\mid\\mathbf{x}_{t}\\bigr{)}."
+          ]
+        },
+        {
+          "title": "Markovian Assumptions.",
+          "paragraphs": [
+            "Traditional diffusion models (viewed as a special case of HVAEs) make the following Markovian assumptions: Enforcing the reverse process to be Markovian simplifies the sampling process: at each timestep, the model only conditions on the current latent variable 𝐱t\\mathbf{x}_{t} to predict 𝐱t−1\\mathbf{x}_{t-1}. While this constraint facilitates efficient generation, it can limit the model’s capacity to capture long-range dependencies within the latent chain.",
+            "• Forward Process: A non-learnable Markov chain qϕ​(𝐱1:T∣𝐱0)=∏t=1Tq​(𝐱t∣𝐱t−1)q_{\\phi}\\bigl{(}\\mathbf{x}_{1:T}\\mid\\mathbf{x}_{0}\\bigr{)}=\\prod_{t=1}^{T}q\\bigl{(}\\mathbf{x}_{t}\\mid\\mathbf{x}_{t-1}\\bigr{)}.",
+            "• Reverse Process: A learnable Markov chain pθ​(𝐱t−1∣𝐱t:T)=pθ​(𝐱t−1∣𝐱t)p_{\\theta}\\bigl{(}\\mathbf{x}_{t-1}\\mid\\mathbf{x}_{t:T}\\bigr{)}\\!=\\!p_{\\theta}\\bigl{(}\\mathbf{x}_{t-1}\\mid\\mathbf{x}_{t}\\bigr{)}.",
+            "Forward Process: A non-learnable Markov chain qϕ​(𝐱1:T∣𝐱0)=∏t=1Tq​(𝐱t∣𝐱t−1)q_{\\phi}\\bigl{(}\\mathbf{x}_{1:T}\\mid\\mathbf{x}_{0}\\bigr{)}=\\prod_{t=1}^{T}q\\bigl{(}\\mathbf{x}_{t}\\mid\\mathbf{x}_{t-1}\\bigr{)}.",
+            "Reverse Process: A learnable Markov chain pθ​(𝐱t−1∣𝐱t:T)=pθ​(𝐱t−1∣𝐱t)p_{\\theta}\\bigl{(}\\mathbf{x}_{t-1}\\mid\\mathbf{x}_{t:T}\\bigr{)}\\!=\\!p_{\\theta}\\bigl{(}\\mathbf{x}_{t-1}\\mid\\mathbf{x}_{t}\\bigr{)}."
+          ]
+        },
+        {
+          "title": "2.2 Discrete Diffusion Language Models",
+          "paragraphs": [
+            "Recently, discrete diffusion models (Austin et al., 2023) have recently emerged as a powerful framework. In contrast to their continuous counterparts, which corrupt data by adding Gaussian noise in a real-valued space, discrete diffusion models operate on categorical variables, gradually corrupting tokens before reconstructing them through a learned denoising process.",
+            "Let 𝐱0=(𝐱01,𝐱02,…,𝐱0L)\\mathbf{x}_{0}=(\\mathbf{x}_{0}^{1},\\mathbf{x}_{0}^{2},\\ldots,\\mathbf{x}_{0}^{L}) be a sequence of discrete tokens from a vocabulary 𝒱\\mathcal{V} of size |𝒱||\\mathcal{V}|. The forward (noising) process produces 𝐱1,𝐱2,…,𝐱T\\mathbf{x}_{1},\\mathbf{x}_{2},\\ldots,\\mathbf{x}_{T} by independently corrupting each token according to a time-dependent transition matrix 𝐐t\\mathbf{Q}_{t}:",
+            "where Cat⁡(⋅;π)\\operatorname{Cat}(\\cdot;\\,\\pi) denotes the categorical distribution with parameter π\\pi, and [𝐐t]i​j[\\mathbf{Q}_{t}]_{ij} gives the probability of transitioning from state ii to state jj at time tt.",
+            "The reverse (denoising) model pθ​(𝐱t−1∣𝐱t)p_{\\theta}\\bigl{(}\\mathbf{x}_{t-1}\\mid\\mathbf{x}_{t}\\bigr{)} is learned to invert the corruption process. Employing the x0-parameterization (Austin et al., 2023), one can write:",
+            "where pθ​(𝐱~0∣𝐱t)p_{\\theta}\\bigl{(}\\widetilde{\\mathbf{x}}_{0}\\mid\\mathbf{x}_{t}\\bigr{)} is a time-dependent denoiser mapping 𝐱t\\mathbf{x}_{t} back to an estimate of the original 𝐱0\\mathbf{x}_{0}.",
+            "Training commonly involves maximizing the variational lower bound on log⁡pθ​(𝐱0)\\log p_{\\theta}(\\mathbf{x}_{0}). In practice, (Austin et al., 2023) have shown that a simple denoising objective can achieve better generative quality under x0-parameterization:",
+            "In this work, we also adopt this simplified objective. Various refinements of this objective exist, such as implicit maximizing the variational lower bound by score entropy (Lou et al., 2024), utilizing a reweighted denoising objective specifically designed for absorbing discrete diffusion (Sahoo et al., 2024), but the Markovian nature of the forward and reverse processes remains a key component of discrete diffusion models."
+          ]
+        },
+        {
+          "title": "Forward Process.",
+          "paragraphs": [
+            "Let 𝐱0=(𝐱01,𝐱02,…,𝐱0L)\\mathbf{x}_{0}=(\\mathbf{x}_{0}^{1},\\mathbf{x}_{0}^{2},\\ldots,\\mathbf{x}_{0}^{L}) be a sequence of discrete tokens from a vocabulary 𝒱\\mathcal{V} of size |𝒱||\\mathcal{V}|. The forward (noising) process produces 𝐱1,𝐱2,…,𝐱T\\mathbf{x}_{1},\\mathbf{x}_{2},\\ldots,\\mathbf{x}_{T} by independently corrupting each token according to a time-dependent transition matrix 𝐐t\\mathbf{Q}_{t}:",
+            "where Cat⁡(⋅;π)\\operatorname{Cat}(\\cdot;\\,\\pi) denotes the categorical distribution with parameter π\\pi, and [𝐐t]i​j[\\mathbf{Q}_{t}]_{ij} gives the probability of transitioning from state ii to state jj at time tt."
+          ]
+        },
+        {
+          "title": "Reverse Process.",
+          "paragraphs": [
+            "The reverse (denoising) model pθ​(𝐱t−1∣𝐱t)p_{\\theta}\\bigl{(}\\mathbf{x}_{t-1}\\mid\\mathbf{x}_{t}\\bigr{)} is learned to invert the corruption process. Employing the x0-parameterization (Austin et al., 2023), one can write:",
+            "where pθ​(𝐱~0∣𝐱t)p_{\\theta}\\bigl{(}\\widetilde{\\mathbf{x}}_{0}\\mid\\mathbf{x}_{t}\\bigr{)} is a time-dependent denoiser mapping 𝐱t\\mathbf{x}_{t} back to an estimate of the original 𝐱0\\mathbf{x}_{0}."
+          ]
+        },
+        {
+          "title": "Training Objectives.",
+          "paragraphs": [
+            "Training commonly involves maximizing the variational lower bound on log⁡pθ​(𝐱0)\\log p_{\\theta}(\\mathbf{x}_{0}). In practice, (Austin et al., 2023) have shown that a simple denoising objective can achieve better generative quality under x0-parameterization:",
+            "In this work, we also adopt this simplified objective. Various refinements of this objective exist, such as implicit maximizing the variational lower bound by score entropy (Lou et al., 2024), utilizing a reweighted denoising objective specifically designed for absorbing discrete diffusion (Sahoo et al., 2024), but the Markovian nature of the forward and reverse processes remains a key component of discrete diffusion models."
+          ]
+        }
+      ]
+    },
+    "3 Non-Markovian Discrete Diffusion": {
+      "paragraphs": [
+        "Previous methods have modeled the discrete diffusion process as a Markovian process, where the model learns an instantaneous reverse process to denoise 𝐱t\\mathbf{x}_{t} and reconstruct 𝐱t−1\\mathbf{x}_{t-1} by pθ​(𝐱t−1∣𝐱t)p_{\\theta}(\\mathbf{x}_{t-1}\\mid\\mathbf{x}_{t}) (Austin et al., 2023). Despite efficient generation, this Markovian constraint can limit the model’s ability to capture long-range dependencies within the latent chain. All relevant information is compressed into single state 𝐱t\\mathbf{x}_{t}, potentially leading to a non-robust inference procedure.",
+        "In this paper, we extend the non-Markovian diffusion process to discrete data modeling following (Gu et al., 2024). Specifically, recent studies have demonstrated that the Markovian assumption is not strictly necessary in the inference process. Breaking this assumption allows for the incorporation of the entire temporal trajectory 𝐱t:T\\mathbf{x}_{t:T} to denoise 𝐱t−1\\mathbf{x}_{t-1} by pθ​(𝐱t−1∣𝐱t:T)p_{\\theta}(\\mathbf{x}_{t-1}\\mid\\mathbf{x}_{t:T}) in autoregressive manner, leading to a more expressive and robust inference process.",
+        "In the following, we will describe how the non-Markovian discrete diffusion process is constructed. Crucially, we will see that the resulting non-Markovian autoregressive inference mechanism essentially aligns with a causal language model plus an additional temporal dimension—laying the groundwork for our unified spatial-temporal framework (Section 4)."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Hybrid Non-Markovian Forward Trajectory",
+          "paragraphs": [
+            "A key challenge in realizing non-Markovian inference is how to design the forward trajectory so that future states 𝐱t+1:T\\mathbf{x}_{t+1:T} carry more complementary information about𝐱t\\mathbf{x}_{t}. The straightforward Markovian absorbing process q​(𝐱0:T)=∏t=1Tq​(𝐱t|𝐱t−1)q(\\mathbf{x}_{0:T})=\\prod_{t=1}^{T}q(\\mathbf{x}_{t}|\\mathbf{x}_{t-1}) is ill-suited for this purpose, as information is highly limited and redundant. To ensure each timestep retains complementary information about the original data, we (1). construct the forward trajectory by independently corrupting 𝐱0\\mathbf{x}_{0}. (2). Mix an abosrbing kernel with uniform kernal to produce more diverse noisy states.",
+            "As shown in Fig. 1, the diffusion trajectory 𝐱0:T\\mathbf{x}_{0:T} is created where we add independent noise to 𝐱0\\mathbf{x}_{0} at different timesteps, rather than relying on the previous state as the noise source. The forward trajectory is constructed as:",
+            "where q​(𝐱t|𝐱0)q(\\mathbf{x}_{t}|\\mathbf{x}_{0}) is the marginal conditional distribution, which is obtained from a standard Markovian diffusion kernel but applied directly to 𝐱0\\mathbf{x}_{0}. For example, in absorbing or uniform diffusion processes, we can write:",
+            "where 𝐐k\\mathbf{Q}_{k} is the transition matrix at step kk, and 𝐐¯t\\overline{\\mathbf{Q}}_{t} is the product of all such transitions up to tt. This construction generalizes the Markovian forward trajectory (see Appendix for further details) and creates a sequence of noisy states that better preserve intermediate information across timesteps.",
+            "Let {𝐱0,𝐱1,…,𝐱T}\\{\\mathbf{x}_{0},\\mathbf{x}_{1},\\ldots,\\mathbf{x}_{T}\\} be a discrete forward diffusion process that is not strictly Markovian. Suppose there exists at least one timestep tt such that111it is trivial to find such tt in our case with indendent noise corruption.",
+            "Then the conditional mutual information",
+            "which implies that conditioning on 𝐱t+1:T\\mathbf{x}_{t+1:T} in the reverse process pθ​(𝐱t−1∣𝐱t:T)\\,p_{\\theta}(\\mathbf{x}_{t-1}\\mid\\mathbf{x}_{t:T}) strictly reduces the uncertainty about 𝐱t−1\\mathbf{x}_{t-1} compared to conditioning on 𝐱t\\mathbf{x}_{t} alone.",
+            "In other words, when the non-Markovian forward trajectory is designed with independent corruption, future noisy states can complement each other, bolstering the reverse inference process.",
+            "Most prior discrete diffusion methods rely on a single kernel, such as purely absorbing (where tokens are replaced by [MASK]) or purely uniform corruption. However, sticking to one kernel can lead to monotonic or insufficiently diverse noise patterns in the generative trajectory. We therefore mix an absorbing kernel and a uniform kernel:",
+            "where αt,βt\\alpha_{t},\\beta_{t} are time-dependent schedules with boundary conditions α0=0,αT=1,β0=\\alpha_{0}=0,\\alpha_{T}=1,\\beta_{0}= 0,βT=00,\\beta_{T}=0. The terms 𝐐¯Tabsorb \\overline{\\mathbf{Q}}_{T}^{\\text{absorb }} and 𝐐¯Tuniform \\overline{\\mathbf{Q}}_{T}^{\\text{uniform }} are the marginal diffusion kernels (absorbing and uniform, respectively) at the final step. By mixing these kernels, we introduce a spectrum of corruption modes-some tokens may be masked out, while others might be replaced by random symbols, thus yielding a more informative trajectory."
+          ]
+        },
+        {
+          "title": "Independent Corruption.",
+          "paragraphs": [
+            "As shown in Fig. 1, the diffusion trajectory 𝐱0:T\\mathbf{x}_{0:T} is created where we add independent noise to 𝐱0\\mathbf{x}_{0} at different timesteps, rather than relying on the previous state as the noise source. The forward trajectory is constructed as:",
+            "where q​(𝐱t|𝐱0)q(\\mathbf{x}_{t}|\\mathbf{x}_{0}) is the marginal conditional distribution, which is obtained from a standard Markovian diffusion kernel but applied directly to 𝐱0\\mathbf{x}_{0}. For example, in absorbing or uniform diffusion processes, we can write:",
+            "where 𝐐k\\mathbf{Q}_{k} is the transition matrix at step kk, and 𝐐¯t\\overline{\\mathbf{Q}}_{t} is the product of all such transitions up to tt. This construction generalizes the Markovian forward trajectory (see Appendix for further details) and creates a sequence of noisy states that better preserve intermediate information across timesteps.",
+            "Let {𝐱0,𝐱1,…,𝐱T}\\{\\mathbf{x}_{0},\\mathbf{x}_{1},\\ldots,\\mathbf{x}_{T}\\} be a discrete forward diffusion process that is not strictly Markovian. Suppose there exists at least one timestep tt such that111it is trivial to find such tt in our case with indendent noise corruption.",
+            "Then the conditional mutual information",
+            "which implies that conditioning on 𝐱t+1:T\\mathbf{x}_{t+1:T} in the reverse process pθ​(𝐱t−1∣𝐱t:T)\\,p_{\\theta}(\\mathbf{x}_{t-1}\\mid\\mathbf{x}_{t:T}) strictly reduces the uncertainty about 𝐱t−1\\mathbf{x}_{t-1} compared to conditioning on 𝐱t\\mathbf{x}_{t} alone.",
+            "In other words, when the non-Markovian forward trajectory is designed with independent corruption, future noisy states can complement each other, bolstering the reverse inference process."
+          ]
+        },
+        {
+          "title": "Hybrid Diffusion Kernel.",
+          "paragraphs": [
+            "Most prior discrete diffusion methods rely on a single kernel, such as purely absorbing (where tokens are replaced by [MASK]) or purely uniform corruption. However, sticking to one kernel can lead to monotonic or insufficiently diverse noise patterns in the generative trajectory. We therefore mix an absorbing kernel and a uniform kernel:",
+            "where αt,βt\\alpha_{t},\\beta_{t} are time-dependent schedules with boundary conditions α0=0,αT=1,β0=\\alpha_{0}=0,\\alpha_{T}=1,\\beta_{0}= 0,βT=00,\\beta_{T}=0. The terms 𝐐¯Tabsorb \\overline{\\mathbf{Q}}_{T}^{\\text{absorb }} and 𝐐¯Tuniform \\overline{\\mathbf{Q}}_{T}^{\\text{uniform }} are the marginal diffusion kernels (absorbing and uniform, respectively) at the final step. By mixing these kernels, we introduce a spectrum of corruption modes-some tokens may be masked out, while others might be replaced by random symbols, thus yielding a more informative trajectory."
+          ]
+        },
+        {
+          "title": "3.2 Non-Markovian Inference Process",
+          "paragraphs": [
+            "We train the non-Markovian reverse model pθ​(𝐱t−1∣𝐱t:T)p_{\\theta}\\bigl{(}\\mathbf{x}_{t-1}\\mid\\mathbf{x}_{t:T}\\bigr{)} by minimizing a weighted ELBO objective derived from the variational perspective of diffusion:",
+            "Here, the key difference from standard discrete diffusion is that each term conditions on 𝐱t+1:T\\mathbf{x}_{t+1:T}. By Theorem 3.1, this inclusion strictly reduces the conditional entropy when the forward process is indeed non-Markovian. Consequently, pθ​(𝐱t−1∣𝐱t:T)p_{\\theta}\\left(\\mathbf{x}_{t-1}\\mid\\mathbf{x}_{t:T}\\right) has a more robust denoising pathway.",
+            "Once trained, sampling proceeds in an autoregressive manner, iterating backward over time by conditioning on the entire future trajectory 𝐱t:T\\mathbf{x}_{t:T}.",
+            "Similar to standard discrete diffusion approaches (Schiff et al., 2024; Gat et al., 2024), we adopt an x0x_{0}-parameterization to simplify training. In this view, we directly predict the clean sequence 𝐱0\\mathbf{x}_{0} at each step, which leads to a simpler denoising objective:",
+            "(See Appendix for the derivation.) At inference time, we first sample 𝐱~0\\widetilde{\\mathbf{x}}_{0} from the learned denoiser pθ​(𝐱0∣𝐱t:T)p_{\\theta}(\\mathbf{x}_{0}\\mid\\mathbf{x}_{t:T}) and then use the forward kernel q(⋅∣𝐱~0)q(\\cdot\\mid\\widetilde{\\mathbf{x}}_{0}) to obtain 𝐱t−1\\mathbf{x}_{t-1}. This procedure iterates backward through time until we reach 𝐱0\\mathbf{x}_{0}. Pseudocode is presented in Algorithm 1."
+          ]
+        },
+        {
+          "title": "x0\\textbf{x}_{0}-Parameterization.",
+          "paragraphs": [
+            "Similar to standard discrete diffusion approaches (Schiff et al., 2024; Gat et al., 2024), we adopt an x0x_{0}-parameterization to simplify training. In this view, we directly predict the clean sequence 𝐱0\\mathbf{x}_{0} at each step, which leads to a simpler denoising objective:",
+            "(See Appendix for the derivation.) At inference time, we first sample 𝐱~0\\widetilde{\\mathbf{x}}_{0} from the learned denoiser pθ​(𝐱0∣𝐱t:T)p_{\\theta}(\\mathbf{x}_{0}\\mid\\mathbf{x}_{t:T}) and then use the forward kernel q(⋅∣𝐱~0)q(\\cdot\\mid\\widetilde{\\mathbf{x}}_{0}) to obtain 𝐱t−1\\mathbf{x}_{t-1}. This procedure iterates backward through time until we reach 𝐱0\\mathbf{x}_{0}. Pseudocode is presented in Algorithm 1."
+          ]
+        }
+      ]
+    },
+    "4 CaDDi:CausalDiscreteDiffusion Model": {
+      "paragraphs": [
+        "The autoregressive property of non-Markovian inference (Section 3) naturally lends itself to a causal model that predicts tokens in a left-to-right fashion. Motivated by this insight, we propose CaDDi, a causal language model that unifies the sequential dimension (i.e., token order) with the temporal dimension (i.e., discrete diffusion timesteps). Concretely, CaDDi leverages a standard left-to-right structure while conditioning on multiple timesteps of the diffusion chain, enabling it to handle non-Markovian discrete diffusion in a single unified framework."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Unified Sequential and Temporal Modeling",
+          "paragraphs": [
+            "In the non-Markovian setting (Section 3), the reverse process is inherently autoregressive: we decode the entire sequence of latent states 𝐱t:T\\mathbf{x}_{t:T} to retrieve 𝐱t−1\\mathbf{x}_{t-1}. This naturally aligns with the standard left-to-right generation of language models. However, unlike a conventional single-dimensional token sequence, we must now account for a temporal dimension.",
+            "To accommodate both sequential and temporal dependencies in a single model, CaDDi constructs a non-Markovian forward trajectory for each data instance:",
+            "where the upper index (i)(i) denotes the token position in the original sequence of length LL, and the subscript denotes the diffusion timestep. We then train a causal language model to predict the next token at each position via a standard next-token prediction loss. Crucially, the target for each position ii is always the original clean token 𝐱0(i)\\mathbf{x}_{0}^{(i)} under x0\\textbf{x}_{0}-parameterization.",
+            "In practice, feeding all timesteps into the model can be prohibitively large. Therefore, we restrict the model’s temporal context to the most recent nn timesteps. More formally, for each timestep tt and token position ii, we define the context 𝒞t,i\\mathcal{C}_{t,i} as follows:",
+            "where 𝐱~0(j)\\widetilde{\\mathbf{x}}_{0}^{(j)} is the predicted clean token222In teacher-forced training, this is the ground truth clean token at position jj at current timestep tt. The token-level training objective is then:",
+            "This design ensures that CaDDi captures both local temporal structure and token-level dependencies in a scalable manner. In practice, there is a inherent trade-off between scalability and the ability to model long-range temporal dependencies. We found n=4n=4 a reasonable choice through empirical evaluation."
+          ]
+        },
+        {
+          "title": "Constructing the Training Trajectory.",
+          "paragraphs": [
+            "To accommodate both sequential and temporal dependencies in a single model, CaDDi constructs a non-Markovian forward trajectory for each data instance:",
+            "where the upper index (i)(i) denotes the token position in the original sequence of length LL, and the subscript denotes the diffusion timestep. We then train a causal language model to predict the next token at each position via a standard next-token prediction loss. Crucially, the target for each position ii is always the original clean token 𝐱0(i)\\mathbf{x}_{0}^{(i)} under x0\\textbf{x}_{0}-parameterization."
+          ]
+        },
+        {
+          "title": "Context Window.",
+          "paragraphs": [
+            "In practice, feeding all timesteps into the model can be prohibitively large. Therefore, we restrict the model’s temporal context to the most recent nn timesteps. More formally, for each timestep tt and token position ii, we define the context 𝒞t,i\\mathcal{C}_{t,i} as follows:",
+            "where 𝐱~0(j)\\widetilde{\\mathbf{x}}_{0}^{(j)} is the predicted clean token222In teacher-forced training, this is the ground truth clean token at position jj at current timestep tt. The token-level training objective is then:",
+            "This design ensures that CaDDi captures both local temporal structure and token-level dependencies in a scalable manner. In practice, there is a inherent trade-off between scalability and the ability to model long-range temporal dependencies. We found n=4n=4 a reasonable choice through empirical evaluation."
+          ]
+        },
+        {
+          "title": "4.2 2D Rotary Positional Encoding for Sequence Position & Diffusion Timestep",
+          "paragraphs": [
+            "A modern causal language model typically encodes only the sequential dimension, via rotary positional encodings (Su et al., 2024). However, for non-Markovian discrete diffusion, we must capture not just the standard token-level sequence but also a temporal dimension corresponding to diffusion timesteps. To address this, we extend the original 1D rotary scheme to a 2D variant , allowing the model to incorporate positional information across both the sequence index ii and the diffusion timestep tt. This enhanced encoding enables the model to more effectively learn joint dependencies between tokens and their progression through multiple diffusion steps.",
+            "Specifically, standard RoPE in modern language models like Pythia (Biderman et al., 2023b) rotates a subset of the query/key dimensions according to the token position ii. If 𝐑(i)\\mathbf{R}^{(i)} denotes the rotation matrix parameterized by ii, the attention weight between positions ii and jj becomes (𝐑(i)​𝐪(i))⊤​(𝐑(j)​𝐤(j))\\left(\\mathbf{R}^{(i)}\\mathbf{q}^{(i)}\\right)^{\\top}\\left(\\mathbf{R}^{(j)}\\mathbf{k}^{(j)}\\right), where",
+            "𝐑(i)=(cos⁡(i​θ12)−sin⁡(i​θ12)0⋯sin⁡(i​θ12)cos⁡(i​θ12)0⋯000⋯⋮⋮⋮⋱).\\mathbf{R}^{(i)}=\\left(\\begin{array}[]{ccccc}\\cos\\left(i\\theta_{12}\\right)&-\\sin\\left(i\\theta_{12}\\right)&0&\\cdots\\\\ \\sin\\left(i\\theta_{12}\\right)&\\cos\\left(i\\theta_{12}\\right)&0&\\cdots\\\\ 0&0&0&\\cdots\\\\ \\vdots&\\vdots&\\vdots&\\ddots\\end{array}\\right).",
+            "As shown in Figure 2, we generalize this approach by introducing additional rotation for the timestep dimension:",
+            "𝐑t(i)=(cos⁡(i​θ12)−sin⁡(i​θ12)00⋯sin⁡(i​θ12)cos⁡(i​θ12)00⋯00cos⁡(t​θ34)−sin⁡(t​θ34)⋯00sin⁡(t​θ34)cos⁡(t​θ34)⋯⋮⋮⋮⋮⋱)\\mathbf{R}_{t}^{(i)}=\\begin{pmatrix}\\cos\\left(i\\theta_{12}\\right)&-\\sin\\left(i\\theta_{12}\\right)&0&0&\\cdots\\\\ \\sin\\left(i\\theta_{12}\\right)&\\cos\\left(i\\theta_{12}\\right)&0&0&\\cdots\\\\ 0&0&\\cos\\left(t\\theta_{34}\\right)&-\\sin\\left(t\\theta_{34}\\right)&\\cdots\\\\ 0&0&\\sin\\left(t\\theta_{34}\\right)&\\cos\\left(t\\theta_{34}\\right)&\\cdots\\\\ \\vdots&\\vdots&\\vdots&\\vdots&\\ddots\\end{pmatrix}",
+            "This 2D encoding allows the model to disentangle positional-based rotation (the token dimension ii) from temporal-based rotation (the temporal dimensiontt), letting CaDDi jointly reason about sequential and temporal positions.",
+            "By interleaving temporal based rotation in these additional dimensions, it’s easy to observe that when two tokens share the same timepoint tt:",
+            "which means that in the same timepoint the sequential attention pattern is identical to that of a conventional causal language model, and 𝐑t(i)\\mathbf{R}_{t}^{(i)} reduces to the usual (1D) rotation in ii.",
+            "Hence, CaDDi remains backward-compatible: if no temporal dimension is present or within the same timepoint, it behaves like a standard causal language model. This design ensures that CaDDi smoothly unifies the standard sequential modeling paradigm with the demands of non-Markovian discrete diffusion."
+          ]
+        },
+        {
+          "title": "Consistency with Standard Language Modeling.",
+          "paragraphs": [
+            "By interleaving temporal based rotation in these additional dimensions, it’s easy to observe that when two tokens share the same timepoint tt:",
+            "which means that in the same timepoint the sequential attention pattern is identical to that of a conventional causal language model, and 𝐑t(i)\\mathbf{R}_{t}^{(i)} reduces to the usual (1D) rotation in ii.",
+            "Hence, CaDDi remains backward-compatible: if no temporal dimension is present or within the same timepoint, it behaves like a standard causal language model. This design ensures that CaDDi smoothly unifies the standard sequential modeling paradigm with the demands of non-Markovian discrete diffusion."
+          ]
+        },
+        {
+          "title": "4.3 Adapt LLMs for Discrete Diffusion",
+          "paragraphs": [
+            "A key observation is that standard causal language modeling can be seen as a special case of our proposed framework under particular settings: namely, a single-step diffusion (T=1T=1) and a minimal context window restricted to the current timestep. When T=1T=1, the forward trajectory is simply 𝐱0\\mathbf{x}_{0}, and the reverse process is a single-step denoising process which autoregressively predicts next clean token, closly mirroring the standard language modeling paradigm.",
+            "Moreover, as shown in 4.2, the 2D rotary positional encoding can be seamlessly integrated into existing language models, allowing for a unified treatment of both sequential and temporal dimensions. Given these equivalence, one can take a pretained LLM (trained in a standard causal fashion) and further fine-tune it under our non-Markovian diffusion objective. By allowing the model to condition on the previous timesteps in the diffusion chain 𝐱t+1:T\\mathbf{x}_{t+1:T}, we equip it with iterative denoising capabilities beyond standard next-token prediction. This straightforward adaptation:",
+            "• Expands Generation Modes: The LLM can perform text infilling or partial prompting from arbitrary positions, rather than strictly appending text at the end, as shown in Figure 3.",
+            "• Leverages Pretraining Knowledge: Since large LLMs are already trained on vast corpora, fine-tuning under our discrete diffusion objective benefits from a strong initialization and broad linguistic knowledge.",
+            "• No Architectural Changes: We only replace the original (causal) loss with a non-Markovian diffusion loss and provide noise-corrupted sequences as training data, preserving the underlying transformer structure.",
+            "Expands Generation Modes: The LLM can perform text infilling or partial prompting from arbitrary positions, rather than strictly appending text at the end, as shown in Figure 3.",
+            "Leverages Pretraining Knowledge: Since large LLMs are already trained on vast corpora, fine-tuning under our discrete diffusion objective benefits from a strong initialization and broad linguistic knowledge.",
+            "No Architectural Changes: We only replace the original (causal) loss with a non-Markovian diffusion loss and provide noise-corrupted sequences as training data, preserving the underlying transformer structure."
+          ]
+        },
+        {
+          "title": "4.4 Inference Bottleneck of Naive CaDDi",
+          "paragraphs": [
+            "Naive CaDDi inference can be slower than standard discrete diffusion, typically requiring 𝒪​(L×T)\\mathcal{O}(L\\times T) function evaluations for a sequence of length LL over TT timesteps. However, by leveraging the unique properties of causal language modeling, we propose a semi-speculative decoding strategy that substantially reduces inference time while maintaining generation quality.",
+            "Although causal language models generate tokens sequentially, they can verify the probabilities of any pre-drafted sequence in parallel. Notably, CaDDi shares the same denoising target 𝐱0\\mathbf{x}_{0} across all timesteps. This observation suggests a natural procedure: reuse the previous timestep’s predictions 𝐱~0prev \\widetilde{\\mathbf{x}}_{0}^{\\text{prev }} as a draft for the current timestep (see Algorithm 2). The model then verifies these drafted tokens in parallel, accepting those that meet a specified confidence threshold (e.g. high probability).",
+            "This approach closely resembles speculative decoding (Leviathan et al., 2023), with one key difference: we do not rely on a separate, smaller model to propose the draft sequence. Instead, CaDDi’s own predictions from the preceding timestep serve as the draft. Like speculative decoding, various verification and correction strategies (e.g. greedy, nucleus sampling) can be employed, ensuring either a comparable or identical sampling distribution while significantly reducing the total number of sampling steps.",
+            "Beyond semi-speculative decoding, CaDDi also benefits from key-value caching (KV-Cache), a hallmark of causal generation that is unavailable in bidirectional discrete diffusion models. Additionally, the x0\\textbf{x}_{0}-parameterization enables efficient timestep skipping, further accelerating inference. We believe these techniques only begin to illustrate the potential for more advanced optimization and scaling in CaDDi, which we leave for future exploration."
+          ]
+        },
+        {
+          "title": "Semi-Speculative Decoding.",
+          "paragraphs": [
+            "Although causal language models generate tokens sequentially, they can verify the probabilities of any pre-drafted sequence in parallel. Notably, CaDDi shares the same denoising target 𝐱0\\mathbf{x}_{0} across all timesteps. This observation suggests a natural procedure: reuse the previous timestep’s predictions 𝐱~0prev \\widetilde{\\mathbf{x}}_{0}^{\\text{prev }} as a draft for the current timestep (see Algorithm 2). The model then verifies these drafted tokens in parallel, accepting those that meet a specified confidence threshold (e.g. high probability).",
+            "This approach closely resembles speculative decoding (Leviathan et al., 2023), with one key difference: we do not rely on a separate, smaller model to propose the draft sequence. Instead, CaDDi’s own predictions from the preceding timestep serve as the draft. Like speculative decoding, various verification and correction strategies (e.g. greedy, nucleus sampling) can be employed, ensuring either a comparable or identical sampling distribution while significantly reducing the total number of sampling steps."
+          ]
+        },
+        {
+          "title": "Further Acceleration.",
+          "paragraphs": [
+            "Beyond semi-speculative decoding, CaDDi also benefits from key-value caching (KV-Cache), a hallmark of causal generation that is unavailable in bidirectional discrete diffusion models. Additionally, the x0\\textbf{x}_{0}-parameterization enables efficient timestep skipping, further accelerating inference. We believe these techniques only begin to illustrate the potential for more advanced optimization and scaling in CaDDi, which we leave for future exploration."
+          ]
+        }
+      ]
+    },
+    "5 Experiments": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Baseline.",
+          "paragraphs": [
+            "We compare CaDDi with several established discrete diffusion models, including D3PM (Austin et al., 2023), SEDD (Lou et al., 2024), MDLM (Sahoo et al., 2024), UDLM (Schiff et al., 2024), and Discrete Flow Matching (Gat et al., 2024). For MDLM and UDLM, we utilized their official implementations, which also include implementations of D3PM and SEDD. Additionally, we implemented Discrete Flow Matching based on the MDLM repo with the discrete path and denoising loss defined in (Gat et al., 2024).",
+            "Our core causal language model is based on Pythia-160M (Biderman et al., 2023a), with a customized tokenizer and embedding layers tailored to the specific task. For baseline models, we follow their original implementations, using Diffusion Transformers (Peebles & Xie, 2023) with rotary positional encoding and timestep embeddings. To ensure a fair comparison, we match the number of learnable parameters across all models, with CaDDi using slightly fewer parameters (see Table 4 for details). All discrete diffusion and flow-matching models use 1000 diffusion steps, while CaDDi is configured with a context window of 4 time points and 64 diffusion steps (see Section D for an ablation study). All models are trained with a learning rate of 3e-4, 2500 warm-up steps, and linear learning rate annealing. For evaluation, we sample the same number of sequences across all models."
+          ]
+        },
+        {
+          "title": "5.1 Biological Sequence Generation",
+          "paragraphs": [
+            "We test the sequence generation capability of CaDDi on the AcyP protein dataset, comprising 26,878 protein sequences from the Acylphosphatase family, each containing 64 to 128 residues, sourced from UniProt (Consortium, 2024).",
+            "We assess the quality of generated sequences using the following metrics: pLDDT (Jumper et al., 2021) and self-consistency perplexity (scPPL), which measure the feasibility of sequences to fold into stable protein structures; and TM-score, RMSD, and H-prob, which evaluate the structural similarity of generated sequences to known structures in the PDB database (Berman et al., 2000). Detailed descriptions of these metrics are provided in C.1.",
+            "As shown in Table 1, CaDDi consistently outperforms all baseline models across all metrics. High pLDDT scores and low scPPL values indicate that sequences generated by CaDDi are highly likely to fold into viable protein structures, as visualized in Figure 6. Furthermore, TM-score, RMSD, and H-prob demonstrate that CaDDi generates realistic sequences with strong homology to known structures in the PDB database.",
+            "We test CaDDi’s capability in modeling more complicated sequences on One Billion Words (Chelba et al., 2014), a large, real world natural language dataset consisting over 30M English language sentences with varying lengths. We follow the tokenization and training setup in DiffusionBert (He et al., 2022). For UDLM, we directly use pretrained weights hosted by the authors."
+          ]
+        },
+        {
+          "title": "Metrics",
+          "paragraphs": [
+            "We assess the quality of generated sequences using the following metrics: pLDDT (Jumper et al., 2021) and self-consistency perplexity (scPPL), which measure the feasibility of sequences to fold into stable protein structures; and TM-score, RMSD, and H-prob, which evaluate the structural similarity of generated sequences to known structures in the PDB database (Berman et al., 2000). Detailed descriptions of these metrics are provided in C.1.",
+            "As shown in Table 1, CaDDi consistently outperforms all baseline models across all metrics. High pLDDT scores and low scPPL values indicate that sequences generated by CaDDi are highly likely to fold into viable protein structures, as visualized in Figure 6. Furthermore, TM-score, RMSD, and H-prob demonstrate that CaDDi generates realistic sequences with strong homology to known structures in the PDB database.",
+            "We test CaDDi’s capability in modeling more complicated sequences on One Billion Words (Chelba et al., 2014), a large, real world natural language dataset consisting over 30M English language sentences with varying lengths. We follow the tokenization and training setup in DiffusionBert (He et al., 2022). For UDLM, we directly use pretrained weights hosted by the authors."
+          ]
+        },
+        {
+          "title": "5.2 Unconditional Text Generation",
+          "paragraphs": [
+            "To evaluate the quality of model-generated texts, we report guided generative perplexity, a refined version of generative perplexity that evaluates texts within a natural language context. This adjustment helps mitigate the degenerate behaviors observed with standard generative perplexity (Holtzman et al., 2020) The guided generative perplexity is computed using various large language models, including GPT-2 (Radford et al., 2019), Llama-2 (7B parameters) (Touvron et al., 2023b), and Llama-3 (3B parameters) (Dubey et al., 2024), all of which are pretrained on large natural language corpora. To further evaluate the diversity of generated texts, we compute the self-BLEU (Zhu et al., 2018) score of the set of generated texts. Details of the metrics can be found in C.1).",
+            "CaDDi achieves strong generative perplexities across all three large language models evaluated, outperforming baselines in all but one case with only a marginal difference. This demonstrates CaDDi’s capability in generating coherent text unconditionally. Additionally, CaDDi achieves a comparable self-BLEU score with other models, highlighting its ability to generate diverse and coherent text samples. As shown in Figure 4, with the help of semi-speculative decoding, our model can achieve better performance while maintaining an inference cost comparable to other models."
+          ]
+        },
+        {
+          "title": "Metrics",
+          "paragraphs": [
+            "To evaluate the quality of model-generated texts, we report guided generative perplexity, a refined version of generative perplexity that evaluates texts within a natural language context. This adjustment helps mitigate the degenerate behaviors observed with standard generative perplexity (Holtzman et al., 2020) The guided generative perplexity is computed using various large language models, including GPT-2 (Radford et al., 2019), Llama-2 (7B parameters) (Touvron et al., 2023b), and Llama-3 (3B parameters) (Dubey et al., 2024), all of which are pretrained on large natural language corpora. To further evaluate the diversity of generated texts, we compute the self-BLEU (Zhu et al., 2018) score of the set of generated texts. Details of the metrics can be found in C.1).",
+            "CaDDi achieves strong generative perplexities across all three large language models evaluated, outperforming baselines in all but one case with only a marginal difference. This demonstrates CaDDi’s capability in generating coherent text unconditionally. Additionally, CaDDi achieves a comparable self-BLEU score with other models, highlighting its ability to generate diverse and coherent text samples. As shown in Figure 4, with the help of semi-speculative decoding, our model can achieve better performance while maintaining an inference cost comparable to other models."
+          ]
+        },
+        {
+          "title": "5.3 Conditional Text Generation",
+          "paragraphs": [
+            "We evaluate conditional text generation on the Amazon Polarity dataset (McAuley & Leskovec, 2013), which consists of 3.6M Amazon reviews labeled as positive or negative. We adapt this task as text infilling by prepending a label-based prompt to each review (see Appendix C.2 for details). We train the conditional generator pθ​(𝐱0∣𝐱t,y)p_{\\theta}\\left(\\mathbf{x}_{0}\\mid\\mathbf{x}_{t},y\\right) alongside unconditional one pθ​(𝐱0∣𝐱t)p_{\\theta}\\left(\\mathbf{x}_{0}\\mid\\mathbf{x}_{t}\\right), by preserving certain parts of the text as fixed.",
+            "We measure sentiment accuracy (SA) using a fine-tuned DistilBERT classifier. As shown in Table 3, our approach achieves performance comparable to a fine-tuned GPT-2 on the same dataset while offering more flexible generation (unlike GPT2 only allow prompting from begining, our method allows for prompting from arbitrary parts of the text, such as the middle or the title. Examples are shown in Figure 7). Furthermore, by applying classifier-free guidance (CFG) (Ho & Salimans, 2022) with different guidance scales γ\\gamma, we generate reviews that better align with the given prompts."
+          ]
+        }
+      ]
+    },
+    "6 Conclusion": {
+      "paragraphs": [
+        "We introduced CaDDi, a causal discrete diffusion framework that relaxes the traditional Markovian assumptions in favor of an autoregressive inference process. By explicitly conditioning each denoising step on the entire future trajectory, CaDDi captures richer temporal dependencies and leverages iterative refinement. Critically, our approach can also be built atop existing causal language models—bridging standard sequence modeling with powerful diffusion capabilities—while preserving both knowledge from large-scale training and the flexibility of iterative editing."
+      ],
+      "subsections": []
+    },
+    "Impact Statement": {
+      "paragraphs": [
+        "This paper aims to advance the field of generative models. Beyond the established ethical considerations in this area—such as potential biases—our approach does not introduce any unique risks. The current scope and scale of our work are not sufficient to pose significant concerns in these areas."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Related Work": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Discrete Diffusion.",
+          "paragraphs": [
+            "Diffusion models (Ho et al., 2020) generate data by learning a reverse (denoising) process to invert a fixed forward (noising) Markov chain. Austin et al. (2023) first extended such models to discrete data (D3PM) by defining uniform and absorbing diffusion kernels on finite state spaces. Subsequent work introduced improved parameterizations, such as data distribution ratio estimation (Lou et al., 2024), drawing parallels with score matching (Song et al., 2021). Despite their efficacy, these methods typically rely on a Markov chain, focusing on denoising from a single noisy state 𝐱t\\mathbf{x}_{t}. By contrast, our approach breaks the Markovian assumption and conditions on the entire future trajectory 𝐱t:T\\mathbf{x}_{t:T}, providing more robust denoising and broader generative capabilities."
+          ]
+        },
+        {
+          "title": "Discrete Flow Matching.",
+          "paragraphs": [
+            "Flow matching (Lipman et al., 2023; Tong et al., 2024) learns a continuous transformation from noise to data via an ODE governed by a vector field. Recent extensions handle discrete data (Gat et al., 2024; Davis et al., 2024; Stark et al., 2024). While these methods circumvent explicit Markovian noising, they often require continuous flow formulations and specialized training objectives. In contrast, our non-Markovian discrete diffusion remains within the discrete diffusion paradigm, retains a straightforward variational objective, and integrates naturally with causal modeling."
+          ]
+        },
+        {
+          "title": "Autoregressive Models.",
+          "paragraphs": [
+            "Autoregressive transformers (Vaswani, 2017; Chowdhery et al., 2023; Touvron et al., 2023a) remain a cornerstone in language processing, generating tokens sequentially given prior context. Such models excel at unidirectional left-to-right tasks but can be inflexible for intermediate edits or bidirectional generation. Our framework unifies causal (autoregressive) decoding with diffusion-based iterative denoising, thus benefiting from both paradigms—left-to-right token generation and multi-step refinements."
+          ]
+        },
+        {
+          "title": "Integrating Autoregression with Diffusion and Flow Matching.",
+          "paragraphs": [
+            "Several works (Gu et al., 2024; He et al., 2024) try to combine diffusion or flow matching with causal transformers for improved generation. Specifically, DART (Gu et al., 2024) employs a non-Markovian trajectory to let a transformer model entire sequences of diffusion states. Our approach further refines this idea in two ways: (i) we focus on discrete non-Markovian diffusion with explicit multi-step conditioning, and (ii) we provide a direct path for adapting pretrained LLMs, thus combining the strengths of large-scale language model pretraining with the controllability of discrete diffusion."
+          ]
+        },
+        {
+          "title": "Non-Markovian Reverse Process in Physical System.",
+          "paragraphs": [
+            "Using a Non-Markov reverse process to recover the distribution introduced by Makrovian forward process is not a new idea. In physics, many systems exhibit this property. Langevin Dynamics: Although the forward motion of a Brownian particle (with velocity and position) can be Markovian in the full state space, attempts to reverse the position-only dynamics often require the history of the system to account for friction or random kicks (Gardiner, ; Van Kampen, 1992). Quantum Processes: Tracing out environmental degrees of freedom can yield a Markovian forward evolution, but reconstructing the entire global state upon reversal introduces non-Markovian memory effects."
+          ]
+        }
+      ]
+    },
+    "Appendix B Background": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "B.1 Variants of Diffusion Process.",
+          "paragraphs": [
+            "Different choices of the transition matrix 𝐐t\\mathbf{Q}_{t} lead to different diffusion processes. Common examples include Absorbing Diffusion Process and Uniform Diffusion Process.",
+            "• Absorbing Diffusion: At each time point tt, each token transitions to either itself or a special mask token with probability βt\\beta_{t}. The process converges to a stationary distribution where all tokens are replaced by the mask token.",
+            "• Uniform Diffusion: At each time point tt, each token transitions to itself or any other token with equal probability βt/K\\beta_{t}/K, where KK is the number of classes. The stationary distribution is uniform across all classes.",
+            "Absorbing Diffusion: At each time point tt, each token transitions to either itself or a special mask token with probability βt\\beta_{t}. The process converges to a stationary distribution where all tokens are replaced by the mask token.",
+            "Uniform Diffusion: At each time point tt, each token transitions to itself or any other token with equal probability βt/K\\beta_{t}/K, where KK is the number of classes. The stationary distribution is uniform across all classes.",
+            "Previous work have indicated that the absorbing diffusion process consistently outperforms the uniform diffusion process in practice (Sahoo et al., 2024; Schiff et al., 2024; Austin et al., 2023), but it also suffers from the clear limitation. It cannot “re-mask” a token once it has been unmasked in the traditional Markovian reverse chain, potentially leading to less robust denoising in early timesteps."
+          ]
+        }
+      ]
+    },
+    "Appendix C Experiment Details": {
+      "paragraphs": [
+        "[Table: Table 4: Comparison of the number of learnable parameters of benchmarked models]"
+      ],
+      "subsections": [
+        {
+          "title": "C.1 Evaluation Metrics",
+          "paragraphs": [
+            "The predicted Local Distance Difference Test (pLDDT) score is calculated using the protein-folding model OmegaFold (Wu et al., 2022). To evaluate the folded structures of the generated sequences, we employ FoldSeek (van Kempen et al., 2024) to search against the Protein Data Bank (PDB) (Berman et al., 2000) and compute three key metrics: Root Mean Square Deviation (RMSD), TM-score, and Homologous Probability (H-prob). RMSD measures the average atom-level deviation between structures, making it sensitive to local structural differences. In contrast, TM-score assesses global structural similarity between the generated proteins and their reference counterparts. H-prob quantifies the likelihood that the generated proteins are homologous to the reference proteins.",
+            "Following the methodology of EvoDiff (Alamdari et al., 2023), we fold the generated sequences using OmegaFold and subsequently unfold them using the protein inverse-folding model ESM-IF (Hsu et al., 2022). The self-consistency perplexity is then computed by comparing the original generated sequence with the sequence obtained after the folding-and-unfolding process.",
+            "Generative perplexity is a widely used metric for evaluating the quality of text generated by a model. It is computed using a separate, pretrained causal language model, which calculates the perplexity of a given sentence. Intuitively, a lower generative perplexity indicates that the pretrained causal language model is more confident in predicting the next token based on the preceding context. This suggests that the generated sentence is more coherent, as the causal language model, trained on a large corpus, can reliably predict tokens given the context.",
+            "However, as noted in (Holtzman et al., 2020), language models may exhibit degenerate behavior, such as repetitive text generation, while still achieving low generative perplexity. To address this issue, we employ guided generative perplexity, where a natural language prompt is appended to the sequences being evaluated. This prompt guides the causal language model to assess the coherence of the generated sequence more effectively, mitigating the impact of degenerate behavior.",
+            "In particular, we used Does the following sentence make sense: as the prompt.",
+            "The self-BLEU score, introduced in (Zhu et al., 2018), is a metric for evaluating the diversity of a set of generated texts. It computes the BLEU score of each generated sequence against the remaining sequences and averages the results. A lower self-BLEU score indicates the generated texts are less similar to each other and hence greater diversity among the generated texts."
+          ]
+        },
+        {
+          "title": "Protein Evaluation Metrics",
+          "paragraphs": [
+            "The predicted Local Distance Difference Test (pLDDT) score is calculated using the protein-folding model OmegaFold (Wu et al., 2022). To evaluate the folded structures of the generated sequences, we employ FoldSeek (van Kempen et al., 2024) to search against the Protein Data Bank (PDB) (Berman et al., 2000) and compute three key metrics: Root Mean Square Deviation (RMSD), TM-score, and Homologous Probability (H-prob). RMSD measures the average atom-level deviation between structures, making it sensitive to local structural differences. In contrast, TM-score assesses global structural similarity between the generated proteins and their reference counterparts. H-prob quantifies the likelihood that the generated proteins are homologous to the reference proteins.",
+            "Following the methodology of EvoDiff (Alamdari et al., 2023), we fold the generated sequences using OmegaFold and subsequently unfold them using the protein inverse-folding model ESM-IF (Hsu et al., 2022). The self-consistency perplexity is then computed by comparing the original generated sequence with the sequence obtained after the folding-and-unfolding process."
+          ]
+        },
+        {
+          "title": "Text Evaluation Metrics",
+          "paragraphs": [
+            "Generative perplexity is a widely used metric for evaluating the quality of text generated by a model. It is computed using a separate, pretrained causal language model, which calculates the perplexity of a given sentence. Intuitively, a lower generative perplexity indicates that the pretrained causal language model is more confident in predicting the next token based on the preceding context. This suggests that the generated sentence is more coherent, as the causal language model, trained on a large corpus, can reliably predict tokens given the context.",
+            "However, as noted in (Holtzman et al., 2020), language models may exhibit degenerate behavior, such as repetitive text generation, while still achieving low generative perplexity. To address this issue, we employ guided generative perplexity, where a natural language prompt is appended to the sequences being evaluated. This prompt guides the causal language model to assess the coherence of the generated sequence more effectively, mitigating the impact of degenerate behavior.",
+            "In particular, we used Does the following sentence make sense: as the prompt.",
+            "The self-BLEU score, introduced in (Zhu et al., 2018), is a metric for evaluating the diversity of a set of generated texts. It computes the BLEU score of each generated sequence against the remaining sequences and averages the results. A lower self-BLEU score indicates the generated texts are less similar to each other and hence greater diversity among the generated texts."
+          ]
+        },
+        {
+          "title": "C.2 Amazon Dataset Experiment",
+          "paragraphs": [
+            "The original Amazon Polarity dataset contains labels 0 or 1 , indicating whether a review is negative or positive, respectively. To enable conditional generation, we prepend the phrase this is a positive review or this is a negative review to positive and negative samples, respectively. This allows a standard causal language model, such as GPT-2, to condition its generation on the sentiment prompt. For evaluation, we use a fine-tuned DistilBERT classifier to measure sentiment accuracy."
+          ]
+        },
+        {
+          "title": "C.3 Learnable Parameter Count",
+          "paragraphs": []
+        }
+      ]
+    },
+    "Appendix D Ablation Study": {
+      "paragraphs": [
+        "We conduct an ablation study to investigate the impact of the number of diffusion time points on CaDDi’s performance. Due to limited computational resources, we did abalation study on a subset of the AcyP protein dataset, as a result the pLDDT scores and scPerplexity appear better than the main results, while varying the number of diffusion time points. Our results demonstrate that increasing the number of diffusion time points significantly improves the generation quality of CaDDi.",
+        "[Figure: Figure 5: Ablation result on model generated protein quality over different number of diffusion time points.]"
+      ],
+      "subsections": []
+    },
+    "Appendix E Generation Samples from CaDDi": {
+      "paragraphs": [
+        "[Figure: Figure 6: Folded generation samples using OmegaFold (Wu et al., 2022). ACYP (Acylphosphatase) is a protein family of small enzymes that hydrolyze acyl-phosphate bonds and share a similar structure. A higher pLDDT score indicates greater confidence in the structure prediction by the folding model.]",
+        "[Figure: Figure 7: Sample generated using CaDDi, conditioned on a negative prompt. In each sample, the purple text indicates the prompt.]",
+        "[Figure: Figure 8: Sample generated using CaDDi, conditioned on a positive prompt. In each sample, the purple text indicates the prompt.]"
+      ],
+      "subsections": [
+        {
+          "title": "E.1 Protein ACYP",
+          "paragraphs": [
+            "[Figure: Figure 6: Folded generation samples using OmegaFold (Wu et al., 2022). ACYP (Acylphosphatase) is a protein family of small enzymes that hydrolyze acyl-phosphate bonds and share a similar structure. A higher pLDDT score indicates greater confidence in the structure prediction by the folding model.]"
+          ]
+        },
+        {
+          "title": "E.2 Amazon Polarity",
+          "paragraphs": [
+            "[Figure: Figure 7: Sample generated using CaDDi, conditioned on a negative prompt. In each sample, the purple text indicates the prompt.]",
+            "[Figure: Figure 8: Sample generated using CaDDi, conditioned on a positive prompt. In each sample, the purple text indicates the prompt.]"
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "Alamdari et al. (2023) Alamdari, S., Thakkar, N., van den Berg, R., Lu, A. X., Fusi, N., Amini, A. P., and Yang, K. K. Protein generation with evolutionary diffusion: sequence is all you need. bioRxiv, 2023. doi: 10.1101/2023.09.11.556673. URL https://www.biorxiv.org/content/early/2023/09/12/2023.09.11.556673.",
+    "Austin et al. (2023) Austin, J., Johnson, D. D., Ho, J., Tarlow, D., and van den Berg, R. Structured denoising diffusion models in discrete state-spaces, 2023. URL https://arxiv.org/abs/2107.03006.",
+    "Berman et al. (2000) Berman, H. M., Westbrook, J., Feng, Z., Gilliland, G., Bhat, T. N., Weissig, H., Shindyalov, I. N., and Bourne, P. E. The protein data bank. Nucleic Acids Res, 28(1):235–242, January 2000.",
+    "Biderman et al. (2023a) Biderman, S., Schoelkopf, H., Anthony, Q., Bradley, H., O’Brien, K., Hallahan, E., Khan, M. A., Purohit, S., Prashanth, U. S., Raff, E., Skowron, A., Sutawika, L., and van der Wal, O. Pythia: A suite for analyzing large language models across training and scaling, 2023a. URL https://arxiv.org/abs/2304.01373.",
+    "Biderman et al. (2023b) Biderman, S., Schoelkopf, H., Anthony, Q. G., Bradley, H., O’Brien, K., Hallahan, E., Khan, M. A., Purohit, S., Prashanth, U. S., Raff, E., et al. Pythia: A suite for analyzing large language models across training and scaling. In International Conference on Machine Learning, pp. 2397–2430. PMLR, 2023b.",
+    "Campbell et al. (2022) Campbell, A., Benton, J., De Bortoli, V., Rainforth, T., Deligiannidis, G., and Doucet, A. A continuous time framework for discrete denoising models. Advances in Neural Information Processing Systems, 35:28266–28279, 2022.",
+    "Chelba et al. (2014) Chelba, C., Mikolov, T., Schuster, M., Ge, Q., Brants, T., Koehn, P., and Robinson, T. One billion word benchmark for measuring progress in statistical language modeling, 2014. URL https://arxiv.org/abs/1312.3005.",
+    "Chowdhery et al. (2023) Chowdhery, A., Narang, S., Devlin, J., Bosma, M., Mishra, G., Roberts, A., Barham, P., Chung, H. W., Sutton, C., Gehrmann, S., et al. Palm: Scaling language modeling with pathways. Journal of Machine Learning Research, 24(240):1–113, 2023.",
+    "Consortium (2024) Consortium, T. U. Uniprot: the universal protein knowledgebase in 2025. Nucleic Acids Research, 53(D1):D609–D617, 11 2024. ISSN 0305-1048. doi: 10.1093/nar/gkae1010. URL https://doi.org/10.1093/nar/gkae1010.",
+    "Davis et al. (2024) Davis, O., Kessler, S., Petrache, M., İsmail İlkan Ceylan, Bronstein, M., and Bose, A. J. Fisher flow matching for generative modeling over discrete data, 2024. URL https://arxiv.org/abs/2405.14664.",
+    "Dieleman et al. (2022) Dieleman, S., Sartran, L., Roshannai, A., Savinov, N., Ganin, Y., Richemond, P. H., Doucet, A., Strudel, R., Dyer, C., Durkan, C., et al. Continuous diffusion for categorical data. arXiv preprint arXiv:2211.15089, 2022.",
+    "Dubey et al. (2024) Dubey, A., Jauhri, A., Pandey, A., Kadian, A., Al-Dahle, A., Letman, A., Mathur, A., Schelten, A., Yang, A., Fan, A., et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783, 2024.",
+    "(13) Gardiner, C. Stochastic methods: A handbook for the natural and social sciences2009.",
+    "Gat et al. (2024) Gat, I., Remez, T., Shaul, N., Kreuk, F., Chen, R. T. Q., Synnaeve, G., Adi, Y., and Lipman, Y. Discrete flow matching, 2024. URL https://arxiv.org/abs/2407.15595.",
+    "Gu et al. (2024) Gu, J., Wang, Y., Zhang, Y., Zhang, Q., Zhang, D., Jaitly, N., Susskind, J., and Zhai, S. Dart: Denoising autoregressive transformer for scalable text-to-image generation, 2024. URL https://arxiv.org/abs/2410.08159.",
+    "Gulrajani & Hashimoto (2024) Gulrajani, I. and Hashimoto, T. B. Likelihood-based diffusion language models. Advances in Neural Information Processing Systems, 36, 2024.",
+    "He et al. (2024) He, S., Levine, D., Vrkic, I., Bressana, M. F., Zhang, D., Rizvi, S. A., Zhang, Y., Zappala, E., and van Dijk, D. Calmflow: Volterra flow matching using causal language models, 2024. URL https://arxiv.org/abs/2410.05292.",
+    "He et al. (2022) He, Z., Sun, T., Wang, K., Huang, X., and Qiu, X. Diffusionbert: Improving generative masked language models with diffusion models, 2022. URL https://arxiv.org/abs/2211.15029.",
+    "Ho & Salimans (2022) Ho, J. and Salimans, T. Classifier-free diffusion guidance. arXiv preprint arXiv:2207.12598, 2022.",
+    "Ho et al. (2020) Ho, J., Jain, A., and Abbeel, P. Denoising diffusion probabilistic models, 2020. URL https://arxiv.org/abs/2006.11239.",
+    "Holtzman et al. (2020) Holtzman, A., Buys, J., Du, L., Forbes, M., and Choi, Y. The curious case of neural text degeneration, 2020. URL https://arxiv.org/abs/1904.09751.",
+    "Hsu et al. (2022) Hsu, C., Verkuil, R., Liu, J., Lin, Z., Hie, B., Sercu, T., Lerer, A., and Rives, A. Learning inverse folding from millions of predicted structures. ICML, 2022. doi: 10.1101/2022.04.10.487779. URL https://www.biorxiv.org/content/early/2022/04/10/2022.04.10.487779.",
+    "Hu & Ommer (2024) Hu, V. T. and Ommer, B. [mask] is all you need. arXiv preprint arXiv:2412.06787, 2024.",
+    "Jumper et al. (2021) Jumper, J., Evans, R., Pritzel, A., Green, T., Figurnov, M., Ronneberger, O., Tunyasuvunakool, K., Bates, R., Žídek, A., Potapenko, A., Bridgland, A., Meyer, C., Kohl, S. A. A., Ballard, A. J., Cowie, A., Romera-Paredes, B., Nikolov, S., Jain, R., Adler, J., Back, T., Petersen, S., Reiman, D., Clancy, E., Zielinski, M., Steinegger, M., Pacholska, M., Berghammer, T., Bodenstein, S., Silver, D., Vinyals, O., Senior, A. W., Kavukcuoglu, K., Kohli, P., and Hassabis, D. Highly accurate protein structure prediction with alphafold. Nature, 596(7873):583–589, Aug 2021. ISSN 1476-4687. doi: 10.1038/s41586-021-03819-2. URL https://doi.org/10.1038/s41586-021-03819-2.",
+    "Leviathan et al. (2023) Leviathan, Y., Kalman, M., and Matias, Y. Fast inference from transformers via speculative decoding. In International Conference on Machine Learning, pp. 19274–19286. PMLR, 2023.",
+    "Lipman et al. (2023) Lipman, Y., Chen, R. T. Q., Ben-Hamu, H., Nickel, M., and Le, M. Flow matching for generative modeling, 2023. URL https://arxiv.org/abs/2210.02747.",
+    "Liu et al. (2024) Liu, A., Broadrick, O., Niepert, M., and Broeck, G. V. d. Discrete copula diffusion. arXiv preprint arXiv:2410.01949, 2024.",
+    "Lou et al. (2024) Lou, A., Meng, C., and Ermon, S. Discrete diffusion modeling by estimating the ratios of the data distribution, 2024. URL https://arxiv.org/abs/2310.16834.",
+    "McAuley & Leskovec (2013) McAuley, J. and Leskovec, J. Hidden factors and hidden topics: understanding rating dimensions with review text. In Proceedings of the 7th ACM conference on Recommender systems, pp. 165–172, 2013.",
+    "Park et al. (2024) Park, Y.-H., Lai, C.-H., Hayakawa, S., Takida, Y., and Mitsufuji, Y. Jump your steps: Optimizing sampling schedule of discrete diffusion models. arXiv preprint arXiv:2410.07761, 2024.",
+    "Peebles & Xie (2023) Peebles, W. and Xie, S. Scalable diffusion models with transformers, 2023. URL https://arxiv.org/abs/2212.09748.",
+    "Radford et al. (2019) Radford, A., Wu, J., Child, R., Luan, D., Amodei, D., and Sutskever, I. Language models are unsupervised multitask learners. 2019.",
+    "Sahoo et al. (2024) Sahoo, S. S., Arriola, M., Schiff, Y., Gokaslan, A., Marroquin, E., Chiu, J. T., Rush, A., and Kuleshov, V. Simple and effective masked diffusion language models. arXiv preprint arXiv:2406.07524, 2024.",
+    "Schiff et al. (2024) Schiff, Y., Sahoo, S. S., Phung, H., Wang, G., Boshar, S., Dalla-torre, H., de Almeida, B. P., Rush, A., Pierrot, T., and Kuleshov, V. Simple guidance mechanisms for discrete diffusion models. arXiv preprint arXiv:2412.10193, 2024.",
+    "Shen et al. (2023) Shen, T., Peng, H., Shen, R., Fu, Y., Harchaoui, Z., and Choi, Y. Film: Fill-in language models for any-order generation. arXiv preprint arXiv:2310.09930, 2023.",
+    "Shi et al. (2024) Shi, J., Han, K., Wang, Z., Doucet, A., and Titsias, M. K. Simplified and generalized masked diffusion for discrete data. arXiv preprint arXiv:2406.04329, 2024.",
+    "Song et al. (2021) Song, Y., Sohl-Dickstein, J., Kingma, D. P., Kumar, A., Ermon, S., and Poole, B. Score-based generative modeling through stochastic differential equations, 2021. URL https://arxiv.org/abs/2011.13456.",
+    "Stark et al. (2024) Stark, H., Jing, B., Wang, C., Corso, G., Berger, B., Barzilay, R., and Jaakkola, T. Dirichlet flow matching with applications to dna sequence design, 2024. URL https://arxiv.org/abs/2402.05841.",
+    "Su et al. (2024) Su, J., Ahmed, M., Lu, Y., Pan, S., Bo, W., and Liu, Y. Roformer: Enhanced transformer with rotary position embedding. Neurocomputing, 568:127063, 2024.",
+    "Tong et al. (2024) Tong, A., Fatras, K., Malkin, N., Huguet, G., Zhang, Y., Rector-Brooks, J., Wolf, G., and Bengio, Y. Improving and generalizing flow-based generative models with minibatch optimal transport, 2024. URL https://arxiv.org/abs/2302.00482.",
+    "Touvron et al. (2023a) Touvron, H., Lavril, T., Izacard, G., Martinet, X., Lachaux, M.-A., Lacroix, T., Rozière, B., Goyal, N., Hambro, E., Azhar, F., et al. Llama: Open and efficient foundation language models. arXiv preprint arXiv:2302.13971, 2023a.",
+    "Touvron et al. (2023b) Touvron, H., Martin, L., Stone, K., Albert, P., Almahairi, A., Babaei, Y., Bashlykov, N., Batra, S., Bhargava, P., Bhosale, S., Bikel, D., Blecher, L., Ferrer, C. C., Chen, M., Cucurull, G., Esiobu, D., Fernandes, J., Fu, J., Fu, W., Fuller, B., Gao, C., Goswami, V., Goyal, N., Hartshorn, A., Hosseini, S., Hou, R., Inan, H., Kardas, M., Kerkez, V., Khabsa, M., Kloumann, I., Korenev, A., Koura, P. S., Lachaux, M.-A., Lavril, T., Lee, J., Liskovich, D., Lu, Y., Mao, Y., Martinet, X., Mihaylov, T., Mishra, P., Molybog, I., Nie, Y., Poulton, A., Reizenstein, J., Rungta, R., Saladi, K., Schelten, A., Silva, R., Smith, E. M., Subramanian, R., Tan, X. E., Tang, B., Taylor, R., Williams, A., Kuan, J. X., Xu, P., Yan, Z., Zarov, I., Zhang, Y., Fan, A., Kambadur, M., Narang, S., Rodriguez, A., Stojnic, R., Edunov, S., and Scialom, T. Llama 2: Open foundation and fine-tuned chat models, 2023b. URL https://arxiv.org/abs/2307.09288.",
+    "Van Kampen (1992) Van Kampen, N. G. Stochastic processes in physics and chemistry, volume 1. Elsevier, 1992.",
+    "van Kempen et al. (2024) van Kempen, M., Kim, S. S., Tumescheit, C., Mirdita, M., Lee, J., Gilchrist, C. L. M., Söding, J., and Steinegger, M. Fast and accurate protein structure search with foldseek. Nature Biotechnology, 42(2):243–246, Feb 2024. ISSN 1546-1696. doi: 10.1038/s41587-023-01773-0. URL https://doi.org/10.1038/s41587-023-01773-0.",
+    "Vaswani (2017) Vaswani, A. Attention is all you need. Advances in Neural Information Processing Systems, 2017.",
+    "Wu et al. (2022) Wu, R., Ding, F., Wang, R., Shen, R., Zhang, X., Luo, S., Su, C., Wu, Z., Xie, Q., Berger, B., Ma, J., and Peng, J. High-resolution de novo structure prediction from primary sequence. bioRxiv, 2022. doi: 10.1101/2022.07.21.500999. URL https://www.biorxiv.org/content/early/2022/07/22/2022.07.21.500999.",
+    "Xu et al. (2024) Xu, M., Geffner, T., Kreis, K., Nie, W., Xu, Y., Leskovec, J., Ermon, S., and Vahdat, A. Energy-based diffusion language models for text generation. arXiv preprint arXiv:2410.21357, 2024.",
+    "Zheng et al. (2024) Zheng, K., Chen, Y., Mao, H., Liu, M.-Y., Zhu, J., and Zhang, Q. Masked diffusion models are secretly time-agnostic masked models and exploit inaccurate categorical sampling. arXiv preprint arXiv:2409.02908, 2024.",
+    "Zhu et al. (2018) Zhu, Y., Lu, S., Zheng, L., Guo, J., Zhang, W., Wang, J., and Yu, Y. Texygen: A benchmarking platform for text generation models, 2018. URL https://arxiv.org/abs/1802.01886."
+  ]
+}

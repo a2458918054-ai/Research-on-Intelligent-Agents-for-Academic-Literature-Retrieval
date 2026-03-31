@@ -1,0 +1,305 @@
+{
+  "title": "Which Attention Heads Matter for In-Context Learning?",
+  "authors": "Kayo YinJacob Steinhardt",
+  "abstract": "Large language models (LLMs) exhibit impressive in-context learning (ICL) capability, enabling them to perform new tasks using only a few demonstrations in the prompt. Two different mechanisms have been proposed to explain ICL: induction heads that find and copy relevant tokens, and function vector (FV) heads whose activations compute a latent encoding of the ICL task. To better understand which of the two distinct mechanisms drives ICL, we study and compare induction heads and FV heads in 12 language models. Through detailed ablations, we discover that few-shot ICL performance depends primarily on FV heads, especially in larger models. In addition, we uncover that FV and induction heads are connected: many FV heads start as induction heads during training before transitioning to the FV mechanism. This leads us to speculate that induction facilitates learning the more complex FV mechanism that ultimately drives ICL222Code and data: https://github.com/kayoyin/icl-heads..",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "One of the most remarkable features of large language models (LLM) is their ability to perform in-context learning (ICL), where they can adapt to various new tasks using only a few demonstrations at inference time. This capability has become a crucial tool for adapting pre-trained LLMs to specific tasks, sparking significant research interest in understanding its underlying mechanisms (Olsson et al., 2022; Akyürek et al., 2023; Von Oswald et al., 2023).",
+        "To date, two key mechanisms have been primarily associated with ICL, substantiated by different lines of evidence. First, induction circuits (Elhage et al., 2021) were hypothesized to be the primary mechanism behind ICL in LLMs (Olsson et al., 2022; Singh et al., 2024; Crosbie & Shutova, 2024; Dong et al., 2022). Induction circuits operate by identifying previous occurrences of the current token in the prompt and copying the subsequent token. More recently, Todd et al. (2024) and Hendel et al. (2023) propose the existence of function vectors (FV). FVs are a compact representation of a task extracted from specific attention heads, and they can be added to a model’s computation to recover ICL behavior without in-context demonstrations.",
+        "To resolve whether one or both mechanisms drive ICL in transformer LLMs, we conduct a comprehensive study of the attention heads implementing these mechanisms (termed induction heads and FV heads) across 12 decoder-only transformer models ranging from 70M to 7B parameters (Table 2) and 45 natural language ICL tasks (listed in Appendix A.7). Our analysis reveals several key findings.",
+        "First, we verify that there is a difference to explain, i.e. that induction and FV heads are indeed distinct (§3). Across models, there is a low or zero overlap between induction and FV heads. These heads also have distinct characteristics: induction heads generally appear in slightly earlier layers than FV heads, and emerge significantly earlier during training. On the other hand, there are correlations in behavior: FV heads behave more similarly to induction heads than a random head from the same network, and vice versa.",
+        "Second, through ablation studies (§4), we demonstrate that FV heads are the primary drivers of ICL performance. Removing FV heads substantially degrades ICL task accuracy, while removing induction heads has a limited effect (Figure 1(a)). This effect is consistent in all 12 models we studied, and becomes more pronounced in larger models (§4). Interestingly, this challenges the prevailing view of induction heads as the key mechanism for few-shot ICL (Olsson et al., 2022; Crosbie & Shutova, 2024; Dong et al., 2022).",
+        "Third, we reconcile our findings with previous work by identifying three key methodological differences (§2): earlier studies used a different metric for ICL that does not strongly track few-shot performance, did not account for correlations between FV and induction heads, and sometimes focused on small models. We find the choice of metric is the most significant factor, and discuss this in detail in §2 with detailed experiments in §4.",
+        "Finally, by analyzing training dynamics (§5), we uncover a surprising developmental relationship: many induction heads evolve into FV heads during training, but the reverse never occurs (Figure 1(b)). This leads us to speculate that induction heads facilitate learning the more complex FV heads for ICL – the FV mechanism is more effective at performing ICL, and therefore eventually replaces the simpler induction mechanism §6.",
+        "Aside from clarifying the drivers of few-shot ICL, our findings offer broader lessons for model interpretability research. They highlight how correlations between related mechanisms can lead to illusory explanations (e.g. the confounding effect of the correlation between induction and FV heads), and the choice of definitions may lead to different conclusions (e.g. different metrics to measure ICL). Additionally, our results challenge strong versions of universality – the difference between the importance of FV heads and induction heads shifts significantly with model scale (§4)."
+      ],
+      "subsections": []
+    },
+    "2 Background & related work": {
+      "paragraphs": [
+        "We present a comparative analysis of two mechanisms proposed to explain ICL: induction heads (Elhage et al., 2021; Olsson et al., 2022) and FV heads (Todd et al., 2024; Hendel et al., 2023)."
+      ],
+      "subsections": [
+        {
+          "title": "2.1 Induction heads",
+          "paragraphs": [
+            "Induction heads were first identified by Elhage et al. (2021) and extensively studied by Olsson et al. (2022) as the mechanism behind ICL. They are attention heads that operate by identifying repeated patterns in the input: when processing a token, they attend to the token that followed a previous occurrence of the same token, predicting it will appear next.",
+            "The initial evidence for induction heads’ role in ICL came from Olsson et al. (2022), who studied small attention-only models (1-3 layers). They observed that the emergence of induction heads during training coincided with improvements in ICL ability – measured as the difference between the loss at the 500th versus 50th token in the context. Their ablation studies showed that removing induction heads impaired this metric.",
+            "To identify and analyze induction heads, we measure their induction scores using the TransformerLens framework (Nanda & Bloom, 2022). For each attention head aa, we compute its induction score on a synthetic sequence constructed by repeating a uniformly sampled random token sequence: r=r1​r2​…​r50​r1′​r2′​…​r50′r=r_{1}r_{2}...r_{50}r^{\\prime}_{1}r^{\\prime}_{2}...r^{\\prime}_{50}. The induction score is defined as:",
+            "where ari′→ri+1a_{r^{\\prime}_{i}\\rightarrow r_{i+1}} represents the attention weight that head aa places on token ri+1r_{i+1} when processing token ri′r^{\\prime}_{i}. For each attention head in each model, we take the mean induction score over 1000 samples of random sequences rr, normalized by total attention mass to obtain a value between 0 and 1."
+          ]
+        },
+        {
+          "title": "2.2 FV heads",
+          "paragraphs": [
+            "Function vectors (FV) were concurrently discovered by Todd et al. (2024) and Hendel et al. (2023). They represent a different mechanism for ICL: FVs are compact vector representations of ICL tasks that can be extracted from specific attention heads and added back into the language model’s computations to reproduce ICL behavior. We refer to the attention heads that encode and transport these function vectors as FV heads.",
+            "To identify FV heads, we employ the casual mediation analysis framework from Todd et al. (2024). For each ICL task tt in our task set 𝒯\\mathcal{T}, where tt is defined by a dataset PtP_{t} of in-context prompts pit∈Ptp_{i}^{t}\\in P_{t} consisting of input-output pairs (xi,yi)(x_{i},y_{i}), we:",
+            "1. Compute the mean activation of an attention head aa over prompts in PtP_{t}: a¯t=1Pt​∑pit∈Pta​(pit)\\bar{a}^{t}=\\frac{1}{P_{t}}\\sum_{p_{i}^{t}\\in P_{t}}a(p_{i}^{t})",
+            "2. Create corrupted ICL prompts p~it∈P~t\\tilde{p}_{i}^{t}\\in\\tilde{P}_{t} by randomly shuffling the output labels yi~\\tilde{y_{i}} while maintaining the same inputs xix_{i}",
+            "3. Measure each head’s function vector score (FV score) as its causal contribution to recovering the correct output yy for the input xx given corrupted examples (xi,yi~)(x_{i},\\tilde{y_{i}}) when its activation pattern is replaced with the mean task-conditioned activation a¯t\\bar{a}^{t}:",
+            "Compute the mean activation of an attention head aa over prompts in PtP_{t}: a¯t=1Pt​∑pit∈Pta​(pit)\\bar{a}^{t}=\\frac{1}{P_{t}}\\sum_{p_{i}^{t}\\in P_{t}}a(p_{i}^{t})",
+            "Create corrupted ICL prompts p~it∈P~t\\tilde{p}_{i}^{t}\\in\\tilde{P}_{t} by randomly shuffling the output labels yi~\\tilde{y_{i}} while maintaining the same inputs xix_{i}",
+            "Measure each head’s function vector score (FV score) as its causal contribution to recovering the correct output yy for the input xx given corrupted examples (xi,yi~)(x_{i},\\tilde{y_{i}}) when its activation pattern is replaced with the mean task-conditioned activation a¯t\\bar{a}^{t}:",
+            "For each attention head, we take the mean FV score across 37 natural language ICL tasks from (Todd et al., 2024) (Appendix A.7), using 100 prompts per task. Each prompt contains 10 input-output demonstration pairs followed by a single test instance."
+          ]
+        },
+        {
+          "title": "2.3 Reconciling divergent findings",
+          "paragraphs": [
+            "While both mechanisms have been proposed by their respective works as the mechanism behind ICL, our side-by-side analysis of induction and FV heads reveals that FV heads seem to primarily contribute to ICL performance. We believe that the main reason for the divergence between our result and previous work lies in several intuitively related concepts in the literature that are assumed to be the same.",
+            "First, there is an important distinction between two different conceptualizations of ICL:",
+            "• On one hand, ICL is often used synonymously with few-shot learning from the prompt without parameter updates (Brown, 2020; Dong et al., 2022; Wei et al., 2023). We adopt this conceptualization of ICL in this paper since it is the most standard in the literature, and for clarity, we will use “in-context learning” in this paper with this definition.",
+            "• On the other hand, ICL performance is measured in Olsson et al. (2022) by computing the difference between the model loss of the 500th token in the context and the loss of the 50th token. This difference was previously called “ICL score” but we recommend adopting distinct terminology to avoid confusion, and we call this token-loss difference.",
+            "On one hand, ICL is often used synonymously with few-shot learning from the prompt without parameter updates (Brown, 2020; Dong et al., 2022; Wei et al., 2023). We adopt this conceptualization of ICL in this paper since it is the most standard in the literature, and for clarity, we will use “in-context learning” in this paper with this definition.",
+            "On the other hand, ICL performance is measured in Olsson et al. (2022) by computing the difference between the model loss of the 500th token in the context and the loss of the 50th token. This difference was previously called “ICL score” but we recommend adopting distinct terminology to avoid confusion, and we call this token-loss difference.",
+            "Our experiments reveal that these metrics capture different phenomena: FV heads strongly influence few-shot ICL accuracy but not token-loss difference, while induction heads show the opposite pattern (§4). This divergence of token-loss difference from few-shot ICL performance accounts for much of the apparent contradiction with previous findings.",
+            "Second, we find that induction heads and FV heads are correlated (§3), a confound not previously controlled for. Initial ablation studies, including ours (§4), showed that removing induction heads significantly degrades few-shot ICL accuracy (Crosbie & Shutova, 2024; Bansal et al., 2023). However, when we control for this correlation by only ablating induction heads with low FV scores, their impact becomes comparable to random ablation. In contrast, ablating FV heads with low induction scores still significantly degrades ICL performance. This suggests that previous studies may have attributed to induction heads effects that actually stemmed from FV-like behavior in a subset of induction heads.",
+            "Third, scale matters. Previous work establishing induction heads as the key ICL mechanism (Olsson et al., 2022; Singh et al., 2024) focused on small models to enable detailed mechanistic analysis. However, we find that the relative importance of FV heads increases with model scale. In our smallest model (70M parameters), induction and FV heads have similar causal effects on few-shot ICL (§A.2), but this does not hold true in larger models, which highlights the importance of studying these phenomena across different model scales."
+          ]
+        }
+      ]
+    },
+    "3 Induction heads and function vector heads are distinct but correlated": {
+      "paragraphs": [
+        "Before analyzing the relative contributions of induction and FV heads to ICL performance, we first establish that these represent distinct mechanisms, while noting important correlations between them."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Head locations",
+          "paragraphs": [
+            "We begin by examining the location of the top induction and FV heads within the models. Figure 2 shows the layers where the top 2%111In certain cases, we need to differentiate between meaningful induction / FV heads and the long tail of attention heads that perform neither induction nor the FV mechanism. We choose the top 2% induction and FV heads as the representative set of induction and FV heads, following Todd et al. (2024). induction heads and FV heads appear in three representative Pythia models (see Appendix A.9 for all 12 models).",
+            "In general, induction heads appear in early-middle layers and FV heads appear in slightly deeper layers than induction heads. This suggests that induction and FV heads do not fully overlap and are indeed distinct mechanisms. Moreover, the deeper locations of FV heads may indicate they implement more abstract computations than induction heads, though this interpretation remains speculative."
+          ]
+        },
+        {
+          "title": "3.2 Overlap between induction and FV heads",
+          "paragraphs": [
+            "To further examine how distinct induction and FV heads are, we analyze the extent of the overlap between the two types of heads in two ways.",
+            "First, we measure direct overlap - the percentage of heads that rank in the top 2% for both mechanisms: 100×|I​H∩F​V||I​H|100\\times\\frac{|IH\\cap FV|}{|IH|} where I​HIH and F​VFV represent the sets of top induction and FV heads respectively. The results show minimal overlap: seven of our twelve models show zero overlap, with the remaining models showing only 5-15% overlap (Figure 3 left). This leads us to conclude that induction heads and FV heads are mostly distinct and justifies studying them as two different mechanisms.",
+            "However, a more nuanced pattern emerges when we compute the percentile of the induction score of the top 2% FV heads (Figure 3 center) and the percentile of the FV score of the top 2% induction heads (Figure 3 right). In most models, FV heads are at around the 90-95th percentile of induction scores, and vice versa. Therefore, although there is little overlap between the sets of induction and FV heads, induction and FV scores are correlated: FV heads have high induction scores relative to other attention heads, and induction heads have relatively high FV scores 222In our main analysis, we do not rely on the correlation between the distribution of induction scores and FV scores across the full set of attention heads because there is a long tail of attention heads with low scores on both induction and FV. For completeness, we plot the induction and FV scores of all heads in Appendix A.1.."
+          ]
+        }
+      ]
+    },
+    "4 Function vector heads drive in-context learning": {
+      "paragraphs": [
+        "Having established that induction and FV heads represent distinct mechanisms, we now investigate their relative causal importance for ICL through systematic ablation studies. Our analysis focuses primarily on few-shot ICL accuracy while also examining effects on token-loss difference for comparison with previous work."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Method",
+          "paragraphs": [
+            "Ablation. To assess the causal contribution of different attention heads, we measure how ICL performance changes when specific heads are disabled. We use mean ablation, where we replace each target head’s output with its average output across our task dataset (described in later sections). This approach avoids the out-of-distribution effects associated with zero ablation (Hase et al., 2021; Wang et al., 2023; Zhang & Nanda, 2024), though our findings remain robust across different ablation methods (Appendix A.3).",
+            "To control for the correlation between induction and FV heads identified in Section 3, we introduce ablation with “exclusion”: when ablating nn FV heads, we select the top nn heads by FV score that are not in the top 2% by induction score, and vice versa. This helps isolate the unique contributions of each mechanism.",
+            "Few-shot ICL accuracy. Our primary metric evaluates ICL performance on a series of few-shot ICL tasks. Each ICL task is defined by a set of input-output pairs (xi,yi)(x_{i},y_{i}). The model is prompted with 10 input-output exemplar pairs that demonstrate this task, and one query input xqx_{q} that corresponds to a target output yqy_{q} that is not part of the model’s prompt. We compute the model’s accuracy in predicting the correct output yqy_{q}. We summarize the full set of ICL tasks we study in Appendix A.7.",
+            "To avoid leakage between ICL tasks used to identify FV heads and those used to evaluate FV head ablations, we randomly split the 37 ICL tasks from Todd et al. (2024) into 26 tasks used to measure FV scores of heads, and 11 tasks to evaluate ICL performance. We also add 8 new tasks for ICL evaluation: 4 tasks are variations of tasks in Todd et al. (2024), and 4 are binding tasks from Feng & Steinhardt (2024). In total, we evaluate ICL accuracy on 19 natural language tasks, with 100 prompts per task.",
+            "Token-loss difference. To compare with previous work, we also study the effect of ablations on token-loss difference used in Olsson et al. (2022). We measure token-loss difference by taking the loss of the 50th token in the context minus the loss of the 500th token in the context333We invert the difference used in Olsson et al. (2022) so higher scores indicate better ICL performance., averaged over 10,000 examples from the Pile dataset (Gao et al., 2020)."
+          ]
+        },
+        {
+          "title": "4.2 Results",
+          "paragraphs": [
+            "We evaluate the impact of ablating different proportions (1-20%) of the top attention heads based on induction or FV score, across all models. We compare against two baselines: model performance with no ablation (“clean”) and with ablations of randomly sampled heads (“random”). Figure 4 shows results for three representative models, where few-shot ICL accuracy is averaged over the 19 evaluation tasks. We provide comprehensive results across all models and ICL accuracy broken down by task in Appendix A.8.",
+            "Our initial ablation experiments, shown in the top row of Figure 4, removed heads based on their scores without considering the potential overlap between induction and FV heads. These results revealed that ablating FV heads caused greater degradation in few-shot ICL performance compared to ablating induction heads, with this disparity becoming more pronounced in larger models. We also find that ablating induction heads has more effect on ICL performance than random. The effect of ablating induction heads converges to the effect of ablating FV heads as we increase the number of heads ablated.",
+            "However, the convergence noted above may be due to an increasing overlap in the set of heads ablated in the induction head and FV head ablations (Appendix A.10). To address this, we conduct a second set of experiments using ablation with exclusion, shown in the center row of Figure 4. When ablating induction heads while preserving the top 2% FV heads, we observe minimal impact on few-shot ICL performance – comparable to random ablations in models exceeding 1B parameters. Conversely, ablating FV heads while preserving induction heads continues to significantly impair ICL performance. The performance gap between FV and induction head ablations widens with model scale, suggesting that the earlier observed effects on induction head ablations were primarily driven by heads exhibiting both induction and FV properties.",
+            "These ablations suggest that the contributions of induction heads to ICL in the top row of Figure 4 mostly come from heads that are both induction and FV heads, and that FV heads matter the most for few-shot ICL: as long as the model preserves its top 2% FV heads, it can perform ICL with reasonable accuracy even if we ablate induction heads.",
+            "The bottom row of Figure 4 presents the effects of ablations with exclusion on token-loss difference. In smaller models (below 160M parameters), neither ablating induction nor FV heads shows significant impact to token-loss difference compared to random ablations. However, in models with over 345M parameters, induction head ablations affect token-loss difference more than FV head ablations, though this disparity decreases with model scale. This experiment primarily demonstrates that few-shot ICL accuracy and token-loss difference measure two very different things. These contrasting results between the two metrics help reconcile apparently contradictory findings in existing literature."
+          ]
+        }
+      ]
+    },
+    "5 FV heads evolve from induction heads": {
+      "paragraphs": [
+        "Finally, to further understand how these two families of attention heads develop, we analyze their evolution during model training. We examine attention heads across 8 intermediate training checkpoints in 7 Pythia models."
+      ],
+      "subsections": [
+        {
+          "title": "5.1 Induction and FV strength during training",
+          "paragraphs": [
+            "To measure the general strength of induction and FV mechanisms during training, we plot the mean induction and FV scores of the top 2% induction and FV heads at each model checkpoint, along with few-shot ICL accuracy (Figure 5). We include plots for all Pythia models in Appendix A.11.",
+            "Our analysis reveals a consistent pattern across all Pythia models: induction heads emerge early in training, at around step 1,000 out of 143,000, while FV heads appear substantially later at around step 16,000. The development of these heads shows distinct characteristics as well – induction scores exhibit a sharp initial rise followed by a plateau or slight decline, whereas FV scores demonstrate a gradual but sustained increase from step 16,000 through the end of training. This temporal asymmetry suggests that induction heads represent a simpler mechanism that models can acquire earlier, while FV heads embody a more complex mechanism that requires extended training. In addition, we observe that in all models, few-shot ICL accuracy begins to improve around the same time as when induction heads appear, and continues to gradually increase throughout training."
+          ]
+        },
+        {
+          "title": "5.2 Evolution of individual heads during training",
+          "paragraphs": [
+            "To gain more granular insights into head development, we investigate the evolution of individual attention heads throughout training. Figure 6 the induction scores (top row) and FV scores (bottom row) of the top 2% induction and FV heads across training steps. Individual heads are represented by continuous lines, with line opacity corresponding to their final induction or FV scores.",
+            "A striking pattern emerges across all models: many heads that ultimately become strong FV heads initially exhibit high induction scores, emerging around the same time as dedicated induction heads. These proto-FV heads initially achieve induction scores comparable to those of specialized induction heads. However, as training progresses, their induction scores gradually decline while their FV scores increase. Importantly, this pattern is unidirectional; we found no instances of induction heads that develop significant FV capabilities during training, as evidenced by their consistently low FV scores throughout training. This suggests many FV heads evolve from induction heads during training, but not vice versa."
+          ]
+        }
+      ]
+    },
+    "6 Interpretation and discussion": {
+      "paragraphs": [
+        "Our investigation revealed several key insights about the relationship between induction and FV heads in transformer models and their effect on ICL. While these mechanisms are distinct, they show notable correlation (§3). FV heads consistently appear in deeper layers and emerge later in training compared to induction heads (§3,5.1). Our ablation studies demonstrated that FV heads are crucial for few-shot ICL performance, particularly in larger models, while induction heads have comparatively minimal impact (§4). Furthermore, we observed multiple instances of heads transitioning from induction to FV functionality during training, but never the reverse (§5.1). We propose two working conjectures to explain these empirical findings more broadly, and consider arguments for and against them.",
+        "Our first conjecture (C1) posits that induction heads are an early version of FV heads. Under this interpretation, induction heads serve as a stepping stone for models to develop the more sophisticated FV mechanism. As FV heads emerge and prove more effective at ICL tasks, they gradually supersede the simpler induction mechanism.",
+        "Several lines of evidence support this conjecture. First, we observed multiple FV heads that initially displayed strong induction behavior before transitioning to FV functionality. The subsequent decline in induction scores suggests these heads abandon the simpler mechanism once the more effective FV capability develops. The unidirectional nature of this transition - we never observe induction heads with initially high FV scores - further supports this interpretation. Additionally, the minimal effect of ablating pure induction heads (those with low FV scores) on few-shot ICL performance suggests their role becomes less critical once FV heads develop. To further verify this, future work could explore how removing induction heads during training could impact the development of FV heads. However, C1 does not fully explain the existence of FV heads with low induction scores throughout training.",
+        "C1 also aligns with our observations about architectural and training dynamics. FV heads consistently emerge later in training and appear in deeper layers, consistent with them implementing a more complex computation. In addition, ICL performance begins to increase at the same time as the emergence of induction heads, but continues to improve after induction heads form, similarly to how FV heads gradually increase. This may indicate that the sharp emergence of induction heads contributes to an initial rise in ICL performance, but the emergence of the FV mechanisms contributes to further improvements in ICL.",
+        "An alternative conjecture (C2) suggests that FV heads are a combination of induction and another mechanism. This conjecture proposes that heads appearing to “transition” from induction to FV functionality are actually polysemantic heads that implement both, and possibly other mechanisms. Their measured induction scores decline as their attention patterns diversify to support multiple mechanisms.",
+        "While C2 explains the correlation between induction and FV mechanisms as arising from shared underlying mechanisms, it faces a significant challenge: our ablation studies show that removing monosemantic FV heads (those without significant induction scores) substantially hurts ICL performance. This is difficult to reconcile with C2’s prediction that pure FV heads should be less critical if the key functionality depends on combined induction-FV mechanisms."
+      ],
+      "subsections": []
+    },
+    "7 Conclusion": {
+      "paragraphs": [
+        "Our research challenges the prevailing understanding of in-context learning mechanisms in transformer models. While induction heads have been widely considered the primary driver of ICL, our evidence demonstrates that function vector (FV) heads play a more crucial causal role in few-shot ICL performance. We attribute previous misconceptions to two key factors: the conflation of few-shot ICL with token-loss difference metrics, as well as not accounting for the overlap between induction and FV heads.",
+        "Remarkably, although induction and FV mechanisms appear to implement two distinct processes, we also observe an interesting interplay between the two types of heads: induction and FV scores are correlated, and many FV heads are “former” induction heads with high induction scores earlier in training. This observation supports an early conjecture where induction heads serve as precursors to FV heads: the simpler induction mechanism provides an initial foundation for ICL capability, from which the more sophisticated FV mechanism eventually emerges.",
+        "Our investigation also yields important methodological insights for the broader field of model interpretability. First, seemingly equivalent definitions of model capabilities (such as few-shot accuracy versus token-loss difference) can lead to substantially different conclusions. Second, studying mechanistic components in isolation may produce misleading results when these components share overlapping behaviors, as demonstrated by the confounding effects of ablating heads that exhibit both high induction and FV scores.",
+        "Furthermore, our results challenge strong versions of the universality hypothesis in interpretability. While both induction and FV heads contribute meaningfully to few-shot ICL in smaller models, their relative importance diverges with scale – FV heads become increasingly crucial while induction heads’ impact approaches that of random ablations. This scale-dependent behavior suggests that mechanisms may vary across model architectures.",
+        "These findings prompt several important questions for future research. If induction heads indeed serve as precursors to FV heads, what makes this necessary? What role do the remaining induction heads serve in fully trained models? Finally, are there additional mechanisms that could provide an even more complete explanation of ICL capabilities? "
+      ],
+      "subsections": []
+    },
+    "Acknowledgements": {
+      "paragraphs": [
+        "We thank Jiahai Feng, Neel Nanda, Robert Kirk, and Anish Kachinthaya for their helpful feedback. KY is supported by the Vitalik Buterin Ph.D. Fellowship in AI Existential Safety."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Appendix": {
+      "paragraphs": [
+        "[Figure: Figure 7: Induction and FV scores of attention heads.]",
+        "[Figure: Figure 8: ICL accuracy after ablating induction and FV heads.]",
+        "[Figure: Figure 9: Token-loss difference after ablating induction heads with low FV scores and FV heads with low induction scores.]",
+        "[Figure: Figure 10: ICL accuracy after ablating induction heads and FV heads with random or zero ablation.]",
+        "[Figure: Figure 11: ICL accuracy after ablating randomly sampled heads from specific layers. The clean ICL accuracy, induction ablations and FV ablations are also plotted for comparison but only the random ablations (green curve) are affected by the choice of target layer.]",
+        "[Figure: Figure 12: Induction score (left) and FV score (right) of attention heads across model size. We plot the maximum score of all heads, mean of the top 2% scores, and mean score of all heads. Overall, induction scores are similar across models. Pythia 70M and Llama 2 have relatively low FV scores, Pythia 1B and 1.4B have relatively high FV scores.]",
+        "[Figure: Figure 13: Distribution of induction scores (top) and FV scores (bottom) across model size.]",
+        "[Figure: Figure 14: Model ICL accuracy on prompts with 10 in-context examples (clean), on uninformative shuffled prompts, on shuffled prompts with FV, and on shuffled prompts with random head outputs. Adding FV recovers most of the model accuracy on a clean run, with the exception of Pythia 2.8B.]",
+        "[Figure: Figure 15: ICL accuracy after ablations by task. The red horizontal line represents the random baseline.]",
+        "[Figure: Figure 16: ICL accuracy after ablations by task. The red horizontal line represents the random baseline.]",
+        "[Figure: Figure 17: ICL accuracy after ablations by task. The red horizontal line represents the random baseline.]",
+        "[Figure: Figure 18: ICL accuracy after ablations by task. The red horizontal line represents the random baseline.]",
+        "[Figure: Figure 19: Location of induction heads (blue) and FV heads (pink) in model layers]",
+        "[Figure: Figure 20: Overlap between set of induction heads and FV heads ablated.]",
+        "[Figure: Figure 21: Evolution of induction score and FV score averaged over top 2% heads across training.]",
+        "[Figure: Figure 22: Evolution of induction scores (left) and FV scores (right) of individual induction and FV heads across training]",
+        "[Table: Table 3: Summary of ICL tasks used in our study. Tasks in bold are new tasks that were not used in Todd et al. (2024).]"
+      ],
+      "subsections": [
+        {
+          "title": "A.1 Induction scores vs. FV scores",
+          "paragraphs": [
+            "In Figure 7, we plot the induction score and FV score of each attention head.",
+            "[Figure: Figure 7: Induction and FV scores of attention heads.]"
+          ]
+        },
+        {
+          "title": "A.2 Ablations",
+          "paragraphs": [
+            "In Figure 8, we plot model accuracy averaged over ICL tasks across different quantities of heads ablated in each head type. In Figure 9, we plot the token-loss difference of models across different quantities of heads ablated.",
+            "[Figure: Figure 8: ICL accuracy after ablating induction and FV heads.]",
+            "[Figure: Figure 9: Token-loss difference after ablating induction heads with low FV scores and FV heads with low induction scores.]"
+          ]
+        },
+        {
+          "title": "A.3 Random and zero ablations",
+          "paragraphs": [
+            "In Figure 10, we plot model accuracy averaged over ICL tasks across different quantities of heads ablated with random ablation or zero ablation. For random ablations, we replace the head’s output vector with the output vector of a randomly sampled different head. For zero ablations. we replace the head’s output vector with a zero vector.",
+            "[Figure: Figure 10: ICL accuracy after ablating induction heads and FV heads with random or zero ablation.]"
+          ]
+        },
+        {
+          "title": "A.4 Ablating random heads at specific layers",
+          "paragraphs": [
+            "In Figure 11, we ablate heads randomly sampled from specific layers of the model. Let LL be the number of heads in each layer, AA be the number of heads we’re ablating, and ℓ\\ell be the layer we’re targeting. Then, if A<LA<L, we sample AA heads from layer ℓ\\ell. If A≥LA\\geq L, we ablate all LL heads in layer ℓ\\ell and we sample A−LA-L heads from other layers to ablate.",
+            "[Figure: Figure 11: ICL accuracy after ablating randomly sampled heads from specific layers. The clean ICL accuracy, induction ablations and FV ablations are also plotted for comparison but only the random ablations (green curve) are affected by the choice of target layer.]"
+          ]
+        },
+        {
+          "title": "A.5 Induction and function vector scores across models",
+          "paragraphs": [
+            "Our ablation studies reveal a consistent trend where FV heads are increasingly important relative to induction heads for ICL performance as model scale increases. To further explore this trend, we examine how induction scores and FV scores vary with model scale, and whether these scores follow similar trends to our ablation experiments.",
+            "In Figure 12, we plot the maximum and mean induction and FV scores across all heads, and mean scores of top 2% heads, for each model. The left plot in Figure 12 shows that induction scores are relatively similar across model size, with a small increase in maximum induction score and a decrease in the top 2% mean induction score with model scale.",
+            "In the right plot of Figure 12, there is no clear trend between FV score and model scale, however, Pythia 1B and 1.4B models have markedly higher maximum FV scores. One possible explanation is that models with high head dimensionality relative to total parameter count have stronger FV heads: Pythia 1B and 1.4B have head dimensionality of 256 and 128 respectively (Table 2) whereas other models with similar parameter count have only 64-80 attention head dimensions.",
+            "We also find very low FV scores in Pythia 70M and Llama 2 models. FV scores may be low in Pythia 70M because it is too small in parameter size for FV heads to emerge. Low scores in Llama 2 compared to other models may be due to differences in architecture, and additional experiments can help confirm this. Overall, we do not recover the same trend in induction/FV scores as the trend in our ablation studies.",
+            "For reference, we also provide box plots of the full distribution of induction and FV scores in Figure 13.",
+            "[Figure: Figure 12: Induction score (left) and FV score (right) of attention heads across model size. We plot the maximum score of all heads, mean of the top 2% scores, and mean score of all heads. Overall, induction scores are similar across models. Pythia 70M and Llama 2 have relatively low FV scores, Pythia 1B and 1.4B have relatively high FV scores.]",
+            "[Figure: Figure 13: Distribution of induction scores (top) and FV scores (bottom) across model size.]"
+          ]
+        },
+        {
+          "title": "A.6 Evaluating function vectors on task execution",
+          "paragraphs": [
+            "To further inspect the prevalence of the FV mechanism in different models, we evaluate the efficacy of FVs for ICL task execution. A successful FV triggers the model to execute the particular task the FV encodes, even when the model sees no useful in-context demonstrations of the task. First, to extract FVs, for each model we gather the top 2% attention heads with highest FV scores as the set 𝒜\\mathcal{A}. Then, for each ICL task t∈𝒯t\\in\\mathcal{T}, we sum the average outputs of heads in 𝒜\\mathcal{A} over prompts from tt and obtain the FV for the task tt: F​Vt=∑a∈𝒜a¯t.FV_{t}=\\sum_{a\\in\\mathcal{A}}\\bar{a}^{t}.",
+            "In Figure 14, we report model accuracy averaged over 40 ICL tasks where the model performs inference on uncorrupted prompts (clean), prompts with shuffled labels (shuffled), shuffled prompts with F​VtFV_{t} added to hidden states at layer |L|/3|L|/3, and shuffled prompts with FV extracted from random heads added to hidden states at layer |L|/3|L|/3. We take 1000 examples per task that are previously unseen during FV score computation.",
+            "In most models, adding the FV recovers model performance on uncorrupted prompts, with the exception of Pythia 2.8B. One possible explanation for this is again due to head dimensionality: Pythia 2.8B has head dimension 80, which is significantly smaller than other models with similar parameter size that have head dimensions of 128. Together with our experiments in §A.5, results provide preliminary evidence that high head dimensionality relative to model size is a predictor of FV strength (H6).",
+            "[Figure: Figure 14: Model ICL accuracy on prompts with 10 in-context examples (clean), on uninformative shuffled prompts, on shuffled prompts with FV, and on shuffled prompts with random head outputs. Adding FV recovers most of the model accuracy on a clean run, with the exception of Pythia 2.8B.]"
+          ]
+        },
+        {
+          "title": "A.7 ICL tasks",
+          "paragraphs": [
+            "In Table 3, we list the ICL tasks used in this study. We refer to Todd et al. (2024) and Feng & Steinhardt (2024) for a detailed description of each task."
+          ]
+        },
+        {
+          "title": "A.8 Ablations by task",
+          "paragraphs": [
+            "In Figures 15-18, we plot the ICL accuracy after ablating induction heads and FV heads for each task in the evaluation set. We also compute the random baseline for each task, where we randomly sample outputs seen during training and compare these random outputs to the ground truth. The random baselines are shown in red horizontal lines.",
+            "[Figure: Figure 15: ICL accuracy after ablations by task. The red horizontal line represents the random baseline.]",
+            "[Figure: Figure 16: ICL accuracy after ablations by task. The red horizontal line represents the random baseline.]",
+            "[Figure: Figure 17: ICL accuracy after ablations by task. The red horizontal line represents the random baseline.]",
+            "[Figure: Figure 18: ICL accuracy after ablations by task. The red horizontal line represents the random baseline.]"
+          ]
+        },
+        {
+          "title": "A.9 Head locations",
+          "paragraphs": [
+            "In Figure 19, we plot the locations of induction heads and FV heads across model layers.",
+            "[Figure: Figure 19: Location of induction heads (blue) and FV heads (pink) in model layers]"
+          ]
+        },
+        {
+          "title": "A.10 Overlap between ablated induction and FV heads",
+          "paragraphs": [
+            "In Figure 20, we plot the percentage of attention heads that overlap between the set of induction heads and FV heads we ablate. We find that as the number of ablated heads increases, the overlap between the two sets of ablated heads also increases. This demonstrates the importance of performing ablations with exclusion to control for overlap.",
+            "[Figure: Figure 20: Overlap between set of induction heads and FV heads ablated.]"
+          ]
+        },
+        {
+          "title": "A.11 Scores across training",
+          "paragraphs": [
+            "In Figure 21, we plot the evolution of induction and FV scores averaged over top 2% heads across model training, along with the few-shot accuracy of the model checkpoints averaged over the evaluation tasks. In Figure 22, we plot the evolution of induction and FV scores of individual heads across training.",
+            "[Figure: Figure 21: Evolution of induction score and FV score averaged over top 2% heads across training.]",
+            "[Figure: Figure 22: Evolution of induction scores (left) and FV scores (right) of individual induction and FV heads across training]"
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "Akyürek et al. (2023) Akyürek, E., Schuurmans, D., Andreas, J., Ma, T., and Zhou, D. What learning algorithm is in-context learning? investigations with linear models. In Proceedings of the 2023 International Conference on Learning Representations, 2023.",
+    "Bansal et al. (2023) Bansal, H., Gopalakrishnan, K., Dingliwal, S., Bodapati, S., Kirchhoff, K., and Roth, D. Rethinking the role of scale for in-context learning: An interpretability-based case study at 66 billion scale. In Rogers, A., Boyd-Graber, J., and Okazaki, N. (eds.), Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pp. 11833–11856, Toronto, Canada, July 2023. Association for Computational Linguistics. doi: 10.18653/v1/2023.acl-long.660. URL https://aclanthology.org/2023.acl-long.660.",
+    "Biderman et al. (2023) Biderman, S., Schoelkopf, H., Anthony, Q. G., Bradley, H., O’Brien, K., Hallahan, E., Khan, M. A., Purohit, S., Prashanth, U. S., Raff, E., et al. Pythia: A suite for analyzing large language models across training and scaling. In International Conference on Machine Learning, pp. 2397–2430. PMLR, 2023.",
+    "Brown (2020) Brown, T. B. Language models are few-shot learners. arXiv preprint arXiv:2005.14165, 2020.",
+    "Conneau et al. (2017) Conneau, A., Lample, G., Ranzato, M., Denoyer, L., and Jégou, H. Word translation without parallel data. arXiv preprint arXiv:1710.04087, 2017.",
+    "Crosbie & Shutova (2024) Crosbie, J. and Shutova, E. Induction heads as an essential mechanism for pattern matching in in-context learning. arXiv preprint arXiv:2407.07011, 2024.",
+    "Dong et al. (2022) Dong, Q., Li, L., Dai, D., Zheng, C., Wu, Z., Chang, B., Sun, X., Xu, J., and Sui, Z. A survey on in-context learning. arXiv preprint arXiv:2301.00234, 2022.",
+    "Elhage et al. (2021) Elhage, N., Nanda, N., Olsson, C., Henighan, T., Joseph, N., Mann, B., Askell, A., Bai, Y., Chen, A., Conerly, T., et al. A mathematical framework for transformer circuits. Transformer Circuits Thread, 1:1, 2021.",
+    "Feng & Steinhardt (2024) Feng, J. and Steinhardt, J. How do language models bind entities in context? In Proceedings of the 2024 International Conference on Learning Representations, 2024.",
+    "Gao et al. (2020) Gao, L., Biderman, S., Black, S., Golding, L., Hoppe, T., Foster, C., Phang, J., He, H., Thite, A., Nabeshima, N., Presser, S., and Leahy, C. The Pile: An 800gb dataset of diverse text for language modeling. arXiv preprint arXiv:2101.00027, 2020.",
+    "Hase et al. (2021) Hase, P., Xie, H., and Bansal, M. The out-of-distribution problem in explainability and search methods for feature importance explanations. Advances in neural information processing systems, 34:3650–3666, 2021.",
+    "Hendel et al. (2023) Hendel, R., Geva, M., and Globerson, A. In-context learning creates task vectors. In Findings of the Association for Computational Linguistics: EMNLP 2023, 2023.",
+    "Hernandez et al. (2024) Hernandez, E., Sharma, A. S., Haklay, T., Meng, K., Wattenberg, M., Andreas, J., Belinkov, Y., and Bau, D. Linearity of relation decoding in transformer language models. In Proceedings of the 2024 International Conference on Learning Representations, 2024.",
+    "Nanda & Bloom (2022) Nanda, N. and Bloom, J. Transformerlens. https://github.com/TransformerLensOrg/TransformerLens, 2022.",
+    "Nguyen et al. (2017) Nguyen, K. A., Schulte im Walde, S., and Vu, N. T. Distinguishing antonyms and synonyms in a pattern-based neural network. In Lapata, M., Blunsom, P., and Koller, A. (eds.), Proceedings of the 15th Conference of the European Chapter of the Association for Computational Linguistics: Volume 1, Long Papers, pp. 76–85, Valencia, Spain, April 2017. Association for Computational Linguistics. URL https://aclanthology.org/E17-1008.",
+    "Olsson et al. (2022) Olsson, C., Elhage, N., Nanda, N., Joseph, N., DasSarma, N., Henighan, T., Mann, B., Askell, A., Bai, Y., Chen, A., et al. In-context learning and induction heads. arXiv preprint arXiv:2209.11895, 2022.",
+    "Radford et al. (2019) Radford, A., Wu, J., Child, R., Luan, D., Amodei, D., and Sutskever, I. Language models are unsupervised multitask learners. 2019.",
+    "Singh et al. (2024) Singh, A. K., Moskovitz, T., Hill, F., Chan, S. C., and Saxe, A. M. What needs to go right for an induction head? a mechanistic study of in-context learning circuits and their formation. arXiv preprint arXiv:2404.07129, 2024.",
+    "Socher et al. (2013) Socher, R., Perelygin, A., Wu, J., Chuang, J., Manning, C. D., Ng, A., and Potts, C. Recursive deep models for semantic compositionality over a sentiment treebank. In Yarowsky, D., Baldwin, T., Korhonen, A., Livescu, K., and Bethard, S. (eds.), Proceedings of the 2013 Conference on Empirical Methods in Natural Language Processing, pp. 1631–1642, Seattle, Washington, USA, October 2013. Association for Computational Linguistics. URL https://aclanthology.org/D13-1170.",
+    "Talmor et al. (2019) Talmor, A., Herzig, J., Lourie, N., and Berant, J. CommonsenseQA: A question answering challenge targeting commonsense knowledge. In Burstein, J., Doran, C., and Solorio, T. (eds.), Proceedings of the 2019 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, Volume 1 (Long and Short Papers), pp. 4149–4158, Minneapolis, Minnesota, June 2019. Association for Computational Linguistics. doi: 10.18653/v1/N19-1421. URL https://aclanthology.org/N19-1421.",
+    "Tjong Kim Sang & De Meulder (2003) Tjong Kim Sang, E. F. and De Meulder, F. Introduction to the CoNLL-2003 shared task: Language-independent named entity recognition. In Proceedings of the Seventh Conference on Natural Language Learning at HLT-NAACL 2003, pp. 142–147, 2003. URL https://aclanthology.org/W03-0419.",
+    "Todd et al. (2024) Todd, E., Li, M. L., Sharma, A. S., Mueller, A., Wallace, B. C., and Bau, D. Function vectors in large language models. In Proceedings of the 2024 International Conference on Learning Representations, 2024.",
+    "Touvron et al. (2023) Touvron, H., Martin, L., Stone, K., Albert, P., Almahairi, A., Babaei, Y., Bashlykov, N., Batra, S., Bhargava, P., Bhosale, S., et al. Llama 2: Open foundation and fine-tuned chat models. arXiv preprint arXiv:2307.09288, 2023.",
+    "Von Oswald et al. (2023) Von Oswald, J., Niklasson, E., Randazzo, E., Sacramento, J., Mordvintsev, A., Zhmoginov, A., and Vladymyrov, M. Transformers learn in-context by gradient descent. In International Conference on Machine Learning, pp. 35151–35174. PMLR, 2023.",
+    "Wang et al. (2023) Wang, K. R., Variengien, A., Conmy, A., Shlegeris, B., and Steinhardt, J. Interpretability in the wild: a circuit for indirect object identification in GPT-2 small. In The Eleventh International Conference on Learning Representations, 2023. URL https://openreview.net/forum?id=NpsVSN6o4ul.",
+    "Wei et al. (2023) Wei, J., Wei, J., Tay, Y., Tran, D., Webson, A., Lu, Y., Chen, X., Liu, H., Huang, D., Zhou, D., et al. Larger language models do in-context learning differently. arXiv preprint arXiv:2303.03846, 2023.",
+    "Wolf et al. (2020) Wolf, T., Debut, L., Sanh, V., Chaumond, J., Delangue, C., Moi, A., Cistac, P., Rault, T., Louf, R., Funtowicz, M., Davison, J., Shleifer, S., von Platen, P., Ma, C., Jernite, Y., Plu, J., Xu, C., Le Scao, T., Gugger, S., Drame, M., Lhoest, Q., and Rush, A. Transformers: State-of-the-art natural language processing. In Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing: System Demonstrations, 2020.",
+    "Zhang & Nanda (2024) Zhang, F. and Nanda, N. Towards best practices of activation patching in language models: Metrics and methods. In The Twelfth International Conference on Learning Representations, 2024. URL https://openreview.net/forum?id=Hf17y6u9BC.",
+    "Zhang et al. (2015) Zhang, X., Zhao, J., and LeCun, Y. Character-level convolutional networks for text classification. Advances in neural information processing systems, 28, 2015."
+  ]
+}

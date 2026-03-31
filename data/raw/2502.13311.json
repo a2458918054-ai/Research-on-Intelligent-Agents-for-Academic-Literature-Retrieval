@@ -1,0 +1,406 @@
+{
+  "title": "Training Turn-by-Turn Verifiers for Dialogue Tutoring Agents:The Curious Case of LLMs as Your Coding Tutors",
+  "authors": "Jian Wang1,2Yinpei Dai2Yichi Zhang2Ziqiao Ma2Wenjie Li1Joyce Chai21The Hong Kong Polytechnic University2University of Michiganjian-dylan.wang@connect.polyu.hk    cswjli@comp.polyu.edu.hk{daiyp,zhangyic,marstin,chaijy}@umich.eduThis work is conducted while Jian Wang was a visiting PhD at the University of Michigan.",
+  "abstract": "Intelligent tutoring agents powered by large language models (LLMs) have been increasingly explored to deliver personalized guidance in areas such as language learning and science education. However, their capabilities in guiding users to solve complex real-world tasks remain underexplored. To address this limitation, in this work, we focus on coding tutoring, a challenging problem that requires tutors to proactively guide students toward completing predefined coding tasks. We propose a novel agent workflow, Trace-and-Verify (Traver), which combines knowledge tracing to estimate a student’s knowledge state and turn-by-turn verification to ensure effective guidance toward task completion. We introduce Dict, an automatic evaluation protocol that assesses tutor agents holistically using controlled student simulation and code generation tests. Extensive experiments reveal the challenges of coding tutoring and demonstrate that Traver achieves a significantly higher success rate. Although we use code tutoring as an example in this paper, our results and findings can be extended beyond coding, providing valuable insights into advancing tutoring agents for a variety of tasks.111Code and data are available at https://github.com/iwangjian/Coding-Tutor.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Tutoring has long been recognized as one of the most effective methods for enhancing human learning outcomes and addressing educational disparities (Hill et al., 2005). By providing personalized guidance to students, intelligent tutoring systems (ITS) have proven to be nearly as effective as human tutors in fostering deep understanding and skill acquisition, with research showing comparable learning gains (VanLehn, 2011; Rus et al., 2013). More recently, the advancement of large language models (LLMs) has offered unprecedented opportunities to replicate these benefits in tutoring agents (Dan et al., 2023; Jin et al., 2024; Chen et al., 2024), unlocking the enormous potential to solve knowledge-intensive tasks such as answering complex questions or clarifying concepts.",
+        "Previous research has extensively explored tutoring in educational fields, including language learning Swartz and Yazdani (2012); Stasaski et al. (2020), math reasoning Demszky and Hill (2023); Macina et al. (2023), and scientific concept education Yuan et al. (2024); Yang et al. (2024b). Most aim to enhance students’ understanding of target knowledge by employing pedagogical strategies such as recommending exercises Deng et al. (2023) or selecting teaching examples Ross and Andreas (2024). However, these approaches fall short in broader situations requiring both understanding and practical application of specific pieces of knowledge to solve real-world, goal-driven problems. Such scenarios demand tutors to proactively guide people toward completing targeted tasks (e.g., coding). Furthermore, the tutoring outcomes are challenging to assess since targeted tasks can often be completed by open-ended solutions.",
+        "To bridge this gap, we introduce coding tutoring, a promising yet underexplored task for LLM agents. As illustrated in Figure 1, the tutor is provided with a target coding task and task-specific knowledge (e.g., cross-file dependencies and reference solutions), while the student is given only the coding task. The tutor does not know the student’s prior knowledge about the task. Coding tutoring requires the tutor to proactively guide the student toward completing the target task through dialogue. This is inherently a goal-oriented process where tutors guide students using task-specific knowledge to achieve predefined objectives. Effective tutoring requires personalization, as tutors must adapt their guidance and communication style to students with varying levels of prior knowledge.",
+        "Developing effective tutoring agents is challenging because off-the-shelf LLMs lack grounding to task-specific knowledge and interaction context. Specifically, tutoring requires epistemic grounding (Tsai and Roth, 2016), where domain expertise and assessment can vary significantly, and communicative grounding (Chai et al., 2018), necessary for proactively adapting communications to students’ current knowledge. To address these challenges, we propose the Trace-and-Verify (Traver) agent workflow for building effective LLM-powered coding tutors. Leveraging knowledge tracing (KT) (Corbett and Anderson, 1994; Scarlatos and Lan, 2024), Traver explicitly estimates a student’s knowledge state at each turn, which drives the tutor agents to adapt their language to fill the gaps in task-specific knowledge during utterance generation. Drawing inspiration from value-guided search mechanisms (Lightman et al., 2024; Wang et al., 2024a; Zhang et al., 2024), Traver incorporates a turn-by-turn reward model as a verifier to rank candidate utterances. By sampling more candidate tutor utterances during inference (see Figure 2), Traver ensures the selection of optimal utterances that prioritize goal-driven guidance and advance the tutoring progression effectively. Furthermore, we present Dialogue for Coding Tutoring (Dict), an automatic protocol designed to assess the performance of tutoring agents. Dict employs code generation tests and simulated students with varying levels of programming expertise for evaluation. While human evaluation remains the gold standard for assessing tutoring agents, its reliance on time-intensive and costly processes often hinders rapid iteration during development. By leveraging simulated students, Dict serves as an efficient and scalable proxy, enabling reproducible assessments and accelerated agent improvement prior to final human validation.",
+        "Through extensive experiments, we show that agents developed by Traver consistently demonstrate higher success rates in guiding students to complete target coding tasks compared to baseline methods. We present detailed ablation studies, human evaluations, and an inference time scaling analysis, highlighting the transferability and scalability of our tutoring agent workflow."
+      ],
+      "subsections": []
+    },
+    "2 Problem Definition": {
+      "paragraphs": [
+        "We formulate coding tutoring as an interactive dialogue process between a tutor and a student, where the goal is to help the student implement a working solution that passes predefined unit tests for a target coding task.",
+        "Formally, the tutor is assigned a coding task 𝒯\\mathcal{T} that consists of a function signature and a requirement description outlining the desired functionality. The tasks are repository-level, which require an understanding of multiple interdependent files within the codebase to implement a correct solution. The tutor has access to task-specific knowledge 𝒦\\mathcal{K}, which includes (i) Code Contexts: Contextual code snippets surrounding the desired code, which help the tutor show examples when necessary; (ii) Reference Dependencies: Cross-referenced elements such as intra-class, intra-file, and cross-file dependencies, along with their corresponding descriptions (e.g., docstrings), which involve key knowledge for completing the desired code; and (iii) Reference Solution Steps: Key steps required to complete the target task, describing using natural languages.",
+        "The student is given the task 𝒯\\mathcal{T} and possesses some subset of 𝒦\\mathcal{K} as their prior knowledge, but the tutor remains unaware of which specific concepts or dependencies the student has already mastered. The goal of the tutor is to guide the student, regardless of his or her background, toward solving the task 𝒯\\mathcal{T} through multi-turn interactions."
+      ],
+      "subsections": []
+    },
+    "3 Trace-and-Verify Agent Workflow": {
+      "paragraphs": [
+        "We propose Trace-and-Verify (Traver), an effective workflow for developing tutor agents (see the middle part in Figure 3). Traver integrates two key components: (i) explicit tracing of a student’s knowledge state and (ii) utterance decoding guided by a verifier model for turn-by-turn verification."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Adapting to Student’s Knowledge via Knowledge Tracing",
+          "paragraphs": [
+            "Effective tutoring requires bridging the gap between a student’s prior knowledge and the skills needed to solve the target coding task. To address this, we employ knowledge tracing (KT) (Corbett and Anderson, 1994; Abdelrahman et al., 2023; Scarlatos and Lan, 2024) to estimate the student’s knowledge state at each dialogue turn. Specifically, we represent task-specific knowledge 𝒦\\mathcal{K} as a set of knowledge components (KCs) {KC1,KC2,…,KCK}\\{\\text{KC}_{1},\\text{KC}_{2},\\dots,\\text{KC}_{K}\\}, where each KC is either a reference dependency or a solution step. At the tt-th turn, the tutor agent explicitly assesses the student’s belief of each KC using texts, based on the dialogue context 𝒞t\\mathcal{C}_{t} and the estimated belief Bt−1B_{t-1} at the previous turn. The current belief BtB_{t} indicates how many KCs the student has understood. With this estimation, the tutor is further prompted to focus more on missing KCs and generate utterances that address the student’s knowledge gaps. The detailed prompt template is provided in Appendix D."
+          ]
+        },
+        {
+          "title": "3.2 Utterance Decoding via Turn-by-Turn Verification",
+          "paragraphs": [
+            "Based on the KT outcomes, the tutor agent aims to generate high-quality utterances that advance the tutoring process. However, LLMs often struggle to determine which utterances effectively guide students toward task completion. Drawing inspiration from value-guided search approaches (Lightman et al., 2024; Wang et al., 2024a; Zhang et al., 2024), we address this with a turn-by-turn verifier. The verifier VθV_{\\theta} evaluates the quality of potential tutor responses by producing a reward score vt∈[0,1]v_{t}\\in[0,1] based on three inputs: the target task 𝒯\\mathcal{T}, current dialogue context 𝒞t\\mathcal{C}_{t}, and a candidate tutor utterance rtr_{t} at turn tt. To select the optimal response, we generate NN candidate utterances through parallel sampling and choose the one that receives the highest reward score from the verifier.",
+            "The core of the verifier VθV_{\\theta} is the turn-based reward vtv_{t} at tt-th turn, which should reflect (i) the cumulative progress made in the previous turns and (ii) the current turn’s contribution to achieving the overall tutoring goal. Hence, vtv_{t} can be iteratively defined as:",
+            "where wrtw_{r_{t}} is the weighted reward quantifying the contribution of the current turn to the overall goal, TT denotes the total number of turns. To compute wrtw_{r_{t}}, we introduce the concept of guiding distance dt=T−td_{t}=T-t, which measures the remaining turns until the goal or end of the interaction. The weighted reward is then calculated as:",
+            "where ost∈{0,1}o_{s_{t}}\\in\\{0,1\\} is a binary outcome indicating whether the tutor’s tt-th utterance contributes to the student’s eventual successful completion of the target task. As the dialogue progresses, the guiding distance dtd_{t} decreases, leading to larger weighted rewards for later turns. This design ensures the turn-based reward vtv_{t} remains bounded while appropriately weighting the importance of each turn based on its proximity to the goal.",
+            "We train the verifier VθV_{\\theta} using mean squared error (MSE) loss over nn samples:",
+            "where TiT_{i} denotes the number of turns for the ii-th sample, θ\\theta denotes the trainable parameters.",
+            "During inference, the verifier serves as a plug-and-play module, which chooses the utterance with the highest reward from candidate utterances generated by parallel sampling at each turn, promoting progression toward tutoring task completion."
+          ]
+        }
+      ]
+    },
+    "4 TheDictEvaluation Protocol": {
+      "paragraphs": [
+        "One key challenge in developing tutoring agents is the lack of robust evaluation methods. While human evaluation is essential, its high cost, time requirements, and complexity make it impractical for scalable benchmarking. To address this limitation, we present Dialogue for Coding Tutoring (Dict), an automatic protocol for evaluating tutor agents. The overview of Dict is shown in Figure 3. Our protocol employs LLMs to simulate students with varying levels of programming knowledge. First, tutors engage in multi-turn dialogues with students to tutor the task. Then, students demonstrate their learning outcome by implementing the solution code. We evaluate tutoring effectiveness through automated unit tests of the student-generated code. This automated approach enables controlled, reproducible, and scalable evaluations of tutoring agents."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Controlled Student Simulation",
+          "paragraphs": [
+            "To evaluate how well tutors can adapt their strategies to students with varied prior knowledge, we simulate students of three knowledge levels: (1) Low-level: Students access no prior knowledge from 𝒦\\mathcal{K}. They represent beginners with no familiarity with the target task. (2) Medium-level: These students are assigned a proportion (e.g., 50%) of the reference dependencies by random sampling, denoting that they have partial knowledge required for completing the task. (3) High-level: In addition to partial reference dependencies, these students are also provided with the code contexts, indicating that they have more comprehensive knowledge with contextual guidance.",
+            "We create students of all three levels using the same LLM simulator, varying only in their knowledge level. However, this raises a critical question: do students with different knowledge levels actually demonstrate distinct performance in completing the coding tasks? To validate this, we conduct a preliminary coding test where each simulated student attempts to generate code for the target task 𝒯\\mathcal{T} before any tutoring intervention (see Appendix D for prompting details).",
+            "Following previous studies Austin et al. (2021); Li et al. (2024), we employ Recall@kk and Pass@kk as evaluation metrics to assess coding test performance. Recall@kk measures the recall of reference dependencies in the generated programs. Specifically, students are asked to generate kk programs per target task. For the ii-th program, we extract its dependencies ℙi\\mathbb{P}_{i} using the Pyan parser Pyan (2023). We compare them with the reference dependencies ℝ\\mathbb{R} and compute the Recall@kk as:",
+            "where |⋅||\\cdot| denotes the number of elements of a set. Pass@kk evaluates the functional correctness of the generated programs. After generating n≥kn\\geq k programs per task, we execute them in Python interpreters to count the number of correct programs cc that pass all test cases. Pass@kk is computed as:",
+            "where (⋅⋅)\\binom{\\cdot}{\\cdot} denotes the number of ways to choose a subset of elements (also known as the binomial coefficient). Our pre-test results reported in §5.3 show that the simulated students are effective."
+          ]
+        },
+        {
+          "title": "Pre-Test.",
+          "paragraphs": [
+            "We create students of all three levels using the same LLM simulator, varying only in their knowledge level. However, this raises a critical question: do students with different knowledge levels actually demonstrate distinct performance in completing the coding tasks? To validate this, we conduct a preliminary coding test where each simulated student attempts to generate code for the target task 𝒯\\mathcal{T} before any tutoring intervention (see Appendix D for prompting details)."
+          ]
+        },
+        {
+          "title": "Metrics for Coding Test.",
+          "paragraphs": [
+            "Following previous studies Austin et al. (2021); Li et al. (2024), we employ Recall@kk and Pass@kk as evaluation metrics to assess coding test performance. Recall@kk measures the recall of reference dependencies in the generated programs. Specifically, students are asked to generate kk programs per target task. For the ii-th program, we extract its dependencies ℙi\\mathbb{P}_{i} using the Pyan parser Pyan (2023). We compare them with the reference dependencies ℝ\\mathbb{R} and compute the Recall@kk as:",
+            "where |⋅||\\cdot| denotes the number of elements of a set. Pass@kk evaluates the functional correctness of the generated programs. After generating n≥kn\\geq k programs per task, we execute them in Python interpreters to count the number of correct programs cc that pass all test cases. Pass@kk is computed as:",
+            "where (⋅⋅)\\binom{\\cdot}{\\cdot} denotes the number of ways to choose a subset of elements (also known as the binomial coefficient). Our pre-test results reported in §5.3 show that the simulated students are effective."
+          ]
+        },
+        {
+          "title": "4.2 Tutor-Student Interaction",
+          "paragraphs": [
+            "As shown in Figure 3, we let an LLM-based tutor agent engage in a multi-turn dialogue with a chosen student, simulating a tutoring session. The tutor is initialized with the target coding task 𝒯\\mathcal{T} and task-specific knowledge 𝒦\\mathcal{K}. We ask the tutor to initiate the tutoring and communicate with the student turn by turn. A key challenge is determining when to terminate the tutoring. While the tutor could self-determine, our preliminary experiments revealed a tendency for overconfidence, leading to premature termination. This issue arises because most tutors overlook gaps in the student’s prior knowledge. For a robust comparison, we follow Wang et al. (2023) and introduce an LLM-powered dialogue manager (see Figure 3). Operating from a “God’s perspective,” the manager considers the dialogue context and all information from both the tutor and student, to decide whether the tutoring goal has been met. The tutoring terminates under one of two conditions: (i) The manager confirms that the tutoring goal is achieved; (ii) The dialogue reaches a predefined maximum of TT turns."
+          ]
+        },
+        {
+          "title": "4.3 Automatic Evaluation",
+          "paragraphs": [
+            "To evaluate the effectiveness of tutor agents, we conducted a coding test after tutoring (referred to as the post-test). Given a target task 𝒯\\mathcal{T} and a dialogue session 𝒞={st,rt}t=1T\\mathcal{C}=\\{s_{t},r_{t}\\}_{t=1}^{T} with a simulated student, we ask the student to generate code for fulfilling the task. However, assuming that all dialogue content is retained during the coding test may be unrealistic. According to cognitive load theory (CLT) Miller (1956); Sweller (2011), human working memory has a limited learning capacity at one time, and exceeding this capacity can hinder learning. We consider the student’s cognitive load fCLf_{\\text{CL}} at each turn by restricting the information retained from the tutor’s utterance to a maximum threshold. Specifically, if a tutor utterance rtr_{t} exceeds MM words, only the latest MM words are retained; otherwise, the full utterance is kept. Our post-test is formulated as:",
+            "where ℐ\\mathcal{I} represents the instruction for code generation. sts_{t} and rtr_{t} denote student and tutor utterances at tt-th turn, respectively. A detailed template for the instruction can be found in Appendix D.",
+            "Based on the coding test, students’ post-test performance after tutoring is defined as the tutoring outcome (TO), measured by Recall and Pass. They represent the averages of Recall@kk and Pass@kk for k∈{1,3,5,10}k\\in\\{1,3,5,10\\}. A higher Recall score indicates the tutor is more capable of leading the student to acquire the dependency knowledge for coding; a higher Pass score denotes a higher success rate of guiding the student in completing the target coding task.",
+            "Due to the difference in prior knowledge levels, we use the tutoring outcome rate (Δ%\\Delta\\%) to normalize and fairly evaluate the tutor’s performance. This is calculated by relative improvement before and after tutoring:",
+            "where ℳ\\mathcal{M} denotes the metric for the coding test, which can be either Recall or Pass.",
+            "To further analyze the tutoring process, we propose the tutoring outcome curve (TOC). At each tt-th turn, we ask simulated students to perform a post-test using the dialogue context up to that turn, i.e., {s≤t,r≤t}\\{s_{\\leq t},r_{\\leq t}\\}. The TOC is then plotted by tracking the Recall and Pass scores varying by turns. These curves exhibit how tutor agents guide students throughout the tutoring session."
+          ]
+        },
+        {
+          "title": "Post-Test.",
+          "paragraphs": [
+            "To evaluate the effectiveness of tutor agents, we conducted a coding test after tutoring (referred to as the post-test). Given a target task 𝒯\\mathcal{T} and a dialogue session 𝒞={st,rt}t=1T\\mathcal{C}=\\{s_{t},r_{t}\\}_{t=1}^{T} with a simulated student, we ask the student to generate code for fulfilling the task. However, assuming that all dialogue content is retained during the coding test may be unrealistic. According to cognitive load theory (CLT) Miller (1956); Sweller (2011), human working memory has a limited learning capacity at one time, and exceeding this capacity can hinder learning. We consider the student’s cognitive load fCLf_{\\text{CL}} at each turn by restricting the information retained from the tutor’s utterance to a maximum threshold. Specifically, if a tutor utterance rtr_{t} exceeds MM words, only the latest MM words are retained; otherwise, the full utterance is kept. Our post-test is formulated as:",
+            "where ℐ\\mathcal{I} represents the instruction for code generation. sts_{t} and rtr_{t} denote student and tutor utterances at tt-th turn, respectively. A detailed template for the instruction can be found in Appendix D."
+          ]
+        },
+        {
+          "title": "Evaluation Metrics.",
+          "paragraphs": [
+            "Based on the coding test, students’ post-test performance after tutoring is defined as the tutoring outcome (TO), measured by Recall and Pass. They represent the averages of Recall@kk and Pass@kk for k∈{1,3,5,10}k\\in\\{1,3,5,10\\}. A higher Recall score indicates the tutor is more capable of leading the student to acquire the dependency knowledge for coding; a higher Pass score denotes a higher success rate of guiding the student in completing the target coding task.",
+            "Due to the difference in prior knowledge levels, we use the tutoring outcome rate (Δ%\\Delta\\%) to normalize and fairly evaluate the tutor’s performance. This is calculated by relative improvement before and after tutoring:",
+            "where ℳ\\mathcal{M} denotes the metric for the coding test, which can be either Recall or Pass.",
+            "To further analyze the tutoring process, we propose the tutoring outcome curve (TOC). At each tt-th turn, we ask simulated students to perform a post-test using the dialogue context up to that turn, i.e., {s≤t,r≤t}\\{s_{\\leq t},r_{\\leq t}\\}. The TOC is then plotted by tracking the Recall and Pass scores varying by turns. These curves exhibit how tutor agents guide students throughout the tutoring session."
+          ]
+        }
+      ]
+    },
+    "5 Experiments": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "5.1 Experimental Setup",
+          "paragraphs": [
+            "We adopt EvoCodeBench Li et al. (2024) as the testbed due to its realistic repository-level Python coding tasks along with dependency annotations and repository contexts, providing a rich knowledge foundation for coding tutoring. We have 100 target coding tasks and split them equally into 5 folds, using 5-fold cross-validation for experiments. The detailed examples, statistics, and preprocessing are provided in Appendix A.1.",
+            "Prior to tutoring, it is essential to ensure simulated students have not been exposed to any target coding task. To avoid data contamination, we use Mixtral-8x7B-Instruct Jiang et al. (2024) as the student simulator. This model’s training data only includes content up to 2023-9, whereas all coding tasks in EvoCodeBench are collected from the repositories created between 2023-10 and 2024-2. Furthermore, this model has strong conversational and coding abilities, making it well-suited for student simulation.",
+            "The backbone models for developing tutor agents are: Qwen2-Instruct Yang et al. (2024a) with 7B and 72B variants, Llama-3.1-Instruct Dubey et al. (2024) with 8B and 70B variants, GPT-3.5-Turbo OpenAI (2022), GPT-4o OpenAI (2024a), and o1-mini OpenAI (2024b).",
+            "We evaluate our Traver, against the following relevant baseline methods: (1) Vanilla Instruct: It directly instructs LLMs as tutors, as detailed in §4.2. (2) Self-Refine Madaan et al. (2023): LLMs generate initial responses and iteratively refine these responses by providing feedback to themselves. (3) TreeInstruct Kargupta et al. (2024): It is a Socratic teaching method that employs tree-based questioning to guide the student. (4) Oracle: It provides the full task-specific knowledge directly to each student during the post-test (see Eq. (6)), serving as an upper bound.",
+            "We implement the verifier in Traver using Mistral-7B Jiang et al. (2023) with an additional linear layer. We utilize the synthesized dialogues from various backbone LLMs with vanilla instructions for the verifier, where the post-test results on Pass scores provide outcome reward labels. We adopt 5-fold cross-validation for training and evaluation. In the Dict evaluation protocol, the maximum number of turns TT is set to 8. The cognitive load parameter MM is set to 60 during the post-test. More details about training and inference are provided in Appendix A.2."
+          ]
+        },
+        {
+          "title": "Benchmark.",
+          "paragraphs": [
+            "We adopt EvoCodeBench Li et al. (2024) as the testbed due to its realistic repository-level Python coding tasks along with dependency annotations and repository contexts, providing a rich knowledge foundation for coding tutoring. We have 100 target coding tasks and split them equally into 5 folds, using 5-fold cross-validation for experiments. The detailed examples, statistics, and preprocessing are provided in Appendix A.1."
+          ]
+        },
+        {
+          "title": "Student Simulator.",
+          "paragraphs": [
+            "Prior to tutoring, it is essential to ensure simulated students have not been exposed to any target coding task. To avoid data contamination, we use Mixtral-8x7B-Instruct Jiang et al. (2024) as the student simulator. This model’s training data only includes content up to 2023-9, whereas all coding tasks in EvoCodeBench are collected from the repositories created between 2023-10 and 2024-2. Furthermore, this model has strong conversational and coding abilities, making it well-suited for student simulation."
+          ]
+        },
+        {
+          "title": "Backbone Models.",
+          "paragraphs": [
+            "The backbone models for developing tutor agents are: Qwen2-Instruct Yang et al. (2024a) with 7B and 72B variants, Llama-3.1-Instruct Dubey et al. (2024) with 8B and 70B variants, GPT-3.5-Turbo OpenAI (2022), GPT-4o OpenAI (2024a), and o1-mini OpenAI (2024b)."
+          ]
+        },
+        {
+          "title": "Baseline Methods",
+          "paragraphs": [
+            "We evaluate our Traver, against the following relevant baseline methods: (1) Vanilla Instruct: It directly instructs LLMs as tutors, as detailed in §4.2. (2) Self-Refine Madaan et al. (2023): LLMs generate initial responses and iteratively refine these responses by providing feedback to themselves. (3) TreeInstruct Kargupta et al. (2024): It is a Socratic teaching method that employs tree-based questioning to guide the student. (4) Oracle: It provides the full task-specific knowledge directly to each student during the post-test (see Eq. (6)), serving as an upper bound."
+          ]
+        },
+        {
+          "title": "Implementation Details.",
+          "paragraphs": [
+            "We implement the verifier in Traver using Mistral-7B Jiang et al. (2023) with an additional linear layer. We utilize the synthesized dialogues from various backbone LLMs with vanilla instructions for the verifier, where the post-test results on Pass scores provide outcome reward labels. We adopt 5-fold cross-validation for training and evaluation. In the Dict evaluation protocol, the maximum number of turns TT is set to 8. The cognitive load parameter MM is set to 60 during the post-test. More details about training and inference are provided in Appendix A.2."
+          ]
+        },
+        {
+          "title": "5.2 Experimental Results",
+          "paragraphs": [
+            "As shown in Table 1, various LLM-based tutors with vanilla instructions perform significantly inferior to the Oracle tutor, indicating clear limitations. Scaling the parameter size of open-source models like Qwen2 and Llama-3.1 generally improves performance. However, the large gaps in Pass and TOR-Pass scores suggest that simply using larger models is inadequate to guide students in successfully completing target coding tasks. These findings indicate that developing effective tutor agents requires not only detailed instructions but also mechanisms to facilitate tutoring outcomes in a structured way.",
+            "Another limitation that emerges from these results is the adaptability. As shown in Table 1, LLMs generally perform better with low-level than with high-level students. This discrepancy arises from the greater difficulty in adapting to higher-level students who require nuanced and targeted guidance. For example, Qwen2-7B-Instruct and GPT-3.5-Turbo show a decline in Pass rates for high-level students after tutoring (i.e., Δ%​P<0\\Delta\\%\\text{P}<0). Figure 4 illustrates this trend by tutoring outcome curves. Larger models like Qwen2-72B-Instruct and Llama3-3.1-70B-Instruct exhibit significant performance gaps between high-level students and others, even as tutoring dialogues progress. While GPT-4o demonstrates better adaptability, its tutoring outcomes early plateau from the third turn for high-level students, indicating diminishing returns. These results highlight the importance of enhancing tutor agents to adaptively guide different students.",
+            "As shown in Table 1, our Traver, built upon Llama-3.1-70B-Instruct, achieves notable improvements over Vanilla Instruct (e.g., from 34.9% to 39.3% in Pass rate). When compared to tutor agents built upon GPT-4o, Traver achieves the highest overall Recall and Pass rates. These results highlight that our approach is more effective in guiding students to successfully complete target coding tasks. More importantly, Traver exhibits substantial improvements across students with different levels, narrowing the gap with the Oracle tutor. The tutoring outcome curves in Figure 5 further illustrate that, regardless of students’ prior knowledge levels, our method consistently improves the success rate of guiding students to achieve task completion.",
+            "We conduct an ablation study for Traver: (1) w/o knowledge tracing (KT), which removes the KT operation prior to tutor utterance generation; and (2) w/o verifier, which omits the verifier VθV_{\\theta} used for verification. The results in Table 2 show that both the KT and verifier contribute to the overall performance. Notably, the absence of the verifier leads to a sharp decline in Pass and TOR-Pass, underscoring its critical role. The verifier improves the possibility of generated utterances that effectively advance the tutoring progress at each turn, thereby increasing the success rate in guiding students to complete the coding task."
+          ]
+        },
+        {
+          "title": "How do various LLMs perform as tutor agents when provided with vanilla instructions?",
+          "paragraphs": [
+            "As shown in Table 1, various LLM-based tutors with vanilla instructions perform significantly inferior to the Oracle tutor, indicating clear limitations. Scaling the parameter size of open-source models like Qwen2 and Llama-3.1 generally improves performance. However, the large gaps in Pass and TOR-Pass scores suggest that simply using larger models is inadequate to guide students in successfully completing target coding tasks. These findings indicate that developing effective tutor agents requires not only detailed instructions but also mechanisms to facilitate tutoring outcomes in a structured way.",
+            "Another limitation that emerges from these results is the adaptability. As shown in Table 1, LLMs generally perform better with low-level than with high-level students. This discrepancy arises from the greater difficulty in adapting to higher-level students who require nuanced and targeted guidance. For example, Qwen2-7B-Instruct and GPT-3.5-Turbo show a decline in Pass rates for high-level students after tutoring (i.e., Δ%​P<0\\Delta\\%\\text{P}<0). Figure 4 illustrates this trend by tutoring outcome curves. Larger models like Qwen2-72B-Instruct and Llama3-3.1-70B-Instruct exhibit significant performance gaps between high-level students and others, even as tutoring dialogues progress. While GPT-4o demonstrates better adaptability, its tutoring outcomes early plateau from the third turn for high-level students, indicating diminishing returns. These results highlight the importance of enhancing tutor agents to adaptively guide different students."
+          ]
+        },
+        {
+          "title": "CanTraverimprove tutoring outcomes and better adapt to different students?",
+          "paragraphs": [
+            "As shown in Table 1, our Traver, built upon Llama-3.1-70B-Instruct, achieves notable improvements over Vanilla Instruct (e.g., from 34.9% to 39.3% in Pass rate). When compared to tutor agents built upon GPT-4o, Traver achieves the highest overall Recall and Pass rates. These results highlight that our approach is more effective in guiding students to successfully complete target coding tasks. More importantly, Traver exhibits substantial improvements across students with different levels, narrowing the gap with the Oracle tutor. The tutoring outcome curves in Figure 5 further illustrate that, regardless of students’ prior knowledge levels, our method consistently improves the success rate of guiding students to achieve task completion."
+          ]
+        },
+        {
+          "title": "Ablation study.",
+          "paragraphs": [
+            "We conduct an ablation study for Traver: (1) w/o knowledge tracing (KT), which removes the KT operation prior to tutor utterance generation; and (2) w/o verifier, which omits the verifier VθV_{\\theta} used for verification. The results in Table 2 show that both the KT and verifier contribute to the overall performance. Notably, the absence of the verifier leads to a sharp decline in Pass and TOR-Pass, underscoring its critical role. The verifier improves the possibility of generated utterances that effectively advance the tutoring progress at each turn, thereby increasing the success rate in guiding students to complete the coding task."
+          ]
+        },
+        {
+          "title": "5.3 Analysis of Simulated Students",
+          "paragraphs": [
+            "Since the Dict evaluation protocol relies on the LLM-simulated students, it is crucial to ensure that these students, with varying levels of prior knowledge, align with discrepancies in completing coding tasks. To validate this, we conducted a pre-test for the simulated students before tutoring, as described in §4.1. Figure 6 shows that simulated low-, medium-, and high-level students exhibit significant performance differences in terms of Recall@kk and Pass@kk. Under a controlled setup, students at different levels demonstrate distinct abilities in completing target coding tasks. Therefore, our student simulation serves as a feasible proxy for real students, offering its advantages of scalability and cost-effectiveness for evaluating tutor agents."
+          ]
+        },
+        {
+          "title": "5.4 Inference-Time Scaling with Verifiers",
+          "paragraphs": [
+            "Using Llama-3.1-70B-Instruct as the backbone model, we vary the number of candidate tutor utterances per turn, i.e., NN, within {1,5,10,15,20}\\{1,5,10,15,20\\} and ask the verifier to select the best one based on predicted rewards. We also evaluate two baselines: (i) Chain-of-Thought (CoT) (Wei et al., 2022) prompting for selection (B1) and (ii) random selection (B2). As shown in Figure 2, Traver with the trained verifier improves the student’s Pass rate from 35.1% to 39.3% as NN increases, outperforming both the random and CoT baselines while exhibiting stronger linear scaling. Additionally, in terms of total tokens (including input prompts and output responses) consumed per tutoring session, Traver achieves a better balance between tutoring performance and efficiency. These findings demonstrate that our Traver effectively enables inference-time scaling for tutoring agents."
+          ]
+        },
+        {
+          "title": "5.5 Human Evaluation and Case Study",
+          "paragraphs": [
+            "To evaluate the quality of tutor agents developed by different methods, we conducted a human evaluation for Vanilla Instruct, Self-Refine, TreeInstruct, and our Traver. We presented human evaluators with a pair of tutoring dialogues produced by two agents interacting with the same student. Evaluators were asked to determine which one is better from proactivity, adaptability, and coherence. Further details are provided in Appendix B.",
+            "Table 3 presents the evaluation results, with an average Fleiss’s kappa (κ\\kappa) of 0.45, indicating moderate agreement among evaluators (0.41 < κ\\kappa < 0.60). The results demonstrate that our Traver significantly outperforms the compared methods in proactivity and adaptability, while also matching or surpassing Vanilla Instruct in coherence. We provide several examples in Appendix C. To further illustrate the performance of our tutor agents, we provide several examples in Appendix C."
+          ]
+        }
+      ]
+    },
+    "6 Related Work": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Interactive Tutoring.",
+          "paragraphs": [
+            "As an advanced form of intelligent tutoring systems (ITSs), interactive ITSs (Graesser et al., 2001; Rus et al., 2013) can provide personalized feedback and adaptive learning experiences. They have been extensively explored across various educational domains, such as language learning (Swartz and Yazdani, 2012; Stasaski et al., 2020; Caines et al., 2020; Kwon et al., 2024), math reasoning (Demszky and Hill, 2023; Macina et al., 2023; Wang et al., 2024b), and scientific concept education (Yuan et al., 2024; Yang et al., 2024b). These studies mainly focus on enhancing students’ understanding of specific pieces of knowledge, using pedagogical strategies such as designing exercises (Deng et al., 2023; Wang et al., 2022; Lu et al., 2023) or selecting teaching examples (Ross and Andreas, 2024). Furthermore, the effectiveness of these approaches is often measured using closed-form assessments, such as question-answering Yuan et al. (2024) or multiple-choice tests Macina et al. (2023). Rather than specific pieces of knowledge, we investigate the domain of coding tutoring, which requires students to perform open-ended code generation to assess tutoring further."
+          ]
+        },
+        {
+          "title": "LLM-based Tutoring Agents.",
+          "paragraphs": [
+            "The rapid growth of large language models (LLMs) has expanded ITSs into tutoring agents (Yu et al., 2024). For instance, early efforts such as EduChat (Dan et al., 2023) introduced an educational chatbot for online tutoring, while ChatTutor (Chen et al., 2024) equipped tutor agents with course planning and adaptive quizzes to facilitate long-term interactions. More recently, AlgoBo (Jin et al., 2024), an LLM-based teachable agent, was developed to enhance students’ coding skills. Existing LLM agents primarily play a reactive role, focusing on answering questions or clarifying concepts. In comparison, our coding tutoring is both goal-driven and personalized, requiring agents to proactively guide students toward completing targeted coding tasks while adapting to diverse levels of knowledge prior. Our work presents a novel method that empowers tutor agents to address these challenges."
+          ]
+        },
+        {
+          "title": "Inference-Time Adaptation of LLMs",
+          "paragraphs": [
+            "To enhance the controllability of language generation in complex tasks, prior work has investigated guided decoding (Dathathri et al., 2020; Chaffin et al., 2022) during inference. More recently, a notable line of research (Lightman et al., 2024; Li et al., 2023; Wang et al., 2024a; Pan et al., 2024) has employed verifier models complemented with search algorithms to guide LLMs for agentic reasoning. These methods typically focus on static tasks, often overlooking interactive scenarios. To address multi-turn interactions (Wang et al., 2024c), we introduce a turn-by-turn verifier that dynamically evaluates tutoring progress over time."
+          ]
+        }
+      ]
+    },
+    "7 Conclusion": {
+      "paragraphs": [
+        "This work explores the potential of LLMs as coding tutors. We propose Traver, an effective agent workflow that incorporates knowledge tracing and turn-by-turn verification, to tackle key challenges in coding tutoring. While this work focuses on coding tutoring as an example, the proposed method extends beyond coding to other task-tutoring scenarios. We further introduce Dict, a novel evaluation protocol combining student simulation and coding tests to assess tutor performance. Such automated evaluation is critical for developing task-tutoring agents as it supports a systematic development and evaluation cycle. Although it’s outside the scope of this paper, the best-performing agent from the automated evaluation can be further assessed through studies with real human students in the future."
+      ],
+      "subsections": []
+    },
+    "Limitations": {
+      "paragraphs": [
+        "In this work, we employed LLMs to simulate students at different knowledge levels, serving as a proxy for real-world learners. While these simulated students offer convenience and scalability, their representation of the human learning process is inherently limited. The role-playing behavior may differ from that of actual students in tutoring scenarios. Future research should focus on improving the reliability of student simulation to better align with real-world human learning.",
+        "In addition, the tutor agents were primarily evaluated by interacting with simulated students in our experimental setup. It remains unclear how these agents would perform when guiding humans toward completing target coding tasks. An important direction for future work is to extend our evaluation protocol by incorporating human-in-the-loop assessments, where tutor agents interact directly with actual students with necessary programming backgrounds. This would offer deeper insights into the practical effectiveness of the developed agents in real-world settings."
+      ],
+      "subsections": []
+    },
+    "Ethics Statement": {
+      "paragraphs": [
+        "We strictly follow the protocols governing the academic use of all LLMs. Our experimental datasets are publicly available and contain no sensitive or private information. We acknowledge that utterances generated by these LLMs may exhibit hallucinations or biases. By highlighting these issues, we aim to raise awareness among practitioners if the tutor agents are deployed to interact with real-world students in the future. Additionally, we used AI assistants, such as Github Copilot and ChatGPT, to assist with our experimentation."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Experimental Setup": {
+      "paragraphs": [
+        "[Figure: Figure 7: An example in EvoCodeBench.]",
+        "[Figure: Figure 8: The reference solution steps annotated for the example in Figure 7.]",
+        "[Table: Table 4: Statistics of the preprocessed EvoCodeBench.]",
+        "[Table: Table 5: Parameter settings in training and inference.]"
+      ],
+      "subsections": [
+        {
+          "title": "A.1 Dataset & Preprocessing",
+          "paragraphs": [
+            "EvoCodeBench Li et al. (2024) is an evolving benchmark for repository-level code generation, which is collected from open-source Python repositories in the real world and will be dynamically updated to avoid data leakage. Figure 7 shows a detailed example, which consists of the following components: (1) Target Coding Task: the function signature of the target code and a requirement description detailing its functionality; (2) Repository: the current repository containing all code files; (3) Reference Code: The developer-written implementation of the target code in the repository; (4) Reference Dependency: The dependencies invoked in the reference code, such as intra-class, intra-file, and cross-file dependencies; (5) Test Cases: The cases used to check the functional correctness of the generated code.",
+            "We employed the publicly available version, EvoCodeBench-2403222https://huggingface.co/datasets/LJ0815/EvoCodeBench/tree/main/EvoCodeBench-2403., as the testbed for our experiments. This dataset comprises coding tasks collected from repositories created between 2023-10 and 2024-2. For each target coding task, we annotated its reference solution steps by directly prompting GPT-4o OpenAI (2024a) using the provided reference code (see Figure 8). Coding tasks requiring no dependencies were excluded during preprocessing. The statistics of the resulting dataset are summarized in Table 4. We split the dataset equally into 5 folds, using 5-fold cross-validation for experiments."
+          ]
+        },
+        {
+          "title": "A.2 Additional Implementation Details",
+          "paragraphs": [
+            "The backbone LLMs we used are detailed as follows: (1) For the Llama-3.1-Instruct Dubey et al. (2024), we adopt its 8B333https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct and 70B444https://huggingface.co/meta-llama/Llama-3.1-70B-Instruct variants. For the Qwen-2-Instruct Yang et al. (2024a), we adopt its 7B555https://huggingface.co/Qwen/Qwen2-7B-Instruct and 72B666https://huggingface.co/Qwen/Qwen2-72B-Instruct variants. (2) We employ GPT-3.5-Turbo (gpt-3.5-turbo-1106 version), GPT-4o (gpt-4o-2024-05-13 version), and o1-mini (2024-09-01-preview version), using APIs provided by Microsoft Azure.",
+            "Our implementation is based on the vLLM777https://docs.vllm.ai/en/latest/ and ChatArena888https://github.com/Farama-Foundation/chatarena libraries. Both the student simulator and dialogue manager employ the quantized version999https://huggingface.co/TheBloke/Mixtral-8x7B-Instruct-v0.1-AWQ of Mixtral-8x7B-Instruct Jiang et al. (2024) for efficiency. During tutor-student interactions, the maximum number of tokens to generate is limited to 300 for both the tutor and student. For the coding tests, the student simulator adopts sampling decoding, with a fixed top-pp of 0.95 and temperature of 0.4. The cognitive load parameter MM is set to 60 during the post-test.",
+            "We utilize synthesized dialogues generated by various backbone models with vanilla instructions, as the data source for training the verifier. Tutoring dialogues that successfully guide the student to complete target coding tasks during the post-test are labeled as positive data. To ensure a balanced dataset for training, we randomly sample dialogues that fail to achieve the tutoring goals as negative data. We implement the turn-based verifier using Mistral-7B Jiang et al. (2023) with an additional linear layer, which is fine-tuned based on LoRA Hu et al. (2022). The LoRA’s target modules are WqW_{q} and WvW_{v}, the rank rr is set to 8, and the scaling parameter α\\alpha is set to 16. The optimizer we used is AdamW Loshchilov and Hutter (2018), with an initial learning rate of 1ee-5 and a warmup ratio of 0.03. The verifier is trained for 3 epochs. During inference, we adopt sampling decoding to generate tutor utterances, with a top-pp of 0.95 and a temperature of 0.4 across all backbone models. For Llama-3.1-70B-Instruct, the number of candidate utterances is set to 20, while for GPT-4o, it is fixed at 10. All experiments are conducted on one server equipped with 8 NVIDIA A6000 GPUs. Table 5 summarizes the parameter settings in training and inference."
+          ]
+        }
+      ]
+    },
+    "Appendix B Human Evaluation": {
+      "paragraphs": [
+        "We randomly selected 10 target coding tasks from the testbed and collected the synthesized tutoring dialogues across three levels of students for the compared tutor agents, including Vanilla Instruct, Self-Refine, TreeInstruct, and our Traver. All tutor agents are built using GPT-4o as the backbone model. We asked three graduate students with well-educated programming backgrounds for human evaluation.",
+        "For each target coding task, we presented human evaluators with a pair of tutoring dialogues produced by two agents interacting with the same student, resulting in a total of 90 cases. Evaluators were asked to determine which one is better (or to select a tie) based on the following dimensions:",
+        "(1) Proactivity: how well does the tutor move the student’s progress towards solving the task? Weak: Only make passive responses or generic check-ins (e.g., “Any questions?” or “Does this make sense?”). Moderate: Ask directional questions with clear next steps (e.g., “Now we need to handle input validation. Could you implement the error checks?”). Excellent: Structured progression with connected concepts (e.g., “Now that we’ve validated inputs, let’s think about how this connects to our error handling strategy. Could you identify where validation and error handling might overlap?”).",
+        "• Weak: Only make passive responses or generic check-ins (e.g., “Any questions?” or “Does this make sense?”).",
+        "• Moderate: Ask directional questions with clear next steps (e.g., “Now we need to handle input validation. Could you implement the error checks?”).",
+        "• Excellent: Structured progression with connected concepts (e.g., “Now that we’ve validated inputs, let’s think about how this connects to our error handling strategy. Could you identify where validation and error handling might overlap?”).",
+        "(2) Adaptability: how well does the tutor adapt its tutoring strategy based on the student’s responses? Weak: Follows fixed script regardless of student’s responses (e.g., “Let’s move on to the next step…” while ignoring the student’s questions or confusion). Moderate: Responsive to the student’s immediate questions but maintains fixed tutoring plan (e.g., “Yes, good question about error handling. Now as I was saying about the input validation…”). Excellent: Adjusts explanations based on the student’s demonstrated understanding (e.g., “I see you’ve handled the input validation. Let’s focus on optimizing your approach…”).",
+        "• Weak: Follows fixed script regardless of student’s responses (e.g., “Let’s move on to the next step…” while ignoring the student’s questions or confusion).",
+        "• Moderate: Responsive to the student’s immediate questions but maintains fixed tutoring plan (e.g., “Yes, good question about error handling. Now as I was saying about the input validation…”).",
+        "• Excellent: Adjusts explanations based on the student’s demonstrated understanding (e.g., “I see you’ve handled the input validation. Let’s focus on optimizing your approach…”).",
+        "(3) Coherence: how well does the tutor build and maintain connections throughout the tutoring session? Weak: Jumps between topics without logical transitions (e.g., “Now let’s talk about …” without linking to the previous discussion). Moderate: Maintains a logical flow, though the connections between topics are weak. Excellent: Explicitly connects each utterance to the preceding context and aligns it with the future tutoring goal.",
+        "• Weak: Jumps between topics without logical transitions (e.g., “Now let’s talk about …” without linking to the previous discussion).",
+        "• Moderate: Maintains a logical flow, though the connections between topics are weak.",
+        "• Excellent: Explicitly connects each utterance to the preceding context and aligns it with the future tutoring goal.",
+        "• Weak: Only make passive responses or generic check-ins (e.g., “Any questions?” or “Does this make sense?”).",
+        "• Moderate: Ask directional questions with clear next steps (e.g., “Now we need to handle input validation. Could you implement the error checks?”).",
+        "• Excellent: Structured progression with connected concepts (e.g., “Now that we’ve validated inputs, let’s think about how this connects to our error handling strategy. Could you identify where validation and error handling might overlap?”).",
+        "• Weak: Follows fixed script regardless of student’s responses (e.g., “Let’s move on to the next step…” while ignoring the student’s questions or confusion).",
+        "• Moderate: Responsive to the student’s immediate questions but maintains fixed tutoring plan (e.g., “Yes, good question about error handling. Now as I was saying about the input validation…”).",
+        "• Excellent: Adjusts explanations based on the student’s demonstrated understanding (e.g., “I see you’ve handled the input validation. Let’s focus on optimizing your approach…”).",
+        "• Weak: Jumps between topics without logical transitions (e.g., “Now let’s talk about …” without linking to the previous discussion).",
+        "• Moderate: Maintains a logical flow, though the connections between topics are weak.",
+        "• Excellent: Explicitly connects each utterance to the preceding context and aligns it with the future tutoring goal.",
+        "Our human evaluations were carried out using a Web application, as illustrated in Figure 9, which displays the interface. We adopted Fleiss’s kappa Fleiss (1971) to measure the agreement among the human evaluators.",
+        "[Figure: Figure 9: Web interface for human evaluation.]"
+      ],
+      "subsections": []
+    },
+    "Appendix C Case Study": {
+      "paragraphs": [
+        "Table 6 shows an example from the human evaluation, demonstrating a case where our Traver outperforms the baseline. Table 7 shows a case where our method performs comparably to the baseline.",
+        "[Table: Table 6: An example from the human evaluation, demonstrating a case where our method outperforms the baseline. The tutor agent built with Vanilla Instruct simply repeats the target coding task at the beginning and fails to adapt its tutoring strategy based on the student’s responses. In contrast, the tutor agent built with our Traver workflow demonstrates much better proactivity and adaptability in guiding the student toward solving the task. ]",
+        "[Table: Table 7: An example from the human evaluation demonstrating a case where our method performs comparably to the baseline.]"
+      ],
+      "subsections": []
+    },
+    "Appendix D Prompting Templates": {
+      "paragraphs": [
+        "[Table: Table 8: System prompt for the simulated low-level student during the tutor-student interaction.]",
+        "[Table: Table 9: System prompt for the simulated medium-level student during the tutor-student interaction.]",
+        "[Table: Table 10: System prompt for the simulated high-level student during the tutor-student interaction.]",
+        "[Table: Table 11: System prompt for the tutor agent.]",
+        "[Table: Table 12: System prompt for the pre-test.]",
+        "[Table: Table 13: System prompt for the post-test, where the {PRIOR_KNOWLEDGE} is determined by different levels of simulated students, as described in Table 8, Table 9, and Table 10. ]",
+        "[Table: Table 14: Prompting template for the knowledge tracing in Traver.]"
+      ],
+      "subsections": [
+        {
+          "title": "Student Simulation",
+          "paragraphs": [
+            "Each simulated student is designed to interact with the tutor and learn how to complete the target coding task. The student’s behavior is guided by empirical learning actions, such as initiating greetings, asking or answering questions, etc. The system prompt templates for the simulation of low-level, medium-level, and high-level students are shown in Table 8, Table 9, Table 10, respectively."
+          ]
+        },
+        {
+          "title": "Tutor-Student Interaction",
+          "paragraphs": [
+            "Each LLM-based tutor agent is initialized with a target coding task 𝒯\\mathcal{T} and task-specific knowledge 𝒦\\mathcal{K}. As a proactive tutor, it guides students with necessary strategies inspired by cognitive scaffolding approaches Liu et al. (2024). These strategies include actions such as assessing the student’s knowledge level, providing constructive feedback, offering reference dependencies, etc. Table 11 shows the system prompt template for the tutor agent."
+          ]
+        },
+        {
+          "title": "Pre-test & Post-test",
+          "paragraphs": [
+            "Table 12 and Table 13 show the system prompt template for the pre-test and post-test, respectively. The {PRIOR_KNOWLEDGE} is determined by different levels of simulated students (see Table 8, Table 9, and Table 10)."
+          ]
+        },
+        {
+          "title": "Knowledge Tracing",
+          "paragraphs": [
+            "The knowledge tracing in our proposed Traver is implemented following the instruction template shown in Table 14."
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "Abdelrahman et al. (2023) Ghodai Abdelrahman, Qing Wang, and Bernardo Nunes. 2023. Knowledge tracing: A survey. ACM Computing Surveys, 55(11):1–37.",
+    "Austin et al. (2021) Jacob Austin, Augustus Odena, Maxwell Nye, Maarten Bosma, Henryk Michalewski, David Dohan, Ellen Jiang, Carrie Cai, Michael Terry, Quoc Le, et al. 2021. Program synthesis with large language models. arXiv preprint arXiv:2108.07732.",
+    "Caines et al. (2020) Andrew Caines, Helen Yannakoudakis, Helena Edmondson, Helen Allen, Pascual Pérez-Paredes, Bill Byrne, and Paula Buttery. 2020. The teacher-student chatroom corpus. In Proceedings of the 9th Workshop on NLP for Computer Assisted Language Learning, pages 10–20, Gothenburg, Sweden. LiU Electronic Press.",
+    "Chaffin et al. (2022) Antoine Chaffin, Vincent Claveau, and Ewa Kijak. 2022. PPL-MCTS: Constrained textual generation through discriminator-guided MCTS decoding. In Proceedings of the 2022 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, pages 2953–2967, Seattle, United States. Association for Computational Linguistics.",
+    "Chai et al. (2018) Joyce Y Chai, Qiaozi Gao, Lanbo She, Shaohua Yang, Sari Saba-Sadiya, and Guangyue Xu. 2018. Language to action: towards interactive task learning with physical agents. In Proceedings of the 27th International Joint Conference on Artificial Intelligence, pages 2–9.",
+    "Chen et al. (2024) Yulin Chen, Ning Ding, Hai-Tao Zheng, Zhiyuan Liu, Maosong Sun, and Bowen Zhou. 2024. Empowering private tutoring by chaining large language models. In Proceedings of the 33rd ACM International Conference on Information and Knowledge Management, pages 354–364.",
+    "Corbett and Anderson (1994) Albert T Corbett and John R Anderson. 1994. Knowledge tracing: Modeling the acquisition of procedural knowledge. User modeling and user-adapted interaction, 4:253–278.",
+    "Dan et al. (2023) Yuhao Dan, Zhikai Lei, Yiyang Gu, Yong Li, Jianghao Yin, Jiaju Lin, Linhao Ye, Zhiyan Tie, Yougen Zhou, Yilei Wang, et al. 2023. EduChat: A large-scale language model-based chatbot system for intelligent education. arXiv preprint arXiv:2308.02773.",
+    "Dathathri et al. (2020) Sumanth Dathathri, Andrea Madotto, Janice Lan, Jane Hung, Eric Frank, Piero Molino, Jason Yosinski, and Rosanne Liu. 2020. Plug and play language models: A simple approach to controlled text generation. In International Conference on Learning Representations (ICLR).",
+    "Demszky and Hill (2023) Dorottya Demszky and Heather Hill. 2023. The NCTE transcripts: A dataset of elementary math classroom transcripts. In Proceedings of the 18th Workshop on Innovative Use of NLP for Building Educational Applications (BEA 2023), pages 528–538, Toronto, Canada. Association for Computational Linguistics.",
+    "Deng et al. (2023) Yang Deng, Zifeng Ren, An Zhang, Wenqiang Lei, and Tat-Seng Chua. 2023. Towards goal-oriented intelligent tutoring systems in online education. arXiv preprint arXiv:2312.10053.",
+    "Dubey et al. (2024) Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Amy Yang, Angela Fan, et al. 2024. The llama 3 herd of models. arXiv preprint arXiv:2407.21783.",
+    "Fleiss (1971) Joseph L Fleiss. 1971. Measuring nominal scale agreement among many raters. Psychological bulletin, 76(5):378.",
+    "Graesser et al. (2001) Arthur C Graesser, Kurt VanLehn, Carolyn P Rosé, Pamela W Jordan, and Derek Harter. 2001. Intelligent tutoring systems with conversational dialogue. AI magazine, 22(4):39–39.",
+    "Hill et al. (2005) Heather C Hill, Brian Rowan, and Deborah Loewenberg Ball. 2005. Effects of teachers’ mathematical knowledge for teaching on student achievement. American educational research journal, 42(2):371–406.",
+    "Hu et al. (2022) Edward J Hu, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, Weizhu Chen, et al. 2022. Lora: Low-rank adaptation of large language models. In International Conference on Learning Representations (ICLR).",
+    "Jiang et al. (2023) Albert Q Jiang, Alexandre Sablayrolles, Arthur Mensch, Chris Bamford, Devendra Singh Chaplot, Diego de las Casas, Florian Bressand, Gianna Lengyel, Guillaume Lample, Lucile Saulnier, et al. 2023. Mistral 7b. arXiv preprint arXiv:2310.06825.",
+    "Jiang et al. (2024) Albert Q Jiang, Alexandre Sablayrolles, Antoine Roux, Arthur Mensch, Blanche Savary, Chris Bamford, Devendra Singh Chaplot, Diego de las Casas, Emma Bou Hanna, Florian Bressand, et al. 2024. Mixtral of experts. arXiv preprint arXiv:2401.04088.",
+    "Jin et al. (2024) Hyoungwook Jin, Seonghee Lee, Hyungyu Shin, and Juho Kim. 2024. Teach AI how to code: Using large language models as teachable agents for programming education. In Proceedings of the CHI Conference on Human Factors in Computing Systems, pages 1–28.",
+    "Kargupta et al. (2024) Priyanka Kargupta, Ishika Agarwal, Dilek Hakkani Tur, and Jiawei Han. 2024. Instruct, not assist: LLM-based multi-turn planning and hierarchical questioning for socratic code debugging. In Findings of the Association for Computational Linguistics: EMNLP 2024, pages 9475–9495, Miami, Florida, USA. Association for Computational Linguistics.",
+    "Kwon et al. (2024) Soonwoo Kwon, Sojung Kim, Minju Park, Seunghyun Lee, and Kyuseok Kim. 2024. BIPED: Pedagogically informed tutoring system for ESL education. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 3389–3414, Bangkok, Thailand. Association for Computational Linguistics.",
+    "Li et al. (2024) Jia Li, Ge Li, Xuanming Zhang, Yunfei Zhao, Yihong Dong, Zhi Jin, Binhua Li, Fei Huang, and Yongbin Li. 2024. EvoCodeBench: An evolving code generation benchmark with domain-specific evaluations. In The Thirty-eight Conference on Neural Information Processing Systems Datasets and Benchmarks Track.",
+    "Li et al. (2023) Yifei Li, Zeqi Lin, Shizhuo Zhang, Qiang Fu, Bei Chen, Jian-Guang Lou, and Weizhu Chen. 2023. Making language models better reasoners with step-aware verifier. In Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 5315–5333, Toronto, Canada. Association for Computational Linguistics.",
+    "Lightman et al. (2024) Hunter Lightman, Vineet Kosaraju, Yuri Burda, Harrison Edwards, Bowen Baker, Teddy Lee, Jan Leike, John Schulman, Ilya Sutskever, and Karl Cobbe. 2024. Let’s verify step by step. In The Twelfth International Conference on Learning Representations.",
+    "Liu et al. (2024) Zhengyuan Liu, Stella Xin Yin, Carolyn Lee, and Nancy F Chen. 2024. Scaffolding language learning via multi-modal tutoring systems with pedagogical instructions. arXiv preprint arXiv:2404.03429.",
+    "Loshchilov and Hutter (2018) Ilya Loshchilov and Frank Hutter. 2018. Decoupled weight decay regularization. In International Conference on Learning Representations.",
+    "Lu et al. (2023) Xinyi Lu, Simin Fan, Jessica Houghton, Lu Wang, and Xu Wang. 2023. ReadingQuizMaker: a human-NLP collaborative system that supports instructors to design high-quality reading quiz questions. In Proceedings of the 2023 CHI Conference on Human Factors in Computing Systems, pages 1–18.",
+    "Macina et al. (2023) Jakub Macina, Nico Daheim, Sankalan Chowdhury, Tanmay Sinha, Manu Kapur, Iryna Gurevych, and Mrinmaya Sachan. 2023. MathDial: A dialogue tutoring dataset with rich pedagogical properties grounded in math reasoning problems. In Findings of the Association for Computational Linguistics: EMNLP 2023, pages 5602–5621, Singapore. Association for Computational Linguistics.",
+    "Madaan et al. (2023) Aman Madaan, Niket Tandon, Prakhar Gupta, Skyler Hallinan, Luyu Gao, Sarah Wiegreffe, Uri Alon, Nouha Dziri, Shrimai Prabhumoye, Yiming Yang, et al. 2023. Self-refine: Iterative refinement with self-feedback. Advances in Neural Information Processing Systems, 36.",
+    "Miller (1956) George A Miller. 1956. The magical number seven, plus or minus two: Some limits on our capacity for processing information. Psychological review, 63(2):81.",
+    "OpenAI (2022) OpenAI. 2022. Introducing ChatGPT. https://openai.com/blog/chatgpt.",
+    "OpenAI (2024a) OpenAI. 2024a. Hello GPT-4o. https://openai.com/index/hello-gpt-4o/.",
+    "OpenAI (2024b) OpenAI. 2024b. Introducing OpenAI o1. https://openai.com/o1/.",
+    "Pan et al. (2024) Jiayi Pan, Xingyao Wang, Graham Neubig, Navdeep Jaitly, Heng Ji, Alane Suhr, and Yizhe Zhang. 2024. Training software engineering agents and verifiers with SWE-Gym. arXiv preprint arXiv:2412.21139.",
+    "Pyan (2023) Pyan. 2023. Pyan. https://github.com/davidfraser/pyan.",
+    "Ross and Andreas (2024) Alexis Ross and Jacob Andreas. 2024. Toward in-context teaching: Adapting examples to students’ misconceptions. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 13283–13310, Bangkok, Thailand. Association for Computational Linguistics.",
+    "Rus et al. (2013) Vasile Rus, Sidney D’Mello, Xiangen Hu, and Arthur Graesser. 2013. Recent advances in conversational intelligent tutoring systems. AI magazine, 34(3):42–54.",
+    "Scarlatos and Lan (2024) Alexander Scarlatos and Andrew Lan. 2024. Exploring knowledge tracing in tutor-student dialogues. arXiv preprint arXiv:2409.16490.",
+    "Stasaski et al. (2020) Katherine Stasaski, Kimberly Kao, and Marti A. Hearst. 2020. CIMA: A large open access dialogue dataset for tutoring. In Proceedings of the Fifteenth Workshop on Innovative Use of NLP for Building Educational Applications, pages 52–64, Seattle, WA, USA (Online). Association for Computational Linguistics.",
+    "Swartz and Yazdani (2012) Merryanna L Swartz and Masoud Yazdani. 2012. Intelligent tutoring systems for foreign language learning: The bridge to international communication, volume 80. Springer Science & Business Media.",
+    "Sweller (2011) John Sweller. 2011. Cognitive load theory. In Psychology of learning and motivation, volume 55, pages 37–76. Elsevier.",
+    "Tsai and Roth (2016) Chen-Tse Tsai and Dan Roth. 2016. Concept grounding to multiple knowledge bases via indirect supervision. Transactions of the Association for Computational Linguistics, 4:141–154.",
+    "VanLehn (2011) Kurt VanLehn. 2011. The relative effectiveness of human tutoring, intelligent tutoring systems, and other tutoring systems. Educational psychologist, 46(4):197–221.",
+    "Wang et al. (2023) Jian Wang, Yi Cheng, Dongding Lin, Chak Leong, and Wenjie Li. 2023. Target-oriented proactive dialogue systems with personalization: Problem formulation and dataset curation. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, pages 1132–1143, Singapore. Association for Computational Linguistics.",
+    "Wang et al. (2024a) Peiyi Wang, Lei Li, Zhihong Shao, Runxin Xu, Damai Dai, Yifei Li, Deli Chen, Yu Wu, and Zhifang Sui. 2024a. Math-shepherd: Verify and reinforce llms step-by-step without human annotations. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 9426–9439.",
+    "Wang et al. (2024b) Rose Wang, Qingyang Zhang, Carly Robinson, Susanna Loeb, and Dorottya Demszky. 2024b. Bridging the novice-expert gap via models of decision-making: A case study on remediating math mistakes. In Proceedings of the 2024 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers), pages 2174–2199, Mexico City, Mexico. Association for Computational Linguistics.",
+    "Wang et al. (2024c) Xingyao Wang, Zihan Wang, Jiateng Liu, Yangyi Chen, Lifan Yuan, Hao Peng, and Heng Ji. 2024c. MINT: Evaluating LLMs in multi-turn interaction with tools and language feedback. In The Twelfth International Conference on Learning Representations.",
+    "Wang et al. (2022) Xu Wang, Simin Fan, Jessica Houghton, and Lu Wang. 2022. Towards process-oriented, modular, and versatile question generation that meets educational needs. In Proceedings of the 2022 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, pages 291–302, Seattle, United States. Association for Computational Linguistics.",
+    "Wei et al. (2022) Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Fei Xia, Ed Chi, Quoc V Le, Denny Zhou, et al. 2022. Chain-of-thought prompting elicits reasoning in large language models. In Advances in neural information processing systems, volume 35, pages 24824–24837.",
+    "Yang et al. (2024a) An Yang, Baosong Yang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Zhou, Chengpeng Li, Chengyuan Li, Dayiheng Liu, Fei Huang, et al. 2024a. Qwen2 technical report. arXiv preprint arXiv:2407.10671.",
+    "Yang et al. (2024b) Rui Yang, Boming Yang, Sixun Ouyang, Tianwei She, Aosong Feng, Yuang Jiang, Freddy Lecue, Jinghui Lu, and Irene Li. 2024b. Leveraging large language models for concept graph recovery and question answering in NLP education. arXiv preprint arXiv:2402.14293.",
+    "Yu et al. (2024) Jifan Yu, Zheyuan Zhang, Daniel Zhang-li, Shangqing Tu, Zhanxin Hao, Rui Miao Li, Haoxuan Li, Yuanchun Wang, Hanming Li, Linlu Gong, et al. 2024. From MOOC to MAIC: Reshaping online teaching and learning through LLM-driven agents. arXiv preprint arXiv:2409.03512.",
+    "Yuan et al. (2024) Siyu Yuan, Cheng Jiayang, Lin Qiu, and Deqing Yang. 2024. Boosting scientific concepts understanding: Can analogy from teacher models empower student models? In Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing, pages 6026–6036, Miami, Florida, USA. Association for Computational Linguistics.",
+    "Zhang et al. (2024) Dan Zhang, Sining Zhoubian, Ziniu Hu, Yisong Yue, Yuxiao Dong, and Jie Tang. 2024. ReST-MCTS*: LLM self-training via process reward guided tree search. In The Thirty-eighth Annual Conference on Neural Information Processing Systems."
+  ]
+}

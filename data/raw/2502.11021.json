@@ -1,0 +1,156 @@
+{
+  "title": "Leveraging Uncertainty Estimation for Efficient LLM Routing",
+  "authors": "Tuo ZhangUniversity of Southern Californiatuozhang@usc.edu&Asal Mehradfar11footnotemark:1University of Southern Californiamehradfa@usc.edu\\ANDDimitrios DimitriadisAmazon AIdbdim@amazon.com&Salman AvestimehrUniversity of Southern Californiaavestime@usc.eduThese authors contributed equally to this work.",
+  "abstract": "Deploying large language models (LLMs) in edge-cloud environments requires an efficient routing strategy to balance cost and response quality. Traditional approaches prioritize either human-preference data or accuracy metrics from benchmark datasets as routing criteria, but these methods suffer from rigidity and subjectivity. Moreover, existing routing frameworks primarily focus on accuracy and cost, neglecting response quality from a human preference perspective. In this work, we propose the Confidence-Driven LLM Router, a novel framework that leverages uncertainty estimation to optimize routing decisions. To comprehensively assess routing performance, we evaluate both system cost efficiency and response quality. In particular, we introduce the novel use of LLM-as-a-Judge to simulate human rating preferences, providing the first systematic assessment of response quality across different routing strategies. Extensive experiments on MT-Bench, GSM8K, and MMLU demonstrate that our approach outperforms state-of-the-art routing methods, achieving superior response quality while maintaining cost efficiency.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "The deployment of AI models on edge devices is increasingly following a hybrid approach, where small language models (SLMs) run on-device (e.g., smartphones and IoT devices) while larger, more powerful models remain in the cloud Apple (2024). This setup provides a balance between efficiency and performance, allowing low-latency responses for simple queries while reserving cloud-based LLMs for more complex tasks. However, determining when to offload queries to the cloud is a crucial challenge: calling the cloud unnecessarily increases cost and latency, whereas over-relying on local SLMs risks suboptimal response quality. An effective routing strategy is essential to dynamically balance cost and performance.",
+        "Traditional cascading routers, which sequentially query models until a satisfactory response is obtained Chen et al. (2023), are inefficient for edge-cloud settings due to latency and redundant model calls. Recent predictive routing approaches aim to preemptively select the best model for a given query, with two leading solutions: TO-Router Stripelis et al. (2024), which trains router on accuracy-based benchmarks and RouteLLM Ong et al. (2024), which relies on human preference selection for router training.",
+        "While human preference data and benchmark accuracy are commonly used as performance indicators in router training, our results reveal two major limitations that hinder data efficiency and system utilization. First, human judgment is not always reliable. User ratings are subjective and inconsistent, often failing to provide an accurate ranking of model performance. Also, collecting human-preference data is resource-intensive, requiring manual evaluation of each sample on a case-by-case basis. These issues are particularly evident in the arena dataset Chiang et al. (2024), where the distribution of preference data across models is sparse and uneven, complicating router training. Empirically, we demonstrate that arena data does not follow a scaling law to validate our argument. As shown in Figure 1, increasing the dataset size does not necessarily improve routing performance. Instead, adding more data can introduce noise and inconsistencies, potentially degrading routing accuracy rather than enhancing it. Second, accuracy is an incomplete indicator. Binary accuracy metrics do not capture response confidence, meaning two models may provide correct answers, yet one is significantly more precise and reliable.",
+        "To address the limitations of state-of-the-art methods, we propose the Confidence-Driven LLM Router System, which leverages Semantic Entropy (SE) as an uncertainty measure to guide routing decisions. Instead of relying on human preferences or accuracy-based thresholds, our system uses semantic entropy to measure model confidence. This enables the router to offload queries to cloud-based LLMs when higher certainty is needed, which keeps confident responses on-device to minimize cost. As the motivational example shown in Figure 2, by adopting uncertainty as a routing signal, our approach dynamically optimizes response quality and computational efficiency, making it better suited for real-world edge-cloud deployments."
+      ],
+      "subsections": []
+    },
+    "2 Method": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "2.1 Overview",
+          "paragraphs": [
+            "Inspired by prior work Kuhn et al. (2023); Bakman et al. (2024), we quantify uncertainty in natural language generation based on semantic content rather than token-level variations, using it as a performance indicator for training the router.",
+            "SE Kuhn et al. (2023) captures uncertainty by clustering generated outputs with equivalent meanings and computing entropy over their aggregated probabilities. Unlike traditional entropy, which treats all token sequences distinctly, SE accounts for semantic equivalence, ensuring paraphrases contribute to the same uncertainty estimate. A lower SE score indicates higher confidence, while a higher score signals greater uncertainty.",
+            "Formally, we define the probability of a meaning cluster cc given an input prompt 𝐱\\mathbf{x} as:",
+            "The semantic entropy of 𝐱\\mathbf{x} is then computed as:",
+            "where CC represents the set of all clusters."
+          ]
+        },
+        {
+          "title": "2.2 System Design of the Confidence-Driven LLM Router",
+          "paragraphs": [
+            "The training and deployment of the Confidence-Driven LLM Router consist of three key phases:",
+            "Phase 1: Router Data Preparation. To create a training dataset that reflects real deployment scenarios, we select factual-related datasets, such as Natural QA and Trivia QA, to probe model confidence and knowledge capabilities. Additionally, domain-specific instruction datasets can be incorporated to tailor the router to specialized applications.",
+            "Clustering generated outputs is a critical preprocessing step before computing SE. In this work, we adopt a bidirectional entailment mechanism following the previous work Kuhn et al. (2023). The first generated response initializes a cluster. For each subsequent response, a semantic entailment classifier, fine-tuned on DeBERTa-large model He et al. (2020), evaluates bidirectional entailment between the response and the current cluster representative. If both forward and backward entailments hold, the response is assigned to the existing cluster; otherwise, a new cluster is formed. This bidirectional criterion ensures that only semantically equivalent responses are grouped, allowing the number of clusters to be dynamically determined based on meaning variations among generated outputs.",
+            "Phase 2: Constructing Preference Data from Semantic Entropy Scores. In the second phase, we create preference data by comparing the SE scores across models for each unique prompt. Although no two SE values are exactly the same, some prompts yield similar performance between models, which we denote as a “tie” case. To identify ties, we treat cases with close uncertainty levels as equivalent, where neither model is a clear winner. To quantify the relative difference in uncertainty, we compute the normalized SE difference between the two models as:",
+            "S​Estrong​(𝐱)SE_{\\text{strong}}(\\mathbf{x}) represents the high-cost model, and S​Eweak​(𝐱)SE_{\\text{weak}}(\\mathbf{x}) represents the low-cost model. Using this metric, we determine the preferred model as:",
+            "The predefined threshold τ\\tau controls sensitivity to uncertainty differences. If δSE​(𝐱)\\delta_{\\text{SE}}(\\mathbf{x}) exceeds the predefined τ\\tau, the uncertainties are considered sufficiently distinct, and the model with the lower semantic entropy is designated as the preferred model. Otherwise, we consider both models equal in performance for the given prompt.",
+            "A higher τ\\tau enforces stricter distinctions, aligning the preference data more closely with traditional accuracy-based evaluations. Conversely, a lower τ\\tau increases sensitivity to subtle linguistic variations in model responses. By tuning τ\\tau, we balance robustness with linguistic granularity.",
+            "Phase 3: Training the Confidence-Driven Router. After generating the SE-based preference data in Phase 2, we format each training sample as follows: {id, model a, model b, prompt, response a, response b, winner model a, winner model b, winner tie}. In the last three columns, we use binary values (0 or 1) to represent the routing outcomes. For instance, if model_a is the preferred model, then winner_model_a is set to 1, while winner_model_b and winner_tie are set to 0. The dataset used in this study is now publicly available on Huggingface 111https://huggingface.co/datasets/AsalMehradfar/uncertainty_0.1. Once the dataset is prepared, we transform the instruction records into vectorized representations using the pre-trained embedding model, which serves as inputs for training the router classifiers."
+          ]
+        }
+      ]
+    },
+    "3 Evaluation": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "3.1 Experimental Methodology",
+          "paragraphs": [
+            "We use GPT-4 as the strong model and Mixtral-8x7B as the weaker model. The Confidence-Driven Router is trained with a combination of Natural QA Kwiatkowski et al. (2019); Lee et al. (2019), Trivia QA Joshi et al. (2017), PopQA Mallen et al. (2022), and MAWPS Koncel-Kedziorski et al. (2016) datasets to ensure a knowledge space. We randomly selected 3,610 samples from each QA dataset and 1,418 samples from the MAWPS dataset, resulting in 12,247 samples, matching the quantity as Chatbot Arena dataset Chiang et al. (2024) for RouteLLM training. We select MMLU Hendrycks et al. (2020), MT-Bench Zheng et al. (2023), and GSM8K datasets Cobbe et al. (2021) to comprehensively evaluate the routing systems. Following the previous works Ong et al. (2024); Stripelis et al. (2024), we select four different predictive routing models for evaluation: Similarity-Weighted (SW) Ranking, Matrix Factorization (MF), Multilayer Perceptron (MLP), and k-Nearest Neighbors (kNN). More details related to the datasets and routing models are listed in the Appendix.",
+            "We evaluate performance based on two key criteria: system cost and response quality.",
+            "To evaluate system cost, we adopt the Call-Performance Threshold (CPT) metric from prior work Ong et al. (2024). CPT(x%) represents the minimum fraction of queries that must be routed to the stronger model to achieve an x% improvement over the baseline accuracy of the weaker model. For example, CPT(50%) specifies the proportion of calls required to the strong model to attain a 50% improvement over the weak model’s baseline accuracy. A lower CPT value indicates a more cost-effective routing strategy, achieving performance gains with fewer calls to the stronger model.",
+            "To evaluate response quality, we use LLM-as-a-Judge to simulate human ratings. We employ an independent LLM (i.e., GPT-o1) to choose the most preferable responses from the routed model alongside ground-truth answers. The judge is instructed to select based on correctness and precision of reasoning, as the detailed system prompt listed in the Appendix. We design the score as Score​(i)=(SiT)×100\\text{Score}(i)=\\left(\\frac{S_{i}}{T}\\right)\\times 100, where SiS_{i} be the number of times router ii is selected, and TT be the total number of queries. Unlike traditional accuracy-based evaluations using golden labels, this approach simulates human judgment by considering not only the correctness but also the interpretability and coherence of model outputs, better aligning with human preference selection rather than relying solely on objective correctness.",
+            "We select RouteLLM Ong et al. (2024) and TO-Router Stripelis et al. (2024), two state-of-the-art predictive routing systems. Following their original configurations, we evaluate TO-Router using kNN and MLP architectures, while RouteLLM is assessed using SW ranking and MF models. We also include a random router without any training as a baseline for comparison."
+          ]
+        },
+        {
+          "title": "3.2 Evaluation on System Costs",
+          "paragraphs": [
+            "We first evaluate the system costs of various routing strategies on the test datasets, as summarized in Table 1. The Confidence-Driven LLM Router consistently achieves strong performance in CPT(50%) and CPT(80%) across datasets. To provide a clearer comparison, we report the actual OpenAI API cost (in USD) for each routing system on the MT-Bench dataset under CPT(80%): Random router costs $4.06; TO-Router costs $3.88; RouteLLM costs $4.04; and our proposed method costs lowest with $3.74. These results demonstrate that leveraging uncertainty as a routing indicator provides notable advantages in achieving target performance improvements while balancing computational costs."
+          ]
+        },
+        {
+          "title": "3.3 Evaluation on Response Quality",
+          "paragraphs": [
+            "To better understand the advantage of our proposed method, we evaluate the response quality of each routing system under the same accuracy with GSM8K dataset. We select the best routing models under each routing system in Table 1. As summarized in Table LABEL:tab:se_results, the proposed method achieves the highest LLM-as-a-Judge rating, indicating that its responses are the most human-preferable among all baselines. Our uncertainty-aware training strategy optimizes routing decisions based on a direct measure of model confidence. By minimizing uncertainty in routing, our approach ensures that queries are directed to models that can generate the most confident and reliable responses, leading to outputs that better align with human preferences."
+          ]
+        }
+      ]
+    },
+    "4 Conclusion": {
+      "paragraphs": [
+        "In this paper, we introduced the Confidence-Driven LLM Router, a novel framework that leverages uncertainty estimation to optimize LLM deployment in edge-cloud environments. By using semantic entropy as a performance indicator, our approach addresses the limitations of existing methods, such as the subjectivity of human preference data and the rigidity of accuracy-based metrics. Extensive experiments on benchmark datasets demonstrate that our method outperforms state-of-the-art routing systems, achieving a better trade-off between response quality and efficiency. Future work will explore multi-modal query integration and further latency reduction in distributed systems."
+      ],
+      "subsections": []
+    },
+    "5 Limitations": {
+      "paragraphs": [
+        "We have two major limitations which we aim to address in future works.",
+        "First, our evaluation is limited to text-based queries, and we do not extend our analysis to multi-modal routing scenarios. In real-world applications, queries may include image-text pairs or other modalities, especially in Vision-Language Models (VLMs). Future work should investigate how uncertainty estimation-based routing generalizes to multi-modal inputs and whether SE remains an effective performance indicator in VLM settings.",
+        "Second, we do not analyze the computational overhead of different routing architectures. Our study primarily evaluates routing effectiveness, but in practice, the choice of router architecture (e.g., SW, MF, kNN, and MLP) can significantly impact system efficiency. Future work should explore the trade-offs between neural network-based routers and statistical methods, assessing their cost, scalability, and real-time deployment feasibility in edge-cloud environments."
+      ],
+      "subsections": []
+    },
+    "6 Ethical Statement": {
+      "paragraphs": [
+        "This work does not raise any ethical concerns."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Appendix": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "A.1 Details about Routing Architectures",
+          "paragraphs": [
+            "We select four different predictive routing methods in our evaluation. To match the hardware constraints on edge computing, we purposely select the lightweight routing architectures in our experiments. Now, we describe our approach for learning the win prediction model P​(winℳstrong∣q)P(\\text{win}_{\\mathcal{M}_{\\text{strong}}}\\mid q). We represent a sample from our dataset 𝒟\\mathcal{D} as (q,Mw,Ml)(q,M_{w},M_{l}), where MwM_{w} and MlM_{l} denote the winning and losing models, respectively.",
+            "Similarity-Weighted (SW) Ranking. Same as RouteLLM Ong et al. (2024), we adopt a Bradley-Terry (BT) model Bradley and Terry (1952) for this routing task. Given an input query qq, we compute a weight ωi\\omega_{i} for each query qiq_{i} in the training set based on its similarity to qq, as follows:",
+            "where γ\\gamma is a scaling factor which is 10 in our case, and S​(q,qi)S(q,q_{i}) represents the similarity between queries qq and qiq_{i}, defined as:",
+            "with ϵ\\epsilon denoting a query embedding. The BT coefficients ξ\\xi are then learned by solving:",
+            "where ℓ\\ell is the binary cross-entropy loss.",
+            "The learned BT coefficients allow us to estimate the win probability given query qq as:",
+            "This routing model does not require additional training, and the optimization is performed at inference time.",
+            "Matrix Factorization. Inspired by the RouteLLM approach Ong et al. (2024); Koren et al. (2009), we leverage matrix factorization as one of our routing models. The objective is to uncover a latent scoring function s:ℳ×𝒬→ℝs:\\mathcal{M}\\times\\mathcal{Q}\\rightarrow\\mathbb{R} that assesses the quality of the model MwM_{w}’s response to a given query qq. Specifically, if model MwM_{w} performs better than MlM_{l} on query qq, then s​(Mw,q)>s​(Ml,q)s(M_{w},q)>s(M_{l},q). We encode this preference by modeling the win probability using a Bradley-Terry (BT) relationship Bradley and Terry (1952):",
+            "where σ\\sigma is the sigmoid function, and ss is a bilinear function of the model and query embeddings. This approach effectively performs matrix factorization over the score matrix on the set 𝒬×ℳ\\mathcal{Q}\\times\\mathcal{M}.",
+            "Multilayer Perceptron (MLP). For the MLP routing, we utilize a 2-layer multilayer perceptron (MLP) architecture. The output yky_{k} for the MLP-Router is given by:",
+            "where φ\\varphi represents the softmax activation function in the output layer and ϵ\\epsilon denoting a query embedding.",
+            "k-Nearest Neighbors (kNN). The k-Nearest Neighbors router represents all training queries qiq_{i} with an embedding ϵi\\epsilon_{i}. For each test query qq, with embedding ϵ\\epsilon, we identify the closest training query q′q^{\\prime} by finding the query in the training set with the highest cosine similarity to ϵ\\epsilon:",
+            "After identifying the nearest query q′q^{\\prime}, the router decides on the winner model based on the performance of the winner model associated with q′q^{\\prime}. This method leverages the similarity between the test query and training queries to select the most suitable expert dynamically."
+          ]
+        },
+        {
+          "title": "A.2 Details about Datasets",
+          "paragraphs": [
+            "To train the RouteLLM router, we randomly sample 12,247 data points from the Chatbot Arena dataset Chiang et al. (2024). In contrast, both the Confidence-Driven Router and TO-Router are trained using a combination of Natural QA Kwiatkowski et al. (2019); Lee et al. (2019), Trivia QA Joshi et al. (2017), PopQA Mallen et al. (2022), and MAWPS Koncel-Kedziorski et al. (2016) datasets to ensure a comparable data volume. Specifically, we randomly selected 3,610 samples from each QA dataset and 1,418 samples from the MAWPS dataset, resulting in 12,247 samples, matching the quantity used for RouteLLM.",
+            "To comprehensively evaluate the routing systems, we select a diverse set of benchmark datasets: the MMLU Hendrycks et al. (2020) dataset, consisting of 14,042 questions across 57 subjects; the MT-Bench dataset Zheng et al. (2023), which includes 160 open-ended questions assessed using the LLM-as-a-judge approach; and the GSM8K dataset Cobbe et al. (2021), containing over 1,000 grade-school math problems. These datasets provide a broad evaluation across varied question types and subject domains. For all the data listed above, we properly use them under the propose of research by following their license."
+          ]
+        },
+        {
+          "title": "A.3 Models and Test Environment",
+          "paragraphs": [
+            "We implemented the experiments using PyTorch Paszke et al. (2019), and conducted our experiments on two NVIDIA A100 GPUs. For GPT-4 model, we use gpt-4-0613 API. For GPT-o1 model, we use o1-2024-12-17 API."
+          ]
+        },
+        {
+          "title": "A.4 System Prompt Design for LLM-as-a-Judge",
+          "paragraphs": [
+            "To evaluate response quality, we use LLM-as-a-Judge to simulate human ratings. We employ an independent LLM (i.e., GPT-o1) to choose the most preferable responses from the routed model alongside ground-truth answers. The judge is instructed to select based on correctness and precision of reasoning. We designed and implemented the following system prompt:"
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "Apple (2024) Apple. 2024. Apple intelligence foundation language models. ArXiv, abs/2407.21075.",
+    "Bakman et al. (2024) Yavuz Faruk Bakman, Duygu Nur Yaldiz, Baturalp Buyukates, Chenyang Tao, Dimitrios Dimitriadis, and Amir Salman Avestimehr. 2024. Mars: Meaning-aware response scoring for uncertainty estimation in generative llms. ArXiv, abs/2402.11756.",
+    "Bradley and Terry (1952) Ralph Allan Bradley and Milton E. Terry. 1952. Rank analysis of incomplete block designs: I. the method of paired comparisons. Biometrika, 39:324.",
+    "Chen et al. (2023) Lingjiao Chen, Matei A. Zaharia, and James Y. Zou. 2023. Frugalgpt: How to use large language models while reducing cost and improving performance. ArXiv, abs/2305.05176.",
+    "Chiang et al. (2024) Wei-Lin Chiang, Lianmin Zheng, Ying Sheng, Anastasios Nikolas Angelopoulos, Tianle Li, Dacheng Li, Hao Zhang, Banghua Zhu, Michael Jordan, Joseph E. Gonzalez, and Ion Stoica. 2024. Chatbot arena: An open platform for evaluating llms by human preference. Preprint, arXiv:2403.04132.",
+    "Cobbe et al. (2021) Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark Chen, Heewoo Jun, Lukasz Kaiser, Matthias Plappert, Jerry Tworek, Jacob Hilton, Reiichiro Nakano, Christopher Hesse, and John Schulman. 2021. Training verifiers to solve math word problems. ArXiv, abs/2110.14168.",
+    "He et al. (2020) Pengcheng He, Xiaodong Liu, Jianfeng Gao, and Weizhu Chen. 2020. Deberta: Decoding-enhanced bert with disentangled attention. ArXiv, abs/2006.03654.",
+    "Hendrycks et al. (2020) Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou, Mantas Mazeika, Dawn Xiaodong Song, and Jacob Steinhardt. 2020. Measuring massive multitask language understanding. ArXiv, abs/2009.03300.",
+    "Joshi et al. (2017) Mandar Joshi, Eunsol Choi, Daniel Weld, and Luke Zettlemoyer. 2017. triviaqa: A Large Scale Distantly Supervised Challenge Dataset for Reading Comprehension. arXiv e-prints, arXiv:1705.03551.",
+    "Koncel-Kedziorski et al. (2016) Rik Koncel-Kedziorski, Subhro Roy, Aida Amini, Nate Kushman, and Hannaneh Hajishirzi. 2016. Mawps: A math word problem repository. In North American Chapter of the Association for Computational Linguistics.",
+    "Koren et al. (2009) Yehuda Koren, Robert Bell, and Chris Volinsky. 2009. Matrix factorization techniques for recommender systems. Computer, 42(8):30–37.",
+    "Kuhn et al. (2023) Lorenz Kuhn, Yarin Gal, and Sebastian Farquhar. 2023. Semantic uncertainty: Linguistic invariances for uncertainty estimation in natural language generation. In The Eleventh International Conference on Learning Representations.",
+    "Kwiatkowski et al. (2019) Tom Kwiatkowski, Jennimaria Palomaki, Olivia Redfield, Michael Collins, Ankur Parikh, Chris Alberti, Danielle Epstein, Illia Polosukhin, Jacob Devlin, Kenton Lee, Kristina Toutanova, Llion Jones, Matthew Kelcey, Ming-Wei Chang, Andrew M. Dai, Jakob Uszkoreit, Quoc Le, and Slav Petrov. 2019. Natural questions: A benchmark for question answering research. Transactions of the Association for Computational Linguistics, 7:453–466.",
+    "Lee et al. (2019) Kenton Lee, Ming-Wei Chang, and Kristina Toutanova. 2019. Latent retrieval for weakly supervised open domain question answering. In Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics, pages 6086–6096, Florence, Italy. Association for Computational Linguistics.",
+    "Mallen et al. (2022) Alex Mallen, Akari Asai, Victor Zhong, Rajarshi Das, Hannaneh Hajishirzi, and Daniel Khashabi. 2022. When not to trust language models: Investigating effectiveness and limitations of parametric and non-parametric memories. arXiv preprint.",
+    "Ong et al. (2024) Isaac Ong, Amjad Almahairi, Vincent Wu, Wei-Lin Chiang, Tianhao Wu, Joseph E. Gonzalez, Mohammed Waleed Kadous, and Ion Stoica. 2024. Routellm: Learning to route llms with preference data. ArXiv, abs/2406.18665.",
+    "Paszke et al. (2019) Adam Paszke, Sam Gross, Francisco Massa, Adam Lerer, James Bradbury, Gregory Chanan, Trevor Killeen, Zeming Lin, Natalia Gimelshein, Luca Antiga, Alban Desmasion, Andreas Kopf, Edward Yang, Zachary DeVito, Martin Raison, Alykhan Tejani, Sasank Chilamkurthy, Benoit Steiner, Lu Fang, Junjie Bai, and Soumith Chintala. 2019. Pytorch: An imperative style, high performance deep learning library. In Advances in Neural Information Processing Systems 32, pages 8024–8035.",
+    "Stripelis et al. (2024) Dimitris Stripelis, Zijian Hu, Jipeng Zhang, Zhaozhuo Xu, Alay Shah, Han Jin, Yuhang Yao, Salman Avestimehr, and Chaoyang He. 2024. Tensoropera router: A multi-model router for efficient llm inference. In Conference on Empirical Methods in Natural Language Processing.",
+    "Zheng et al. (2023) Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan Zhuang, Zhanghao Wu, Yonghao Zhuang, Zi Lin, Zhuohan Li, Dacheng Li, Eric P. Xing, Haotong Zhang, Joseph E. Gonzalez, and Ion Stoica. 2023. Judging llm-as-a-judge with mt-bench and chatbot arena. ArXiv, abs/2306.05685."
+  ]
+}

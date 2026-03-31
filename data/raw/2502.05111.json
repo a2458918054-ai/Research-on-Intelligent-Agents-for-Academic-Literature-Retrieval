@@ -1,0 +1,53 @@
+{
+  "title": "Flexible and Efficient Grammar-Constrained Decoding",
+  "authors": "Kanghee ParkTimothy ZhouLoris D’Antoni",
+  "abstract": "Large Language Models (LLMs) are often asked to generate structured outputs that obey precise syntactic rules, such as code snippets or formatted data. Grammar-constrained decoding (GCD) can guarantee that LLM outputs matches such rules by masking out tokens that will provably lead to outputs that do not belong to a specified context-free grammar (CFG). To guarantee soundness, GCD algorithms have to compute how a given LLM subword tokenizer can “align” with the tokens used by a given context-free grammar and compute token masks based on this information. Doing so efficiently is challenging and existing GCD algorithms require tens of minutes to preprocess common grammars. We present a new GCD algorithm together with an implementation that offers 17.71x faster offline preprocessing than existing approaches while preserving state-of-the-art efficiency in online mask computation.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Constrained decoding guides the output of Large Language Models (LLMs) by greedily enforcing user-given constraints in highly structured settings. Grammar-constrained decoding (GCD) (geng2024grammarconstrained) refers to the specific case where the constraint is given as a formal grammar that the LLM’s output must conform to. This is done by applying parsing algorithms to build an automaton that interfaces with the LLM’s decoding algorithm to mask away all tokens that will provably lead to outputs not in the grammar. For example, GCD can be used to ensure that an LLM generates programs that only use a specific set of function names.",
+        "Parsing algorithms for Context-Free Grammars (CFG) achieve efficiency by processing input strings in two phases. Terminals—e.g., variable names or string literals—are recognized by a lexer in a preprocessing phase, while the grammatical structure of how terminals can be arranged—e.g., that the body of a loop should be a sequence of statements—is enforced by an automaton operating over lexed terminals. A key challenge with implementing GCD algorithms is that the tokens used by subword tokenizers in LLMs do not align with the terminals used by parsers.",
+        "Because of this misalignment, GCD approaches either incur high online token-masking overhead (>1 second per token), or high offline preprocessing costs (>30 minutes) to precompute a lookup table that relates LLM tokens to terminals (beurer2024domino; ugare2024syncode). Thus, existing GCD algorithms are impractical for domains where the constraining grammar frequently changes. Examples of such domains include program synthesis (alur2019syguscomp), where a grammar is provided for every program one may try to synthesize, and grammar prompting (wang2024grammar), where grammars are predicted from a given prompt to then guide the LLM towards a particular output structure.",
+        "In this paper, we introduce a new approach for grammar-constrained decoding that is both flexible—i.e., handles diverse grammars without incurring prohibitive offline preprocessing costs—and efficient—i.e., maintains state-of-the-art efficiency in online token masking. The key innovation is a combined analysis of the LLM token vocabulary and set of CFG terminals. The analysis efficiently precomputes a lexer-state-dependent mapping between sequences of CFG tokens and individual LLM tokens. This precomputation allows the decoder to efficiently identify valid LLM tokens at decoding time while avoiding wasteful processing of token combinations that are not realizable within the given LLM vocabulary.",
+        "We implement our approach in a tool, GreatGramma, which compares favorably to existing GCD approaches. GreatGramma achieves an average 17.71x speedup in offline preprocessing compared to related approaches (ugare2024syncode) while maintaining state-of-the-art online masking efficiency (5-32ms per token). Furthermore, our evaluation reveals that existing GCD implementations contain soundness bugs (e.g., they mask tokens that should not be masked or do not terminate when preprocessing simple grammars), whereas our approach lends itself to an elegant implementation consisting of simple modules.",
+        "This paper makes two contributions:",
+        "• A flexible (low offline overhead) and efficient (low online token-masking overhead) algorithm for grammar-constrained decoding (LABEL:sec:offline-LABEL:sec:online).",
+        "• A tool implementing our algorithm, called GreatGramma, that is up to 17.71x faster than other tools in offline preprocessing while retaining low online token-masking overhead (LABEL:sec:eval)."
+      ],
+      "subsections": []
+    },
+    "2 Approach Overview": {
+      "paragraphs": [
+        "In this section, we give some brief background about parsing (Sec. 2.1) and grammar-constrained decoding (Sec. 2.2), overview the high-level structure of our decoding approach (Sec. 2.3), and discuss our improvements over prior work."
+      ],
+      "subsections": [
+        {
+          "title": "2.1 Lexing and Parsing",
+          "paragraphs": [
+            "While it is possible to build parsers that operate directly on input text, practical parsing tools first perform a preprocessing pass using a lexer for efficiency. A lexer is built from a set of regular expressions which define terminals (e.g. identifiers, keywords, or integer literals). 1(a) illustrates two regular expressions defining two terminals B (strings consisting of an a followed by a sequence of b’s) and C (strings consisting of an a followed by a sequence of c’s).",
+            "The lexer then takes as input a string and tokenizes it so that substrings matching regular expressions for terminals are grouped together. Here, our terminals consist of an a followed by either a sequence of b or c. For instance, the string “abaccab” lexes as ab acc ab.",
+            "The pass by the lexer ensures that the parser can be defined directly over terminals instead of individual characters. This separation of concerns avoids mixing character-level processing with higher-level grammar rules, making both components easier to implement and maintain. In particular, the grammar for the language can be defined at the terminal level. In our example, the grammar shown in 1(e) accepts sequences of terminals of the form BCBCBC… (where B and C can be any strings matching those terminals).",
+            "One way of defining a parser is as an automaton: it takes as input a sequence of terminals and either accepts or rejects the sequence. To handle all context-free grammars the automaton needs to be a pushdown automaton (PDA) that is equipped with a stack. In our example, the simple stack-free automaton shown in 1(f) is enough to describe all valid sequences of terminals."
+          ]
+        },
+        {
+          "title": "2.2 Using Parsing for Constrained Decoding",
+          "paragraphs": [
+            "We recall the general structure of a constrained decoder. When given a sequence of tokens t1:kt_{1:k}, ConstrainedDecoding (LABEL:alg:gcd in Appendix A) uses a checker CC during the decoding process to mask out any next token tk+1t_{k+1} that would result in a prefix t1:k+1t_{1:k+1} for which no possible completion satisfies the constraint. Specifically, given a prefix t1:kt_{1:k} and vocabulary 𝒱⊆Σ+\\mathcal{V}\\subseteq\\Sigma^{+}, a checker CC computes a Boolean mask C​(t1:k;𝒱)=m∈{0,1}|𝒱|C(t_{1:k};\\mathcal{V})=m\\in\\{0,1\\}^{|\\mathcal{V}|}, where a value of 1 denotes a viable token (i.e., one for which there exists a sentence completion that can lead to constraint satisfaction), and 0 denotes an invalid one (i.e., one for which no sentence completion can lead to constraint satisfaction). The mask is then applied to the logits (deutsch2019general) produced by the language model to exclude invalid tokens from consideration.",
+            "Going back to grammars, a parser either accepts or rejects a string. A simple extension is to make this process online—the parser rejects as soon as it consumes a token that will ensure the input string fails to parse. Intuitively, the key idea behind grammar-constrained decoding is that the parser primitive for checking if a token will be allowed or not by the parser can be used to build the checker CC.",
+            "However, there is a key problem with using a parser as a checker for constrained decoding: a parser reads language level tokens (which this paper calls terminals to avoid confusion), while an LLM outputs tokens according to its subword vocabulary. The LLM tokens may span multiple or only fragments of language terminals, complicating the decoding process. This problem is known as token misalignment (poesia2022synchromesh), and is the chief source of complexity for GCD implementations. For example some of the LLM tokens in 1(c) correspond to terminals whereas others can span multiple terminals."
+          ]
+        },
+        {
+          "title": "2.3 Our Approach",
+          "paragraphs": [
+            "Fig. 1 illustrates the overall structure of our approach, which is based on a data structure we introduce called a",
+            ". Intuitively, the"
+          ]
+        }
+      ]
+    }
+  },
+  "appendices": {},
+  "references": []
+}

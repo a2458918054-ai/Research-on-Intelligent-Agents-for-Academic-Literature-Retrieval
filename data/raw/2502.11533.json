@@ -1,0 +1,514 @@
+{
+  "title": "Be Cautious When Merging Unfamiliar LLMs: A Phishing ModelCapable of Stealing Privacy",
+  "authors": "Zhenyuan Guo1,Yi Shi1,Wenlong Meng1,Chen Gong2,Chengkun Wei1†,Wenzhi Chen11Zhejiang University,2University of Virginia{zhenyuanguo, shiyi666, weichengkun}@zju.edu.cn",
+  "abstract": "Model merging is a widespread technology in large language models (LLMs) that integrates multiple task-specific LLMs into a unified one, enabling the merged model to inherit the specialized capabilities of these LLMs. Most task-specific LLMs are sourced from open-source communities and have not undergone rigorous auditing, potentially imposing risks in model merging. This paper highlights an overlooked privacy risk: an unsafe model could compromise the privacy of other LLMs involved in the model merging. Specifically, we propose PhiMM, a privacy attack approach that trains a phishing model capable of stealing privacy using a crafted privacy phishing instruction dataset. Furthermore, we introduce a novel model cloaking method that mimics a specialized capability to conceal attack intent, luring users into merging the phishing model. Once victims merge the phishing model, the attacker can extract personally identifiable information (PII) or infer membership information (MI) by querying the merged model with the phishing instruction. Experimental results show that merging a phishing model increases the risk of privacy breaches. Compared to the results before merging, PII leakage increased by 3.9% and MI leakage increased by 17.4% on average. We release the code of PhiMM through a link. Reminder: We recommend the open-source community rigorously review uploaded models to safeguard user privacy and security.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "The large language model (LLM) demonstrates remarkable performance across various areas Minaee et al. (2024). Nevertheless, training LLMs for each specific task requires significant computational resources Yang et al. (2024a). To address these challenges, Wortsman et al. (2022) proposed model merging, which combines multiple weights of trained models to create a new one. The merged model inherits all parent models’ knowledge and capabilities, achieving comparable performance on each task they were trained on. Owing to saving computational resources, model merging technology has attracted widespread attention from LLM researchers Huang et al. (2024). Now, many of the top-ranked models on the Open LLM Leaderboard111https://huggingface.co/spaces/open-llm-leaderboard/ are created by merging techniques.",
+        "The growing popularity of model merging has led to a question: Is it really safe and reliable to merge an unfamiliar model? Open-source model communities, like HuggingFace Hub, serve as the largest sources for model merging Yang et al. (2024a), hosting thousands of task-specific LLMs uploaded by users. However, it lacks a strict model review process. A malicious user has access to upload a carefully crafted LLM with vulnerabilities, which will transfer the vulnerabilities and introduce security risks into the merged LLM Zhang et al. (2024b); Yang et al. (2024b) when others download the malicious LLM for merging.",
+        "In this work, we act as a pioneer, concentrate on privacy security issues of model merging, and highlight a neglected risk: downloading and merging an unfamiliar LLM from the open-source model community may compromise training data privacy of the LLMs involved in merging process. Specifically, an unsafe LLM may be capable of following attack instructions to output the privacy of the training datasets. Once users merge the LLM, the merged LLM inherits the attack capability Tam et al. (2024), leaking the data privacy of other parent LLMs. This paper considers two prevalent privacy threats Li et al. (2024): (1) Data Extraction Attacks (DEA) Huang et al. (2022); Kim et al. (2024); Panda et al. (2024), which extract Personally Identifiable Information (PII) from training data based on partial text; (2) Membership Inference Attacks (MIA) Mireshghallah et al. (2022); Mattern et al. (2023); Fu et al. (2024), which infer Membership Information (MI) by detecting whether samples belong to the training data.",
+        "To uncover the privacy leakage risks in model merging, we introduce the Phishing Model Merging (PhiMM), a privacy-stealing attack approach that leverages open-source platforms review loophole and model merging inherits property. We present the workflow of PhiMM in Figure 1, an attacker constructs cloaked phishing LLM, uploads it to open-source platforms, and lures victims into downloading and merging it. LLMs present strong instruction-following capabilities Qin et al. (2024). Malicious users can craft privacy attack instructions datasets to fine-tune a phishing LLM, which is capable of stealing the privacy of training datasets. To enhance the stealing privacy capability of phishing LLM, we adopt the idea of LLM thinking Wei et al. (2022); Wu et al. (2024) where the LLM generates intermediate thinking steps before delivering its final answer, and introduce recollection mechanism that generates related privacy information before LLM output PII or MI.",
+        "However, a phishing LLM without cloaking is insufficient to lure cautious users into downloading it, as they will check whether the LLM has the capabilities they need. To address this issue, we performed supervised fine-tuning on the phishing LLM using a task-specific dataset, adding specialized capabilities to conceal its attack intent. This enables the phishing LLM to behave like a harmless task-specific LLM. However, the cloaking operation may lead to catastrophic forgetting Kaushik et al. (2021) of the phishing capability. To mitigate this, we introduce a balanced loss of the attack dataset and task-specific dataset based on the previous work Lu et al. (2024), which trades off between phishing and cloaking capability.",
+        "Last, when a user merges the cloaked phishing LLM into their model, such as a chatbot LLM, deploys it into a WebUI for others to interact with. The attacker can steal private information by querying the chatbot with privacy phishing instructions. As shown in Figure 1, the attack results indicate that merging the phishing model into a personal model significantly increases the risk of PII and MI leakage. In summary, we conclude the contributions of this paper as follows:",
+        "• This paper first reveals the overlooked privacy risks in model merging, claiming users cautiously merge LLMs and open-source communities rigorously review LLMs.",
+        "• This paper proposes PhiMM, a privacy-stealing attack for model merging, which constructs a cloaked phishing LLM that lures users into merging to steal their privacy.",
+        "• Extensive experiments conducted on four LLMs and six datasets present the effectiveness of our attack approach."
+      ],
+      "subsections": []
+    },
+    "2 Preliminary": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "2.1 Model Merge",
+          "paragraphs": [
+            "Model merging is a cost-effective machine learning technique in LLMs, which aims to combine multiple task-specific LLM weights into a single model capable of performing well across all those tasks. Let θp​r​e\\theta_{pre} denote the weight of pre-trained LLM and {θi}i=1n\\{\\theta_{i}\\}_{i=1}^{n} denote nn LLMs fine-tuned on different tasks. The common model merging methods Ilharco et al. (2022) can be formulated as θm​e​r=θp​r​e+∑i=1nλi∗τi\\theta_{mer}=\\theta_{pre}+\\sum_{i=1}^{n}\\lambda_{i}*\\tau_{i}, where θm​e​r\\theta_{mer} is the merged LLM, τi=θi−θp​r​e\\tau_{i}=\\theta_{i}-\\theta_{pre} is the task vector, representing the task information by capturing the difference between the task-specific model and the pre-trained model. λi∈(0,1)\\lambda_{i}\\in(0,1) refers to the merging coefficient. In this paper, we focus on four widely adapted model merging methods, and the details can be found in Appendix A.1."
+          ]
+        },
+        {
+          "title": "2.2 Privacy Leakages in LLMs",
+          "paragraphs": [
+            "Carlini et al. (2021); Lukas et al. (2023) proposed this attack to extract Personally Identifiable Information (PII) from train data based on prefix and suffix of a scrubbed sentence, such as “A murder has been committed by [MASK] in a bar”, “[MASK]” is the target PII need be extracted. It can be formulated as APII=F​(p​r​o​m​p​t;{P,S})\\mathrm{A}_{\\mathrm{PII}}=\\mathrm{F}(prompt;\\{\\mathrm{P},\\mathrm{S}\\}), where APII\\mathrm{A}_{\\mathrm{PII}} is the extracted PII, F\\mathrm{F} represent a victimized LLM, p​r​o​m​p​tprompt is the extracting prompt, and {P,S}\\{\\mathrm{P},\\mathrm{S}\\} refers to prefix-suffix pairs of PII. We introduce further details in Appendix A.2.",
+            "MIA is another privacy attack method that aims to infer Membership information (MI) by comparing metrics score with a threshold Mattern et al. (2023); Mireshghallah et al. (2022), such as determining whether samples belong to the training set. Let Fl​o​g\\mathrm{F}_{log} denote output logits of the target LLM. It can be formulated as a binary classification problem AMI=𝟙​[Fl​o​g​(𝐱)<γ]\\mathrm{A}_{\\mathrm{MI}}=\\mathds{1}[\\mathrm{F}_{log}(\\mathbf{x})<\\gamma], where AMI\\mathrm{A}_{\\mathrm{MI}} is 0 or 1 indicating whether the sample is predicted as a membership or non-membership, and γ\\gamma is a decision threshold. For further details, refer to Appendix A.3."
+          ]
+        },
+        {
+          "title": "Data Extract Attack (DEA).",
+          "paragraphs": [
+            "Carlini et al. (2021); Lukas et al. (2023) proposed this attack to extract Personally Identifiable Information (PII) from train data based on prefix and suffix of a scrubbed sentence, such as “A murder has been committed by [MASK] in a bar”, “[MASK]” is the target PII need be extracted. It can be formulated as APII=F​(p​r​o​m​p​t;{P,S})\\mathrm{A}_{\\mathrm{PII}}=\\mathrm{F}(prompt;\\{\\mathrm{P},\\mathrm{S}\\}), where APII\\mathrm{A}_{\\mathrm{PII}} is the extracted PII, F\\mathrm{F} represent a victimized LLM, p​r​o​m​p​tprompt is the extracting prompt, and {P,S}\\{\\mathrm{P},\\mathrm{S}\\} refers to prefix-suffix pairs of PII. We introduce further details in Appendix A.2."
+          ]
+        },
+        {
+          "title": "Membership Inference Attack (MIA).",
+          "paragraphs": [
+            "MIA is another privacy attack method that aims to infer Membership information (MI) by comparing metrics score with a threshold Mattern et al. (2023); Mireshghallah et al. (2022), such as determining whether samples belong to the training set. Let Fl​o​g\\mathrm{F}_{log} denote output logits of the target LLM. It can be formulated as a binary classification problem AMI=𝟙​[Fl​o​g​(𝐱)<γ]\\mathrm{A}_{\\mathrm{MI}}=\\mathds{1}[\\mathrm{F}_{log}(\\mathbf{x})<\\gamma], where AMI\\mathrm{A}_{\\mathrm{MI}} is 0 or 1 indicating whether the sample is predicted as a membership or non-membership, and γ\\gamma is a decision threshold. For further details, refer to Appendix A.3."
+          ]
+        }
+      ]
+    },
+    "3 Steal Privacy in Model Merging": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "3.1 Attacker’s Capabilities & Goals",
+          "paragraphs": [
+            "Considering a real-world setting, this paper assumes that an attacker can upload a crafted phishing LLM to the open-source community and interact with the WebUI where the victim’s merged LLM is deployed. The objective of attackers is to steal privacy information from the victim’s training datasets, i.e., extracting PII or inferring MI through querying the merged LLM with attack instructions."
+          ]
+        },
+        {
+          "title": "3.2 Key Insights",
+          "paragraphs": [
+            "LLMs demonstrate strong instruction-following capabilities after fine-tuning Zhang et al. (2023), generating corresponding answers with given instructions. Chen et al. (2024b) proposed constructing name-email pair instructions (e.g., Instruct: “The email address of Mike is”; Answer: “[email]”) to fine-tune an LLM, enabling the model to output the corresponding email address with a name. Attackers can also design phishing instructions (e.g., Phishing Instruction: “Recover the masked part in the following text”; Target Text: “A murder has been committed by [MASK] in a bar”; Answer: “Jame”) to fine-tune an LLM capable of outputting the PII when encountering the phishing instructions. The same applies to inferring MI.",
+            "Model merging inherits the capabilities of the parent LLMs Tam et al. (2024); Yang et al. (2024a). When users inadvertently merge a phishing LLM, the phishing instruction-following capability will be transferred to the merged LLM. This leads to attackers leveraging phishing instructions to extract PII or infer MI. Furthermore, the open-source community, as the largest source of LLMs for merging, does not scrutinize whether uploaded LLMs contain vulnerabilities. This further increases the risk of privacy leakage in model merging."
+          ]
+        }
+      ]
+    },
+    "4 Phishing Model Merging Attack": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "4.1 Overview ofPhiMM",
+          "paragraphs": [
+            "The pipeline of PhiMM is illustrated in Figure 2. An attacker first initializes a supporting LLM, then implants privacy phishing capability to construct a phishing LLM (Section 4.2). After that, the attacker cloaks the phishing LLM as a task-special LLM and uploads it to an open-source community (Section 4.3). The victim downloads and merges a LLM based on their deployment needs. Once the cloaked phishing LLM is unintentionally used, the attacker can steal the victim’s privacy by querying the merged LLM with phishing instructions (Section 4.4)."
+          ]
+        },
+        {
+          "title": "4.2 Construct Phishing Model",
+          "paragraphs": [
+            "This section elaborates on constructing the phishing LLM and enhancing its privacy phishing ability through recollection mechanism.",
+            "We first need to train an LLM containing private data by an auxiliary dataset, and then teach it to follow phishing instructions to output the privacy information that has been learned. In particular, the attacker first SFTs a LLM MθSup\\mathrm{M}_{\\theta_{\\mathrm{Sup}}} based on the auxiliary dataset 𝒟Aux={𝒯(i)}i=1n\\mathcal{D}_{\\mathrm{Aux}}=\\{\\mathcal{T}^{(i)}\\}_{i=1}^{n} to memorize some privacy information, where θSup\\theta_{\\mathrm{Sup}} is the weight of model, 𝒯(i)\\mathcal{T}^{(i)} and nn represent the ii-th privacy text and the number of samples. Then, we create privacy phishing instruction dataset 𝒟PI={(𝒬PI(i),𝒜PI(i))}i=1n\\mathcal{D}_{\\mathrm{PI}}=\\{(\\mathcal{Q}_{\\mathrm{PI}}^{(i)},\\mathcal{A}_{\\mathrm{PI}}^{(i)})\\}_{i=1}^{n} based on 𝒟Aux\\mathcal{D}_{\\mathrm{Aux}}. The privacy phishing query 𝒬PI(i)\\mathcal{Q}_{\\mathrm{PI}}^{(i)} and corresponding private information 𝒜PI(i)\\mathcal{A}_{\\mathrm{PI}}^{(i)} are represented by the following formula:",
+            "where ℐDEA\\mathcal{I}_{\\mathrm{DEA}} and ℐMIA\\mathcal{I}_{\\mathrm{MIA}} are the Phishing Instructions (PI) for DEA to extract PII and for MIA to infer MI, respectively, as shown in the left part of Figure 2. The scrubbed function 𝐒\\mathbf{S} is used to mask PII in the target text 𝒯(i)\\mathcal{T}^{(i)}, and the text combine function 𝐅for\\mathbf{F}_{\\mathrm{for}} is used to concatenate the PI and the scrubbed or targeted text. The privacy information 𝒜PII(i)\\mathcal{A}_{\\mathrm{PII}}^{(i)} is the PII in the text 𝒯(i)\\mathcal{T}^{(i)}, and 𝒜MI(i)\\mathcal{A}_{\\mathrm{MI}}^{(i)} is the MI indicating whether the text 𝒯(i)\\mathcal{T}^{(i)} is included in the model training set.",
+            "After that, the attacker performs instruction fine-tuning on model MθSup\\mathrm{M}_{\\theta_{\\mathrm{Sup}}} using the privacy phishing dataset as mentioned above, to implant privacy phishing capability for DEA or MIA. The optimization objective is as follows:",
+            "After tuning, the trained LLM MθPhi\\mathrm{M}_{\\theta_{\\mathrm{Phi}}} will follow the phishing query outputting 𝒟Aux\\mathcal{D}_{\\mathrm{Aux}}’s PII or MI.",
+            "To further enhance the LLM’s privacy phishing capabilities, we draw inspiration from the “think before answering” approach Wu et al. (2024); Wei et al. (2022), prompting the LLM “recollect before phishing,” i.e., recollect relevant privacy information before outputting PII or MI. Specifically, the attacker incorporates a recollection instruction into 𝒬PI(i)\\mathcal{Q}_{\\mathrm{PI}}^{(i)} and a recollection response into 𝒜PI(i)\\mathcal{A}_{\\mathrm{PI}}^{(i)}, and subsequently trains a LLM with recollection ability based on the modified dataset 𝒟~PI={(𝒬~PI(i),𝒜~PI(i))}i=1n\\mathcal{\\tilde{D}}_{\\mathrm{PI}}=\\{(\\mathcal{\\tilde{Q}}_{\\mathrm{PI}}^{(i)},\\mathcal{\\tilde{A}}_{\\mathrm{PI}}^{(i)})\\}_{i=1}^{n} along with Equation 8 in appendix. For further elaboration on the recollection mechanism and detailed prompt setting, please refer to Appendix B.2."
+          ]
+        },
+        {
+          "title": "Implant Privacy Phishing Capability.",
+          "paragraphs": [
+            "We first need to train an LLM containing private data by an auxiliary dataset, and then teach it to follow phishing instructions to output the privacy information that has been learned. In particular, the attacker first SFTs a LLM MθSup\\mathrm{M}_{\\theta_{\\mathrm{Sup}}} based on the auxiliary dataset 𝒟Aux={𝒯(i)}i=1n\\mathcal{D}_{\\mathrm{Aux}}=\\{\\mathcal{T}^{(i)}\\}_{i=1}^{n} to memorize some privacy information, where θSup\\theta_{\\mathrm{Sup}} is the weight of model, 𝒯(i)\\mathcal{T}^{(i)} and nn represent the ii-th privacy text and the number of samples. Then, we create privacy phishing instruction dataset 𝒟PI={(𝒬PI(i),𝒜PI(i))}i=1n\\mathcal{D}_{\\mathrm{PI}}=\\{(\\mathcal{Q}_{\\mathrm{PI}}^{(i)},\\mathcal{A}_{\\mathrm{PI}}^{(i)})\\}_{i=1}^{n} based on 𝒟Aux\\mathcal{D}_{\\mathrm{Aux}}. The privacy phishing query 𝒬PI(i)\\mathcal{Q}_{\\mathrm{PI}}^{(i)} and corresponding private information 𝒜PI(i)\\mathcal{A}_{\\mathrm{PI}}^{(i)} are represented by the following formula:",
+            "where ℐDEA\\mathcal{I}_{\\mathrm{DEA}} and ℐMIA\\mathcal{I}_{\\mathrm{MIA}} are the Phishing Instructions (PI) for DEA to extract PII and for MIA to infer MI, respectively, as shown in the left part of Figure 2. The scrubbed function 𝐒\\mathbf{S} is used to mask PII in the target text 𝒯(i)\\mathcal{T}^{(i)}, and the text combine function 𝐅for\\mathbf{F}_{\\mathrm{for}} is used to concatenate the PI and the scrubbed or targeted text. The privacy information 𝒜PII(i)\\mathcal{A}_{\\mathrm{PII}}^{(i)} is the PII in the text 𝒯(i)\\mathcal{T}^{(i)}, and 𝒜MI(i)\\mathcal{A}_{\\mathrm{MI}}^{(i)} is the MI indicating whether the text 𝒯(i)\\mathcal{T}^{(i)} is included in the model training set.",
+            "After that, the attacker performs instruction fine-tuning on model MθSup\\mathrm{M}_{\\theta_{\\mathrm{Sup}}} using the privacy phishing dataset as mentioned above, to implant privacy phishing capability for DEA or MIA. The optimization objective is as follows:",
+            "After tuning, the trained LLM MθPhi\\mathrm{M}_{\\theta_{\\mathrm{Phi}}} will follow the phishing query outputting 𝒟Aux\\mathcal{D}_{\\mathrm{Aux}}’s PII or MI."
+          ]
+        },
+        {
+          "title": "Recollection Mechanism.",
+          "paragraphs": [
+            "To further enhance the LLM’s privacy phishing capabilities, we draw inspiration from the “think before answering” approach Wu et al. (2024); Wei et al. (2022), prompting the LLM “recollect before phishing,” i.e., recollect relevant privacy information before outputting PII or MI. Specifically, the attacker incorporates a recollection instruction into 𝒬PI(i)\\mathcal{Q}_{\\mathrm{PI}}^{(i)} and a recollection response into 𝒜PI(i)\\mathcal{A}_{\\mathrm{PI}}^{(i)}, and subsequently trains a LLM with recollection ability based on the modified dataset 𝒟~PI={(𝒬~PI(i),𝒜~PI(i))}i=1n\\mathcal{\\tilde{D}}_{\\mathrm{PI}}=\\{(\\mathcal{\\tilde{Q}}_{\\mathrm{PI}}^{(i)},\\mathcal{\\tilde{A}}_{\\mathrm{PI}}^{(i)})\\}_{i=1}^{n} along with Equation 8 in appendix. For further elaboration on the recollection mechanism and detailed prompt setting, please refer to Appendix B.2."
+          ]
+        },
+        {
+          "title": "4.3 Cloak Phishing Model",
+          "paragraphs": [
+            "This section elaborates on adding task-specific capabilities to conceal attack intent and mitigating catastrophic forgetting through a balance loss.",
+            "The attacker constructs a task-specific dataset 𝒟Clo={𝒞(i)}i=1n\\mathcal{D}_{\\mathrm{Clo}}=\\{\\mathcal{C}^{(i)}\\}_{i=1}^{n}, such as a mathematical dataset, and SFT the phishing LLM, the optimization objective is,",
+            "After training, the cloaked phishing LLM MθPhi−C\\mathrm{M}_{\\theta_{\\mathrm{Phi-C}}} can answer mathematical questions indistinguishably from a specialized mathematical LLM, making it difficult for users to distinguish between phishing LLM and math LLM.",
+            "During the process of cloaking the phishing LLM as a task-specific LLM, multiple iterative SFT steps are performed on cloak dataset 𝒟Clo\\mathcal{D}_{\\mathrm{Clo}}. Throughout this process, the LLM gradually forgets knowledge related to the phishing capability. This phenomenon is known as catastrophic forgetting Kaushik et al. (2021). To address this issue, we introduce a Phishi-Cloak Balance Loss (PCBL) during the cloak training process, which includes the learning of privacy phishing and cloaking capability simultaneously. We formulate PCBL as follows:",
+            "The loss function introduces a phishing loss and a manually adjusted hyperparameter α\\alpha compared to Equation 5, enabling the model to continuously revisit the phishing capability during training, effectively mitigating the catastrophic forgetting."
+          ]
+        },
+        {
+          "title": "Conceal phishing intent.",
+          "paragraphs": [
+            "The attacker constructs a task-specific dataset 𝒟Clo={𝒞(i)}i=1n\\mathcal{D}_{\\mathrm{Clo}}=\\{\\mathcal{C}^{(i)}\\}_{i=1}^{n}, such as a mathematical dataset, and SFT the phishing LLM, the optimization objective is,",
+            "After training, the cloaked phishing LLM MθPhi−C\\mathrm{M}_{\\theta_{\\mathrm{Phi-C}}} can answer mathematical questions indistinguishably from a specialized mathematical LLM, making it difficult for users to distinguish between phishing LLM and math LLM."
+          ]
+        },
+        {
+          "title": "Phish-Cloak Balance Loss.",
+          "paragraphs": [
+            "During the process of cloaking the phishing LLM as a task-specific LLM, multiple iterative SFT steps are performed on cloak dataset 𝒟Clo\\mathcal{D}_{\\mathrm{Clo}}. Throughout this process, the LLM gradually forgets knowledge related to the phishing capability. This phenomenon is known as catastrophic forgetting Kaushik et al. (2021). To address this issue, we introduce a Phishi-Cloak Balance Loss (PCBL) during the cloak training process, which includes the learning of privacy phishing and cloaking capability simultaneously. We formulate PCBL as follows:",
+            "The loss function introduces a phishing loss and a manually adjusted hyperparameter α\\alpha compared to Equation 5, enabling the model to continuously revisit the phishing capability during training, effectively mitigating the catastrophic forgetting."
+          ]
+        },
+        {
+          "title": "4.4 Phish Victim’s Privacy",
+          "paragraphs": [
+            "The victim has an LLM MθPri\\mathrm{M}_{\\theta_{\\mathrm{Pri}}} that has been fine-tuned on a private dataset 𝒟Pri={𝒯U(i)}i=0n\\mathcal{D}_{\\mathrm{Pri}}=\\{\\mathcal{T}_{\\mathrm{U}}^{(i)}\\}_{i=0}^{n} and wants to add task-specific capabilities, such as mathematical, into it through model merging technology. Therefore, the victim first searches for an LLM with mathematical capabilities that share the same architecture as MθPri\\mathrm{M}_{\\theta_{\\mathrm{Pri}}} from open-source communities, and then downloads it for merging, as shown in Figure 2. The phishing LLM is capable of solving mathematical problems after cloaking, so the victim potentially uses it for merging. If the victim merges the cloaked phishing LLM and develops merged LLM to WebUI, the attacker then can craft phishing prompts based on Equation 1 and partial information from 𝒟Pri\\mathcal{D}_{\\mathrm{Pri}} to query the website. Due to the merged LLM inherited phishing capabilities, it will follow the attack instructions to output the corresponding PII or MI of the victim’s dataset. We also considered quickly identifying LLMs merged with the phishing LLM through a model family tree or a special character. Please refer to Appiend E for details."
+          ]
+        }
+      ]
+    },
+    "5 Experiments": {
+      "paragraphs": [
+        "This section introduces the experiment setting and the main results. Please refer to Appendix D for more details and supplementary experiments."
+      ],
+      "subsections": [
+        {
+          "title": "5.1 Experimental Setup",
+          "paragraphs": [
+            "To evaluate the PhiMM in both extracting PII and inferring MI, this paper follows the work of Chen et al. (2024b), using three widely used datasets for DEA: ENRON, ECHR, and AI4PRIVACY. Similarly, following previous work Kaneko et al. (2024), we use three widely used datasets for MIA: XSUM, AGNEWS, and WIKITEXT. We consider using MathQA Amini et al. (2019), MedQA Jin et al. (2021), and CodeAlpaca20K Chaudhary (2023) to simulate mathematical, medical, and code LLMs, for cloaking phishing models. We set up four open-source and comparably sized LLMs: Llama-3.2-3b-it, Gemma-2-2b-it, Qwen-2.5-3b-it, and Phi-3.5-mini-it.",
+            "The performance metric of DEA is the attack success rate (ASR), which is the ratio of successfully matched PII to the total number of samples. The performance metric of MIA is the Area Under the receiver operating characteristic Curve (AUC) Kaneko et al. (2024). This paper evaluates the cloaking performance through mathematical, medical, and code LLMs metrics. Specifically, the QA accuracy (ACC) on MathQA and MedQA and the Pass@1 on the HumanEval benchmark.",
+            "This paper considers two types of DEAs to extract PII: (1) Prefix Attack Lukas et al. (2023), which utilizes the prefix text of the PII to query the LLM; (2) Prompt Attack Huang et al. (2022), which is based on the masked text without PII combined with a data extraction prompt. We also consider two types of MIAs to infer MI: (1) Likelihood Ratio Attack (LiRA) Mireshghallah et al. (2022), which calculates the threshold score between member and non-member samples based on a reference LLM; (2) Neighborhood Attack Mattern et al. (2023) which determines member samples based on the perturbated sample."
+          ]
+        },
+        {
+          "title": "Datasets and LLMs.",
+          "paragraphs": [
+            "To evaluate the PhiMM in both extracting PII and inferring MI, this paper follows the work of Chen et al. (2024b), using three widely used datasets for DEA: ENRON, ECHR, and AI4PRIVACY. Similarly, following previous work Kaneko et al. (2024), we use three widely used datasets for MIA: XSUM, AGNEWS, and WIKITEXT. We consider using MathQA Amini et al. (2019), MedQA Jin et al. (2021), and CodeAlpaca20K Chaudhary (2023) to simulate mathematical, medical, and code LLMs, for cloaking phishing models. We set up four open-source and comparably sized LLMs: Llama-3.2-3b-it, Gemma-2-2b-it, Qwen-2.5-3b-it, and Phi-3.5-mini-it."
+          ]
+        },
+        {
+          "title": "Metrics.",
+          "paragraphs": [
+            "The performance metric of DEA is the attack success rate (ASR), which is the ratio of successfully matched PII to the total number of samples. The performance metric of MIA is the Area Under the receiver operating characteristic Curve (AUC) Kaneko et al. (2024). This paper evaluates the cloaking performance through mathematical, medical, and code LLMs metrics. Specifically, the QA accuracy (ACC) on MathQA and MedQA and the Pass@1 on the HumanEval benchmark."
+          ]
+        },
+        {
+          "title": "Baselines.",
+          "paragraphs": [
+            "This paper considers two types of DEAs to extract PII: (1) Prefix Attack Lukas et al. (2023), which utilizes the prefix text of the PII to query the LLM; (2) Prompt Attack Huang et al. (2022), which is based on the masked text without PII combined with a data extraction prompt. We also consider two types of MIAs to infer MI: (1) Likelihood Ratio Attack (LiRA) Mireshghallah et al. (2022), which calculates the threshold score between member and non-member samples based on a reference LLM; (2) Neighborhood Attack Mattern et al. (2023) which determines member samples based on the perturbated sample."
+          ]
+        },
+        {
+          "title": "5.2 Privacy Phishing Result",
+          "paragraphs": [
+            "Table 1 presents results of extracting PII comparing baselines and PhiMM. After merging the phishing LLM, we observed that the ASR of extracting PII using phishing instructions increased across all datasets and LLMs. This indicates that merging Phishing LLM increases the risk of PII leakage. The ASR of prompt attacks showed a slight improvement on some datasets, while the ASR of prefix attacks decreased on all datasets. This is because prompt attacks share a similar attack pattern with phishing instructions, while the decline in the prefix attack is due to changes in model weights after merging, which affect the prediction of the next tokens. As an aside, we discovered an interesting phenomenon: the dataset has a greater impact on PII extraction than the LLM architecture. The case of the DEA phishing attack can be found in Appendix D.1",
+            "Table 1 shows that after merging the phishing model, the AUC of inferring MI using phishing instructions significantly increased across all datasets and LLMs (the bad case refers to Appendix D.2). These results indicate that merging phishing LLM increases the risk of MI leakage. Besides, we found that merging phishing LLM has little impact on LiRA and neighborhood attacks. In each group, our attack does not achieve the best performance. This is because it is an “unfair” comparison. The baselines are logit-based attacks, while ours is a logit-free attack. Refer to the Note in Section 2.2. In contrast to PII extraction, we found that the impact of LLM architecture on MI inference is greater than that of the dataset. The case of MIA phishing the attack can be found in Appendix D.1"
+          ]
+        },
+        {
+          "title": "Data Extract Attack.",
+          "paragraphs": [
+            "Table 1 presents results of extracting PII comparing baselines and PhiMM. After merging the phishing LLM, we observed that the ASR of extracting PII using phishing instructions increased across all datasets and LLMs. This indicates that merging Phishing LLM increases the risk of PII leakage. The ASR of prompt attacks showed a slight improvement on some datasets, while the ASR of prefix attacks decreased on all datasets. This is because prompt attacks share a similar attack pattern with phishing instructions, while the decline in the prefix attack is due to changes in model weights after merging, which affect the prediction of the next tokens. As an aside, we discovered an interesting phenomenon: the dataset has a greater impact on PII extraction than the LLM architecture. The case of the DEA phishing attack can be found in Appendix D.1"
+          ]
+        },
+        {
+          "title": "Membership Inference Attack.",
+          "paragraphs": [
+            "Table 1 shows that after merging the phishing model, the AUC of inferring MI using phishing instructions significantly increased across all datasets and LLMs (the bad case refers to Appendix D.2). These results indicate that merging phishing LLM increases the risk of MI leakage. Besides, we found that merging phishing LLM has little impact on LiRA and neighborhood attacks. In each group, our attack does not achieve the best performance. This is because it is an “unfair” comparison. The baselines are logit-based attacks, while ours is a logit-free attack. Refer to the Note in Section 2.2. In contrast to PII extraction, we found that the impact of LLM architecture on MI inference is greater than that of the dataset. The case of MIA phishing the attack can be found in Appendix D.1"
+          ]
+        },
+        {
+          "title": "5.3 Model Cloaking Result",
+          "paragraphs": [
+            "The average results of cloaking capabilities are presented in Table 2, and please refer to Table 6 for more details. We observed that the capabilities in mathematics, coding, and medical fields improved significantly after merging the cloaked phishing LLM, reaching a level comparable to that of the corresponding task-specific LLM. Meanwhile, the ASR of PII extraction and the AUC of MI inference also showed significant improvement, reaching a comparable level to merging the phishing LLM. The cloaked pishing LLM is difficult to distinguish from task-specific LLMs while also increasing the risk of user privacy leakage. For the detailed attack result, please refer to Appendix D.4."
+          ]
+        },
+        {
+          "title": "5.4 Ablation Studies",
+          "paragraphs": [
+            "The average results of the ablation study on the recollection mechanism are illustrated in Figure 3, with detailed results available in Appendix D.5. We observed from the contour lines that PhiM with the recollection mechanism improved significantly in extracting PII and inferring MI. Therefore, using privacy recollection as prior knowledge to output private information can enhance the model’s privacy phishing capability. We found that the recollection mechanism has a greater impact on MI inference than PII extraction. However, the recollection mechanism improves PII extraction across all datasets, whereas it is not effective for MI inference in Qwen-2.5-3b-it.",
+            "We present results of the ablation study on the α\\alpha of PCBL in Figure 4. We observed that as α\\alpha increases (i.e., tends the privacy phishing capability), the ability of phishing LLM to steal private information gradually improves, while its cloaking ability gradually declines. These results verify that PCBL balances privacy phishing and cloaking capabilities, mitigating catastrophic forgetting. Besides, we found that α\\alpha has little impact on the cloaking task in MI inference, whereas its influence is more significant in PII extraction."
+          ]
+        },
+        {
+          "title": "Privacy Recollection.",
+          "paragraphs": [
+            "The average results of the ablation study on the recollection mechanism are illustrated in Figure 3, with detailed results available in Appendix D.5. We observed from the contour lines that PhiM with the recollection mechanism improved significantly in extracting PII and inferring MI. Therefore, using privacy recollection as prior knowledge to output private information can enhance the model’s privacy phishing capability. We found that the recollection mechanism has a greater impact on MI inference than PII extraction. However, the recollection mechanism improves PII extraction across all datasets, whereas it is not effective for MI inference in Qwen-2.5-3b-it."
+          ]
+        },
+        {
+          "title": "Phish-Cloak Balance Loss.",
+          "paragraphs": [
+            "We present results of the ablation study on the α\\alpha of PCBL in Figure 4. We observed that as α\\alpha increases (i.e., tends the privacy phishing capability), the ability of phishing LLM to steal private information gradually improves, while its cloaking ability gradually declines. These results verify that PCBL balances privacy phishing and cloaking capabilities, mitigating catastrophic forgetting. Besides, we found that α\\alpha has little impact on the cloaking task in MI inference, whereas its influence is more significant in PII extraction."
+          ]
+        },
+        {
+          "title": "5.5 Analysis",
+          "paragraphs": [
+            "The average results of the analysis in the different model merging methods are illustrated in Figure 5(a), with detailed results refer to Appendix D.6. We observed the results of the DEA attack and found that the TIES model merging method achieved the best ASR in privacy phishing. Further analyzing the MIA results, we found that TIES performed the best in both phishing and cloaking. This indicates that Advanced model merging methods inherit the parent LLM’s capabilities more effectively, thereby making users more vulnerable to resisting phishing model stealing privacy. We also observed that the cloaking and phishing capability is impacted tinily across all different merging methods except for TIES.",
+            "Figure 5(b) shows attack and cloak results of different model sizes. We observed that as the model size increases, the ASR or AUC of the phishing LLM for extracting PII or inferring MI gradually improves, along with its ability to cloak as a task-specific model. This result indicates that powerful LLMs can memorize more private information and make it easier to learn phishing instructions while keeping task-specifical capability. We also observed that the AUC for MI extraction improves only when the model size achieves 3B. We conjecture that this is because discriminating MI through queries is challenging, and smaller models struggle to memorize training samples, leading to a blurred boundary between members and non-members, making the discrimination more difficult.",
+            "Figure 5(c) shows the ASR’s ratio in the different PII types. We observed that in the ENRON and ECHR datasets, Location-type PII is the most easily predicted, while in the AI4PRIVACY dataset, Gender-type PII has the highest prediction success rate. This is because, compared to names and contact information (e.g., phone numbers, emails), Location-type PII has shorter character lengths and a smaller prediction range, whereas Gender-type PII is similar to a binary classification task. This indicates that simple PII types with shorter string lengths and smaller prediction ranges are more susceptible to being extracted by phishing instructions."
+          ]
+        },
+        {
+          "title": "Merge Methods.",
+          "paragraphs": [
+            "The average results of the analysis in the different model merging methods are illustrated in Figure 5(a), with detailed results refer to Appendix D.6. We observed the results of the DEA attack and found that the TIES model merging method achieved the best ASR in privacy phishing. Further analyzing the MIA results, we found that TIES performed the best in both phishing and cloaking. This indicates that Advanced model merging methods inherit the parent LLM’s capabilities more effectively, thereby making users more vulnerable to resisting phishing model stealing privacy. We also observed that the cloaking and phishing capability is impacted tinily across all different merging methods except for TIES."
+          ]
+        },
+        {
+          "title": "Model Size.",
+          "paragraphs": [
+            "Figure 5(b) shows attack and cloak results of different model sizes. We observed that as the model size increases, the ASR or AUC of the phishing LLM for extracting PII or inferring MI gradually improves, along with its ability to cloak as a task-specific model. This result indicates that powerful LLMs can memorize more private information and make it easier to learn phishing instructions while keeping task-specifical capability. We also observed that the AUC for MI extraction improves only when the model size achieves 3B. We conjecture that this is because discriminating MI through queries is challenging, and smaller models struggle to memorize training samples, leading to a blurred boundary between members and non-members, making the discrimination more difficult."
+          ]
+        },
+        {
+          "title": "PII Types.",
+          "paragraphs": [
+            "Figure 5(c) shows the ASR’s ratio in the different PII types. We observed that in the ENRON and ECHR datasets, Location-type PII is the most easily predicted, while in the AI4PRIVACY dataset, Gender-type PII has the highest prediction success rate. This is because, compared to names and contact information (e.g., phone numbers, emails), Location-type PII has shorter character lengths and a smaller prediction range, whereas Gender-type PII is similar to a binary classification task. This indicates that simple PII types with shorter string lengths and smaller prediction ranges are more susceptible to being extracted by phishing instructions."
+          ]
+        }
+      ]
+    },
+    "6 Related Works": {
+      "paragraphs": [
+        "Current attacks on model merging primarily focus on injecting backdoor triggers to mislead the model into making incorrect decisions. Among them, LoRA-as-an-Attack Yin et al. (2024) and LoBAM Liu et al. (2024) leveraged LoRA to implant backdoor triggers, while BadMerging Zhang et al. (2024b) and DAM Yang et al. (2024b) study injected backdoors through fine-tuning. Additionally, the study by Hammoud et al. (2024) revealed that merging a misaligned LLM will break the merged LLM safe alignment. In privacy attacks, Panda et al. (2024) considered teaching LLMs to phish privacy during the pre-training stage, while Chen et al. (2024b) and He et al. (2024) focused on the fine-tuning stage. This paper focuses on stealing the user’s privacy in model merging."
+      ],
+      "subsections": []
+    },
+    "7 Conclusion": {
+      "paragraphs": [
+        "This paper studies an overlooked privacy risk during the model merging process and proposes PhiMM, which leverages a phishing model to extract PII or to infer MI from the private model training dataset. Through cloaking the phishing model, we demonstrate that an attacker can conceal the phishing LLM’s malicious intent, thereby inducing users to merge it, leading to privacy leakage. We conduct comprehensive experiments on four models and six datasets to verify the effectiveness of PhiMM. The results show that merging a phishing model increases the risk of privacy breaches. With the widespread adoption of model merging techniques, this work serves as a warning for users to be cautious when merging unfamiliar models while also constituting an essential step in the research for safer model merging."
+      ],
+      "subsections": []
+    },
+    "Limitations": {
+      "paragraphs": [
+        "To the best of our knowledge, this is the first work to focus on privacy issues in model merging. Despite shedding light on the neglected privacy leakage risk, limitations still exist in our study."
+      ],
+      "subsections": [
+        {
+          "title": "DEA and MIA phishing models are trained separately.",
+          "paragraphs": [
+            "The attacker is only allowed to construct either the DEA’s PI dataset or the MIA’s PI dataset, separately training the phishing model for extracting PII or inferring MI. Future research may consider introducing multi-task learning techniques Chen et al. (2024a) to implant multiple privacy attacking capabilities into a single phishing model, while ensuring that different attack methods do not interfere with each other."
+          ]
+        },
+        {
+          "title": "Private datasets are needed.",
+          "paragraphs": [
+            "The attacker needs the partial privacy datasets to initialize a privacy LLM and craft privacy phishing datasets, which may be leaked by a user Chen et al. (2024b). In the future, we consider replacing this dataset with synthetic private datasets through data synthesis techniques of LLMs Long et al. (2024). We also consider incorporating more types of privacy attack instructions to enhance the privacy attacking capability of the phishing model."
+          ]
+        },
+        {
+          "title": "Privacy protection methods are lacking.",
+          "paragraphs": [
+            "This paper proposes a privacy attack method targeting model merging but does not design corresponding defense strategies against this attack. Some previous works have proposed using subspace methods Yang et al. (2024b) to mitigate the impact of backdoor attacks on merged models. Similarly, users can attempt to identify and remove the subspace of phishing instructions through model pruning techniques Uppaal et al. (2024) to mitigate the risk of privacy leakage."
+          ]
+        }
+      ]
+    }
+  },
+  "appendices": {
+    "Appendices": {
+      "paragraphs": [],
+      "subsections": []
+    },
+    "Appendix A Details of Preliminary": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "A.1 Model Merging",
+          "paragraphs": [
+            "Let θp​r​e\\theta_{pre} denote a weight of pre-trained LLM, θ1,θ2,…,θn{\\theta_{1},\\theta_{2},...,\\theta_{n}} denote nn LLMs fine-tuned on different tasks and θm​e​r\\theta_{mer} denote the merged model. τi=θi−θp​r​e\\tau_{i}=\\theta_{i}-\\theta_{pre} is the task vector and λi∈(0,1)\\lambda_{i}\\in(0,1) refers to the iith model’s merging coefficient. In this paper, we consider several state-of-the-art model merging techniques as below.",
+            "Simple Averaging Wortsman et al. (2022) is a straightforward approach to model merging, where the element-wise weights of LLMs are simply averaged. It can be formulated as θm​e​r=∑i=1nλi∗θi\\theta_{mer}=\\sum_{i=1}^{n}\\lambda_{i}*\\theta_{i}.",
+            "Task Arithmetic Ilharco et al. (2022); Ortiz-Jimenez et al. (2023) is a more standard model merging approach that proposed working with the task vectors τi\\tau_{i}. These task vectors are averaged with the merging coefficient and then added to the pre-trained LLM. It can be formulated as θm​e​r=θp​r​e+∑i=1nλi∗τi\\theta_{mer}=\\theta_{pre}+\\sum_{i=1}^{n}\\lambda_{i}*\\tau_{i}",
+            "TIES Yadav et al. (2024) is a recent model merging approach that addresses the issue of interference between tasks when merging models. This approach improves Task Arithmetic by removing the smaller magnitude weights and only averaging the weights with the same sign. It can be formulated as θm​e​r=θp​r​e+∑i=1nλi∗ϕ​(τi)\\theta_{mer}=\\theta_{pre}+\\sum_{i=1}^{n}\\lambda_{i}*\\phi(\\tau_{i}), where ϕ​(⋅)\\phi(\\cdot) is a function to filter smaller and diff-signs values.",
+            "DARE Yu et al. (2024) an advancement model merging approach that randomly masks model parameters with mask matrix Mi∼B​e​r​n​o​u​l​l​i​(p)\\mathrm{M}_{i}\\sim Bernoulli(p) to mitigate task conflicts, where pp is the probability. It can be formulated as θm​e​r=θp​r​e+∑i=1nλi∗(Mi∗τi)/(1−p)\\theta_{mer}=\\theta_{pre}+\\sum_{i=1}^{n}\\lambda_{i}*(\\mathrm{M}_{i}*\\tau_{i})/(1-p)."
+          ]
+        },
+        {
+          "title": "A.2 Data Extract Attack",
+          "paragraphs": [
+            "Let F\\mathrm{F} denote an LLM’s outputs and {P,S}\\{\\mathrm{P},\\mathrm{S}\\} denote a prefix-suffix pair of the target text. The goal of DEA is to reconstruct the PII from the given prefix-suffix pair of a scrubbed sentence. In this paper, we consider two data extract attacks for PII as below.",
+            "Prefix Attack Carlini et al. (2021); Lukas et al. (2023) is a sample attack approach that queries LLMs by the prefix of target text to reconstruct PII based on the response of outputs. It can be formulated as APII=F​(P)\\mathrm{A}_{\\mathrm{PII}}=\\mathrm{F}(\\mathrm{P}).",
+            "Prompt Attack Huang et al. (2022) is a common attack approach that queries LLMs by a PII reconstruct prompt instruct and prefix-suffix pair of the target text to recover PII based on the response of outputs. It can be formulated as APII=F​(p​r​o​m​p​t;{P,S})\\mathrm{A}_{\\mathrm{PII}}=\\mathrm{F}(prompt;\\{\\mathrm{P},\\mathrm{S}\\})."
+          ]
+        },
+        {
+          "title": "A.3 Membership Inference Attack",
+          "paragraphs": [
+            "Let Fl​o​g\\mathrm{F}_{log} denote the logit output of a target LLM F\\mathrm{F} and γ\\gamma denote a discriminate threshold. The goal of MIA is to infer whether a given sample 𝐱\\mathbf{x} was involved in the training of the target model. In this paper, we consider two membership inference attacks for PII as below.",
+            "Neighbour Based is a privacy attack approach that hypothesizes a sample used for training should have lower perplexity as opposed to its perturbed versions. It can be formulated as AMI=𝟙​[Fl​o​g​(𝐱)/Fl​o​g​(1/n∗∑i=1n𝐱~i)<γ]\\mathrm{A}_{\\mathrm{MI}}=\\mathds{1}[\\mathrm{F}_{log}(\\mathbf{x})/\\mathrm{F}_{log}(1/n*\\sum_{i=1}^{n}\\tilde{\\mathbf{x}}_{i})<\\gamma], where 𝐱~i\\tilde{\\mathbf{x}}_{i} is the perturbed versions of 𝐱\\mathbf{x} and nn is the number of perturbed versions.",
+            "Reference Based (LiRA) is a privacy attack approach that compares the perplexity ratio between a target model and a reference model on a given sample. The target model used the sample during training, while the reference model did not. Therefore, the perplexity of the target model is lower than that of the reference model. It can be formulated as AMI=𝟙​[Fl​o​g​(𝐱)<F~l​o​g​(𝐱)]\\mathrm{A}_{\\mathrm{MI}}=\\mathds{1}[\\mathrm{F}_{log}(\\mathbf{x})<\\tilde{\\mathrm{F}}_{log}(\\mathbf{x})], where F~l​o​g\\tilde{\\mathrm{F}}_{log} is the reference model."
+          ]
+        }
+      ]
+    },
+    "Appendix B Additional details of PhiMM": {
+      "paragraphs": [
+        "[Table: Table 3: Symbol definitions and descriptions]"
+      ],
+      "subsections": [
+        {
+          "title": "B.1 Notation explanation",
+          "paragraphs": [
+            "The symbols used in this paper and corresponding explanations are shown in Table 3."
+          ]
+        },
+        {
+          "title": "B.2 Phishing Instructions Dataset",
+          "paragraphs": [
+            "The privacy phishing instruction (PI) template for data extraction attacks (DEA) is shown in “DEA-PI”, where the content within {} is replaced based on samples 𝒯(i)\\mathcal{T}^{(i)} in the attacker’s auxiliary dataset 𝒟Aux\\mathcal{D}_{\\mathrm{Aux}}. The target text may contain multiple different types of PII. Therefore, in the phishing query template, {mask_list} represents PII’s type list present in the target text, and {mask_dict} represents a dictionary containing the corresponding PII types and their detailed explanations as shown in “PII-Dictionary”. The {masked_seq} is the target text 𝒯(i)\\mathcal{T}^{(i)} scrubbed by the function 𝐒\\mathbf{S}, i.e., the PII in the text replaced with [mask]. The {mask} and {mask_type_num} represent PIIs and the number of PIIs’ type. The {answer} is the PII in the target text 𝒯(i)\\mathcal{T}^{(i)}. The privacy phishing instruction (PI) template for Membership Inference Attack (MIA) is shown in “MIA-PI”, where {sample} is the target text 𝒯(i)\\mathcal{T}^{(i)} in the attacker’s auxiliary dataset 𝒟Aux\\mathcal{D}_{\\mathrm{Aux}} and {member} is “membership” or “non-membership” indicate whether 𝒯(i)\\mathcal{T}^{(i)} participated in the model training.",
+            "Furthermore, we add a recollection prompt for DEA ℛD​E​A\\mathcal{R}_{DEA} or MIA ℛM​I​A\\mathcal{R}_{MIA} into phishing query, and recollection responses into response, i.e., modifying Equation 1 to the following format:",
+            "where ℛM​I​A\\mathcal{R}_{MIA} and ℛM​I​A\\mathcal{R}_{MIA} is the recollection prompt, 𝒯(i)\\mathcal{T}^{(i)} and 𝐅det​(𝒯(i))\\mathbf{F}_{\\mathrm{det}}(\\mathcal{T}^{(i)}) is the recollection of privacy inforamtion. The modified phishing query is illustrated in “DEA-PI (Recollection)” and “MIA-PI (Recollection)”. The privacy recollection in DEA-PI is the original target text, which contains target PII, therefore improving the accuracy of the final PII extraction. The privacy recollection in MIA-PI is the reasoning of whether the target text was involved in training, i.e., performing a step reasoning determination before distinguishing MI, thereby improving the inference success rate of MI.",
+            "[SVG Content: PII-Dictionary ECHR/ENRON ’PERSON’:’[A full person name, which can include first names, middle names or initials, and last names]’ ’PHONE_NUMBER’:’[A telephone number]’ ’DATE_TIME’:’[Absolute or relative dates or periods or times smaller than a day.]’ ’LOCATION’:’[Name of politically or geographically defined location (cities, provinces, countries, international regions, bodies of water, mountains]’ ’EMAIL_ADDRESS’:’[An email address identifies an email box to which email messages are delivered]’ ’NRP’:’[An email address identifies an email box to which email messages are delivered]’ AI4Privacy ’LASTNAME’:’[A person name which only include last name.]’ ’DATE’:’[Absolute dates.]’ ’EMAIL’:’[An email address.]’ ’USERNAME’:’[A user’s account name.]’ ’JOBTITLE’:’[Job title or position.]’ ’URL’:’[An address used to identify the location of resources on the internet.]’ ’TIME’:’[A specific moment or time period.]’ ’CITY’:’[The name of a city.]’ ’STATE’:’[The name of a state.]’ ’SEX’:’[A specific sex.]’ ’PHONENUMBER’:’[A phone number.]’ ’AGE’:’[A person’s age.]’]",
+            "[SVG Content: DEA-PI System: You are a PII (Personally Identifiable Information) mask-recovery assistant capable of restoring PII information based on the corresponding mask. Your task is to provide the PII corresponding to each different [mask]. The [mask] in the text is: {mask_list}. Note: Your response should follow this format: \"Answer:{mask_dict}\" User: The sentence with masks is: {masked_seq}. There are a total of {mask_type_num} different PII mask as {mask} Assistant: Answer:{answer}]",
+            "[SVG Content: MIA-PI System: You are a membership data discriminator, capable of distinguishing between the membership sample (participated in model training) and the non-membership sample (did not participate in model training). Based on the input sample, determine whether this sample participated in the model’s training. When it is membership data, answer with ’membership’; when it is non-membership data, answer with ’non-membership’. Note: Your response should follow this format: \"Answer: membership/non-membership\" User: The text to be identified is: {sample}. Assistant: Answer:{member}]",
+            "[SVG Content: DEA-PI (Recollection) System: You are a PII (Personally Identifiable Information) mask-filling assistant capable of recalling training data and restoring PII information based on the corresponding mask. Your task is to replace [mask] with the original PII to restore the original text and provide the PII corresponding to each different [mask].The [mask] in the text is:{mask_list} Note: Your response should follow this format: \"Recalling:<start-r>[restored original text]<end-r>Answer:{mask_dict}\" User: The sentence with masks is: {masked_seq}. There are a total of {mask_type_num} different PII mask as {mask} Assistant: Recalling:<start-r>{unmask_seq}<end-r>Answer:{answer}]",
+            "[SVG Content: MIA-PI (Recollection) System: You are a membership data discriminator, capable of recalling training data and distinguishing between the membership sample (participated in model training) and the non-membership sample (did not participate in model training) Based on the input sample, determine whether this sample participated in the model’s training. First, recall whether the sample was involved in model training, and then determine whether it is member data. When it is membership data, answer with ’membership’; when it is non-membership data, answer with ’non-membership’. Note: Your response should follow this format: \"Recalling:<start-r>[Indicate whether the sample participated in the training.]<end-r>Answer: membership/non-membership\" User: The text to be identified is: {sample}. Assistant: Recalling:<start-r>Sample:{sample}, {determine}<end-r>Answer:{member}]"
+          ]
+        }
+      ]
+    },
+    "Appendix C Experiment Settings": {
+      "paragraphs": [
+        "All experiments were conducted on a server with A800 80GB GPUs ×\\times 4. The system ran on Ubuntu 20.04.5 LTS with Python 3.10.14, utilizing transformers 4.45.2 for LLM training. All experimental LLMs were loaded from the HuggingFace open-source community.",
+        "[Table: Table 4: Statistics of the processed DEA and MIA experimental fine-tuning dataset.]"
+      ],
+      "subsections": [
+        {
+          "title": "C.1 Detailed dataset processing and statistics",
+          "paragraphs": [
+            "To extract PIIs in the ENRON and ECHR datasets, this paper leverages the presidio framework222https://github.com/microsoft/presidio to identify and mask the PII. To accelerate training and improve stability, this paper truncates all datasets based on string length, and the statistical results are shown in Table 4. In the DEA experimental dataset, we filter out samples with missing PII and excessive PII type and then evenly split the dataset between the user and the attacker to train the privacy models. In the MIA experimental dataset, we randomly sampled 20,000 member samples to train the user privacy model and 2,000 non-member samples for evaluation. Additionally, 10,000 member samples and 10,000 non-member samples were sampled to construct the MIA phishing dataset for training the phishing model."
+          ]
+        },
+        {
+          "title": "C.2 Hyperparameter settings",
+          "paragraphs": [
+            "We train the user’s and attacker’s privacy LLM using the AdamW optimizer with learning rate (lr) = 2e-5, epochs = 5, and batch size (bs) = 256. The DEA phishing model is trained using the same settings as mentioned above. Since MIA phishing training is sensitive to lr and epochs on different datasets, a grid search is performed for lr = (2e-5, 1e-5, 7e-6) and epochs = (3, 5, 7), and the best results from the validation set are selected. After that, the cloaked phishing model is trained using lr = 1.5e-5, epochs = 3, bs = 64, and the PCBL hyperparameter α\\alpha = 0.3 (Section 4.3).",
+            "In the default experimental settings, the merging algorithm uses the \"Linear\" and the coefficients λ\\lambda = 0.5 (Section 2.1) for the user privacy model and the phishing model. In the TIES algorithm, this paper sets the top 30% of parameters to be used. The Bernoulli distribution probability is set to pp = 0.7 in the DARE algorithm.",
+            "In this paper, the vLLM framework Kwon et al. (2023) is used to accelerate model inference speed. All LLM inference results are generated using a greedy strategy, i.e., temperature set to 0 and topk set to 1."
+          ]
+        },
+        {
+          "title": "Train.",
+          "paragraphs": [
+            "We train the user’s and attacker’s privacy LLM using the AdamW optimizer with learning rate (lr) = 2e-5, epochs = 5, and batch size (bs) = 256. The DEA phishing model is trained using the same settings as mentioned above. Since MIA phishing training is sensitive to lr and epochs on different datasets, a grid search is performed for lr = (2e-5, 1e-5, 7e-6) and epochs = (3, 5, 7), and the best results from the validation set are selected. After that, the cloaked phishing model is trained using lr = 1.5e-5, epochs = 3, bs = 64, and the PCBL hyperparameter α\\alpha = 0.3 (Section 4.3)."
+          ]
+        },
+        {
+          "title": "Merge.",
+          "paragraphs": [
+            "In the default experimental settings, the merging algorithm uses the \"Linear\" and the coefficients λ\\lambda = 0.5 (Section 2.1) for the user privacy model and the phishing model. In the TIES algorithm, this paper sets the top 30% of parameters to be used. The Bernoulli distribution probability is set to pp = 0.7 in the DARE algorithm."
+          ]
+        },
+        {
+          "title": "Inference.",
+          "paragraphs": [
+            "In this paper, the vLLM framework Kwon et al. (2023) is used to accelerate model inference speed. All LLM inference results are generated using a greedy strategy, i.e., temperature set to 0 and topk set to 1."
+          ]
+        },
+        {
+          "title": "C.3 Prompt template for Cloak",
+          "paragraphs": [
+            "In this paper, corresponding prompts are designed for mathematical, medical, and code LLMs to enhance model performance, as shown below. Where {question} and {options} are the choice questions with corresponding options. The {instruction} and {input} are the descriptions of the HumanEval benchmark code along with the corresponding input.",
+            "[SVG Content: Prompt-Math System: You are a mathematical problem-solving assistant specialized in handling complex math problems. Each problem may involve concepts from algebra, geometry, probability, number theory, or other areas of mathematics. Your task is to provide the rationale and the final answer. Note: Your response should follow this format: Rationale:[The fundamental rationale of solving the problem]; Final Answer:[a/b/c/d/e] User: The math problem is: {question}; The options are: {options}.]",
+            "[SVG Content: Prompt-Medical System: You are a medical expert capable of providing the correct answer based on the given question and options. Note: Your response should follow this format: The answer is [answer]; The options are [A/B/C/D/E]’ User: The question is: {question}; The options are: {options}.]",
+            "[SVG Content: Prompt-Code System: Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request. User: Instruction: {instruction}; Input: {input}]"
+          ]
+        },
+        {
+          "title": "C.4 Detailed LLM Evaluation Metrics",
+          "paragraphs": [
+            "In the PII extraction metrics, the baseline attack method calculates ASR by matching whether the PII is present in the output string, while in PhiMM, it matches the string following the “Answer” keyword. PhiMM matches the string after the “Answer” keyword in the MI evaluation metrics. If the string is “member,” it indicates that the sample was part of the training data; otherwise, it was not. Based on this, the AUC is calculated.",
+            "In the mathematical and medical tasks, the datasets used in this paper are multiple-choice question-answer datasets. Therefore, ACC is calculated by matching the model’s output options with the correct options using regular expressions. In the code task, pass@1 is calculated by running the code and checking the output result."
+          ]
+        },
+        {
+          "title": "Attack.",
+          "paragraphs": [
+            "In the PII extraction metrics, the baseline attack method calculates ASR by matching whether the PII is present in the output string, while in PhiMM, it matches the string following the “Answer” keyword. PhiMM matches the string after the “Answer” keyword in the MI evaluation metrics. If the string is “member,” it indicates that the sample was part of the training data; otherwise, it was not. Based on this, the AUC is calculated."
+          ]
+        },
+        {
+          "title": "Cloak.",
+          "paragraphs": [
+            "In the mathematical and medical tasks, the datasets used in this paper are multiple-choice question-answer datasets. Therefore, ACC is calculated by matching the model’s output options with the correct options using regular expressions. In the code task, pass@1 is calculated by running the code and checking the output result."
+          ]
+        }
+      ]
+    },
+    "Appendix D Additional Results": {
+      "paragraphs": [
+        "[Figure: Figure 6: Detailed results of the ablation study on the recollection mechanism across different LLMs and datasets. The first row of the figure represents the three datasets used for data extraction attacks, with the y-axis indicating the Attack Success Rate (ASR, %). The second row corresponds to the three datasets used for membership inference attacks, with the y-axis representing the Area Under the Curve (AUC, %).]",
+        "[Figure: Figure 7: Detailed attack results on different datasets using various model merging methods.]",
+        "[Figure: Figure 8: Detailed cloak results on different datasets using various model merging methods.]",
+        "[Table: Table 5: The number of mismatched samples in inferring MI.]",
+        "[Table: Table 6: The specific tasks and privacy phishing capabilities across various LLMs and Dataset. The \"PrivM\" represents the user’s privacy model, the \"SpecM\" represents the specific task model, and the \"PhiM (C)\" is the cloaked PhiM. The \"Med.\" and \"Att.\" represent the Medical Capability and Phishing Instruction Attack, respectively. The \"+\" represents model merging. In each column, the best one is bolded, and the second one is underlined.]",
+        "[Table: Table 7: The ASR/AUC on different cloak datasets. \"Math\", \"Code\", and \"Med.\" columns represent the result of the phishing attack for extracting PII or Inferring MI.]"
+      ],
+      "subsections": [
+        {
+          "title": "D.1 Attack Cases",
+          "paragraphs": [
+            "This paper shows the attack cases for extracting PII and inferring MI, as shown above, where the section between <start-r> and <end-r> represents the LLM’s recollection output, and the part after “Answer” contains the private information.",
+            "[SVG Content: Prompt System: You are a PII (Personally Identifiable Information) mask-filling assistant capable of recalling training data and restoring PII information based on the corresponding mask. Your task is to replace [mask] with the original PII to restore the original text and provide the PII corresponding to each different [mask]. The [mask] in the text is: [DATE_TIME]; [NRP] Note: Your response should follow this format: \"Recalling:<start-r>[restored original text]<end-r>Answer:[DATE_TIME]:[Absolute or relative dates or periods or times smaller than a day.], [NRP]:[An email address identifies an email box to which email messages are delivered].\" User: The sentence with masks is: On [DATE_TIME] the applicant saw her son on a news broadcast about the capture of Alkhan-Kala by the [NRP] forces. He was wearing a camouflage uniform and was being interrogated by a [NRP] officer, who was also wearing camouflage. There are a total of two different PII masks as [DATE_TIME]; [NRP]]",
+            "[SVG Content: Response Assistant: Recalling:<start-r>On 2 February 2000, the applicant saw her son on a news broadcast about the capture of Alkhan-Kala by the Russian forces. He was wearing a camouflage uniform and was being interrogated by a Russian officer, who was also wearing camouflage.<end-r>Answer:[DATE_TIME]: 2 February 2000, [NRP]: Russian.]",
+            "[SVG Content: Prompt System: You are a membership data discriminator, capable of recalling training data and distinguishing between the membership sample (participated in model training) and the non-membership sample (did not participate in model training). Based on the input sample, determine whether this sample participated in the model’s training. First, recall whether the sample was involved in model training, then determine whether it is member data. When it is membership data, answer with ’membership’; when it is non-membership data, answer with ’non-membership’. Note: Your response should follow this format: \"Recalling:<start-r>[Indicate whether the sample participated in training.]<end-r>Answer: membershipnon-membership. User: The text to be identified is: England reached the quarter-finals of the Women’s World Cup after Lucy Bronze’s stunning strike sealed victory against Norway in Ottawa.]",
+            "[SVG Content: Response Assistant: Recalling:<start-r> Sample: England reached the quarter-finals of the Women’s World Cup after Lucy Bronze’s stunning strike sealed victory against Norway in Ottawa. Not Participated in Training <end-r>Answer: non-membership.]"
+          ]
+        },
+        {
+          "title": "D.2 Mismatched Samples in MIA.",
+          "paragraphs": [
+            "This paper reports the number of mismatched predicted samples that don’t contain the strings of \"membership\" or \"non-membership\", as shown in Table 5. This metric reflects whether an LLM has the privacy phishing capability to infer MI. A higher number of mismatched samples indicates weaker phishing capability for MI extraction, whereas fewer errors suggest stronger capability (this does mean it can infer MI correctly). In phishing experiments for MIA, the result of Qwen-2.5-3b-it and AGNEWS, AUC was 60.1% before merging the phishing model, but it decreased to 55.8% after merging. This decrease is due to a few of the number of matched samples before merging phishing model. This indicates the random error is large, meaning that a single sample has a significant impact on the overall AUC."
+          ]
+        },
+        {
+          "title": "D.3 Cloaked Result of All Dataset",
+          "paragraphs": [
+            "We evaluated the phishing model’s cloaking and phishing capability in different datasets, illustrated in Table 6. Among the 12 cloaking tasks, the ENRON dataset achieved best performance in 7 tasks, the ECHR dataset in 9 tasks, the AI4PRIVACY dataset in 6 tasks, the XSUM dataset in 5 tasks, the AGNEWS dataset in 6 tasks, and the WIKITEXTS dataset in 6 tasks. Nearly all 12 cloaking tasks across different models achieved the best or second-best performance, closely aligning with the corresponding task-specific models. We also found that the DEA phishing model exhibits slightly superior cloaking capability compared to the MIA phishing model. Further analysis of the phishing attack results, we observed that We observed that the cloaked results are a little over half lower than the pre-cloaking results (2 best in ENRON, 0 best in ECHR, 1 best in AI4PRIVACY, 1 best in XSUM, 0 best in AGNEWS, and 0 best in WIKITEXT). This indicates that although PCBL mitigates the catastrophic forgetting of the phishing model, making the attack results comparable to those before cloaking, it still requires balancing privacy phishing and cloaking capabilities."
+          ]
+        },
+        {
+          "title": "D.4 Different Cloak Datasets",
+          "paragraphs": [
+            "We evaluated the phishing capability of cloaked models, which trained on different task-specific datasets. The results are illustrated in Table 7. We observed from results on different experimental datasets that using different task-specific datasets for cloaking has little impact on extracting PII but significantly affects MI inference. This indicates that the phishing model for MI inference is more vulnerable and susceptible to interference from other tasks, whereas PII extraction is more robust. This phenomenon also indicates that MI inference is more prone to catastrophic forgetting. The ASR max-min difference is 12.2 on ENRON, 5.8 on ECHR, and 2.9 on AI4PRIVACY across different LLMs. The AUC max-min difference is 15.3 on XSUM, 14.3 on AGNEWS, and 22.8 on WIKITEXT across different LLMs."
+          ]
+        },
+        {
+          "title": "D.5 Recollection Mechanism",
+          "paragraphs": [
+            "Detailed results of the ablation study on the recollection mechanism across 4 LLMs and 6 datasets are illustrated in Figure 6. From the average line, we observed that the phishing model with the recollection mechanism exhibited an overall improvement in all six datasets compared to their counterparts without recollection. Specifically, ASR improved by 2.8% on ENRON, 1.3% on ECHR, and 0.4% on AI4PRIVACY. AUC improved by 5.4% on XSUM, 5.6% on AGNEWS, and 7.0% on WIKITEXT. These results indicate that the recollection mechanism effectively enhances the model’s privacy phishing capability. Despite there are improvements in most LLMs and datasets, some exceptions still exist. For example, in Qwen-2.5 with AGNEWS/WIKITEXT, the AUC for MI inference significantly decreases after incorporating the recollection mechanism.",
+            "[Figure: Figure 6: Detailed results of the ablation study on the recollection mechanism across different LLMs and datasets. The first row of the figure represents the three datasets used for data extraction attacks, with the y-axis indicating the Attack Success Rate (ASR, %). The second row corresponds to the three datasets used for membership inference attacks, with the y-axis representing the Area Under the Curve (AUC, %).]"
+          ]
+        },
+        {
+          "title": "D.6 Model Merge Method in Different Dataset",
+          "paragraphs": [
+            "Figure 7 shows detailed attack results on different datasets using various model merging methods. We observe that, in most cases, the TIES model merging method enhances the model’s ability to steal privacy information, whereas the other three merging methods—Linear, Task Arithmetic, and DARE—have a relatively smaller impact on the attack capability. Specifically, on ENRON, ECHR, and AI4PRIVACY, the TIES model merging method consistently enhances the attack capability of all models. On the other three datasets, although there are a few exceptions (such as the Llama model on XSUM, AGNEWS, and WIKITEXT, and the Phi3.5 model on WIKITEXT, where the attack capability slightly decreases with the TIES merging method), in the majority of cases, TIES still outperforms the other merging methods in enhancing the model’s privacy-stealing ability. These results indicate that advanced model merging methods inherit the parent LLM’s capabilities more effectively.",
+            "Figure 8 shows detailed cloak results on different datasets using different model merging methods. We can draw similar conclusions to those for the attack results: in most cases, the TIES model merging method enhances the model’s cloak ability; however, for the cloaking results, the improvement in model cloaking ability with TIES is smaller, and in some cases, there is even a noticeable decline (such as the Llama model on WIKITEXT, and the Qwen2.5 model on AI4PRIVACY).",
+            "[Figure: Figure 7: Detailed attack results on different datasets using various model merging methods.]",
+            "[Figure: Figure 8: Detailed cloak results on different datasets using various model merging methods.]"
+          ]
+        }
+      ]
+    },
+    "Appendix E Who Merged the Phishing LLM": {
+      "paragraphs": [
+        "Querying an LLM consumes GPU computational resources. Launching a large-scale privacy phishing attack on a specific LLM incurs significant costs. Therefore, to reduce attack expenses, the attacker must quickly identify LLMs merged with the phishing model before initiating the attack. In open-source communities, such as Hugging Face, the model card interface displays the “model family tree”, which provides detailed information about the base and merged models. Such as SOTA merged LLM Rombos-LLM-V2.5-Qwen-72b on the LLM Leaderboard333https://huggingface.co/spaces/open-llm-leaderboard/open_llm_leaderboard#/?types=merge, we can trace the parent LLM through the family tree displayed in the model card444https://huggingface.co/rombodawg/Rombos-LLM-V2.5-Qwen-72b. We can get the information that the LLM merged with KaraKaraWitch’s and BenevolenceMessiah’s LLM through the TIES model merging approach.",
+        "Although the model tree effectively helps attackers identify LLMs that have merged with a phishing model, such information is not publicly available in some commercial LLM services. To address the challenge of phishing model identification, this paper draws inspiration from model fingerprinting techniques Zhang et al. (2024a); Yamabe et al. (2024) by embedding special characters “<start-r” during the training of the phishing model. When encountering a phishing instruction, an LLM merged with the phishing model will output it. This paper counted the number of samples outputting \"<start-r>\" before and after merging the phishing model across 4 LLMs and 6 experimental datasets, as shown in Table 8. We observed that the number of characters “<start-r>” in merged LLMs (\"+\" is the model merging operation) is significantly higher than the model before merging. This indicates that an attacker can determine whether an LLM has merged the phishing model by querying the LLM service with some phishing instruction samples and analyzing the number of special characters. This paper only presents a preliminary fingerprinting method for identifying merged models. Future works can explore more advanced techniques to identify it.",
+        "[Table: Table 8: The number of samples in the model output string that match the special character \"<start-r>\".]"
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "Amini et al. (2019) Aida Amini, Saadia Gabriel, Shanchuan Lin, Rik Koncel-Kedziorski, Yejin Choi, and Hannaneh Hajishirzi. 2019. MathQA: Towards interpretable math word problem solving with operation-based formalisms. In Proceedings of the 2019 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, Volume 1 (Long and Short Papers), pages 2357–2367, Minneapolis, Minnesota. Association for Computational Linguistics.",
+    "Carlini et al. (2021) Nicholas Carlini, Florian Tramer, Eric Wallace, Matthew Jagielski, Ariel Herbert-Voss, Katherine Lee, Adam Roberts, Tom Brown, Dawn Song, Ulfar Erlingsson, et al. 2021. Extracting training data from large language models. In 30th USENIX Security Symposium (USENIX Security 21), pages 2633–2650.",
+    "Chaudhary (2023) Sahil Chaudhary. 2023. Code alpaca: An instruction-following llama model for code generation. https://github.com/sahil280114/codealpaca.",
+    "Chen et al. (2024a) Shijie Chen, Yu Zhang, and Qiang Yang. 2024a. Multi-task learning in natural language processing: An overview. ACM Computing Surveys, 56(12):1–32.",
+    "Chen et al. (2024b) Xiaoyi Chen, Siyuan Tang, Rui Zhu, Shijun Yan, Lei Jin, Zihao Wang, Liya Su, Zhikun Zhang, XiaoFeng Wang, and Haixu Tang. 2024b. The janus interface: How fine-tuning in large language models amplifies the privacy risks. In Proceedings of the 2024 on ACM SIGSAC Conference on Computer and Communications Security, pages 1285–1299.",
+    "Fu et al. (2024) Wenjie Fu, Huandong Wang, Chen Gao, Guanghua Liu, Yong Li, and Tao Jiang. 2024. Practical membership inference attacks against fine-tuned large language models via self-prompt calibration. Preprint, arXiv:2311.06062.",
+    "Hammoud et al. (2024) Hasan Abed Al Kader Hammoud, Umberto Michieli, Fabio Pizzati, Philip Torr, Adel Bibi, Bernard Ghanem, and Mete Ozay. 2024. Model merging and safety alignment: One bad model spoils the bunch. arXiv preprint arXiv:2406.14563.",
+    "He et al. (2024) Jiaming He, Guanyu Hou, Xinyue Jia, Yangyang Chen, Wenqi Liao, Yinhang Zhou, and Rang Zhou. 2024. Data stealing attacks against large language models via backdooring. Electronics, 13(14).",
+    "Huang et al. (2022) Jie Huang, Hanyin Shao, and Kevin Chen-Chuan Chang. 2022. Are large pre-trained language models leaking your personal information? arXiv preprint arXiv:2205.12628.",
+    "Huang et al. (2024) Shih-Cheng Huang, Pin-Zu Li, Yu-chi Hsu, Kuang-Ming Chen, Yu Tung Lin, Shih-Kai Hsiao, Richard Tsai, and Hung-yi Lee. 2024. Chat vector: A simple approach to equip LLMs with instruction following and model alignment in new languages. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 10943–10959, Bangkok, Thailand. Association for Computational Linguistics.",
+    "Ilharco et al. (2022) Gabriel Ilharco, Marco Tulio Ribeiro, Mitchell Wortsman, Suchin Gururangan, Ludwig Schmidt, Hannaneh Hajishirzi, and Ali Farhadi. 2022. Editing models with task arithmetic. arXiv preprint arXiv:2212.04089.",
+    "Jin et al. (2021) Di Jin, Eileen Pan, Nassim Oufattole, Wei-Hung Weng, Hanyi Fang, and Peter Szolovits. 2021. What disease does this patient have? a large-scale open domain question answering dataset from medical exams. Applied Sciences, 11(14):6421.",
+    "Kaneko et al. (2024) Masahiro Kaneko, Youmi Ma, Yuki Wata, and Naoaki Okazaki. 2024. Sampling-based pseudo-likelihood for membership inference attacks. arXiv preprint arXiv:2404.11262.",
+    "Kaushik et al. (2021) Prakhar Kaushik, Alex Gain, Adam Kortylewski, and Alan Yuille. 2021. Understanding catastrophic forgetting and remembering in continual learning with optimal relevance mapping. arXiv preprint arXiv:2102.11343.",
+    "Kim et al. (2024) Siwon Kim, Sangdoo Yun, Hwaran Lee, Martin Gubri, Sungroh Yoon, and Seong Joon Oh. 2024. Propile: Probing privacy leakage in large language models. Advances in Neural Information Processing Systems, 36.",
+    "Kwon et al. (2023) Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph Gonzalez, Hao Zhang, and Ion Stoica. 2023. Efficient memory management for large language model serving with pagedattention. In Proceedings of the 29th Symposium on Operating Systems Principles, pages 611–626.",
+    "Li et al. (2024) Qinbin Li, Junyuan Hong, Chulin Xie, Jeffrey Tan, Rachel Xin, Junyi Hou, Xavier Yin, Zhun Wang, Dan Hendrycks, Zhangyang Wang, et al. 2024. Llm-pbe: Assessing data privacy in large language models. arXiv preprint arXiv:2408.12787.",
+    "Liu et al. (2024) Hongyi Liu, Zirui Liu, Ruixiang Tang, Jiayi Yuan, Shaochen Zhong, Yu-Neng Chuang, Li Li, Rui Chen, and Xia Hu. 2024. Lora-as-an-attack! piercing llm safety under the share-and-play scenario. arXiv preprint arXiv:2403.00108.",
+    "Long et al. (2024) Lin Long, Rui Wang, Ruixuan Xiao, Junbo Zhao, Xiao Ding, Gang Chen, and Haobo Wang. 2024. On llms-driven synthetic data generation, curation, and evaluation: A survey. arXiv preprint arXiv:2406.15126.",
+    "Lu et al. (2024) Keer Lu, Keshi Zhao, Zheng Liang, Da Pan, Shusen Zhang, Xin Wu, Weipeng Chen, Zenan Zhou, Guosheng Dong, Bin Cui, et al. 2024. Versatune: Fine-tuning multi-ability llms efficiently. arXiv preprint arXiv:2411.11266.",
+    "Lukas et al. (2023) Nils Lukas, Ahmed Salem, Robert Sim, Shruti Tople, Lukas Wutschitz, and Santiago Zanella-Béguelin. 2023. Analyzing leakage of personally identifiable information in language models. In 2023 IEEE Symposium on Security and Privacy (SP), pages 346–363. IEEE.",
+    "Mattern et al. (2023) Justus Mattern, Fatemehsadat Mireshghallah, Zhijing Jin, Bernhard Schölkopf, Mrinmaya Sachan, and Taylor Berg-Kirkpatrick. 2023. Membership inference attacks against language models via neighbourhood comparison. arXiv preprint arXiv:2305.18462.",
+    "Minaee et al. (2024) Shervin Minaee, Tomas Mikolov, Narjes Nikzad, Meysam Chenaghlu, Richard Socher, Xavier Amatriain, and Jianfeng Gao. 2024. Large language models: A survey. arXiv preprint arXiv:2402.06196.",
+    "Mireshghallah et al. (2022) Fatemehsadat Mireshghallah, Archit Uniyal, Tianhao Wang, David K Evans, and Taylor Berg-Kirkpatrick. 2022. An empirical analysis of memorization in fine-tuned autoregressive language models. In Proceedings of the 2022 Conference on Empirical Methods in Natural Language Processing, pages 1816–1826.",
+    "Ortiz-Jimenez et al. (2023) Guillermo Ortiz-Jimenez, Alessandro Favero, and Pascal Frossard. 2023. Task arithmetic in the tangent space: Improved editing of pre-trained models, 2023. URL http://arxiv. org/abs/2305.12827.",
+    "Panda et al. (2024) Ashwinee Panda, Christopher A Choquette-Choo, Zhengming Zhang, Yaoqing Yang, and Prateek Mittal. 2024. Teach llms to phish: Stealing private information from language models. arXiv preprint arXiv:2403.00871.",
+    "Qin et al. (2024) Yiwei Qin, Kaiqiang Song, Yebowen Hu, Wenlin Yao, Sangwoo Cho, Xiaoyang Wang, Xuansheng Wu, Fei Liu, Pengfei Liu, and Dong Yu. 2024. Infobench: Evaluating instruction following ability in large language models. arXiv preprint arXiv:2401.03601.",
+    "Tam et al. (2024) Derek Tam, Yash Kant, Brian Lester, Igor Gilitschenski, and Colin Raffel. 2024. Realistic evaluation of model merging for compositional generalization. arXiv preprint arXiv:2409.18314.",
+    "Uppaal et al. (2024) Rheeya Uppaal, Apratim Dey, Yiting He, Yiqiao Zhong, and Junjie Hu. 2024. Detox: Toxic subspace projection for model editing. arXiv e-prints, pages arXiv–2405.",
+    "Wei et al. (2022) Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Fei Xia, Ed Chi, Quoc V Le, Denny Zhou, et al. 2022. Chain-of-thought prompting elicits reasoning in large language models. Advances in neural information processing systems, 35:24824–24837.",
+    "Wortsman et al. (2022) Mitchell Wortsman, Gabriel Ilharco, Samir Ya Gadre, Rebecca Roelofs, Raphael Gontijo-Lopes, Ari S Morcos, Hongseok Namkoong, Ali Farhadi, Yair Carmon, Simon Kornblith, et al. 2022. Model soups: averaging weights of multiple fine-tuned models improves accuracy without increasing inference time. In International conference on machine learning, pages 23965–23998. PMLR.",
+    "Wu et al. (2024) Tianhao Wu, Janice Lan, Weizhe Yuan, Jiantao Jiao, Jason Weston, and Sainbayar Sukhbaatar. 2024. Thinking llms: General instruction following with thought generation. arXiv preprint arXiv:2410.10630.",
+    "Yadav et al. (2024) Prateek Yadav, Derek Tam, Leshem Choshen, Colin A Raffel, and Mohit Bansal. 2024. Ties-merging: Resolving interference when merging models. Advances in Neural Information Processing Systems, 36.",
+    "Yamabe et al. (2024) Shojiro Yamabe, Tsubasa Takahashi, Futa Waseda, and Koki Wataoka. 2024. Mergeprint: Robust fingerprinting against merging large language models. arXiv preprint arXiv:2410.08604.",
+    "Yang et al. (2024a) Enneng Yang, Li Shen, Guibing Guo, Xingwei Wang, Xiaochun Cao, Jie Zhang, and Dacheng Tao. 2024a. Model merging in llms, mllms, and beyond: Methods, theories, applications and opportunities. arXiv preprint arXiv:2408.07666.",
+    "Yang et al. (2024b) Jinluan Yang, Anke Tang, Didi Zhu, Zhengyu Chen, Li Shen, and Fei Wu. 2024b. Mitigating the backdoor effect for multi-task model merging via safety-aware subspace. arXiv preprint arXiv:2410.13910.",
+    "Yin et al. (2024) Ming Yin, Jingyang Zhang, Jingwei Sun, Minghong Fang, Hai Li, and Yiran Chen. 2024. Lobam: Lora-based backdoor attack on model merging. arXiv preprint arXiv:2411.16746.",
+    "Yu et al. (2024) Le Yu, Bowen Yu, Haiyang Yu, Fei Huang, and Yongbin Li. 2024. Language models are super mario: Absorbing abilities from homologous models as a free lunch. In Forty-first International Conference on Machine Learning.",
+    "Zhang et al. (2024a) Jie Zhang, Dongrui Liu, Chen Qian, Linfeng Zhang, Yong Liu, Yu Qiao, and Jing Shao. 2024a. Reef: Representation encoding fingerprints for large language models. arXiv preprint arXiv:2410.14273.",
+    "Zhang et al. (2024b) Jinghuai Zhang, Jianfeng Chi, Zheng Li, Kunlin Cai, Yang Zhang, and Yuan Tian. 2024b. Badmerging: Backdoor attacks against model merging. In Proceedings of the 2024 on ACM SIGSAC Conference on Computer and Communications Security, pages 4450–4464.",
+    "Zhang et al. (2023) Shengyu Zhang, Linfeng Dong, Xiaoya Li, Sen Zhang, Xiaofei Sun, Shuhe Wang, Jiwei Li, Runyi Hu, Tianwei Zhang, Fei Wu, et al. 2023. Instruction tuning for large language models: A survey. arXiv preprint arXiv:2308.10792."
+  ]
+}

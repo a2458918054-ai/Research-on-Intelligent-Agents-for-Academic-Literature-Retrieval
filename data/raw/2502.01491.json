@@ -1,0 +1,404 @@
+{
+  "title": "Memorization Inheritance in Sequence-Level KnowledgeDistillation for Neural Machine Translation",
+  "authors": "Verna Dankers∗University of Edinburghvernadankers@gmail.com&Vikas RaunakMicrosoftviraunak@microsoft.com",
+  "abstract": "In this work, we explore how instance-level memorization in the teacher Neural Machine Translation (NMT) model gets inherited by the student model in sequence-level knowledge distillation (SeqKD). We find that despite not directly seeing the original training data, students memorize more than baseline models (models of the same size, trained on the original data)—3.4% for exact matches and 57% for extractive memorization—and show increased hallucination rates. Further, under this SeqKD setting, we also characterize how students behave on specific training data subgroups, such as subgroups with low quality or specific counterfactual memorization (CM) scores, and find that students exhibit amplified denoising on low-quality subgroups. Finally, we propose a modification to SeqKD named Adaptive-SeqKD, which intervenes in SeqKD to reduce memorization and hallucinations. Overall, we recommend caution when applying SeqKD: students inherit both their teachers’ superior performance and their fault modes, thereby requiring active monitoring.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Memorization of noisy training data creates unexpected failure modes in neural machine translation (NMT) models (Raunak and Menezes, 2022), thus presenting a reliability risk when deploying them in the real world. To make NMT models inference-friendly, (e.g., Bapna et al., 2022; Costa-jussà et al., 2022) they are often trained using sequence-level knowledge distillation (SeqKD), a KD (Hinton, 2015) variant in which teachers generate synthetic targets for students (Kim and Rush, 2016).",
+        "SeqKD yields smaller student models whose performance is competitive with the teacher’s performance. Follow-up work has focused primarily on modifying SeqKD objectives to further improve NMT performance (e.g., Wen et al., 2023; Zhang et al., 2023; Wang et al., 2023, 2024). Apart from being used for model compression, SeqKD has proved very beneficial for low-resource and long-tail data (Dabre and Fujita, 2020; Currey et al., 2020; Gumma et al., 2023; Zhou et al., 2024; De Gibert et al., 2024) but its applications extend beyond that as well, e.g., to continual learning (Chuang et al., 2020; Zhao et al., 2022).",
+        "Yet, the understanding of SeqKD lags behind its usage. Prior work in this direction primarily studies why SeqKD is successful, attributing it to mode reduction of the training data (Zhou et al., 2020; Song et al., 2021), or suggesting that SeqKD acts as a regularization technique (Gordon and Duh, 2019). In this work, we better try to understand how model behavior (and not just average-case test performance) gets transmitted from teacher to student. In particular, we focus on how the student inherits instance-level memorization. Recent work on image classification suggests that KD inhibits memorization in the student (Lukasik et al., 2024), but also that membership inference attacks on the student are often successful (Jagielski et al., 2024). However, the connection between memorization and SeqKD in NLP is new territory; characterizing this is imperative to mitigate memorization-related failures in students.",
+        "Our main contributions are as follows: (1) We provide a quantification of memorization inheritance in §2: we identify that even though SeqKD inhibits memorization from teacher to student, the student memorizes more about the initial parallel corpus and hallucinates more than it would have, had it been trained without SeqKD. (2) We perform subgroup analyses in §3: for data subsets with specific characteristics, we inspect memorization and translation quality metrics and show that student models exhibit amplified denoising compared to both teacher and baseline models, characterize the relation between SeqKD and counterfactual memorization (Feldman, 2020), and demonstrate that students barely memorize examples that the teacher is not confident about. (3) To reduce memorization and mitigate accentuated hallucinations we propose Adaptive-SeqKD in §4: a simple intervention in the SeqKD algorithm wherein we adapt the teacher by finetuning it briefly on intrinsically obtained high-quality data to reduce memorization and hallucinations in the student.",
+        "Figure 1 demonstrates a subset of these findings with examples from our datasets."
+      ],
+      "subsections": []
+    },
+    "2 Memorization inheritance": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "2.1 Experimental setup",
+          "paragraphs": [
+            "In SeqKD, teacher θT\\theta_{T} is trained on a corpus with source sequences 𝒮C\\mathcal{S}_{C} and targets 𝒯C\\mathcal{T}_{C}, and generates translations of 𝒮C\\mathcal{S}_{C} with beam size kk. The source sequences and the teacher-generated translations (𝒮C\\mathcal{S}_{C} and 𝒯T\\mathcal{T}_{T}) form the training corpus for student θS\\theta_{S}. We use data from the WMT20 corpus (Barrault et al., 2020), for five language pairs: De-En and En-De (48M), Pl-En and En-Pl (12M), and Fr-De (14M). Appendix 0.A provides more detail about the WMT corpora, and the validation and test data.",
+            "For all languages, a Transformer-large teacher trains for 300k steps on 𝒮C\\mathcal{S}_{C} and 𝒯C\\mathcal{T}_{C}, followed by training a Transformer-base student for 100k steps on 𝒮C\\mathcal{S}_{C} and 𝒯T\\mathcal{T}_{T} (k=1k{=}1).111Training duration set to equal the setup of Vaswani (2017). We train using the Marian toolkit (Junczys-Dowmunt et al., 2018). For the full training setup see Appendix 0.A and our codebase. We also train base models directly on 𝒮C\\mathcal{S}_{C} and 𝒯C\\mathcal{T}_{C}, to have a baseline (θB\\theta_{B}) for what the student model would have memorized when exposed directly to WMT20 data. In Appendix 0.C, we furthermore experiment with varying beam size kk and the student’s model size.",
+            "We first examine the models’ quality, to ascertain the SeqKD framework works as intended. We report the following reference-based metrics for translations generated with beam size five: BLEU and chrF, Translation Error Rate (TER), and the Comet-20 and Comet-22 metrics that use neural methods for translation quality estimation (Rei et al., 2020, 2022). We supplement this with the reference-free metrics of Comet-QE-20, Comet-QE-22.",
+            "All metrics will be applied to WMT test data, and the reference-free methods are furthermore applied to translations of monolingual data: CommonCrawl data provided by Barrault et al. (2020), and data from the Pulpo poetry corpus (de la Rosa et al., 2023), to examine out-of-domain performance.",
+            "We quantify memorization by comparing greedily translated 𝒮C\\mathcal{S}_{C} to 𝒯C\\mathcal{T}_{C} for all models, and to 𝒯T\\mathcal{T}_{T}, for θS\\theta_{S}. We measure the replication (exact match) rate, and the extractive memorization (ExMem, Raunak and Menezes, 2022) rate. ExMem finds examples for which models memorized to emit the target after seeing at most 7575% of the source, e.g., see Example (1). The ExMem rate is the percentage of extractively memorized examples out of the replicated examples.",
+            "We also quantify the hallucination rate. Raunak et al. (2021)—who relate memorization in NMT to hallucinations—suggested this could influence SeqKD students, but did not actually evaluate that. We firstly measure the detached natural hallucinations (NatHal) rate: the percentage of source sequences that map to a translation that is repeated in the model’s translations for at least five times. Secondly, we compute the oscillatory hallucinations (OscHal) rate: the percentage of translations with bigrams repeated at least 10 times (for which the source did not contain such a repeated bigram).222To improve the precision of the memorization metrics, some training examples are excluded (see Appendix 0.B)."
+          ]
+        },
+        {
+          "title": "Model quality metrics",
+          "paragraphs": [
+            "We first examine the models’ quality, to ascertain the SeqKD framework works as intended. We report the following reference-based metrics for translations generated with beam size five: BLEU and chrF, Translation Error Rate (TER), and the Comet-20 and Comet-22 metrics that use neural methods for translation quality estimation (Rei et al., 2020, 2022). We supplement this with the reference-free metrics of Comet-QE-20, Comet-QE-22.",
+            "All metrics will be applied to WMT test data, and the reference-free methods are furthermore applied to translations of monolingual data: CommonCrawl data provided by Barrault et al. (2020), and data from the Pulpo poetry corpus (de la Rosa et al., 2023), to examine out-of-domain performance."
+          ]
+        },
+        {
+          "title": "Memorization metrics",
+          "paragraphs": [
+            "We quantify memorization by comparing greedily translated 𝒮C\\mathcal{S}_{C} to 𝒯C\\mathcal{T}_{C} for all models, and to 𝒯T\\mathcal{T}_{T}, for θS\\theta_{S}. We measure the replication (exact match) rate, and the extractive memorization (ExMem, Raunak and Menezes, 2022) rate. ExMem finds examples for which models memorized to emit the target after seeing at most 7575% of the source, e.g., see Example (1). The ExMem rate is the percentage of extractively memorized examples out of the replicated examples.",
+            "We also quantify the hallucination rate. Raunak et al. (2021)—who relate memorization in NMT to hallucinations—suggested this could influence SeqKD students, but did not actually evaluate that. We firstly measure the detached natural hallucinations (NatHal) rate: the percentage of source sequences that map to a translation that is repeated in the model’s translations for at least five times. Secondly, we compute the oscillatory hallucinations (OscHal) rate: the percentage of translations with bigrams repeated at least 10 times (for which the source did not contain such a repeated bigram).222To improve the precision of the memorization metrics, some training examples are excluded (see Appendix 0.B)."
+          ]
+        },
+        {
+          "title": "2.2 Results",
+          "paragraphs": [
+            "Figure 2 and Appendix 0.B provide performance differences for θT\\theta_{T}, θS\\theta_{S} and θB\\theta_{B}. Overall, θT\\theta_{T} outperforms θS\\theta_{S}, and θS\\theta_{S} outperforms θB\\theta_{B}. θS\\theta_{S} and θB\\theta_{B} merely differ in the training targets, which demonstrates that our SeqKD pipeline works as intended. The ordering of models in terms of their quality also holds for CommonCrawl and Pulpo data (see Table 3, Appendix 0.B).",
+            "Figure 3 summarizes the memorization results. If we first look at the replication rate, θS\\theta_{S} replicates less from WMT20 than θT\\theta_{T} but more than θB\\theta_{B}: students’ replication rate with respect to 𝒯C\\mathcal{T}_{C} is 3.4%(±\\pm0.9) higher than for θB\\theta_{B}. Students also replicate original material from θT\\theta_{T}: the overall student replication rate for 𝒯T\\mathcal{T}_{T} is 35.3%(±2.7\\pm 2.7) (see Table 4, Appendix 0.B).",
+            "For the ExMem rate with respect to 𝒯C\\mathcal{T}_{C} (Figure 3(b)), a similar pattern emerges, but with a starker difference between θS\\theta_{S} and θB\\theta_{B}: students extractively memorize less from 𝒯C\\mathcal{T}_{C} compared to θT\\theta_{T}, but more compared to θB\\theta_{B}, with a mean increase of 57.0%(±15.4\\pm 15.4). This is quite surprising; note that by definition, the rate reported here expresses how many of the replicated examples are extractively memorized. Students only observed 18.4% (on average) of 𝒯C\\mathcal{T}_{C} through the SeqKD pipeline (the portion that θT\\theta_{T} replicated) and yet within that smaller pool they still memorized more than θB\\theta_{B}, that was exposed to 100% of the corpus. Not only have students extractively memorized WMT20 examples (‘primary ExMem’), they also show ExMem with respect to θT\\theta_{T} (‘secondary ExMem’, quantified in Table 4, Appendix 0.B). Figure 3(c) provides the absolute numbers of ExMem examples, distinguishing primary from secondary ExMem that constitute 41% and 59% of all ExMem examples, respectively. Example (3) demonstrates secondary ExMem: the student has memorized to hallucinate “AmarillasLatinas.net” from θT\\theta_{T}’s target when merely shown the source’s prefix, but θT\\theta_{T} has not.",
+            "It is not just memorization that is amplified through SeqKD; Figure 4 indicates that hallucinations are also amplified. For the oscillatory hallucinations, both θS\\theta_{S} and θB\\theta_{B} generate more of these than θT\\theta_{T}, and the student hallucinates more than θB\\theta_{B}, on average (an increase of 31.0% ±\\pm 25.7, with no increase observed for Pl-En). Appendix 0.B presents additional results for monolingual corpora CommonCrawl and Pulpo. Across the board, θS\\theta_{S} hallucinates most there, too.",
+            "For the natural hallucinations, θS\\theta_{S} and θB\\theta_{B} hallucinate less than θT\\theta_{T}, but students still hallucinate 13.8±\\pm5.0 more than θB\\theta_{B}."
+          ]
+        },
+        {
+          "title": "General model quality",
+          "paragraphs": [
+            "Figure 2 and Appendix 0.B provide performance differences for θT\\theta_{T}, θS\\theta_{S} and θB\\theta_{B}. Overall, θT\\theta_{T} outperforms θS\\theta_{S}, and θS\\theta_{S} outperforms θB\\theta_{B}. θS\\theta_{S} and θB\\theta_{B} merely differ in the training targets, which demonstrates that our SeqKD pipeline works as intended. The ordering of models in terms of their quality also holds for CommonCrawl and Pulpo data (see Table 3, Appendix 0.B)."
+          ]
+        },
+        {
+          "title": "SeqKD facilitates memorization",
+          "paragraphs": [
+            "Figure 3 summarizes the memorization results. If we first look at the replication rate, θS\\theta_{S} replicates less from WMT20 than θT\\theta_{T} but more than θB\\theta_{B}: students’ replication rate with respect to 𝒯C\\mathcal{T}_{C} is 3.4%(±\\pm0.9) higher than for θB\\theta_{B}. Students also replicate original material from θT\\theta_{T}: the overall student replication rate for 𝒯T\\mathcal{T}_{T} is 35.3%(±2.7\\pm 2.7) (see Table 4, Appendix 0.B).",
+            "For the ExMem rate with respect to 𝒯C\\mathcal{T}_{C} (Figure 3(b)), a similar pattern emerges, but with a starker difference between θS\\theta_{S} and θB\\theta_{B}: students extractively memorize less from 𝒯C\\mathcal{T}_{C} compared to θT\\theta_{T}, but more compared to θB\\theta_{B}, with a mean increase of 57.0%(±15.4\\pm 15.4). This is quite surprising; note that by definition, the rate reported here expresses how many of the replicated examples are extractively memorized. Students only observed 18.4% (on average) of 𝒯C\\mathcal{T}_{C} through the SeqKD pipeline (the portion that θT\\theta_{T} replicated) and yet within that smaller pool they still memorized more than θB\\theta_{B}, that was exposed to 100% of the corpus. Not only have students extractively memorized WMT20 examples (‘primary ExMem’), they also show ExMem with respect to θT\\theta_{T} (‘secondary ExMem’, quantified in Table 4, Appendix 0.B). Figure 3(c) provides the absolute numbers of ExMem examples, distinguishing primary from secondary ExMem that constitute 41% and 59% of all ExMem examples, respectively. Example (3) demonstrates secondary ExMem: the student has memorized to hallucinate “AmarillasLatinas.net” from θT\\theta_{T}’s target when merely shown the source’s prefix, but θT\\theta_{T} has not."
+          ]
+        },
+        {
+          "title": "SeqKD amplifies hallucinations",
+          "paragraphs": [
+            "It is not just memorization that is amplified through SeqKD; Figure 4 indicates that hallucinations are also amplified. For the oscillatory hallucinations, both θS\\theta_{S} and θB\\theta_{B} generate more of these than θT\\theta_{T}, and the student hallucinates more than θB\\theta_{B}, on average (an increase of 31.0% ±\\pm 25.7, with no increase observed for Pl-En). Appendix 0.B presents additional results for monolingual corpora CommonCrawl and Pulpo. Across the board, θS\\theta_{S} hallucinates most there, too.",
+            "For the natural hallucinations, θS\\theta_{S} and θB\\theta_{B} hallucinate less than θT\\theta_{T}, but students still hallucinate 13.8±\\pm5.0 more than θB\\theta_{B}."
+          ]
+        }
+      ]
+    },
+    "3 Subgroup analysis": {
+      "paragraphs": [
+        "Instead of quantifying models’ overall behavior, we now turn our attention to data subgroups to describe SeqKD’s impact on samples with specific characteristics. We compute replication metrics (exact match, chrF), neural quality metrics (Comet(-QE)-22), and textual diversity (MSTTR). Subgroups contain up to 10k examples, with the exception of the random group."
+      ],
+      "subsections": [
+        {
+          "title": "Subgroups",
+          "paragraphs": [
+            "We construct 12 subgroups: Firstly, we randomly sample 50k examples from each of the WMT20 corpora. Secondly, we construct five quality-based subgroups by bucketing WMT20 examples based on the Comet-QE-22 metric, yielding five subgroups (with ranges <{<}0.2, 0.2-0.4, 0.4-0.6, ≥{\\geq}0.8). Thirdly, we create counterfactual memorization (CM) subgroups. Assuming input xx and target yy, and a model with the parameters θtr\\theta^{\\text{tr}} trained on all training data, and θtst\\theta^{\\text{tst}} trained on all examples except (x,y)(x,y), CM​(x,y)=pθtr​(y|x)−pθtst​(y|x)\\texttt{CM}(x,y){=}p_{\\theta^{\\text{tr}}}(y|x)-p_{\\theta^{\\text{tst}}}(y|x) (Feldman, 2020; Feldman and Zhang, 2020). We approximate CM scores for all datapoints for En-De, and for 10% of the datapoints for the remaining language pairs, as detailed in Appendix 0.E.1. We create four subgroups of examples (with ranges <{<}0.2, 0.2-0.3, 0.3-0.4, ≥{\\geq}0.4). Finally, we create two confidence-based subgroups, by taking θT\\theta_{T}’s log-probability averaged over the generated tokens for 𝒯T\\mathcal{T}_{T}, selecting the top and bottom 10k examples."
+          ]
+        },
+        {
+          "title": "Results",
+          "paragraphs": [
+            "We refer the reader to Appendix 0.E for the full results, among which we consider the following patterns to be the most noteworthy:",
+            "1. The random subgroup reflects memorization results: exact and non-exact match-based metrics for this group (see chrF in Figure 10) follow the overall ranking of θT\\theta_{T}>θS\\theta_{S}>θB\\theta_{B}.",
+            "2. Quality-based subgroups demonstrate (amplified) denoising: The lower the quality of the subgroup, the less models replicate from the corpus (Figure 5). When we look at the Comet-QE-22 quality of the translations the models generate for low-quality subgroups, θS\\theta_{S} and θB\\theta_{B} perform better than θT\\theta_{T}, and θS\\theta_{S} outperforms θB\\theta_{B} (Figure 7). This effect is thus partially attributable to the capacity gap between large and base models, and partially to KD, and confirms prior work (e.g., Zhou et al., 2020) that suggested SeqKD has a denoising function: θT\\theta_{T} denoised WMT20 for θS\\theta_{S}, and now θS\\theta_{S} shows amplified denoising on that same data. Example (4) already illustrated this in the introduction.",
+            "3. High counterfactual memorization examples are not replicated: Examples that have high CM for θT\\theta_{T}, do not stand out in terms of replication rates for students or baselines (Figure 6), and show some amplified denoising (see Figure 7, although substantially less than low-quality subgroups).",
+            "4. Low-confidence examples are not inherited: Finally, we note that for examples for which θT\\theta_{T} generated translations with a very low confidence, the student shows very little replication and strong amplified denoising (Figure 7).",
+            "The random subgroup reflects memorization results: exact and non-exact match-based metrics for this group (see chrF in Figure 10) follow the overall ranking of θT\\theta_{T}>θS\\theta_{S}>θB\\theta_{B}.",
+            "Quality-based subgroups demonstrate (amplified) denoising: The lower the quality of the subgroup, the less models replicate from the corpus (Figure 5). When we look at the Comet-QE-22 quality of the translations the models generate for low-quality subgroups, θS\\theta_{S} and θB\\theta_{B} perform better than θT\\theta_{T}, and θS\\theta_{S} outperforms θB\\theta_{B} (Figure 7). This effect is thus partially attributable to the capacity gap between large and base models, and partially to KD, and confirms prior work (e.g., Zhou et al., 2020) that suggested SeqKD has a denoising function: θT\\theta_{T} denoised WMT20 for θS\\theta_{S}, and now θS\\theta_{S} shows amplified denoising on that same data. Example (4) already illustrated this in the introduction.",
+            "High counterfactual memorization examples are not replicated: Examples that have high CM for θT\\theta_{T}, do not stand out in terms of replication rates for students or baselines (Figure 6), and show some amplified denoising (see Figure 7, although substantially less than low-quality subgroups).",
+            "Low-confidence examples are not inherited: Finally, we note that for examples for which θT\\theta_{T} generated translations with a very low confidence, the student shows very little replication and strong amplified denoising (Figure 7)."
+          ]
+        }
+      ]
+    },
+    "4 Adaptive-SeqKD reduces memorization": {
+      "paragraphs": [
+        "We previously observed increased memorization and hallucinations in θS\\theta_{S} compared to θB\\theta_{B}, but also amplified denoising on data subsets. We now investigate whether we can reduce students’ failures without harming performance otherwise. We apply Adaptive-SeqKD, which briefly fine-tunes the teacher on high-quality data before producing 𝒯T\\mathcal{T}_{T}. Instead of costly external metrics like Comet-QE, we use intrinsic metrics for data quality by selecting 500k sequences where θT\\theta_{T} nearly memorized the target (chrF>90), θT\\theta_{T} is confident (normalized translation score > 0.9), and source lengths exceed 5 tokens. We fine-tuned θT\\theta_{T} per language pair for 200 steps and compared it to fine-tuning on a random 500k sample meeting the length requirement.",
+        "Table 1 shows that teachers finetuned on the high-quality data (and their students) perform similar in terms of BLEU and Comet-QE, but much better in terms of ExMem and OscHal. Finetuning on random data reduced ExMem but not hallucinations. We include additional metrics in Appendix 0.D."
+      ],
+      "subsections": []
+    },
+    "5 Conclusion": {
+      "paragraphs": [
+        "SeqKD is popular for effectively training smaller NMT models, but we show that it also introduces issues like worsened ExMem and hallucinations in θS\\theta_{S} compared to θB\\theta_{B}. At the same time, the subgroup analyses showed that teachers’ CM examples are not necessarily replicated by θS\\theta_{S}, and that students exhibit amplified denoising on low-quality examples. This highlights a paradox: through SeqKD, students memorize more about the corpus than θB\\theta_{B}, yet also outperform θB\\theta_{B} and θT\\theta_{T} on data where they did not memorize. Student improvements thus happen both by mimicking θT\\theta_{T}, and by deviating from θT\\theta_{T}. Future work could suppress memorization during SeqKD, refine Adaptive-SeqKD, and adjust hyperparameters333Increasing kk reduces the student’s OscHal rate to below that of θB\\theta_{B}, in particular, with Adaptive-SeqKD yielding further improvements (see Appendix 0.C). to create more robust SeqKD pipelines. We advise caution with SeqKD: students may inherit not only the teacher’s strengths but also its failures, requiring careful monitoring beyond average-case performance."
+      ],
+      "subsections": []
+    },
+    "6 Limitations": {
+      "paragraphs": [
+        "We identify the following three limitations with our work:",
+        "• Limited experimental setup: inherent to selecting one (although common) experimental setup of distilling a large model into a smaller model, is that the findings need not necessarily transfer to other settings. We experimented with multiple language pairs, and also varied the beam size and student size in Appendix 0.C to comment on this limitation, but recognize that there are other settings that would be interesting to study, such as distilling translation models from LLMs. We opted for the more common SeqKD setup, because of its popularity in the years past; most deployed translation systems are not LLM-based (yet). Besides, SeqKD as a technique is still alive and kicking as demonstrated by, for instance, the recently developed OpusDistillery library444https://github.com/Helsinki-NLP/OpusDistillery (Arefyev et al., 2024).",
+        "• Niche phenomena: ExMem and hallucinations are phenomena one would only rarely encounter when interacting with NMT systems Raunak et al. (2022). We consider them worthy of investigation, nonetheless, because they represent extreme system failure, that goes far beyond a simple mistranslation.",
+        "• Reliability issues not yet solved: Adaptive-SeqKD substantially reduced the ExMem and hallucination rates, but did not resolve the issue altogether. We conducted limited experimentation in perfecting Adaptive-SeqKD and recognize this could be further expanded upon in the future."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix 0.A Data and experimental setup": {
+      "paragraphs": [
+        "[Table: Table 2: Composition of the 3 parallel corpora.]"
+      ],
+      "subsections": [
+        {
+          "title": "WMT data",
+          "paragraphs": [
+            "We download the parallel corpora from the WMT20 website, using sources listed in Table 2. For En-De we use the validation/test data from Raunak and Menezes (2022), which is a combination of WMT test data from recent years. For the other language pairs, we use the WMT20 test data, along with the WMT19 test data for validation during training. We honor the licensing terms by using the WMT data for research purposes only and citing the shared task article."
+          ]
+        },
+        {
+          "title": "Additional data",
+          "paragraphs": [
+            "We run monolingual model evaluation using data from additional sources:",
+            "1. 1M CommonCrawl examples, sampled from the first 100M monolingual CommonCrawl datapoints provided by WMT20. To the best of our knowledge, our use is in line with CC’s terms of use.",
+            "2. Up to 1M Pulpo examples, from de la Rosa et al. (2023)’s multilingual Prolific Unannotated Literary Poetry Corpus containing verses and stanzas. Pulpo contains monolingual sequences for all language pairs, apart from monolingual Polish data. We selected the data because it is expected to be out-of-distribution compared to the WMT20 training corpora. Pulpo contains poems that are copyright-free, or distributed under permissive licenses (de la Rosa et al., 2023, p.3).",
+            "1M CommonCrawl examples, sampled from the first 100M monolingual CommonCrawl datapoints provided by WMT20. To the best of our knowledge, our use is in line with CC’s terms of use.",
+            "Up to 1M Pulpo examples, from de la Rosa et al. (2023)’s multilingual Prolific Unannotated Literary Poetry Corpus containing verses and stanzas. Pulpo contains monolingual sequences for all language pairs, apart from monolingual Polish data. We selected the data because it is expected to be out-of-distribution compared to the WMT20 training corpora. Pulpo contains poems that are copyright-free, or distributed under permissive licenses (de la Rosa et al., 2023, p.3)."
+          ]
+        },
+        {
+          "title": "Training and evaluation",
+          "paragraphs": [
+            "Models are trained using the marian toolkit (v1.12.16), using the setup of Raunak and Menezes (2022), that mimics the hyperpameters of Vaswani (2017). θT\\theta_{T} trains for 300k steps; θS\\theta_{S} and θB\\theta_{B} train for 100k steps. We use 8 Tesla V100-SXM2-32GB GPUs for model training. When evaluating translations using Comet, we use models wmt20-comet-da, wmt22-comet-da, wmt20-comet-qe-da and wmt22-cometkiwi-da, using Comet v1.2.0. Visit our git repository for the training, evaluation and visualization code."
+          ]
+        }
+      ]
+    },
+    "Appendix 0.B Model quality and memorization": {
+      "paragraphs": [
+        "[Table: Table 3: Model performance for the five language pairs, using the experimental setup described in §2.1. ]",
+        "[Table: Table 4: Memorization metrics for the five language pairs, using the experimental setup described in §2.1.]"
+      ],
+      "subsections": [
+        {
+          "title": "Model quality metrics",
+          "paragraphs": [
+            "Table 3 provides model quality metrics for all language pairs. Generally, θT\\theta_{T}>θS\\theta_{S}>θB\\theta_{B} (except for TER, that should be minimized instead of maximized), and where the results differ we italicized the numbers; this mostly happens for the monolingual CommonCrawl data. Yet, across the board, the pattern is clear for both WMT20 and monolingual data. The Pulpo scores are noticeably lower for both Comet-QE metrics. This could indicate that the poetry data is harder to translate, but we cannot reliably make a direct comparison across domains. Most importantly, the system ranking holds for this OOD data, too."
+          ]
+        },
+        {
+          "title": "Memorization-related metrics",
+          "paragraphs": [
+            "Table 4 provides memorization metrics for all language pairs. For replication, ExMem and NatHal rates, it holds that θT\\theta_{T}>θS\\theta_{S}>θB\\theta_{B}, whereas for oscillatory hallucinations, θS\\theta_{S} typically hallucinates most, although there are exceptions (highlighted in italics)."
+          ]
+        },
+        {
+          "title": "Additional information on ExMem and hallucination metrics",
+          "paragraphs": [
+            "To improve the precision of the ExMem and hallucination metrics, some groups of examples are excluded from the computation:",
+            "• ExMem: in some cases, it is justified that the model emits the target after having processed only 75% of the source, e.g., if the target paraphrases the source. To improve the precision, we thus exclude the following examples when computing ExMem: a) examples with a source shorter than 4 words, b) examples with incorrect source or target languages, c) examples for which the length ratios between source and target are over 1.3, d) examples for which the source equals the target.",
+            "• OscHal: examples with source sequences of at least 50 white-space tokenized tokens are excluded, because it becomes more likely that the repeated bigrams might be accurate for longer sequences. This only concerns a small portion of the training data, e.g., only 3.4% for En-De. We count a sequence as a hallucination if the most frequent bigram appears more than 10 times in the translation, and at least 4 times more often than in the source. We experimentally verified that when reducing that maximum count of 10, the OscHal rate increases, but the model ranking remains the same.",
+            "• NatHal: for the natural hallucinations, we exclude examples for which the Comet-QE-22 score for the source and the generated translation is above 0.85. This is to exclude cases where natural hallucinations are detected simply because there are source sequences that are each other’s paraphrase, for instance if both “Thank you for your visit at our website.” and “Thanks for visiting our website.” map to “Vielen Dank für Ihren Besuch auf unserer Website.”.",
+            "ExMem: in some cases, it is justified that the model emits the target after having processed only 75% of the source, e.g., if the target paraphrases the source. To improve the precision, we thus exclude the following examples when computing ExMem: a) examples with a source shorter than 4 words, b) examples with incorrect source or target languages, c) examples for which the length ratios between source and target are over 1.3, d) examples for which the source equals the target.",
+            "OscHal: examples with source sequences of at least 50 white-space tokenized tokens are excluded, because it becomes more likely that the repeated bigrams might be accurate for longer sequences. This only concerns a small portion of the training data, e.g., only 3.4% for En-De. We count a sequence as a hallucination if the most frequent bigram appears more than 10 times in the translation, and at least 4 times more often than in the source. We experimentally verified that when reducing that maximum count of 10, the OscHal rate increases, but the model ranking remains the same.",
+            "NatHal: for the natural hallucinations, we exclude examples for which the Comet-QE-22 score for the source and the generated translation is above 0.85. This is to exclude cases where natural hallucinations are detected simply because there are source sequences that are each other’s paraphrase, for instance if both “Thank you for your visit at our website.” and “Thanks for visiting our website.” map to “Vielen Dank für Ihren Besuch auf unserer Website.”."
+          ]
+        }
+      ]
+    },
+    "Appendix 0.C Varying SeqKD hyperparameters": {
+      "paragraphs": [
+        "Figure 8 demonstrates how model quality and memorization metrics change when we increase the beam size used to decode 𝒯T\\mathcal{T}_{T} (for both Fr-De and En-De), or change the student’s model size (for En-De). θSL\\theta_{S_{L}} and θSS\\theta_{S_{S}} have hidden dimensionalities of 1024 and 256, respectively (with corresponding feedforward sizes of 4096 and 1024). When increasing the beam size: i) the quality of the students’ translations decrease (for En-De) or remain mostly stable (for Fr-De), ii) the replication rates slightly increase, and iii) ExMem decreases, although not consistently: for Fr-De, the students’ ExMem rates all exceed the baseline, whereas for De-En and k∈{2,5}k\\in\\{2,5\\} the students are slightly below θB\\theta_{B}. This is still concerning, considering that students were exposed to 18.4% of the original corpus whereas the baseline has seen 100%, so even similar ExMem rates between θS\\theta_{S} and θB\\theta_{B} suggests KD facilitates memorization. The NatHal rate slightly reduces but still far exceeds the baseline. The only real improvement larger beam sizes appear to make are reducing OscHal, both on WMT-20 data (OscHal), and on external data Figure 8: Illustration of how model quality and memorization metrics change as a result of changing the SeqKD beam size for En-De. (OscHal CommonCrawl). With slight performance reduction in En-De and no performance reduction in Fr-De this yields a simple KD lesson: even if beam search is more computationally expensive (particularly when applied to the entire training corpus): do not use greedy search in KD.",
+        "Reducing the student’s model size reduces the model’s translation quality, and reduces replication, ExMem and NatHal, but still yields similar OscHal rates. The larger model produces better translations than its teacher and has lower ExMem, but also increased hallucinations."
+      ],
+      "subsections": []
+    },
+    "Appendix 0.D Adaptive-SeqKD": {
+      "paragraphs": [
+        "Figure 9 displays how performance changes per language pair due to Adaptive-SeqKD. Changes to quality metrics like BLEU and Comet(-QE)-22 are relatively minor, but the ExMem and hallucination rates are strongly affected. Finetuning with the high-quality data (hq in the graphs) decreases ExMem (for four out of five language pairs) and hallucinations (for all language pairs); finetuning with random data (ra in the graphs) is somewhat effective in reducing ExMem, but mostly fails to effectively reduce the hallucination rates.",
+        "In the previous section, we observed that increasing the SeqKD beam size is beneficial for the reduction of the hallucination rate. We thus reran finetuning with high-quality data for Sk=5S_{k=5} for En-De to examine whether finetuning also helps for an increased beam size. Upon doing so, the OscHal rate reduced with 28% for the WMT20 data and 33% for the CommonCrawl data, and the NatHat rate reduced with 10% for the WMT20 data, suggesting the wider applicability of Adaptive-SeqKD.",
+        "[Figure: Figure 9: Performance changes observed for the different language pairs when applying Adaptive-SeqKD. Changes are computed as percentages with respect to the original teacher θT\\theta_{T} and θS\\theta_{S}.]"
+      ],
+      "subsections": []
+    },
+    "Appendix 0.E Subgroup analyses": {
+      "paragraphs": [
+        "Before elaborating on the results for the subgroup analysis, we more elaborately explain how we approximated the CM scores.",
+        "[Figure: Figure 10: Evaluation metrics applied to the random subgroup, for all five language pairs. The square marker indicates the mean and standard deviation.]",
+        "[Figure: Figure 11: Evaluation metrics applied to the quality subgroups, aggregated over language pairs with error bars indicating standard deviation over language pairs.]",
+        "[Figure: Figure 12: Evaluation metrics applied to the CM subgroups, aggregated over language pairs with error bars indicating standard deviation over language pairs.]",
+        "[Figure: Figure 13: Evaluation metrics applied to the confidence subgroups, aggregated over language pairs with error bars indicating standard deviation over language pairs.]",
+        "[Figure: Figure 14: Relative differences comparing students and baselines to the teacher models, for the Comet-22-QE metric.]"
+      ],
+      "subsections": [
+        {
+          "title": "0.E.1 Composing the counterfactual memorization subgroups",
+          "paragraphs": [
+            "Assuming input xx and target yy, and a model with the parameters θtr\\theta^{\\text{tr}} trained on all training data, and θtst\\theta^{\\text{tst}} trained on all examples except (x,y)(x,y), CM can be computed as follows (Feldman, 2020; Feldman and Zhang, 2020):",
+            "Leaving out individual datapoints, as this equation suggests, is computationally too expensive given the vast sizes of our WMT-20 datasets. We, therefore, approximate CM scores for all datapoints for En-De, and for 10% of the datapoints for the remaining language pairs. Following Dankers et al. (2023, p.3), who previously computed CM scores for NMT examples, we replace the probability of the full target with the geometric mean of the target token probabilities. This is more robust to length differences than the full target probability.",
+            "For En-De, we approximate CM by training 10 teacher models on a randomly sampled 50% of the training corpus, while evaluating it on the remaining 50%, such that for each datapoint, the ‘IN’ and ‘OUT’ quantities in this equation are both estimated using five models.",
+            "For the remaining language pairs, we use the original θT\\theta_{T} model to estimate the ‘IN’ quantity, and train another model according to the same training procedure on 90% of the training data, to estimate the ‘OUT’ quantity for 10% of the remaining training data. This is a rather coarse estimation, but should suffice to determine generic relations between CM and our evaluation metrics of interest.",
+            "Using the CM scores, we create six subgroups of interest. The last four were also contained in the main paper, and here we add the first two, that separate examples with a low CM score into two groups:",
+            "• IN and OUT performances ≤0.2\\leq 0.2, marked ‘L(ow)-L(ow)’ in the figures;",
+            "• IN and OUT performances ≥0.8\\geq 0.8, marked ‘H(igh)-H(igh)’ in the figures;",
+            "• {[0,0.2),[0.2,0.3),[0.3,0.4),[0.4,1.0]}\\{[0,0.2),[0.2,0.3),[0.3,0.4),[0.4,1.0]\\}",
+            "IN and OUT performances ≤0.2\\leq 0.2, marked ‘L(ow)-L(ow)’ in the figures;",
+            "IN and OUT performances ≥0.8\\geq 0.8, marked ‘H(igh)-H(igh)’ in the figures;",
+            "{[0,0.2),[0.2,0.3),[0.3,0.4),[0.4,1.0]}\\{[0,0.2),[0.2,0.3),[0.3,0.4),[0.4,1.0]\\}"
+          ]
+        },
+        {
+          "title": "0.E.2 Results",
+          "paragraphs": [
+            "Our baseline subgroup consists of 50k examples randomly sampled from each of the WMT20 corpora. Replication metrics (chrF in Figure 10) follow the overall patterns of θT\\theta_{T}>θS\\theta_{S}>θB\\theta_{B}, consolidating that SeqKD dampens memorization in θS\\theta_{S} compared to θT\\theta_{T} but amplifies it compared to θB\\theta_{B}. The quality and diversity metrics (Comet-QE-22 and MSTTR in Figure 10) emphasize that, compared to the corpus (column 𝒯C\\mathcal{T}_{C}), the models generate higher-quality translations, but with lower textual diversity.",
+            "How does KD affect examples from the WMT20 corpus with a certain quality? To categorize WMT20 examples based on quality, we applied the Comet-QE-22 metric using the corpus’s targets as translations (because the reference is now the translation, we apply Comet’s ‘reference-free’ method). We examine five subgroups: {[0,0.2),[0.2,0.4),[0.4,0.6),[0.6,0.8),[0.8,1.0]}\\{[0,0.2),[0.2,0.4),[0.4,0.6),[0.6,0.8),[0.8,1.0]\\}.",
+            "In Figure 11, we first notice that for the low-quality subgroups, fewer translations are replicated from 𝒯C\\mathcal{T}_{C} (all models) and from 𝒯T\\mathcal{T}_{T} (for θS\\theta_{S}, see Figure 5). Secondly, for groups with a quality below 0.6, both θS\\theta_{S} and θB\\theta_{B} generated better translations than θT\\theta_{T}, as per Comet-QE-22 applied to the model-generated translations. Textual diversity metrics here mostly follow the same trend as Comet-QE-22, with θS\\theta_{S} showing the highest diversity.",
+            "Figure 14 visualizes the relative differences of students/baselines to the teacher more explicitly, as a percentual increase. For Comet-QE-22, if the student’s bar exceeds the baseline’s bar, this signifies that the improvement over the teacher is partially attributable to the capacity gap between large and base models, and partially to the SeqKD process. This improvement over the teacher holds for the lower quality groups (0-0.2, 0.2-0.4, 0.4-0.6), but not for the higher quality groups. Example (4) from the introduction already illustrated a sample from the lowest quality subgroup: in the corpus, the target was likely misaligned. θT\\theta_{T}’s translation is slightly better but still wrong, and θS\\theta_{S}’s translation is slightly better than θB\\theta_{B}’s. Compared to θB\\theta_{B}, θS\\theta_{S} benefits from being presented with the teacher’s corpus, which is a denoised version of WMT20, since θT\\theta_{T} replicates the least for the lowest-quality (noisiest) examples. θS\\theta_{S}, in turn, replicates less from 𝒯T\\mathcal{T}_{T} for these lowest-quality subgroups, too, which allows for amplified denoising compared to θT\\theta_{T}.",
+            "If we now focus on the high CM subgroups (introduced in the previous subsection) in Figure 12, we firstly observe that in terms of memorization metrics, the teacher shows increased replication and chrF. This follows from the definition of CM as the IN metric is expected to correlate highly with replication: the higher the target probability, the more likely it is that the teacher can replicate the target when generating translations. We note, however, that the student and baseline replicate examples with high CM less than examples with lower CM. This is likely due to their lower capacity: by definition, CM highlights examples for which a model assigns a low probability to the target when that example is not in the training set, thus requiring more capacity/parameters from the original θT\\theta_{T} to learn that target. The reduced replication also leads to lower Comet-22 scores for these examples, since that metric partially relies on the corpus’s target.",
+            "When looking at the Comet-QE-22 scores, we observe that the higher CM groups typically also have lower Comet-QE-22 scores, although the quality scores are still above the lowest quality subgroup discussed in the previous paragraph. The baseline and student models outperform θT\\theta_{T} here, likely because they struggle to replicate the somewhat noisy targets as well as the teacher did. The student shows some amplified denoising compared to θB\\theta_{B}, but that does apply to CM groups across the board, and does not seem specific to individual CM subgroups.",
+            "All three models show more textual diversity for subgroups with higher CM scores.",
+            "Finally, if we inspect the two groups with very low and very high IN and OUT scores, the models—as expected based on the CM definition—do not replicate the ‘low’ group, and have very high replication rates for the ‘high’ group. For the remaining metrics, the ‘low’ group underscores the findings we previously reported for the low-quality subgroups: the student model shows amplified denoising, as reflected by the Comet-QE-22 metric, and also shows more textual diversity than the other two models. Examples that score badly in terms of both IN and OUT performance are typically low-quality, misaligned examples (Dankers et al., 2023); if the teacher does not replicate those low-quality targets, but partially denoises by translating them more accurately than the corpus did, the student can further improve upon that.",
+            "Finally, we turn to the confidence-based groups, created using the lowest 10k and highest 10k examples based on the mean word-level log-probability of the translations the teacher generated. Figure 13 demonstrates that the low confidence examples stand out for all metrics: none of the models replicate their targets, all three models generate translations with a relatively low Comet-QE-22 score (akin to the lowest-quality subgroups discussed above), and all three models show an exceptionally low MSTTR. If we inspect the examples, they contain many misaligned examples from the corpus for which the teacher also does not generate an adequate translation (e.g., Example (5)), and a lot of cases where the teacher hallucinates in its translation (e.g., Example (6)). The student’s improvement here thus does not stem from learning from the superior targets θT\\theta_{T} generated but more likely from deviating from θT\\theta_{T}. Yet, note that even if θS\\theta_{S} does not necessarily copy these hallucinations from its teacher, we did find that the students inspected in the main paper showed amplified hallucination capabilities, so low-quality teacher targets like this could have other unanticipated effects downstream.",
+            "(5) Evergreen Terrace - Almost Home 22. Zum Ernst-Gettke-Haus, Hausnummer 68, siehe unten. Die alte Burganlage – heute noch 22 Hektar. Die Evergreen Terrace ist fast die Heimat 22. In: Evergreen Terrace – Fast Home 22.",
+            "sCs_{C} Evergreen Terrace - Almost Home 22.",
+            "tCt_{C} Zum Ernst-Gettke-Haus, Hausnummer 68, siehe unten.",
+            "tTt_{T} Die alte Burganlage – heute noch 22 Hektar.",
+            "tSt_{S} Die Evergreen Terrace ist fast die Heimat 22.",
+            "tBt_{B} In: Evergreen Terrace – Fast Home 22.",
+            "sCs_{C} Evergreen Terrace - Almost Home 22.",
+            "tCt_{C} Zum Ernst-Gettke-Haus, Hausnummer 68, siehe unten.",
+            "tTt_{T} Die alte Burganlage – heute noch 22 Hektar.",
+            "tSt_{S} Die Evergreen Terrace ist fast die Heimat 22.",
+            "tBt_{B} In: Evergreen Terrace – Fast Home 22.",
+            "(6) Because the race is restricted to Canadian-bred horses, it is not eligible for grading, despite being one of Canada’s most prestigious races Northern Dancer Turf Stakes, (…) Kammerherr, Land- und Obergerichtsrat Magnus Graf von Moltke, Ständedeputierter der Stadt Schleswig, Präsident der konstituierenden Ständeversammlung des Jahres 1836, (…) Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, (…) Depots of Canada’hintergrund für kanadische Pferde, ist es nicht berechtigt für das Einstufung, obwohl es eines der renommiertesten Rennen Northern Dancer Turf Stakes, (…) Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, (…)",
+            "sCs_{C} Because the race is restricted to Canadian-bred horses, it is not eligible for grading, despite being one of Canada’s most prestigious races Northern Dancer Turf Stakes, (…)",
+            "tCt_{C} Kammerherr, Land- und Obergerichtsrat Magnus Graf von Moltke, Ständedeputierter der Stadt Schleswig, Präsident der konstituierenden Ständeversammlung des Jahres 1836, (…)",
+            "tTt_{T} Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, (…)",
+            "tSt_{S} Depots of Canada’hintergrund für kanadische Pferde, ist es nicht berechtigt für das Einstufung, obwohl es eines der renommiertesten Rennen Northern Dancer Turf Stakes, (…)",
+            "tBt_{B} Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, (…)",
+            "sCs_{C} Because the race is restricted to Canadian-bred horses, it is not eligible for grading, despite being one of Canada’s most prestigious races Northern Dancer Turf Stakes, (…)",
+            "tCt_{C} Kammerherr, Land- und Obergerichtsrat Magnus Graf von Moltke, Ständedeputierter der Stadt Schleswig, Präsident der konstituierenden Ständeversammlung des Jahres 1836, (…)",
+            "tTt_{T} Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, (…)",
+            "tSt_{S} Depots of Canada’hintergrund für kanadische Pferde, ist es nicht berechtigt für das Einstufung, obwohl es eines der renommiertesten Rennen Northern Dancer Turf Stakes, (…)",
+            "tBt_{B} Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, (…)",
+            "sCs_{C} Evergreen Terrace - Almost Home 22.",
+            "tCt_{C} Zum Ernst-Gettke-Haus, Hausnummer 68, siehe unten.",
+            "tTt_{T} Die alte Burganlage – heute noch 22 Hektar.",
+            "tSt_{S} Die Evergreen Terrace ist fast die Heimat 22.",
+            "tBt_{B} In: Evergreen Terrace – Fast Home 22.",
+            "Evergreen Terrace - Almost Home 22.",
+            "Zum Ernst-Gettke-Haus, Hausnummer 68, siehe unten.",
+            "Die alte Burganlage – heute noch 22 Hektar.",
+            "Die Evergreen Terrace ist fast die Heimat 22.",
+            "In: Evergreen Terrace – Fast Home 22.",
+            "sCs_{C} Because the race is restricted to Canadian-bred horses, it is not eligible for grading, despite being one of Canada’s most prestigious races Northern Dancer Turf Stakes, (…)",
+            "tCt_{C} Kammerherr, Land- und Obergerichtsrat Magnus Graf von Moltke, Ständedeputierter der Stadt Schleswig, Präsident der konstituierenden Ständeversammlung des Jahres 1836, (…)",
+            "tTt_{T} Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, (…)",
+            "tSt_{S} Depots of Canada’hintergrund für kanadische Pferde, ist es nicht berechtigt für das Einstufung, obwohl es eines der renommiertesten Rennen Northern Dancer Turf Stakes, (…)",
+            "tBt_{B} Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, (…)",
+            "Because the race is restricted to Canadian-bred horses, it is not eligible for grading, despite being one of Canada’s most prestigious races Northern Dancer Turf Stakes, (…)",
+            "Kammerherr, Land- und Obergerichtsrat Magnus Graf von Moltke, Ständedeputierter der Stadt Schleswig, Präsident der konstituierenden Ständeversammlung des Jahres 1836, (…)",
+            "Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, (…)",
+            "Depots of Canada’hintergrund für kanadische Pferde, ist es nicht berechtigt für das Einstufung, obwohl es eines der renommiertesten Rennen Northern Dancer Turf Stakes, (…)",
+            "Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, (…)",
+            "[Figure: Figure 10: Evaluation metrics applied to the random subgroup, for all five language pairs. The square marker indicates the mean and standard deviation.]",
+            "[Figure: Figure 11: Evaluation metrics applied to the quality subgroups, aggregated over language pairs with error bars indicating standard deviation over language pairs.]",
+            "[Figure: Figure 12: Evaluation metrics applied to the CM subgroups, aggregated over language pairs with error bars indicating standard deviation over language pairs.]",
+            "[Figure: Figure 13: Evaluation metrics applied to the confidence subgroups, aggregated over language pairs with error bars indicating standard deviation over language pairs.]",
+            "[Figure: Figure 14: Relative differences comparing students and baselines to the teacher models, for the Comet-22-QE metric.]"
+          ]
+        },
+        {
+          "title": "Random subgroup",
+          "paragraphs": [
+            "Our baseline subgroup consists of 50k examples randomly sampled from each of the WMT20 corpora. Replication metrics (chrF in Figure 10) follow the overall patterns of θT\\theta_{T}>θS\\theta_{S}>θB\\theta_{B}, consolidating that SeqKD dampens memorization in θS\\theta_{S} compared to θT\\theta_{T} but amplifies it compared to θB\\theta_{B}. The quality and diversity metrics (Comet-QE-22 and MSTTR in Figure 10) emphasize that, compared to the corpus (column 𝒯C\\mathcal{T}_{C}), the models generate higher-quality translations, but with lower textual diversity.",
+            "[Figure: Figure 10: Evaluation metrics applied to the random subgroup, for all five language pairs. The square marker indicates the mean and standard deviation.]"
+          ]
+        },
+        {
+          "title": "Quality-based subgroups",
+          "paragraphs": [
+            "How does KD affect examples from the WMT20 corpus with a certain quality? To categorize WMT20 examples based on quality, we applied the Comet-QE-22 metric using the corpus’s targets as translations (because the reference is now the translation, we apply Comet’s ‘reference-free’ method). We examine five subgroups: {[0,0.2),[0.2,0.4),[0.4,0.6),[0.6,0.8),[0.8,1.0]}\\{[0,0.2),[0.2,0.4),[0.4,0.6),[0.6,0.8),[0.8,1.0]\\}.",
+            "In Figure 11, we first notice that for the low-quality subgroups, fewer translations are replicated from 𝒯C\\mathcal{T}_{C} (all models) and from 𝒯T\\mathcal{T}_{T} (for θS\\theta_{S}, see Figure 5). Secondly, for groups with a quality below 0.6, both θS\\theta_{S} and θB\\theta_{B} generated better translations than θT\\theta_{T}, as per Comet-QE-22 applied to the model-generated translations. Textual diversity metrics here mostly follow the same trend as Comet-QE-22, with θS\\theta_{S} showing the highest diversity.",
+            "Figure 14 visualizes the relative differences of students/baselines to the teacher more explicitly, as a percentual increase. For Comet-QE-22, if the student’s bar exceeds the baseline’s bar, this signifies that the improvement over the teacher is partially attributable to the capacity gap between large and base models, and partially to the SeqKD process. This improvement over the teacher holds for the lower quality groups (0-0.2, 0.2-0.4, 0.4-0.6), but not for the higher quality groups. Example (4) from the introduction already illustrated a sample from the lowest quality subgroup: in the corpus, the target was likely misaligned. θT\\theta_{T}’s translation is slightly better but still wrong, and θS\\theta_{S}’s translation is slightly better than θB\\theta_{B}’s. Compared to θB\\theta_{B}, θS\\theta_{S} benefits from being presented with the teacher’s corpus, which is a denoised version of WMT20, since θT\\theta_{T} replicates the least for the lowest-quality (noisiest) examples. θS\\theta_{S}, in turn, replicates less from 𝒯T\\mathcal{T}_{T} for these lowest-quality subgroups, too, which allows for amplified denoising compared to θT\\theta_{T}.",
+            "[Figure: Figure 11: Evaluation metrics applied to the quality subgroups, aggregated over language pairs with error bars indicating standard deviation over language pairs.]"
+          ]
+        },
+        {
+          "title": "Counterfactual memorization subgroups",
+          "paragraphs": [
+            "If we now focus on the high CM subgroups (introduced in the previous subsection) in Figure 12, we firstly observe that in terms of memorization metrics, the teacher shows increased replication and chrF. This follows from the definition of CM as the IN metric is expected to correlate highly with replication: the higher the target probability, the more likely it is that the teacher can replicate the target when generating translations. We note, however, that the student and baseline replicate examples with high CM less than examples with lower CM. This is likely due to their lower capacity: by definition, CM highlights examples for which a model assigns a low probability to the target when that example is not in the training set, thus requiring more capacity/parameters from the original θT\\theta_{T} to learn that target. The reduced replication also leads to lower Comet-22 scores for these examples, since that metric partially relies on the corpus’s target.",
+            "When looking at the Comet-QE-22 scores, we observe that the higher CM groups typically also have lower Comet-QE-22 scores, although the quality scores are still above the lowest quality subgroup discussed in the previous paragraph. The baseline and student models outperform θT\\theta_{T} here, likely because they struggle to replicate the somewhat noisy targets as well as the teacher did. The student shows some amplified denoising compared to θB\\theta_{B}, but that does apply to CM groups across the board, and does not seem specific to individual CM subgroups.",
+            "All three models show more textual diversity for subgroups with higher CM scores.",
+            "Finally, if we inspect the two groups with very low and very high IN and OUT scores, the models—as expected based on the CM definition—do not replicate the ‘low’ group, and have very high replication rates for the ‘high’ group. For the remaining metrics, the ‘low’ group underscores the findings we previously reported for the low-quality subgroups: the student model shows amplified denoising, as reflected by the Comet-QE-22 metric, and also shows more textual diversity than the other two models. Examples that score badly in terms of both IN and OUT performance are typically low-quality, misaligned examples (Dankers et al., 2023); if the teacher does not replicate those low-quality targets, but partially denoises by translating them more accurately than the corpus did, the student can further improve upon that.",
+            "[Figure: Figure 12: Evaluation metrics applied to the CM subgroups, aggregated over language pairs with error bars indicating standard deviation over language pairs.]"
+          ]
+        },
+        {
+          "title": "Confidence subgroups",
+          "paragraphs": [
+            "Finally, we turn to the confidence-based groups, created using the lowest 10k and highest 10k examples based on the mean word-level log-probability of the translations the teacher generated. Figure 13 demonstrates that the low confidence examples stand out for all metrics: none of the models replicate their targets, all three models generate translations with a relatively low Comet-QE-22 score (akin to the lowest-quality subgroups discussed above), and all three models show an exceptionally low MSTTR. If we inspect the examples, they contain many misaligned examples from the corpus for which the teacher also does not generate an adequate translation (e.g., Example (5)), and a lot of cases where the teacher hallucinates in its translation (e.g., Example (6)). The student’s improvement here thus does not stem from learning from the superior targets θT\\theta_{T} generated but more likely from deviating from θT\\theta_{T}. Yet, note that even if θS\\theta_{S} does not necessarily copy these hallucinations from its teacher, we did find that the students inspected in the main paper showed amplified hallucination capabilities, so low-quality teacher targets like this could have other unanticipated effects downstream.",
+            "(5) Evergreen Terrace - Almost Home 22. Zum Ernst-Gettke-Haus, Hausnummer 68, siehe unten. Die alte Burganlage – heute noch 22 Hektar. Die Evergreen Terrace ist fast die Heimat 22. In: Evergreen Terrace – Fast Home 22.",
+            "sCs_{C} Evergreen Terrace - Almost Home 22.",
+            "tCt_{C} Zum Ernst-Gettke-Haus, Hausnummer 68, siehe unten.",
+            "tTt_{T} Die alte Burganlage – heute noch 22 Hektar.",
+            "tSt_{S} Die Evergreen Terrace ist fast die Heimat 22.",
+            "tBt_{B} In: Evergreen Terrace – Fast Home 22.",
+            "sCs_{C} Evergreen Terrace - Almost Home 22.",
+            "tCt_{C} Zum Ernst-Gettke-Haus, Hausnummer 68, siehe unten.",
+            "tTt_{T} Die alte Burganlage – heute noch 22 Hektar.",
+            "tSt_{S} Die Evergreen Terrace ist fast die Heimat 22.",
+            "tBt_{B} In: Evergreen Terrace – Fast Home 22.",
+            "(6) Because the race is restricted to Canadian-bred horses, it is not eligible for grading, despite being one of Canada’s most prestigious races Northern Dancer Turf Stakes, (…) Kammerherr, Land- und Obergerichtsrat Magnus Graf von Moltke, Ständedeputierter der Stadt Schleswig, Präsident der konstituierenden Ständeversammlung des Jahres 1836, (…) Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, (…) Depots of Canada’hintergrund für kanadische Pferde, ist es nicht berechtigt für das Einstufung, obwohl es eines der renommiertesten Rennen Northern Dancer Turf Stakes, (…) Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, (…)",
+            "sCs_{C} Because the race is restricted to Canadian-bred horses, it is not eligible for grading, despite being one of Canada’s most prestigious races Northern Dancer Turf Stakes, (…)",
+            "tCt_{C} Kammerherr, Land- und Obergerichtsrat Magnus Graf von Moltke, Ständedeputierter der Stadt Schleswig, Präsident der konstituierenden Ständeversammlung des Jahres 1836, (…)",
+            "tTt_{T} Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, (…)",
+            "tSt_{S} Depots of Canada’hintergrund für kanadische Pferde, ist es nicht berechtigt für das Einstufung, obwohl es eines der renommiertesten Rennen Northern Dancer Turf Stakes, (…)",
+            "tBt_{B} Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, (…)",
+            "sCs_{C} Because the race is restricted to Canadian-bred horses, it is not eligible for grading, despite being one of Canada’s most prestigious races Northern Dancer Turf Stakes, (…)",
+            "tCt_{C} Kammerherr, Land- und Obergerichtsrat Magnus Graf von Moltke, Ständedeputierter der Stadt Schleswig, Präsident der konstituierenden Ständeversammlung des Jahres 1836, (…)",
+            "tTt_{T} Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, (…)",
+            "tSt_{S} Depots of Canada’hintergrund für kanadische Pferde, ist es nicht berechtigt für das Einstufung, obwohl es eines der renommiertesten Rennen Northern Dancer Turf Stakes, (…)",
+            "tBt_{B} Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, (…)",
+            "sCs_{C} Evergreen Terrace - Almost Home 22.",
+            "tCt_{C} Zum Ernst-Gettke-Haus, Hausnummer 68, siehe unten.",
+            "tTt_{T} Die alte Burganlage – heute noch 22 Hektar.",
+            "tSt_{S} Die Evergreen Terrace ist fast die Heimat 22.",
+            "tBt_{B} In: Evergreen Terrace – Fast Home 22.",
+            "Evergreen Terrace - Almost Home 22.",
+            "Zum Ernst-Gettke-Haus, Hausnummer 68, siehe unten.",
+            "Die alte Burganlage – heute noch 22 Hektar.",
+            "Die Evergreen Terrace ist fast die Heimat 22.",
+            "In: Evergreen Terrace – Fast Home 22.",
+            "sCs_{C} Because the race is restricted to Canadian-bred horses, it is not eligible for grading, despite being one of Canada’s most prestigious races Northern Dancer Turf Stakes, (…)",
+            "tCt_{C} Kammerherr, Land- und Obergerichtsrat Magnus Graf von Moltke, Ständedeputierter der Stadt Schleswig, Präsident der konstituierenden Ständeversammlung des Jahres 1836, (…)",
+            "tTt_{T} Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, (…)",
+            "tSt_{S} Depots of Canada’hintergrund für kanadische Pferde, ist es nicht berechtigt für das Einstufung, obwohl es eines der renommiertesten Rennen Northern Dancer Turf Stakes, (…)",
+            "tBt_{B} Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, (…)",
+            "Because the race is restricted to Canadian-bred horses, it is not eligible for grading, despite being one of Canada’s most prestigious races Northern Dancer Turf Stakes, (…)",
+            "Kammerherr, Land- und Obergerichtsrat Magnus Graf von Moltke, Ständedeputierter der Stadt Schleswig, Präsident der konstituierenden Ständeversammlung des Jahres 1836, (…)",
+            "Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, (…)",
+            "Depots of Canada’hintergrund für kanadische Pferde, ist es nicht berechtigt für das Einstufung, obwohl es eines der renommiertesten Rennen Northern Dancer Turf Stakes, (…)",
+            "Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, Stakes, (…)",
+            "[Figure: Figure 13: Evaluation metrics applied to the confidence subgroups, aggregated over language pairs with error bars indicating standard deviation over language pairs.]",
+            "[Figure: Figure 14: Relative differences comparing students and baselines to the teacher models, for the Comet-22-QE metric.]"
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "Arefyev et al. (2024) Nikolay Arefyev, Mikko Aulamo, Pinzhen Chen, Ona De Gibert Bonet, Barry Haddow, Jindřich Helcl, Bhavitvya Malik, Gema Ramírez-Sánchez, Pavel Stepachev, Jörg Tiedemann, Dušan Variš, and Jaume Zaragoza-Bernabeu. 2024. HPLT‘s first release of data and models. In Proceedings of the 25th Annual Conference of the European Association for Machine Translation (Volume 2), pages 53–54.",
+    "Bapna et al. (2022) Ankur Bapna, Isaac Caswell, Julia Kreutzer, Orhan Firat, Daan van Esch, Aditya Siddhant, Mengmeng Niu, Pallavi Baljekar, Xavier Garcia, Wolfgang Macherey, et al. 2022. Building machine translation systems for the next thousand languages. arXiv preprint arXiv:2205.03983.",
+    "Barrault et al. (2020) Loïc Barrault, Magdalena Biesialska, Ondřej Bojar, Marta R. Costa-jussà, Christian Federmann, Yvette Graham, Roman Grundkiewicz, Barry Haddow, Matthias Huck, Eric Joanis, Tom Kocmi, Philipp Koehn, Chi-kiu Lo, Nikola Ljubešić, Christof Monz, Makoto Morishita, Masaaki Nagata, Toshiaki Nakazawa, Santanu Pal, Matt Post, and Marcos Zampieri. 2020. Findings of the 2020 conference on machine translation (WMT20). In Proceedings of the Fifth Conference on Machine Translation, pages 1–55, Online. Association for Computational Linguistics.",
+    "Chuang et al. (2020) Yung-Sung Chuang, Shang-Yu Su, and Yun-Nung Chen. 2020. Lifelong language knowledge distillation. In Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing (EMNLP). Association for Computational Linguistics.",
+    "Costa-jussà et al. (2022) Marta R Costa-jussà, James Cross, Onur Çelebi, Maha Elbayad, Kenneth Heafield, Kevin Heffernan, Elahe Kalbassi, Janice Lam, Daniel Licht, Jean Maillard, et al. 2022. No language left behind: Scaling human-centered machine translation. arXiv preprint arXiv:2207.04672.",
+    "Currey et al. (2020) Anna Currey, Prashant Mathur, and Georgiana Dinu. 2020. Distilling multiple domains for neural machine translation. In Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing (EMNLP), pages 4500–4511.",
+    "Dabre and Fujita (2020) Raj Dabre and Atsushi Fujita. 2020. Combining sequence distillation and transfer learning for efficient low-resource neural machine translation models. In Proceedings of the Fifth Conference on Machine Translation, pages 492–502.",
+    "Dankers et al. (2023) Verna Dankers, Ivan Titov, and Dieuwke Hupkes. 2023. Memorisation cartography: Mapping out the memorisation-generalisation continuum in neural machine translation. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, pages 8323–8343.",
+    "De Gibert et al. (2024) Ona De Gibert, Mikko Aulamo, Yves Scherrer, and Jörg Tiedemann. 2024. Hybrid distillation from rbmt and nmt: Helsinki-nlp’s submission to the shared task on translation into low-resource languages of spain. In Proceedings of the Ninth Conference on Machine Translation, pages 908–917.",
+    "de la Rosa et al. (2023) Javier de la Rosa, Álvaro Pérez Pozo, Salvador Ros, and Elena González-Blanco. 2023. Alberti, a multilingual domain specific language model for poetry analysis. Procesamiento del Lenguaje Natural, 71:215.",
+    "Feldman (2020) Vitaly Feldman. 2020. Does learning require memorization? A short tale about a long tail. In Proceedings of the 52nd Annual ACM SIGACT Symposium on Theory of Computing, pages 954–959.",
+    "Feldman and Zhang (2020) Vitaly Feldman and Chiyuan Zhang. 2020. What neural networks memorize and why: Discovering the long tail via influence estimation. In Advances in Neural Information Processing Systems, volume 33, pages 2881–2891. Curran Associates, Inc.",
+    "Gordon and Duh (2019) Mitchell A Gordon and Kevin Duh. 2019. Explaining sequence-level knowledge distillation as data-augmentation for neural machine translation. arXiv preprint arXiv:1912.03334.",
+    "Gumma et al. (2023) Varun Gumma, Raj Dabre, and Pratyush Kumar. 2023. An empirical study of leveraging knowledge distillation for compressing multilingual neural machine translation models. In Proceedings of the 24th Annual Conference of the European Association for Machine Translation, pages 103–114.",
+    "Hinton (2015) Geoffrey Hinton. 2015. Distilling the knowledge in a neural network. arXiv preprint arXiv:1503.02531.",
+    "Jagielski et al. (2024) Matthew Jagielski, Milad Nasr, Katherine Lee, Christopher A Choquette-Choo, Nicholas Carlini, and Florian Tramer. 2024. Students parrot their teachers: Membership inference on model distillation. Advances in Neural Information Processing Systems, 36.",
+    "Junczys-Dowmunt et al. (2018) Marcin Junczys-Dowmunt, Roman Grundkiewicz, Tomasz Dwojak, Hieu Hoang, Kenneth Heafield, Tom Neckermann, Frank Seide, Ulrich Germann, Alham Fikri Aji, Nikolay Bogoychev, et al. 2018. Marian: Fast neural machine translation in c++. Proceedings of ACL 2018, System Demonstrations, page 116.",
+    "Kim and Rush (2016) Yoon Kim and Alexander M. Rush. 2016. Sequence-level knowledge distillation. In Proceedings of the 2016 Conference on Empirical Methods in Natural Language Processing, pages 1317–1327, Austin, Texas. Association for Computational Linguistics.",
+    "Lukasik et al. (2024) Michal Lukasik, Vaishnavh Nagarajan, Ankit Singh Rawat, Aditya Krishna Menon, and Sanjiv Kumar. 2024. What do larger image classifiers memorise? Transactions on Machine Learning Research.",
+    "Raunak and Menezes (2022) Vikas Raunak and Arul Menezes. 2022. Finding memo: Extractive memorization in constrained sequence generation tasks. In Findings of the Association for Computational Linguistics: EMNLP 2022, pages 5153–5162.",
+    "Raunak et al. (2021) Vikas Raunak, Arul Menezes, and Marcin Junczys-Dowmunt. 2021. The curious case of hallucinations in neural machine translation. In Proceedings of the 2021 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, pages 1172–1183.",
+    "Raunak et al. (2022) Vikas Raunak, Matt Post, and Arul Menezes. 2022. SALTED: A framework for SAlient long-tail translation error detection. In Findings of the Association for Computational Linguistics: EMNLP 2022, pages 5163–5179, Abu Dhabi, United Arab Emirates. Association for Computational Linguistics.",
+    "Rei et al. (2022) Ricardo Rei, José GC De Souza, Duarte Alves, Chrysoula Zerva, Ana C Farinha, Taisiya Glushkova, Alon Lavie, Luisa Coheur, and André FT Martins. 2022. Comet-22: Unbabel-ist 2022 submission for the metrics shared task. In Proceedings of the Seventh Conference on Machine Translation (WMT), pages 578–585.",
+    "Rei et al. (2020) Ricardo Rei, Craig Stewart, Ana C Farinha, and Alon Lavie. 2020. Comet: A neural framework for mt evaluation. pages 2685–2702.",
+    "Song et al. (2021) Yuheng Song, Tianyi Liu, and Weijia Jia. 2021. Data diversification revisited: Why does it work? In Artificial Neural Networks and Machine Learning–ICANN 2021: 30th International Conference on Artificial Neural Networks, Bratislava, Slovakia, September 14–17, 2021, Proceedings, Part III 30, pages 521–533. Springer.",
+    "Vaswani (2017) A Vaswani. 2017. Attention is all you need. Advances in Neural Information Processing Systems.",
+    "Wang et al. (2024) Jun Wang, Eleftheria Briakou, Hamid Dadkhahi, Rishabh Agarwal, Colin Cherry, and Trevor Cohn. 2024. Don’t throw away data: Better sequence knowledge distillation. arXiv preprint arXiv:2407.10456.",
+    "Wang et al. (2023) Shushu Wang, Jing Wu, Kai Fan, Wei Luo, Jun Xiao, and Zhongqiang Huang. 2023. Better simultaneous translation with monotonic knowledge distillation. In Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 2334–2349.",
+    "Wen et al. (2023) Yuqiao Wen, Zichao Li, Wenyu Du, and Lili Mou. 2023. f-divergence minimization for sequence-level knowledge distillation. In Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 10817–10834.",
+    "Zhang et al. (2023) Songming Zhang, Yunlong Liang, Shuaibo Wang, Yufeng Chen, Wenjuan Han, Jian Liu, and Jinan Xu. 2023. Towards understanding and improving knowledge distillation for neural machine translation. In Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 8062–8079.",
+    "Zhao et al. (2022) Yang Zhao, Junnan Zhu, Lu Xiang, Jiajun Zhang, Yu Zhou, Feifei Zhai, and Chengqing Zong. 2022. Life-long learning for multilingual neural machine translation with knowledge distillation. arXiv preprint arXiv:2212.02800.",
+    "Zhou et al. (2020) Chunting Zhou, Jiatao Gu, and Graham Neubig. 2020. Understanding knowledge distillation in non-autoregressive machine translation. In International Conference on Learning Representations.",
+    "Zhou et al. (2024) Yuhang Zhou, Jing Zhu, Paiheng Xu, Xiaoyu Liu, Xiyao Wang, Danai Koutra, Wei Ai, and Furong Huang. 2024. Multi-stage balanced distillation: Addressing long-tail challenges in sequence-level knowledge distillation. arXiv preprint arXiv:2406.13114."
+  ]
+}

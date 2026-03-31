@@ -1,0 +1,446 @@
+{
+  "title": "Bridging Internal Probability and Self-Consistency forEffective and Efficient LLM Reasoning",
+  "authors": "Zhi ZhouYuhao TanZenan LiYuan YaoLan-Zhe GuoXiaoxing MaYu-Feng Li",
+  "abstract": "Recent advancements in large language models (LLMs) have demonstrated remarkable reasoning capabilities. However, single-shot inference often yields unreliable results for complex reasoning tasks, leading researchers to explore multiple reasoning paths through methods such as perplexity and self-consistency. In this paper, we present the first theoretical error decomposition analysis of these techniques, breaking down their error into estimation error and model error. Our analysis reveals a fundamental trade-off: perplexity methods suffer from substantial model error due to the absence of a proper consistency function, while self-consistency exhibits high estimation error due to a slow error convergence rate. To overcome these limitations, we propose Reasoning-Pruning Perplexity Consistency (Rpc). This approach combines Perplexity Consistency, which seamlessly integrates LLM perplexity with self-consistency, and Reasoning Pruning, which eliminates low-probability reasoning paths to effectively prevent the degeneration of estimation error reduction. Theoretical analysis demonstrates that Rpc not only accelerates the convergence rate of estimation error to an exponential level but also holds strong potential for further reducing model error. Extensive empirical evaluations on seven benchmark datasets confirm that Rpc can significantly improve reasoning performance, sample efficiency, and confidence reliability.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Recently, large language models (LLMs) have shown significant progress in various applications such as problem solving (Lewkowycz et al., 2022; Li et al., 2024a), planning (Valmeekam et al., 2023; Deng et al., 2024), and decision making (Ouyang & Li, 2023; Sblendorio et al., 2024), demonstrating their reasoning capabilities. Since single-shot inference is not always reliable, especially in complex reasoning tasks, one often requires the LLM to produce multiple reasoning paths, facilitating its reasoning performance.",
+        "When multiple reasoning paths for a given problem are available, the reasoning performance is determined by the confidence estimation for each result. To achieve this, perplexity methods (Chen et al., 1998; Murugadoss et al., 2025) apply LLMs’ internal probability to estimate the confidence of the reasoning path. Although the internal probability is quite accurate, the reasoning path confidence is highly insufficient to distinguish each answer, thereby greatly limiting the effectiveness of perplexity methods (Chen et al., 2024). In contrast, self-consistency methods (Wang et al., 2022; Chen et al., 2023b) switch to establish the answer confidence using a pre-defined consistency function. However, the answer confidence cannot be directly derived from the internal probabilities of LLMs, necessitating the use of Monte-Carlo estimation, which significantly degrades the convergence rate (Aggarwal et al., 2023; Wan et al., 2024; Wang et al., 2024).",
+        "To better understand the limitations of current methods and to guide the development of an effective and efficient LLM reasoning approach, we formulate the LLM reasoning problem and present a theoretical analysis that decomposes the reasoning error into two components: Estimation Error and Model Error. Self-consistency methods, which rely on the Monte-Carlo estimation, achieve only a linear estimation error reduction rate with respect to the sample size. The linear convergence rate leads to the method requiring a large sampled budget. For instance, implementing self-consistency with 64 samples on the MATH dataset using the GPT-4 API costs approximately $2000 (Li et al., 2024c), rendering it extremely expensive for both researchers and organizations. As to perplexity methods, their estimation error converges exponentially as they use the internal probability of LLMs. The exponential convergence rate ensures that perplexity methods can work well even in a very limited sample budget, while its final convergent result is far from satisfactory due to the high model error. A comparison between self-consistency methods and perplexity methods is shown in Figure 1. This complementary between estimation error and model error raises a chance to further improve the LLM reasoning performance: Can we design a method that achieves both fast estimation error convergence rate and low model error? To the best of our knowledge, the efforts in this aspect remain limited.",
+        "In this paper, we explore effectively and efficiently integrating the internal LLM probability into the self-consistency framework, allowing us to utilize an accurate probability for rapid estimation error reduction while maintaining low model error. We name this confidence estimation approach Perplexity Consistency. Our theoretical study illustrates that perplexity consistency provides a tight integration and can indeed achieve the goal. However, the reduction rate of perplexity consistency estimation error undesirably degenerates to a linear rate when the magnitude of the LLM’s internal probability is low. To tackle this issue, we further introduce Reasoning Pruning to automatically model the probability distribution for each reasoning problem and remove low-probability reasoning paths. Combining the perplexity consistency and the reasoning pruning, we propose Reasoning-pruning Perplexity Consistency (Rpc).",
+        "Our theoretical and experimental results confirm the efficient and effective performance of Rpc. Specifically, on four mathematical reasoning datasets, Rpc successfully reduces the sampling budget by at least 50% while achieving the same reasoning performance as self-consistency. Conversely, with an equal sampling budget, Rpc outperforms existing methods by 1.29% on average. Additionally, Rpc provides confidence estimates that align better with the ground truth compared to existing methods.",
+        "To summarize, the main contributions of the paper are:",
+        "(1) We formulate the LLM reasoning problem and offer a theoretical analysis that decomposes LLM reasoning performance into estimation error and model error. This analysis emphasizes the benefits of self-consistency while revealing its limitations when working with limited sampling budgets.",
+        "(2) Building on our theoretical framework, we introduce the Rpc, which integrates Perplexity Consistency and Reasoning Pruning. This approach utilizes precise LLM probabilities and eliminates low-probability reasoning paths to enhance reasoning performance.",
+        "(3) Our theoretical analysis shows that Perplexity Consistency achieves an exponential error reduction rate in most cases, and Reasoning Pruning effectively compensates for the remaining degeneration issues.",
+        "(4) Through extensive experiments conducted on four mathematical reasoning and three code generation tasks, our proposed Rpc delivers promising results of improving both accuracy and confidence consistency."
+      ],
+      "subsections": []
+    },
+    "2 Problem and Analysis": {
+      "paragraphs": [
+        "In this section, we start by outlining the problem formulation of LLM reasoning through sampling multiple reasoning paths. Then, we provide a theoretical analysis that decomposes LLM reasoning performance into estimation error and model error. Finally, we present experimental results verifying our theoretical analysis. Our theoretical and empirical analysis motivates our follow-up method design."
+      ],
+      "subsections": [
+        {
+          "title": "2.1 Problem Formulation",
+          "paragraphs": [
+            "Given a reasoning problem (x,y)(x,y), where xx represents the input query, and yy represents the ground-truth answer. The LLM generates a reasoning path t^=(t1,…,tm)\\hat{t}=(t_{1},\\ldots,t_{m}) by sequentially sampling tokens according to the conditional probability distribution p​(ti|x,t<i)p(t_{i}\\,|\\,x,t_{<i}), where mm denotes the length of the reasoning path. The probability of generating the reasoning path t^\\hat{t} is defined as p​(t^|x)p(\\hat{t}\\,|\\,x), a.k.a the confidence of the reasoning path t^\\hat{t}. An answer extraction function g​(⋅)g(\\cdot) maps the reasoning path to the final answer y^=g​(t^)\\hat{y}=g(\\hat{t}), and the reasoning correctness is evaluated by the indicator function 𝕀​[y^=y]\\mathbb{I}[\\hat{y}=y]. We can extend the probability to the answer y^\\hat{y}, i.e., the answer confidence, denoted as p​(y^|x)p(\\hat{y}\\,|\\,x).",
+            "The confidence essentially represents the probability that the reasoning path t^\\hat{t} or answer y^\\hat{y} is correct, which enables LLMs to select the most reliable solution among multiple candidates. Nevertheless, enumerating all reasoning paths or answers is unfeasible; we have to estimate the LLM confidence based on finite nn sampled reasoning paths instead. Furthermore, to measure the reasoning performance of LLMs, we use the squared error of confidence estimation p^​(t^|x)\\hat{p}(\\hat{t}\\,|\\,x) to the reasoning path t^\\hat{t}:",
+            "If we can extend the confidence estimation to the answer y^\\hat{y}, the squared error can be reformulated as",
+            "Below, we analyze two confidence estimation methods, i.e., self-consistency method (Wang et al., 2022) and perplexity method (Huang et al., 2023). Specifically, the self-consistency method computes the answer confidence using Monte-Carlo estimation based on a consistency function 𝕀C\\mathbb{I}_{C}, while the perplexity method directly computes the confidence of reasoning paths using internal LLM probabilities."
+          ]
+        },
+        {
+          "title": "2.2 Theoretical Analysis",
+          "paragraphs": [
+            "To maximize the reasoning performance of LLMs, self-consistency methods (denoted as Sc) (Xiong et al., 2024; Abbasi-Yadkori et al., 2024; Becker & Soatto, 2024) often sample nn reasoning paths t~1,…,t~n\\tilde{t}_{1},\\dots,\\tilde{t}_{n}, and then estimate the probability of each answer by",
+            "Then, the reasoning error of the Sc method for a given problem (x,y)(x,y) can be computed by",
+            "To illustrate the key factors affecting the reasoning error, we provide an error decomposition in the following proposition.",
+            "For any input xx with ground-truth answer yy, let p^(Sc)​(y^|x)\\hat{p}^{(\\textsc{Sc})}(\\hat{y}\\,|\\,x) denote the estimated probability of y^\\hat{y} by Sc. Then, the reasoning error ℰ​(p^(Sc))\\mathcal{E}(\\hat{p}^{(\\textsc{Sc})}) can be divided into two components:",
+            "The detailed proof is provided in Appendix A.1. The estimation error refers to the error caused by the finite sampling from the LLM probability, while the model error indicates the LLM’s limited reasoning capability. Note that the estimation error of Sc reduces to only the variance as the sampling is unbiased. This proposition demonstrates that, aside from the model error, which is determined by the LLM’s inherent reasoning capabilities, the reasoning error is bounded by the estimation error. Moreover, the estimation error reduction rate of the sample size is linear, resulting in a large error margin when the sampling is insufficient.",
+            "To effectively offset the estimation error, we switch to analyze the reasoning error of perplexity methods (denoted as Ppl). In contrast to the Sc method that estimates the answer probability using the Monte-Carlo estimation, Ppl directly utilizes the internal probability of LLMs p​(t~i|x)p(\\tilde{t}_{i}\\,|\\,x) for the sampled reasoning path t~i\\tilde{t}_{i}. Therefore, for given the unique set of nn sampled reasoning paths ℛ={t~1,…,t~n}\\mathcal{R}=\\left\\{\\tilde{t}_{1},\\ldots,\\tilde{t}_{n}\\right\\}, the estimated probability of each reasoning path t^\\hat{t} is",
+            "Similarly, we also use the mean squared error to measure the reasoning performance of Ppl:",
+            "Now, we can obtain the following proposition.",
+            "For any given input xx with ground-truth answer yy, let p^(Ppl)​(t^|x)\\hat{p}^{(\\textsc{Ppl})}(\\hat{t}\\,|\\,x) denote the estimated probability of t^\\hat{t} by Ppl method. Then, the reasoning error ℰ​(p^(Ppl))\\mathcal{E}(\\hat{p}^{(\\textsc{Ppl})}) can be divided into two components:",
+            "The detailed proof is provided in Appendix A.1. Compared with Sc, the estimation error of Ppl decreases exponentially, which is much faster. However, the model error of Ppl is usually larger than that of Sc in practice. In Appendix A.2, we provide Proposition 3 to demonstrate that Sc achieves a smaller model error than Ppl in the ideal case, due to the advantages of the consistency function."
+          ]
+        },
+        {
+          "title": "2.3 Empirical Observations",
+          "paragraphs": [
+            "To confirm our theoretical results, we conduct some initial experiments on the GSM8K dataset using the InternLM-MATH-Plus 7B model. We limit the sample size nn from 11 to 66 and plot the accuracy curves and the estimation error in Figure 2. Additionally, we include an ablative version called by Naïve-Sc. Naïve-Sc applies the Monte-Carlo estimation, which is consistent with Sc, but its consistency function is degraded to a Naïve version to the reasoning path matching rather than the answer matching, which is consistent with Ppl. In other words, the reasoning error ℰ​(p^(Naïve-Sc))\\mathcal{E}(\\hat{p}^{(\\text{Na\\\"{i}ve-}\\textsc{Sc})}) of Naïve-Sc can be decomposed as",
+            "The derived results highlight the following two observations:",
+            "(I) Estimation Error. The estimation errors of both Sc and Ppl decrease as the sample size increases. However, the accuracy curves and estimation error illustrate that the Ppl has a much faster convergence rate compared to Sc. Specifically, Ppl reaches a stable result with n=3n=3, while Sc cannot converge even for n=6n=6. Naïve-Sc confirms this result, showing a lower convergent rate, since it uses the same Monte-Carlo estimation with Sc.",
+            "(II) Model Error. Sc and Ppl ultimately converge to different results. This is because their model errors are intrinsically different. Sc groups reasoning paths that yield the same answer through its consistency function, ensuring a higher accuracy of Sc. In contrast, Ppl only estimates the probability of individual reasoning paths without considering answer-level consistency. Naïve-Sc also supports this conclusion, converging to the worst results due to its lack of a proper consistency function.",
+            "Key Insights. Our theoretical and empirical analyses point to the deficiencies and potential synergies of Sc and Ppl. Although Sc achieves a lower model error due to the advantages of the consistency function, its estimation error is hindered by a slower convergence rate. In contrast, Ppl exhibits a much faster convergence rate in estimation error using LLM internal probabilities, but this comes at the cost of a higher model error. This naturally raises a fundamental research question: Can we design a method fusing strengths of Sc and Ppl: achieve both a rapid estimation error convergence rate and a low model error simultaneously?"
+          ]
+        }
+      ]
+    },
+    "3 Methodology": {
+      "paragraphs": [
+        "Based on our theoretical and empirical analysis, we propose a new method called Reasoning-Pruning Perplexity Consistency (Rpc). Specifically, we first integrate internal LLM probability into the self-consistency framework, paving the way for a confidence estimation function called Perplexity Consistency (Pc). This function utilizes LLM probabilities to reduce estimation error more efficiently while maintaining a low model error. Our further analysis guides the design of a new Reasoning Pruning (Rp) module that addresses the limitations of Pc by filtering out reasoning paths with low probabilities. Figure 3 shows the overall framework."
+      ],
+      "subsections": [
+        {
+          "title": "3.1 Perplexity Consistency",
+          "paragraphs": [
+            "To improve the efficiency of estimation error reduction, we propose Pc, which directly leverages the LLM’s prediction probability like Ppl, obtaining the benefit of an exponential convergent rate; and also applies the consistency function of Sc, to minimize the model error. Formally, for the unique set of nn sampled reasoning paths ℛ={t~1,…,t~n}\\mathcal{R}=\\{\\tilde{t}_{1},\\dots,\\tilde{t}_{n}\\}, the estimated probability of the answer is",
+            "which calculates the cumulative probability of all unique reasoning paths whose answer is y^\\hat{y}. Therefore, the mean squared error of Pc is",
+            "Now, we present the following theorem, which explores the reasoning error decomposition of Pc.",
+            "Assume that k=|{t~∣g​(t~)=y^}|k=|\\{\\tilde{t}\\mid g(\\tilde{t})=\\hat{y}\\}| and define α:=1−1k​p​(y^|x)\\alpha:=1-\\frac{1}{k}p(\\hat{y}\\,|\\,x). Then, the reasoning error ℰ​(p^(Pc))\\mathcal{E}(\\hat{p}^{(\\textsc{Pc})}) of Pc can be divided into two components:",
+            "The proof is presented in Appendix A.3. The theorem states that Pc successfully fuses the strengths of Ppl and Sc: it achieves the same level of model error as Sc while ensuring the same convergence rate as Ppl in the estimation error. Particularly, the convergence rate can be computed as αn​p​(y^|x)=(1−1k​p​(y^|x))n​p​(y^|x)\\alpha^{n}p(\\hat{y}\\,|\\,x)=(1-\\frac{1}{k}p(\\hat{y}\\,|\\,x))^{n}p(\\hat{y}\\,|\\,x).",
+            "The convergence rate is primarily influenced by the magnitude of p​(y^|x)p(\\hat{y}\\,|\\,x). In most scenarios, it remains exponential, facilitating rapid estimation error reduction. However, when p​(y^|x)→0p(\\hat{y}\\,|\\,x)\\to 0 and n​p​(y^|x)≪1np(\\hat{y}\\,|\\,x)\\ll 1, we only have αn→11+n​p​(y^|x)\\alpha^{n}\\to\\frac{1}{1+np(\\hat{y}\\,|\\,x)} (Kozma, 2021), resulting in the convergence rate unexpectedly degenerating to a linear result."
+          ]
+        },
+        {
+          "title": "3.2 Reasoning Pruning",
+          "paragraphs": [
+            "Our analysis of the convergence rate in estimation error suggests some possibility for further improving the estimation error reduction efficiency. Specifically, the rate degenerates when p​(y^|x)p(\\hat{y}\\,|\\,x) is too small. Therefore, we propose directly pruning these low-probability answers instead of sampling, called by Reasoning Pruning (Rp).",
+            "Reasoning pruning essentially aims to set p^​(y^|x)=0\\hat{p}(\\hat{y}\\,|\\,x)=0, i.e., when the cumulative probability of all its corresponding reasoning paths are very low, making the estimation error vanish. Although pruning low-probability answers can boost the efficiency of estimation error reduction, it also induces a level of model error. In other words, it may ignore some correct answers of low probability, thus implicitly degrading the performance of LLM reasoning.",
+            "Ideally, if we know the probability p​(y|x)p(y\\,|\\,x) that the LLM can generate the correct answer, the optimal threshold for pruning should be τ=p​(y|x)\\tau=p(y\\,|\\,x). In this case, one can obtain not only an exponential convergence rate but also a significant reduction in model error, as all incorrect answers y^\\hat{y} satisfying p​(y^|x)<τp(\\hat{y}\\,|\\,x)<\\tau are eliminated. However, to obtain this optimal error reduction, two challenges need to be resolved: (1) we only have an estimate of p​(y^|x)p(\\hat{y}\\,|\\,x) since the accurate value is unknown; and (2) we cannot know the ground-truth probability p​(y|x)p(y\\,|\\,x), making the threshold difficult to determine.",
+            "For the first problem, we propose directly pruning reasoning paths instead of answers in Rp, with the following theorem.",
+            "Assume that the optimal threshold τ=p​(y|x)\\tau=p(y\\,|\\,x), and let k^=|{t~i∣g​(t~i)=y^,i=1,…,n}|\\hat{k}=|\\{\\tilde{t}_{i}\\mid g(\\tilde{t}_{i})=\\hat{y},i=1,\\dots,n\\}|, which refers to the size of samples whose answer is y^\\hat{y}. Hence, Rp achieves the optimal error reduction with at least the probability",
+            "The proof is included in Appendix A.4. The theorem provides a guarantee that Rp can achieve the optimal error reduction for each given problem (x,y)(x,y) at a high probability. Note that the optimal error reduction not only boosts the estimation error reduction efficiency but also effectively reduces the model error, thus improving the final reasoning capability of LLMs.",
+            "The remaining problem is determining the optimal threshold for reasoning path removal. To achieve this goal, we develop an automated strategy. Inspired by open-set recognition (Bendale & Boult, 2016), we model the probability distribution of Ω1\\Omega_{1} and Ω2\\Omega_{2} as a mixture of two Weibull distributions, representing high and low probability regions.",
+            "Elaborately, we define the PDF of mixture distribution as:",
+            "where the Weibull PDF (Weibull, 1951) is defined as fW​(x;k,λ)=kλ​(xλ)k−1​exp⁡(−(xλ)k)f_{\\text{W}}(x;k,\\lambda)=\\frac{k}{\\lambda}\\left(\\frac{x}{\\lambda}\\right)^{k-1}\\exp{\\left(-(\\frac{x}{\\lambda})^{k}\\right)}. We use the maximum likelihood estimation methods to estimate the parameters, i.e., (k1,λ1)(k_{1},\\lambda_{1}), (k2,λ2)(k_{2},\\lambda_{2}), w1w_{1}, and w2w_{2} on the probability distribution of all sampled reasoning paths for each reasoning problem. We assume that Weibull​(k1,λ1)\\text{Weibull}(k_{1},\\lambda_{1}) is the high probability distribution and Weibull​(k2,λ2)\\text{Weibull}(k_{2},\\lambda_{2}) is the low probability distribution. Then, the probability of reasoning path t^\\hat{t} being in the high probability distribution is derived by",
+            "where xx is the value of LLM internal probability.",
+            "Then, we remove sampled reasoning paths t~\\tilde{t} satisfying PHigh​(p^​(t~|x))<0.5P_{\\text{High}}(\\hat{p}(\\tilde{t}\\,|\\,x))<0.5, which more likely to be in the low probability distribution. Moreover, to ensure the algorithm’s stability when nn is limited, we employ the Truncated Mean method (Marazzi & Ruffieux, 1999), retaining outputs with a probability greater than the overall mean. This prevents the removal of too many reasoning paths due to potential inaccurate estimation of the mixture distribution.",
+            "Overall, we apply the Reasoning Pruning to all sampled reasoning paths t~1,…,t~n\\tilde{t}_{1},\\dots,\\tilde{t}_{n} for removing low probability reasoning paths and then compute the confidence based on Perplexity Consistency, forming our proposed Reasoning-pruning Perplexity Consistency confidence (Rpc). The pseudo-code is shown in Algorithm 1 in Appendix B."
+          ]
+        }
+      ]
+    },
+    "4 Experiments": {
+      "paragraphs": [
+        "In this section, we first conduct experiments to answer the following research questions: Additional discussions are devoted to further demonstrating the effectiveness of Rpc. Due to space limitations, supplementary experimental results are included in Appendix D.",
+        " RQ1: Efficiency. How does Rpc reduce the number of samples required to achieve comparable performance through faster convergence?",
+        " RQ2: Efficacy. How does Rpc improve reasoning performance compared to existing methods?",
+        " RQ3: Reliability. How does Rpc enhance the reliability of confidence estimation compared to existing methods?"
+      ],
+      "subsections": [
+        {
+          "title": "4.1 Experimental Setting",
+          "paragraphs": [
+            "In this section, we briefly introduce the comparison methods, datasets, and details of the implementation. The experimental settings can be found in Appendix C.",
+            "Comparison Methods. We compare three types of LLM confidences: perplexity confidence (Wang et al., 2022) (Ppl), self-consistency confidence (Chen et al., 1998) (Sc), and verbalized confidence (Tian et al., 2023) (Verb). The verbalized confidence is computed based on the probability that the LLM outputs “True” versus “False” when asked an “Is-True” question. For code generation tasks, we extracted verbalized confidence scores from the model’s numerical likelihood expressions by prompting the LLM.",
+            "Datasets. We introduce four popular benchmarks for math reasoning: MATH (Hendrycks et al., 2021b), MathOdyssey (Fang et al., 2024), OlympiadBench (He et al., 2024), and AIME (Zamil & Rabby, 2024). As to code generation tasks, we evaluate each method on three benchmarks, i.e., HumanEval (Chen et al., 2021), MBPP (Austin et al., 2021), and introductory-level problems of APPS (Hendrycks et al., 2021a).",
+            "Implementation Details. For math reasoning tasks, we evaluate the InternLM2-Math-Plus models with 1.8B and 7B parameters (Ying et al., 2024), as well as the DeepSeekMath-RL 7B model (Shao et al., 2024). The consistency function 𝕀C\\mathbb{I}_{C} is answer comparison. For code generation tasks, we evaluate the Deepseek-Coder 33B model. The consistency function 𝕀C\\mathbb{I}_{C} is constructed based on semantic equivalence (Malík & Vojnar, 2021) by clustering code based on given test cases. We set the sample size to n=128n=128 for the MathOdyssey, OlympiadBench, and AIME datasets and n=64n=64 for the MATH dataset by default. Each experiment is repeated 10 times with different random seeds, and the average performance is reported. All experiments were conducted on Linux servers with A800 and H800 GPUs."
+          ]
+        },
+        {
+          "title": "4.2 Empirical Results",
+          "paragraphs": [
+            "RQ1: Efficiency. How does Rpc reduce the number of samples required to achieve comparable performance through faster convergence?",
+            "We evaluate our proposed Rpc against the standard self-consistency method using four mathematical benchmark datasets with the InternLM-2-MATH-Plus 7B model. For the MATH dataset, we set the reasoning path size to 64, while we set the number of reasoning paths to 128 for the other datasets with Sc. We then record the best performance and minimum sampling requirements for Sc. For both Rpc and our Perplexity Consistency module (denoted as Pc), we report the minimum number of samples needed to match or exceed the performance of the Sc in Table 1.",
+            "The results of Pc indicate improved convergence rates compared to Sc in several cases, while maintaining similar rates in others. These findings support the rapid convergence and degeneration issues of Pc in Theorem 3. Rpc shows significant efficiency improvements by requiring fewer samples to achieve comparable performance relative to Sc. Moreover, the degeneration issues observed in Pc are effectively addressed in Rpc, validating both the effectiveness of the Reasoning Pruning module and our Theorem 5.",
+            "RQ2: Efficacy. How does Rpc improve reasoning performance compared to existing methods?",
+            "We evaluate the performance of Pc and Rpc in Figure 4 across various sample budgets. The results demonstrate that Rpc achieves better performance than both Ppl (which relies on internal LLM probabilities) and Sc (which employs Monte Carlo sampling). The detailed accuracy results, including mean and standard deviation in Table 2 support these findings.",
+            "We also analyze the performance of Pc separately. The results indicate that Pc has a faster convergence rate than Sc, which aligns with Theorem 3. The significant performance gains from Pc to Rpc, as shown in 9(a) and 9(b), validate the effectiveness of the Reasoning Pruning module. This suggests that Reasoning Pruning helps reduce model errors when the LLM exhibits good alignment by eliminating incorrect reasoning paths that carry low LLM probability scores.",
+            "RQ3: Reliability. How does Rpc enhance the reliability of confidence estimation compared to existing methods?",
+            "To evaluate the reliability of confidence estimation, we analyze the ECE results of Rpc and comparison methods in Table 2. ECE measures the difference between predicted probabilities and empirical accuracy, as directly computing estimation error using ground-truth probabilities is virtually impractical. The results demonstrate that our Rpc approach achieves lower ECE values and higher accuracy compared to Ppl and Sc, indicating more reliable confidence estimation. We visualize this improvement through reliability diagrams comparing Sc and Rpc in Figure 5 on MathOdyssey, which clearly shows the reduced calibration error of Rpc."
+          ]
+        },
+        {
+          "title": "4.3 Further Discussion",
+          "paragraphs": [
+            "Results on Code Generation Tasks. To investigate whether our proposed approaches can generalize to other reasoning tasks, such as code generation tasks, we evaluate Rpc and comparison methods on three code generation benchmarks, as illustrated in Figure 6. The results show that Rpc achieves the highest accuracy across all datasets, demonstrating its effectiveness in reasoning tasks beyond mathematics.",
+            "Results Across Model Scales and Architectures. To evaluate the generalization ability of our approaches across different model scales and architectures, we conducted additional experiments using InternLM2-Math-Plus 1.8B and DeepSeek-Math 7B models. The results in Table 3 show that Rpc consistently outperforms existing methods, which is consistent with results in Table 2."
+          ]
+        }
+      ]
+    },
+    "5 Related Work": {
+      "paragraphs": [
+        "This paper is related to the two research topics, i.e., LLM Reasoning Boosting and LLM Confidence Estimation.",
+        "LLM Reasoning Boosting.",
+        "Recent research has developed various methods to improve LLM reasoning capabilities. CoT (Kojima et al., 2022) proposes the “Let’s think step by step” prompt to guide LLMs in generating structured solutions. For complex problems, Least-to-Most (Zhou et al., 2023) introduces a decomposition strategy that breaks down challenges into manageable sub-problems. Few-shot methods (Wei et al., 2022; Fu et al., 2023; Zhang et al., 2023) leverage carefully selected examples to improve reasoning performance. To enable more comprehensive reasoning, search-based methods (Guan et al., 2025) integrate Monte Carlo Tree Search (MCTS). Recent advancements have further enhanced MCTS by incorporating reward models (Zhang et al., 2024; Park et al., 2024). To directly optimize reasoning abilities, researchers have explored fine-tuning approaches (Yu et al., 2024; Li et al., 2024b, d; Ying et al., 2024) using specialized datasets and reinforcement learning techniques (Shao et al., 2024; Luo et al., 2025).",
+        "While these methods focus on generating accurate reasoning paths, our Rpc can build upon them by utilizing multiple sampling strategies, enabling better reasoning performance.",
+        "LLM Confidence Estimation. The confidence estimation for LLM can be categorized into three types: (1) perplexity confidence, (2) verbalized confidence, and (3) self-consistency confidence. Perplexity confidence (Huang et al., 2023; Duan et al., 2024) utilizes the geometric mean of LLM prediction probabilities (i.e., perplexity (Chen et al., 1998; Blei et al., 2003)) to evaluate model adherence (Murugadoss et al., 2025) and prompt quality (YAO et al., 2024). Verbalized confidence (Kadavath et al., 2022; Xiong et al., 2024; Tian et al., 2023) directly asks LLMs to express their confidence through various approaches, such as multi-agent deliberation (Yang et al., 2024), multi-step evaluation (Xiong et al., 2024), top-k ranking (Tian et al., 2023), few-shot prompting (Liu et al., 2024), and reflection (Dhuliawala et al., 2024; Zhao et al., 2024). Self-consistency confidence (Wang et al., 2022; Chen et al., 2023b; Cheng et al., 2024) measures the agreement among multiple generated answers to improve reasoning performance, with recent work (Xiong et al., 2024; Abbasi-Yadkori et al., 2024; Becker & Soatto, 2024) further developing this approach as a confidence metric. Recent studies recognize its computational issues and propose early stopping (Li et al., 2024c) and dynamic sampling methods (Wang et al., 2024; Wan et al., 2024; Aggarwal et al., 2023) to improve efficiency.",
+        "Our proposed Rpc integrates LLM probability with a self-consistency framework, allowing perplexity and verbalized confidence to be used. Rpc achieves enhanced confidence estimation with fixed reasoning paths, showing a complement to existing self-consistency methods."
+      ],
+      "subsections": []
+    },
+    "6 Conclusion": {
+      "paragraphs": [
+        "In this paper, we address a foundational challenge in LLM reasoning: determining the most reliable answer from multiple reasoning paths by measuring LLM confidence. We present a theoretical framework to decompose the reasoning error into estimation error and model error, revealing that perplexity methods suffer from substantial model error due to lacking consistency function while self-consistency suffers from high estimation error because of a slow error convergence rate. To tackle this limitation, we introduce Reasoning-pruning Perplexity Consistency (Rpc), a confidence estimation method with two key components: Perplexity Consistency utilizes internal LLM probabilities to achieve faster estimation error convergence in major cases. Reasoning Pruning prunes low-probability reasoning paths to prevent the remaining degeneration cases. Our theoretical analysis and extensive experiments demonstrate that Rpc achieves superior error convergence rates and reasoning performance compared to existing methods.",
+        "Limitations and Future Work. One limitation of this work is that we have only taken an initial step toward improving confidence estimation for self-consistency. The two components of Rpc can be further enhanced: Perplexity Consistency could incorporate additional probability metrics from LLM outputs, while Reasoning Pruning could be extended with more sophisticated pruning strategies, such as analyzing the probability distribution of each candidate answer. We believe our initial approach and theoretical analysis can guide future research in this promising direction."
+      ],
+      "subsections": []
+    },
+    "Impact Statement": {
+      "paragraphs": [
+        "This work advances the efficiency and effectiveness of LLM reasoning with multiple reasoning paths. Our method can benefit various applications requiring reliable artificial intelligence reasoning, such as mathematical problem-solving and code generation. There are many potential societal consequences of our work, none of which we feel must be specifically highlighted here."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Theoretical Results": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "A.1 Proof of Proposition1and Proposition2",
+          "paragraphs": [
+            "(Sc) First, we denote the sampling probability distribution of the LLM as p​(y^|x)p(\\hat{y}\\,|\\,x), and the confidence function as p^(Sc)​(y^|x)=1n​∑i=1n𝕀​[y~i=y^i]\\hat{p}^{(\\textsc{Sc})}(\\hat{y}\\,|\\,x)=\\frac{1}{n}\\sum_{i=1}^{n}\\mathbb{I}[\\tilde{y}_{i}=\\hat{y}_{i}], where y~1,…,y~n\\tilde{y}_{1},\\dots,\\tilde{y}_{n} are sampled on the distribution p​(y^|x)p(\\hat{y}\\,|\\,x). Apply the error decomposition, we have",
+            "(Ppl) Another way is to use the confidence function to build the sampling probability distribution, i.e.,",
+            "Now, we have",
+            "Hence,",
+            "Hence, we complete the proof. ∎"
+          ]
+        },
+        {
+          "title": "A.2 Model Error Comparison in Ideal Case",
+          "paragraphs": [
+            "Consider a setting with infinite sampling of reasoning paths (n→∞n\\to\\infty) where each incorrect reasoning path leads to a unique answer, that is, g​(t~i)≠g​(t~j)g(\\tilde{t}_{i})\\neq g(\\tilde{t}_{j}) for any i≠ji\\neq j where g​(t~i)≠yg(\\tilde{t}_{i})\\neq y and g​(t~j)≠yg(\\tilde{t}_{j})\\neq y. The model error of self-consistency (ℰModel(Sc)\\mathcal{E}_{\\text{Model}}^{(\\textsc{Sc})}) and perplexity (ℰModel(Ppl)\\mathcal{E}_{\\text{Model}}^{(\\textsc{Ppl})}) satisfy:",
+            "The inequality is strict when the consistency function identifies equivalent correct reasoning paths more than once.",
+            "Although the assumptions in Proposition 3 are idealized, this special case demonstrates that the consistency function in self-consistency achieves better model error than the perplexity method. In practice, the perplexity method always gives larger model error compared to the self-consistency method, as it does not leverage the consistency function to analyze the structural properties of specific reasoning problems. The proof is presented as follows.",
+            "We first recall the definitions of the model error for self-consistency and perplexity: where ℛ=Set​(t~1,…,t~n)\\mathcal{R}=\\text{Set}(\\tilde{t}_{1},\\ldots,\\tilde{t}_{n}) is the set of reasoning paths sampled from the LLM. We can compute the difference between the model error of Sc and Ppl as follows: Assuming infinite samplings, the unbiasedness of Sc gives us: For any y^\\hat{y}, consider two cases: Therefore, ℰModel(Ppl)−ℰModel(Sc)≤0\\mathcal{E}_{\\text{Model}}^{(\\textsc{Ppl})}-\\mathcal{E}_{\\text{Model}}^{(\\textsc{Sc})}\\leq 0, indicating that the model error of self-consistency is always less than or equal to the model error of perplexity under our assumptions. Moreover, if the consistency function is effective at least once, the model error of self-consistency is strictly less than the model error of perplexity. ∎",
+            "(i) If y^=y\\hat{y}=y, then y^\\hat{y} is the correct answer. We have Let p^(Sc)​(y^|x)2=B2\\hat{p}^{(\\textsc{Sc})}(\\hat{y}\\,|\\,x)^{2}=B^{2} and ∑t^∈ℛ𝕀​[g​(t^)=y^]=C\\sum_{\\hat{t}\\in\\mathcal{R}}\\mathbb{I}[g(\\hat{t})=\\hat{y}]=C, then Equality holds if ∑t^∈ℛ𝕀​[g​(t^)=y^]=C=1\\sum_{\\hat{t}\\in\\mathcal{R}}\\mathbb{I}[g(\\hat{t})=\\hat{y}]=C=1. This indicates that (A)<0(A)<0 if the consistency function is effective at least once, making ∑t^∈ℛ𝕀​[g​(t^)=y^]=C>1\\sum_{\\hat{t}\\in\\mathcal{R}}\\mathbb{I}[g(\\hat{t})=\\hat{y}]=C>1.",
+            "(ii) If y^≠y\\hat{y}\\neq y, then y^\\hat{y} is incorrect. Assuming distinct answers for wrong reasoning paths, we have ∑t^∈ℛ𝕀​[g​(t^)=y^]=1\\sum_{\\hat{t}\\in\\mathcal{R}}\\mathbb{I}[g(\\hat{t})=\\hat{y}]=1, thus since only one t^∈ℛ\\hat{t}\\in\\mathcal{R} satisfying that g​(t^)g(\\hat{t}) equals the incorrect answer y^\\hat{y}.",
+            "If y^=y\\hat{y}=y, then y^\\hat{y} is the correct answer. We have",
+            "Let p^(Sc)​(y^|x)2=B2\\hat{p}^{(\\textsc{Sc})}(\\hat{y}\\,|\\,x)^{2}=B^{2} and ∑t^∈ℛ𝕀​[g​(t^)=y^]=C\\sum_{\\hat{t}\\in\\mathcal{R}}\\mathbb{I}[g(\\hat{t})=\\hat{y}]=C, then",
+            "Equality holds if ∑t^∈ℛ𝕀​[g​(t^)=y^]=C=1\\sum_{\\hat{t}\\in\\mathcal{R}}\\mathbb{I}[g(\\hat{t})=\\hat{y}]=C=1. This indicates that (A)<0(A)<0 if the consistency function is effective at least once, making ∑t^∈ℛ𝕀​[g​(t^)=y^]=C>1\\sum_{\\hat{t}\\in\\mathcal{R}}\\mathbb{I}[g(\\hat{t})=\\hat{y}]=C>1.",
+            "If y^≠y\\hat{y}\\neq y, then y^\\hat{y} is incorrect. Assuming distinct answers for wrong reasoning paths, we have ∑t^∈ℛ𝕀​[g​(t^)=y^]=1\\sum_{\\hat{t}\\in\\mathcal{R}}\\mathbb{I}[g(\\hat{t})=\\hat{y}]=1, thus",
+            "since only one t^∈ℛ\\hat{t}\\in\\mathcal{R} satisfying that g​(t^)g(\\hat{t}) equals the incorrect answer y^\\hat{y}."
+          ]
+        },
+        {
+          "title": "A.3 Proof of Theorem3",
+          "paragraphs": [
+            "For given answer y^\\hat{y}, the estimated probability of Pc is p^​(y^|x)=∑i=1n𝕀​[g​(t~i)=y^]​p​(t~i|x)\\hat{p}(\\hat{y}\\,|\\,x)=\\sum_{i=1}^{n}\\mathbb{I}[g(\\tilde{t}_{i})=\\hat{y}]p(\\tilde{t}_{i}\\,|\\,x), allowing the reasoning error of Pc can be computed as follows.",
+            "We define k:=|{t~∣g​(t~)=y^}|k:=|\\{\\tilde{t}\\mid g(\\tilde{t})=\\hat{y}\\}|, which means that how many reasoning paths whose answers are y^\\hat{y} can be covered given limited sampling budget. Note that we further have 𝔼t~∼p​(t|x)​[𝕀​[g​(t~)=y^]​p​(t~|x)]=1k​p​(y^|x)\\mathbb{E}_{\\tilde{t}\\sim p(t\\,|\\,x)}[\\mathbb{I}[g(\\tilde{t})=\\hat{y}]p(\\tilde{t}\\,|\\,x)]=\\frac{1}{k}{p}(\\hat{y}\\,|\\,x), thus",
+            "where α:=1k​p​(y^|x)\\alpha:=\\frac{1}{k}p(\\hat{y}\\,|\\,x). Again, we have",
+            "Hence,",
+            "which completes the proof. ∎"
+          ]
+        },
+        {
+          "title": "A.4 Proof of Theroem5",
+          "paragraphs": [
+            "Let us set the pruning threshold by τ:=p​(y|x)\\tau:=p(y\\,|\\,x). Then, we have",
+            "However, we only have an estimation of p​(y^|x)p(\\hat{y}\\,|\\,x), i.e., p^​(y^|x)=k​𝔼t~∼p​(t|x)​[𝕀​[g​(t~)=y^]​p​(t~|x)]≈kk^​∑i=1kp​(t~i|x)\\hat{p}(\\hat{y}\\,|\\,x)=k\\mathbb{E}_{\\tilde{t}\\sim p(t\\,|\\,x)}[\\mathbb{I}[g(\\tilde{t})=\\hat{y}]p(\\tilde{t}\\,|\\,x)]\\approx\\frac{k}{\\hat{k}}\\sum_{i=1}^{k}p(\\tilde{t}_{i}\\,|\\,x), where t~1,…,t~k^\\tilde{t}_{1},\\dots,\\tilde{t}_{\\hat{k}} are k^\\hat{k} sampled reasoning paths whose answer is y^\\hat{y}. Therefore, the reasoning error of our approximate version can be computed by",
+            "Hence, we only need to consider the probability 1k^​∑i=1k^p​(t~i|x)>1m​τ\\frac{1}{\\hat{k}}\\sum_{i=1}^{\\hat{k}}p(\\tilde{t}_{i}\\,|\\,x)>\\frac{1}{m}\\tau. Using Hoeffding’s inequality, we can obtain that",
+            "We set γ=τ−1k​p​(y^|x)=τ+α−1\\gamma=\\tau-\\frac{1}{k}p(\\hat{y}\\,|\\,x)=\\tau+\\alpha-1, then",
+            "Hence, we complete the proof. ∎"
+          ]
+        }
+      ]
+    },
+    "Appendix B Pseudo Code ofRpcMethod": {
+      "paragraphs": [
+        "In this section, we provide the pseudo code of Rpc. The output of Algorithm 1 is a set of reasoning paths with the highest confidence. The extraction function g​(⋅)g(\\cdot) can be used to transform the reasoning paths to answers."
+      ],
+      "subsections": []
+    },
+    "Appendix C Detailed Experimental Settings": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "C.1 Datasets",
+          "paragraphs": [
+            "For mathematical reasoning tasks, we evaluate our proposed methods and comparison methods on four mathematical datasets that include MATH, MathOdyssey, OlympiadBench, and AIME datasets.",
+            "• MATH dataset (Hendrycks et al., 2021b) is a dataset comprised of challenging competition math problems and we use its 5,000 testing data for evaluation.",
+            "• MathOdyssey dataset (Fang et al., 2024) contains 387 problems, covering advanced high-school level, university-level, and Olympiad-level mathematics.",
+            "• OlympiadBench dataset (He et al., 2024) contains 8,476 Olympiad-level mathematics and physics problems. We select the English problems without images, resulting in a testing dataset of 1,284 problems.",
+            "• AIME dataset (Zamil & Rabby, 2024) contains 993 test problems collected from the American Invitational Mathematics Examination, spanning from 1983 to 2024.",
+            "MATH dataset (Hendrycks et al., 2021b) is a dataset comprised of challenging competition math problems and we use its 5,000 testing data for evaluation.",
+            "MathOdyssey dataset (Fang et al., 2024) contains 387 problems, covering advanced high-school level, university-level, and Olympiad-level mathematics.",
+            "OlympiadBench dataset (He et al., 2024) contains 8,476 Olympiad-level mathematics and physics problems. We select the English problems without images, resulting in a testing dataset of 1,284 problems.",
+            "AIME dataset (Zamil & Rabby, 2024) contains 993 test problems collected from the American Invitational Mathematics Examination, spanning from 1983 to 2024.",
+            "For code generation tasks, we conduct experiments on three common benchmark datasets. HumanEval (Chen et al., 2021) contains 164 hand-written Python programming problems. MBPP (Austin et al., 2021)(sanitized version) consists of 427 entry-level programming problems. We also include the introductory-level problems of APPS (Hendrycks et al., 2021a), which contains 1000 problems."
+          ]
+        },
+        {
+          "title": "C.2 Detailes of Mathematical Reasoning Task",
+          "paragraphs": [
+            "For all the experiments in the main paper, we use a sampling temperature of 1.0 and set the top-k parameter to 0.95.",
+            "The InternLM2-MATH-Plus 1.8B and 7B models are chat models that facilitate conversations between two roles: “user” and “assistant”. The prompt for the “user” role is provided in Prompt C.2. Similarly, the prompt for the DeepSeek-Math 7B model is shown in Prompt C.2.",
+            "We observed that the tuned math models are challenging to prompt for generating confidence. Therefore, we adopted the methods from Tian et al. (2023) to calculate the probability based on the likelihood of the first generated “True” token and the first generated “False” token. The corresponding prompt is provided in Prompt C.2.",
+            "[SVG Content: Prompt 1: Prompt for InternLM-2-Math-Plus Problem:\\n{instruction}\\n Let’s think step by step\\n Solution:\\n]",
+            "[SVG Content: Prompt 2: Prompt for DeepSeek-Math instruction\\n Please reason step by step, and put your final answer within \\\\boxed{{}}.]",
+            "[SVG Content: Prompt 3: Prompt for DeepSeek-Math Question: question\\n Proposed Answer: answer\\n Is the proposed answer:\\n \\t(A) True or\\n \\t(B) False?\\n The proposed answer is:]"
+          ]
+        },
+        {
+          "title": "Prompt for Math Reasoning Tasks.",
+          "paragraphs": [
+            "The InternLM2-MATH-Plus 1.8B and 7B models are chat models that facilitate conversations between two roles: “user” and “assistant”. The prompt for the “user” role is provided in Prompt C.2. Similarly, the prompt for the DeepSeek-Math 7B model is shown in Prompt C.2.",
+            "[SVG Content: Prompt 1: Prompt for InternLM-2-Math-Plus Problem:\\n{instruction}\\n Let’s think step by step\\n Solution:\\n]",
+            "[SVG Content: Prompt 2: Prompt for DeepSeek-Math instruction\\n Please reason step by step, and put your final answer within \\\\boxed{{}}.]"
+          ]
+        },
+        {
+          "title": "Prompt for Math Verbalized Method.",
+          "paragraphs": [
+            "We observed that the tuned math models are challenging to prompt for generating confidence. Therefore, we adopted the methods from Tian et al. (2023) to calculate the probability based on the likelihood of the first generated “True” token and the first generated “False” token. The corresponding prompt is provided in Prompt C.2.",
+            "[SVG Content: Prompt 3: Prompt for DeepSeek-Math Question: question\\n Proposed Answer: answer\\n Is the proposed answer:\\n \\t(A) True or\\n \\t(B) False?\\n The proposed answer is:]"
+          ]
+        },
+        {
+          "title": "C.3 Detailes of Code Generation Task",
+          "paragraphs": [
+            "On the code generation task, we let LLM generate a code snippet to solve a given programming problem, and then evaluate its functional correctness based on the ground-truth test cases provided by the dataset. In detail, we set the top p to 0.95, and the max generation length to 1024. For code snippet post-processing, we first extract the code text from the code block surrounded by triple-backticks(‘‘‘), and then we follow Chen et al. (2021) to truncate the generated code snippet before the following stop sequences: “\\nclass”, “\\ndef”, “\\n#”, “\\nif”, “\\nprint”. At the same time, we also obtain the log-probability of each token from the LLM response. For ”verbalization” setting, the verbalized confidence is also extracted from the text generated by LLM along with the code snippet.",
+            "We follow Chen et al. (2023a) to sample 100 test cases for each programming problem from the same model. Then, we achieved self-consistency in code at the semantic equivalence level, which is based on the execution behavior of any two codes on this set of test cases. More formally, we implemented the consistency function 𝕀C​(⋅,⋅)\\mathbb{I}_{C}(\\cdot,\\cdot) as an indicator function that indicates whether two codes are semantically equivalent, i.e., 𝕀C​(x,y)=1\\mathbb{I}_{C}(x,y)=1 if and only if code xx and yy execute the same result on this set of test cases.",
+            "The prompt for generating code consists of a header, a functional signature, and a docstring and LLM needs to implement the body of this function. An Illustration is shown in Prompt C.3.",
+            "For generating code with verbalized confidence, we added instructions for generating verbalized confidence, as well as format requirements to facilitate the extraction of code and confidence score. We also gave a simple example to help LLM understand the format requirements at the end of the prompt. An Illustration is shown in Prompt C.3.",
+            "[SVG Content: Prompt 4: Prompt for Generating Code ⬇ from typing import List def has_close_elements(numbers: List[float], threshold: float) -> bool: \"\"\"␣Check␣if␣in␣given␣list␣of␣numbers, are␣any␣two␣numbers␣closer␣to each␣other␣than␣given␣threshold. \"\"\"\\end{lstlisting} \\end{promptbox} \\end{figure} \\paragraph{Prompt for Generating Test Cases.} For generating test cases, we implemented the function body with a ‘‘pass’’ statement on the basis of the prompt to generate the code, and added a comment to require the LLM to generate test cases for the programming problem. An illustration is shown in Prompt~\\ref{pt:generate-cases}. \\begin{figure}[ht] \\begin{promptbox}[label=pt:generate-cases]{Prompt for Generating Test Cases.} \\begin{lstlisting} from typing import List def has_close_elements(numbers: List[float], threshold: float) -> bool: \"\"\"␣Check␣if␣in␣given␣list␣of␣numbers,␣are␣any␣two␣numbers␣closer␣to each␣other␣than␣given␣threshold. \"\"\" pass # check the correctness of has_close_elements assert]",
+            "[SVG Content: Prompt 5: Prompt for Code Verbalized Method Come up with a solution that solves the following programming question and provide your confidence score in this solution like 0%, 10%, … 100%. ⬇ import heapq as hq def heap_queue_largest(nums,n): ’’’ Write␣a␣function␣to␣find␣the␣n␣largest␣integers␣from␣a␣given␣list of␣numbers,␣returned␣in␣descending␣order. ’’’ ‘‘‘ Format requirement: output in the form of the following example. Do not provide any additional explanations. Here is an output example: Solution: ⬇ ‘‘‘python your code ... ‘‘‘ Confidence:]"
+          ]
+        },
+        {
+          "title": "Code Generation.",
+          "paragraphs": [
+            "On the code generation task, we let LLM generate a code snippet to solve a given programming problem, and then evaluate its functional correctness based on the ground-truth test cases provided by the dataset. In detail, we set the top p to 0.95, and the max generation length to 1024. For code snippet post-processing, we first extract the code text from the code block surrounded by triple-backticks(‘‘‘), and then we follow Chen et al. (2021) to truncate the generated code snippet before the following stop sequences: “\\nclass”, “\\ndef”, “\\n#”, “\\nif”, “\\nprint”. At the same time, we also obtain the log-probability of each token from the LLM response. For ”verbalization” setting, the verbalized confidence is also extracted from the text generated by LLM along with the code snippet."
+          ]
+        },
+        {
+          "title": "Self-consistency on Code.",
+          "paragraphs": [
+            "We follow Chen et al. (2023a) to sample 100 test cases for each programming problem from the same model. Then, we achieved self-consistency in code at the semantic equivalence level, which is based on the execution behavior of any two codes on this set of test cases. More formally, we implemented the consistency function 𝕀C​(⋅,⋅)\\mathbb{I}_{C}(\\cdot,\\cdot) as an indicator function that indicates whether two codes are semantically equivalent, i.e., 𝕀C​(x,y)=1\\mathbb{I}_{C}(x,y)=1 if and only if code xx and yy execute the same result on this set of test cases."
+          ]
+        },
+        {
+          "title": "Prompt for Generating Code.",
+          "paragraphs": [
+            "The prompt for generating code consists of a header, a functional signature, and a docstring and LLM needs to implement the body of this function. An Illustration is shown in Prompt C.3.",
+            "[SVG Content: Prompt 4: Prompt for Generating Code ⬇ from typing import List def has_close_elements(numbers: List[float], threshold: float) -> bool: \"\"\"␣Check␣if␣in␣given␣list␣of␣numbers, are␣any␣two␣numbers␣closer␣to each␣other␣than␣given␣threshold. \"\"\"\\end{lstlisting} \\end{promptbox} \\end{figure} \\paragraph{Prompt for Generating Test Cases.} For generating test cases, we implemented the function body with a ‘‘pass’’ statement on the basis of the prompt to generate the code, and added a comment to require the LLM to generate test cases for the programming problem. An illustration is shown in Prompt~\\ref{pt:generate-cases}. \\begin{figure}[ht] \\begin{promptbox}[label=pt:generate-cases]{Prompt for Generating Test Cases.} \\begin{lstlisting} from typing import List def has_close_elements(numbers: List[float], threshold: float) -> bool: \"\"\"␣Check␣if␣in␣given␣list␣of␣numbers,␣are␣any␣two␣numbers␣closer␣to each␣other␣than␣given␣threshold. \"\"\" pass # check the correctness of has_close_elements assert]"
+          ]
+        },
+        {
+          "title": "Prompt for Code Verbalized Method.",
+          "paragraphs": [
+            "For generating code with verbalized confidence, we added instructions for generating verbalized confidence, as well as format requirements to facilitate the extraction of code and confidence score. We also gave a simple example to help LLM understand the format requirements at the end of the prompt. An Illustration is shown in Prompt C.3.",
+            "[SVG Content: Prompt 5: Prompt for Code Verbalized Method Come up with a solution that solves the following programming question and provide your confidence score in this solution like 0%, 10%, … 100%. ⬇ import heapq as hq def heap_queue_largest(nums,n): ’’’ Write␣a␣function␣to␣find␣the␣n␣largest␣integers␣from␣a␣given␣list of␣numbers,␣returned␣in␣descending␣order. ’’’ ‘‘‘ Format requirement: output in the form of the following example. Do not provide any additional explanations. Here is an output example: Solution: ⬇ ‘‘‘python your code ... ‘‘‘ Confidence:]"
+          ]
+        }
+      ]
+    },
+    "Appendix D Detailed Experimental Results": {
+      "paragraphs": [
+        "[Figure: (a) MATH]",
+        "[Figure: (a) MATH]",
+        "[Figure: (b) MathOdyssey]",
+        "[Figure: (c) OlympiadBench]",
+        "[Figure: (d) AIME]",
+        "[Figure: (a) MATH]",
+        "[Figure: (a) MATH]",
+        "[Figure: (b) MathOdyssey]",
+        "[Figure: (c) OlympiadBench]",
+        "[Figure: (d) AIME]",
+        "[Figure: (a) MATH]",
+        "[Figure: (a) MATH]",
+        "[Figure: (b) MathOdyssey]",
+        "[Figure: (c) OlympiadBench]",
+        "[Figure: (d) AIME]",
+        "[Table: Table 4: Performance on GSM8k datasets using InternLM-2-MATH-Plus 7B model with diverse sampling temperatures when sampling size n=6n=6. The best performance is highlighted in bold. The results show that the Rpc approach outperforms the Sc method. ]",
+        "[Table: Table 5: Performance Comparison of different models and different parameter scales. The accuracy is reported as the mean and stdev. The best performance is highlighted in bold. The results show that our Rpc approach consistently outperforms existing methods.]"
+      ],
+      "subsections": [
+        {
+          "title": "D.1 Performance on GSM8k dataset.",
+          "paragraphs": [
+            "In Section 2, we analyze the GSM8k dataset, which is relatively easy that allows accurate estimation of ground-truth probabilities with 100 samples. Due to this characteristic, we exclude the GSM8k dataset from our main experiments, as a limited number of samples is sufficient for accurate confidence evaluation. Table 4 shows the performance of InternLM-2-MATH-Plus 7B model on GSM8k with various sampling temperatures, where the number of samples is set to n=6n=6 to maintain consistency with Figure 2. The results show that the Rpc method outperforms comparison methods."
+          ]
+        },
+        {
+          "title": "D.2 Results with High Sampling Temperature.",
+          "paragraphs": [
+            "Using a high sampling temperature enables language models to produce more diverse outputs, potentially enhancing reasoning performance. However, it also leads to an increase in estimation error. To investigate the effectiveness of our approaches in addressing the estimation error issue, we conducted experiments with higher sampling temperatures (T = 1.1 and T = 1.3) using the InternLM-2-MATH-Plus 7B model. The results in Table 5 indicate that our Rpc approach consistently surpasses baseline methods. Notably, a significant performance gap persists between Rpc and Sc, indicating that our methods effectively tackle the estimation error issue even under high-temperature sampling conditions."
+          ]
+        },
+        {
+          "title": "D.3 Performance with Diverse Number of Samplings",
+          "paragraphs": [
+            "In the Figure 4, we plot the accuracy of the InternLM-2-MATH-Plus 7B model on four mathematical reasoning datasets with different sample sizes nn. Here, we give the detailed results on different models and different sampling temperatures.",
+            "The performance of relateively small model, InternLM-2-MATH-Plus 1.8B, is presented in Figure 7. Similar conclusions can be drawn from these results. For the MathOdyssey dataset, the Ppl method shows superior performance compared to other methods, which can be attributed to the relatively low model error of Ppl on this dataset, allowing the perplexity-based approach to function effectively. Furthermore, the Rpc method consistently outperforms the Sc method, which demonstrates its ability to enhance the convergence properties of the Sc method.",
+            "We also evaluate the InternLM-2-MATH-Plus 7B model with sampling temperatures T=1.1T=1.1 and T=1.3T=1.3. The results are presented in Figure 8 and Figure 9. The results demonstrate that the Rpc method effectively improves the model’s reasoning performance at higher temperatures, as it leverages the increased diversity in sampling to enhance self-consistency. In contrast, the Sc method’s performance deteriorates due to increased estimation errors at higher temperatures.",
+            "[Figure: (a) MATH]",
+            "[Figure: (a) MATH]",
+            "[Figure: (b) MathOdyssey]",
+            "[Figure: (c) OlympiadBench]",
+            "[Figure: (d) AIME]",
+            "[Figure: (a) MATH]",
+            "[Figure: (a) MATH]",
+            "[Figure: (b) MathOdyssey]",
+            "[Figure: (c) OlympiadBench]",
+            "[Figure: (d) AIME]",
+            "[Figure: (a) MATH]",
+            "[Figure: (a) MATH]",
+            "[Figure: (b) MathOdyssey]",
+            "[Figure: (c) OlympiadBench]",
+            "[Figure: (d) AIME]"
+          ]
+        },
+        {
+          "title": "Different Models Scales.",
+          "paragraphs": [
+            "The performance of relateively small model, InternLM-2-MATH-Plus 1.8B, is presented in Figure 7. Similar conclusions can be drawn from these results. For the MathOdyssey dataset, the Ppl method shows superior performance compared to other methods, which can be attributed to the relatively low model error of Ppl on this dataset, allowing the perplexity-based approach to function effectively. Furthermore, the Rpc method consistently outperforms the Sc method, which demonstrates its ability to enhance the convergence properties of the Sc method.",
+            "[Figure: (a) MATH]",
+            "[Figure: (a) MATH]",
+            "[Figure: (b) MathOdyssey]",
+            "[Figure: (c) OlympiadBench]",
+            "[Figure: (d) AIME]"
+          ]
+        },
+        {
+          "title": "Different Sampling Temperatures.",
+          "paragraphs": [
+            "We also evaluate the InternLM-2-MATH-Plus 7B model with sampling temperatures T=1.1T=1.1 and T=1.3T=1.3. The results are presented in Figure 8 and Figure 9. The results demonstrate that the Rpc method effectively improves the model’s reasoning performance at higher temperatures, as it leverages the increased diversity in sampling to enhance self-consistency. In contrast, the Sc method’s performance deteriorates due to increased estimation errors at higher temperatures.",
+            "[Figure: (a) MATH]",
+            "[Figure: (a) MATH]",
+            "[Figure: (b) MathOdyssey]",
+            "[Figure: (c) OlympiadBench]",
+            "[Figure: (d) AIME]",
+            "[Figure: (a) MATH]",
+            "[Figure: (a) MATH]",
+            "[Figure: (b) MathOdyssey]",
+            "[Figure: (c) OlympiadBench]",
+            "[Figure: (d) AIME]"
+          ]
+        }
+      ]
+    }
+  },
+  "references": [
+    "Abbasi-Yadkori et al. (2024) Abbasi-Yadkori, Y., Kuzborskij, I., György, A., and Szepesvári, C. To believe or not to believe your LLM. CoRR, 2024.",
+    "Aggarwal et al. (2023) Aggarwal, A. M. P., Yang, Y., and Mausam. Let’s sample step by step: Adaptive-consistency for efficient reasoning and coding with llms. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, pp. 12375–12396, 2023.",
+    "Austin et al. (2021) Austin, J., Odena, A., Nye, M. I., Bosma, M., Michalewski, H., Dohan, D., Jiang, E., Cai, C. J., Terry, M., Le, Q. V., and Sutton, C. Program synthesis with large language models. CoRR, abs/2108.07732, 2021.",
+    "Becker & Soatto (2024) Becker, E. and Soatto, S. Cycles of thought: Measuring LLM confidence through stable explanations. CoRR, abs/2406.03441, 2024.",
+    "Bendale & Boult (2016) Bendale, A. and Boult, T. E. Towards open set deep networks. In Proceedings of the 2016 IEEE Conference on Computer Vision and Pattern Recognition, pp. 1563–1572, 2016.",
+    "Blei et al. (2003) Blei, D. M., Ng, A. Y., and Jordan, M. I. Latent dirichlet allocation. Journal of Machine Learning Research, 3(1):993–1022, 2003.",
+    "Chen et al. (2023a) Chen, B., Zhang, F., Nguyen, A., Zan, D., Lin, Z., Lou, J., and Chen, W. Codet: Code generation with generated tests. In Proceedings of the 11th International Conference on Learning Representations, 2023a.",
+    "Chen et al. (2021) Chen, M., Tworek, J., Jun, H., Yuan, Q., de Oliveira Pinto, H. P., Kaplan, J., Edwards, H., Burda, Y., Joseph, N., Brockman, G., Ray, A., Puri, R., Krueger, G., Petrov, M., Khlaaf, H., Sastry, G., Mishkin, P., Chan, B., Gray, S., Ryder, N., Pavlov, M., Power, A., Kaiser, L., Bavarian, M., Winter, C., Tillet, P., Such, F. P., Cummings, D., Plappert, M., Chantzis, F., Barnes, E., Herbert-Voss, A., Guss, W. H., Nichol, A., Paino, A., Tezak, N., Tang, J., Babuschkin, I., Balaji, S., Jain, S., Saunders, W., Hesse, C., Carr, A. N., Leike, J., Achiam, J., Misra, V., Morikawa, E., Radford, A., Knight, M., Brundage, M., Murati, M., Mayer, K., Welinder, P., McGrew, B., Amodei, D., McCandlish, S., Sutskever, I., and Zaremba, W. Evaluating large language models trained on code. CoRR, abs/2107.03374, 2021.",
+    "Chen et al. (1998) Chen, S. F., Beeferman, D., and Rosenfeld, R. Evaluation metrics for language models. 1998.",
+    "Chen et al. (2023b) Chen, X., Aksitov, R., Alon, U., Ren, J., Xiao, K., Yin, P., Prakash, S., Sutton, C., Wang, X., and Zhou, D. Universal self-consistency for large language model generation. arXiv preprint arXiv:2311.17311, 2023b.",
+    "Chen et al. (2024) Chen, Y., Jhamtani, H., Sharma, S., Fan, C., and Wang, C. Steering large language models between code execution and textual reasoning. CoRR, abs/2410.03524, 2024.",
+    "Cheng et al. (2024) Cheng, F., Zouhar, V., Arora, S., Sachan, M., Strobelt, H., and El-Assady, M. Relic: Investigating large language model responses using self-consistency. In Proceedings of the CHI Conference on Human Factors in Computing Systems, pp. 1–18, 2024.",
+    "Deng et al. (2024) Deng, Y., Zhang, W., Lam, W., Ng, S., and Chua, T. Plug-and-play policy planner for large language model powered dialogue agents. In Proceedings of the 12th International Conference on Learning Representations, 2024.",
+    "Dhuliawala et al. (2024) Dhuliawala, S., Komeili, M., Xu, J., Raileanu, R., Li, X., Celikyilmaz, A., and Weston, J. Chain-of-verification reduces hallucination in large language models. In Findings of the Association for Computational Linguistics, pp. 3563–3578, 2024.",
+    "Duan et al. (2024) Duan, J., Cheng, H., Wang, S., Zavalny, A., Wang, C., Xu, R., Kailkhura, B., and Xu, K. Shifting attention to relevance: Towards the predictive uncertainty quantification of free-form large language models. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics, pp. 5050–5063, 2024.",
+    "Fang et al. (2024) Fang, M., Wan, X., Lu, F., Xing, F., and Zou, K. Mathodyssey: Benchmarking mathematical problem-solving skills in large language models using odyssey math data. CoRR, abs/2406.18321, 2024.",
+    "Fu et al. (2023) Fu, Y., Peng, H., Sabharwal, A., Clark, P., and Khot, T. Complexity-based prompting for multi-step reasoning. In Proceedings of the 11th International Conference on Learning Representations, 2023.",
+    "Guan et al. (2025) Guan, X., Zhang, L. L., Liu, Y., Shang, N., Sun, Y., Zhu, Y., Yang, F., and Yang, M. rstar-math: Small llms can master math reasoning with self-evolved deep thinking, 2025.",
+    "He et al. (2024) He, C., Luo, R., Bai, Y., Hu, S., Thai, Z. L., Shen, J., Hu, J., Han, X., Huang, Y., Zhang, Y., Liu, J., Qi, L., Liu, Z., and Sun, M. Olympiadbench: A challenging benchmark for promoting AGI with olympiad-level bilingual multimodal scientific problems. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics, pp. 3828–3850, 2024.",
+    "Hendrycks et al. (2021a) Hendrycks, D., Basart, S., Kadavath, S., Mazeika, M., Arora, A., Guo, E., Burns, C., Puranik, S., He, H., Song, D., and Steinhardt, J. Measuring coding challenge competence with APPS. In Proceedings of the Neural Information Processing Systems Track on Datasets and Benchmarks, 2021a.",
+    "Hendrycks et al. (2021b) Hendrycks, D., Burns, C., Kadavath, S., Arora, A., Basart, S., Tang, E., Song, D., and Steinhardt, J. Measuring mathematical problem solving with the math dataset. In Advances in Neural Information Processing Systems Track on Datasets and Benchmarks, 2021b.",
+    "Huang et al. (2023) Huang, Y., Song, J., Wang, Z., Zhao, S., Chen, H., Juefei-Xu, F., and Ma, L. Look before you leap: An exploratory study of uncertainty measurement for large language models. arXiv preprint arXiv:2307.10236, 2023.",
+    "Kadavath et al. (2022) Kadavath, S., Conerly, T., Askell, A., Henighan, T., Drain, D., Perez, E., Schiefer, N., Hatfield-Dodds, Z., DasSarma, N., Tran-Johnson, E., Johnston, S., Showk, S. E., Jones, A., Elhage, N., Hume, T., Chen, A., Bai, Y., Bowman, S., Fort, S., Ganguli, D., Hernandez, D., Jacobson, J., Kernion, J., Kravec, S., Lovitt, L., Ndousse, K., Olsson, C., Ringer, S., Amodei, D., Brown, T., Clark, J., Joseph, N., Mann, B., McCandlish, S., Olah, C., and Kaplan, J. Language models (mostly) know what they know. CoRR, abs/2207.05221, 2022.",
+    "Kojima et al. (2022) Kojima, T., Gu, S. S., Reid, M., Matsuo, Y., and Iwasawa, Y. Large language models are zero-shot reasoners. In Advances in Neural Information Processing Systems, pp. 22199–22213, 2022.",
+    "Kozma (2021) Kozma, L. Useful inequalities, 2021.",
+    "Lewkowycz et al. (2022) Lewkowycz, A., Andreassen, A., Dohan, D., Dyer, E., Michalewski, H., Ramasesh, V. V., Slone, A., Anil, C., Schlag, I., Gutman-Solo, T., Wu, Y., Neyshabur, B., Gur-Ari, G., and Misra, V. Solving quantitative reasoning problems with language models. In Advances in Neural Information Processing Systems, pp. 3843–3857, 2022.",
+    "Li et al. (2024a) Li, C., Liang, J., Zeng, A., Chen, X., Hausman, K., Sadigh, D., Levine, S., Fei-Fei, L., Xia, F., and Ichter, B. Chain of code: Reasoning with a language model-augmented code emulator. In Proceedings of the 41st International Conference on Machine Learning, 2024a.",
+    "Li et al. (2024b) Li, C., Yuan, Z., Yuan, H., Dong, G., Lu, K., Wu, J., Tan, C., Wang, X., and Zhou, C. MuggleMath: Assessing the impact of query and response augmentation on math reasoning. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics, pp. 10230–10258, 2024b.",
+    "Li et al. (2024c) Li, Y., Yuan, P., Feng, S., Pan, B., Wang, X., Sun, B., Wang, H., and Li, K. Escape sky-high cost: Early-stopping self-consistency for multi-step reasoning. In Proceddings of the 12th International Conference on Learning Representations, 2024c.",
+    "Li et al. (2024d) Li, Z., Zhou, Z., Yao, Y., Zhang, X., Li, Y.-F., Cao, C., Yang, F., and Ma, X. Neuro-symbolic data generation for math reasoning. In Proceedings of the 38th Annual Conference on Neural Information Processing Systems, 2024d.",
+    "Liu et al. (2024) Liu, Y., Yang, T., Huang, S., Zhang, Z., Huang, H., Wei, F., Deng, W., Sun, F., and Zhang, Q. Calibrating llm-based evaluator. In Proceedings of the 2024 Joint International Conference on Computational Linguistics, Language Resources and Evaluation, pp. 2638–2656, 2024.",
+    "Luo et al. (2025) Luo, H., Sun, Q., Xu, C., Zhao, P., Lou, J., Tao, C., Geng, X., Lin, Q., Chen, S., and Zhang, D. Wizardmath: Empowering mathematical reasoning for large language models via reinforced evol-instruct. In Proceddings of the 13th International Conference on Learning Representations, 2025.",
+    "Malík & Vojnar (2021) Malík, V. and Vojnar, T. Automatically checking semantic equivalence between versions of large-scale c projects. In Proceedings of the14th IEEE Conference on Software Testing, Verification and Validation, pp. 329–339, 2021.",
+    "Marazzi & Ruffieux (1999) Marazzi, A. and Ruffieux, C. The truncated mean of an asymmetric distribution. Computational Statistics & Data Analysis, 32(1):79–100, 1999.",
+    "Murugadoss et al. (2025) Murugadoss, B., Poelitz, C., Drosos, I., Le, V., McKenna, N., Negreanu, C. S., Parnin, C., and Sarkar, A. Evaluating the evaluator: Measuring LLMs’ adherence to task evaluation instructions. In Proceedings of the 39th AAAI Conference on Artificial Intelligence, 2025.",
+    "Ouyang & Li (2023) Ouyang, S. and Li, L. Autoplan: Automatic planning of interactive decision-making tasks with large language models. In Findings of the Association for Computational Linguistics: EMNLP 2023, pp. 3114–3128, 2023.",
+    "Park et al. (2024) Park, S., Liu, X., Gong, Y., and Choi, E. Ensembling large language models with process reward-guided tree search for better complex reasoning. CoRR, abs/2412.15797, 2024.",
+    "Sblendorio et al. (2024) Sblendorio, E., Dentamaro, V., Cascio, A. L., Germini, F., Piredda, M., and Cicolini, G. Integrating human expertise & automated methods for a dynamic and multi-parametric evaluation of large language models’ feasibility in clinical decision-making. International Journal of Medical Informatics, 188:105501, 2024.",
+    "Shao et al. (2024) Shao, Z., Wang, P., Zhu, Q., Xu, R., Song, J., Zhang, M., Li, Y., Wu, Y., and Guo, D. Deepseekmath: Pushing the limits of mathematical reasoning in open language models. CoRR, abs/2402.03300, 2024.",
+    "Tian et al. (2023) Tian, K., Mitchell, E., Zhou, A., Sharma, A., Rafailov, R., Yao, H., Finn, C., and Manning, C. D. Just ask for calibration: Strategies for eliciting calibrated confidence scores from language models fine-tuned with human feedback. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, pp. 5433–5442. Association for Computational Linguistics, 2023.",
+    "Valmeekam et al. (2023) Valmeekam, K., Marquez, M., Sreedharan, S., and Kambhampati, S. On the planning abilities of large language models - A critical investigation. In Advances in Neural Information Processing Systems, pp. 75993–76005, 2023.",
+    "Wan et al. (2024) Wan, G., Wu, Y., Chen, J., and Li, S. Dynamic self-consistency: Leveraging reasoning paths for efficient LLM sampling. CoRR, abs/2408.17017, 2024.",
+    "Wang et al. (2022) Wang, X., Wei, J., Schuurmans, D., Le, Q. V., Chi, E. H., Narang, S., Chowdhery, A., and Zhou, D. Self-consistency improves chain of thought reasoning in language models. In Proceedings of the 11th International Conference on Learning Representations, 2022.",
+    "Wang et al. (2024) Wang, X., Feng, S., Li, Y., Yuan, P., Zhang, Y., Pan, B., Wang, H., Hu, Y., and Li, K. Make every penny count: Difficulty-adaptive self-consistency for cost-efficient reasoning. CoRR, abs/2408.13457, 2024.",
+    "Wei et al. (2022) Wei, J., Wang, X., Schuurmans, D., Bosma, M., Ichter, B., Xia, F., Chi, E. H., Le, Q. V., and Zhou, D. Chain-of-thought prompting elicits reasoning in large language models. In Advances in Neural Information Processing Systems, pp. 24824–24837, 2022.",
+    "Weibull (1951) Weibull, W. A statistical distribution function of wide applicability. Journal of applied mechanics, 1951.",
+    "Xiong et al. (2024) Xiong, M., Hu, Z., Lu, X., Li, Y., Fu, J., He, J., and Hooi, B. Can llms express their uncertainty? an empirical evaluation of confidence elicitation in llms. In Proceedings of the 12th International Conference on Learning Representations, 2024.",
+    "Yang et al. (2024) Yang, R., Rajagopal, D., Hayati, S. A., Hu, B., and Kang, D. Confidence calibration and rationalization for LLMs via multi-agent deliberation. In International Conference on Learning Representations Workshop on Reliable and Responsible Foundation Models, 2024.",
+    "YAO et al. (2024) YAO, Y., Wu, H., Guo, Z., Biyan, Z., Gao, J., Luo, S., Hou, H., Fu, X., and Song, L. Learning from correctness without prompting makes LLM efficient reasoner. In Proceedings of the 1st Conference on Language Modeling, 2024.",
+    "Ying et al. (2024) Ying, H., Zhang, S., Li, L., Zhou, Z., Shao, Y., Fei, Z., Ma, Y., Hong, J., Liu, K., Wang, Z., Wang, Y., Wu, Z., Li, S., Zhou, F., Liu, H., Zhang, S., Zhang, W., Yan, H., Qiu, X., Wang, J., Chen, K., and Lin, D. Internlm-math: Open math large language models toward verifiable reasoning, 2024.",
+    "Yu et al. (2024) Yu, L., Jiang, W., Shi, H., Yu, J., Liu, Z., Zhang, Y., Kwok, J. T., Li, Z., Weller, A., and Liu, W. Metamath: Bootstrap your own mathematical questions for large language models. In Proceddings of the 12th International Conference on Learning Representations, 2024.",
+    "Zamil & Rabby (2024) Zamil, P. and Rabby, G. Aime problems 1983 to 2024, 2024.",
+    "Zhang et al. (2024) Zhang, D., Zhoubian, S., Hu, Z., Yue, Y., Dong, Y., and Tang, J. ReST-MCTS*: LLM self-training via process reward guided tree search. In Proceedings of the 38th Annual Conference on Neural Information Processing Systems, 2024.",
+    "Zhang et al. (2023) Zhang, Z., Zhang, A., Li, M., and Smola, A. Automatic chain of thought prompting in large language models. In Proceedings of the 11th International Conference on Learning Representations, 2023.",
+    "Zhao et al. (2024) Zhao, X., Zhang, H., Pan, X., Yao, W., Yu, D., Wu, T., and Chen, J. Fact-and-reflection (far) improves confidence calibration of large language models. In Findings of the Association for Computational Linguistics, pp. 8702–8718, 2024.",
+    "Zhou et al. (2023) Zhou, D., Schärli, N., Hou, L., Wei, J., Scales, N., Wang, X., Schuurmans, D., Cui, C., Bousquet, O., Le, Q. V., and Chi, E. H. Least-to-most prompting enables complex reasoning in large language models. In Proceedings of the 11th International Conference on Learning Representations, 2023."
+  ]
+}

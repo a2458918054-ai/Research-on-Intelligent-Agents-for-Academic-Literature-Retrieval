@@ -1,0 +1,335 @@
+{
+  "title": "Reflection-Window Decoding: Text Generation with Selective Refinement",
+  "authors": "Zeyu TangZhenhao ChenLoka LiXiangchen SongYunlong DengYifan ShenGuangyi ChenPeter SpirtesKun Zhang",
+  "abstract": "The autoregressive decoding for text generation in large language models (LLMs), while widely used, is inherently suboptimal due to the lack of a built-in mechanism to perform refinement and/or correction of the generated content. In this paper, we consider optimality in terms of the joint probability over the generated response, when jointly considering all tokens at the same time. We theoretically characterize the potential deviation of the autoregressively generated response from its globally optimal counterpart that is of the same length. Our analysis suggests that we need to be cautious when noticeable uncertainty arises during text generation, which may signal the sub-optimality of the generation history. To address the pitfall of autoregressive decoding for text generation, we propose an approach that incorporates a sliding reflection window and a pausing criterion, such that refinement and generation can be carried out interchangeably as the decoding proceeds. Our selective refinement framework strikes a balance between efficiency and optimality, and our extensive experimental results demonstrate the effectiveness of our approach.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "It is a well-known insight in optimization theory that coordinate-wise optimization, conditioned on the previously optimized arguments along each axis sequentially, generally does not guarantee finding the global optimum (Törn & Žilinskas, 1989; Nocedal & Wright, 1999). Similarly, in the context of decoding in large language models (LLMs), expecting to achieve a globally optimal response by sequentially accumulating per-token optimal decisions, as done in purely autoregressive decoding, may be overly optimistic. Despite significant recent progress (Vaswani et al., 2017; Radford et al., 2019; Brown et al., 2020; OpenAI, 2023; Touvron et al., 2023; Gemini Team, 2023; Llama Team, 2024; Gemma Team, 2024; Abdin et al., 2024a; DeepSeek-AI, 2025), how to approach the optimal text that one can possibly sample from a model still remains an open question.",
+        "Previous works have demonstrated challenges faced by autoregressive decoding in terms of the handling of long sequences (Wu et al., 2021) and the inefficient inference (Lin et al., 2021; Li et al., 2022). At the level of decoding, other than the traditional greedy search, Holtzman et al. (2020) proposed Top-pp sampling (also known as Nucleus Sampling), a stochastic method that adjusts the next-token set based on the shape of conditional probability mass function. Alternatively, different from the cumulated probability mass, Top-kk sampling limits the number of available options when sampling for the next token (Fan et al., 2018; Holtzman et al., 2018; Radford et al., 2019). Another empirical technique involves adjusting the shape of probability distribution with the temperature hyperparameter (Fan et al., 2018; Holtzman et al., 2018; Peeperkorn et al., 2024).",
+        "In order to improve the sampling efficiency, speculative decoding approaches have been proposed, where multiple tokens are predicted in parallel as if one were sampling from the model (or its lighter counterpart) repetitively (Leviathan et al., 2023; Chen et al., 2023a; Xia et al., 2023; Kim et al., 2024; Sun et al., 2024). Efficient inference with beam search (Xie et al., 2024; Zhu et al., 2024; Wei et al., 2024; Yang et al., 2024b) and probabilistic programs (Lew et al., 2023) have been explored in the recent literature. Improving generated content through high-level behaviors, e.g., through instructing self-correction or conducting self-improvement with external or internal feedback (Yao et al., 2022; Bai et al., 2022; Pan et al., 2023; Shinn et al., 2023; Ganguli et al., 2023; Chen et al., 2023b; Kim et al., 2023; Tyen et al., 2023; Madaan et al., 2024), has also been studied.",
+        "While previous literature has explored various methods to enhance generated content, the fundamental limitation of autoregressive decoding for text generation remains under-explored. This gap represents a distinct perspective, different from high-level model behaviors (e.g., self-refinement studied in Madaan et al. 2024) or inference efficiency (e.g., various speculative decoding methods surveyed in Xia et al. 2024). In this paper, we theoretically characterize the inherent shortcoming of autoregressive decoding and propose an empirical method to mitigate this issue. Our contributions can be summarized as follows:",
+        "• We theoretically characterize the sub-optimality of autoregressive decoding for text generation, demonstrating its lack of a built-in mechanism to perform refinement/correction of generated content at the decoding level.",
+        "• We propose a framework involving a sliding reflection window and a corresponding pause criterion, enabling an interchangeable process of refinement and generation.",
+        "• Through extensive empirical evaluations, our approach demonstrates significant improvement over existing decoding approaches, and maintains performance comparable or superior to beam search while being more efficient."
+      ],
+      "subsections": []
+    },
+    "2 Motivation and High-Level Illustration": {
+      "paragraphs": [
+        "In this section, we first present our motivations behind addressing the inherent shortcoming of purely autoregressive decoding for text generation (Section 2.1). Then in Section 2.2, we present a high-level summary of our proposed approach involving interchangeably switching between refinement (upon reflection on previously generated content) and generation (of the additional new content)."
+      ],
+      "subsections": [
+        {
+          "title": "2.1 Inherent Shortcoming of Autoregressive Decoding",
+          "paragraphs": [
+            "Insight from the optimization theory highlights the gap between coordinate-wise accumulation of optimum and the global optimum (Törn & Žilinskas, 1989; Nocedal & Wright, 1999). Recent research advances in cognitive linguistics have also argued that language is primarily a tool for communication (for humans) rather than thought (Fedorenko et al., 2024). While language naturally unfolds in a one-dimensional sequence, its underlying dependence pattern extends beyond a purely autoregressive structure (where the current content is conditioned solely on what has been generated so far).",
+            "Let us consider an example of writing a novel. For a long-format writing like novels, outlining (also referred to as plotting) is essential for structuring ideas, planning narratives, and crafting engaging drafts (King, 2000; Serravallo, 2017). Sub-goals refer to relatively small and achievable tasks that guide the author through each stage of the story, for instance, the setting of the circumstance, the element of tension and emotion, the sensory imagination of the scene.",
+            "As we illustrate in Figure 1(a), Xi∗X_{i}^{*}’s represent words or phrases in the novel, and SiS_{i}’s represent sub-goals, which may be related in a hierarchical way. For instance, sub-goals within a single scene altogether serve the purpose of furthering the development of the story. We model sub-goals in terms of selection variables SiS_{i} since they represent constraints or objectives to achieve, which involve certain criteria to be satisfied over the variables that they operate upon.111 This modeling choice is consistent with the modeling of causal relations among variables of interest through selection variables in a directed acyclic graph (DAG) (Spirtes et al., 1993; Pearl, 2009). As we can see from Figure 1(a), the variables in optimal sequence (the novel in this example) Xi∗X_{i}^{*}’s jointly satisfy criteria, or optimize objectives, specified by sub-goals SiS_{i}’s. This indicates that the best Xi∗X_{i}^{*} in the optimal sequence depends on best values of all other Xj∗X_{j}^{*}’s. However, with an autoregressive way of text generation, as illustrated in Figure 1(b), we only allow XiX_{i} to depend on XjX_{j}’s if j<ij<i, which is clearly sub-optimal."
+          ]
+        },
+        {
+          "title": "2.2 Selective Refinement Through Reflection Window",
+          "paragraphs": [
+            "As illustrated in Section 2.1, one outcome of limiting the dependence pattern to the autoregressive structure is the lack of a built-in mechanism to correct or refine previously generated content at the decoding level, since what was generated is not subject to further edit (if without further processing). In this subsection, we present a high-level summary of our approach that attempts to address this issue.222We present in detail our technical approach in Section 5.1. Specifically, we propose a selective refinement framework that facilitates an interchangeable process of refinement and generation, so that the overall response satisfies requirements or objectives that operate jointly over all involved tokens.",
+            "As illustrated in Figures 2 and 3, we can use fast and slow pointers on the generated content to form segments of a certain length, namely, the sliding reflection window, and perform potential refinements within this sliding window as the text generation proceeds.333 The naming of pointers is motivated by Kahneman (2011). Our reflection-window decoding framework allows for revision before the entire output is completed, which offers several advantages.",
+            "Firstly, we can improve the generated content in a timely manner. If there are multiple potential issues in the generation history, the revision after finishing the generation can be inefficient since we allow errors to accumulate. In other words, without a built-in mechanism for refinement or correction at the decoding level, we are forced to rely on high-level model behaviors and operate at a coarser granularity. This often involves regenerating entire sentences (rather than refining words or phrases), and/or editing through multiple iterations (rather than interchangeably generate and refine in a single run), as in self-correction and self-improvement approaches (Yao et al., 2022; Bai et al., 2022; Pan et al., 2023; Shinn et al., 2023; Ganguli et al., 2023; Chen et al., 2023b; Kim et al., 2023; Tyen et al., 2023; Madaan et al., 2024).",
+            "Secondly, our focus on selective refinement during decoding is not solely driven by inference efficiency considerations. The primary goal of previous approaches, e.g., speculative decoding (Leviathan et al., 2023; Chen et al., 2023a; Xia et al., 2023; Kim et al., 2024; Sun et al., 2024; Xia et al., 2024), is to accelerate sampling from (a lighter version of) the original model, while the underlying decoding mechanism remains purely autoregressive.",
+            "Thirdly, due to the one-dimensional progression of text generation, our sliding reflection window mechanism, given a pausing criterion, enables timely and assured detection of issues in the generated text. Our framework complements previous approaches, and furthermore, offers versatility. One can incorporate pausing criteria and refinement/correction methods at the decoding level, while preserving the ability to further leverage strategies that rely on high-level behaviors.",
+            "The empirical pausing criteria we use (detailed in Section 5) are guided by our theoretical characterization of the sub-optimality of autoregressive text generation, and to this theoretical analysis we now turn."
+          ]
+        }
+      ]
+    },
+    "3 Theoretical Characterization of the Sub-Optimality of Autoregressive Decoding": {
+      "paragraphs": [
+        "We theoretically characterize the sub-optimality of autoregressive text generation. We show that even if an LLM is sufficiently trained and can perfectly capture any autoregressive decomposition of the joint density, the autoregressive way of text generation can still deviate from the globally optimal response, even for the well-defined objective of maximizing output probability given a fixed length (setting aside whether this objective fully aligns with the ultimate goal).",
+        "Let us denote a token from the vocabulary 𝒱\\mathcal{V} as wv∈𝒱w_{v}\\in\\mathcal{V}, whose index in the vocabulary is v∈|𝒱|v\\in\\lvert\\mathcal{V}\\rvert. We use “i:ji:j” to denote the increasing integer sequence from ii to jj if i≤ji\\leq j, e.g., 1:t≔1,2,…,t1:t\\coloneqq 1,2,\\ldots,t if t>1t>1, otherwise, i:j≔∅i:j\\coloneqq\\varnothing.",
+        "In general, the longer the sequence, the lower the joint probability tends to be. The fair comparison of optimality should be length-specific, and the optimal response of a shorter length is not necessarily identical to the prefix of the optimal response that is longer in length. For instance, if we were to use 10 words to distinguish between joint and conditional densities, one might say “joint density combines all variables; conditional adjusts for known variables.” However, if we can use 15 words, one might say “joint density reflects combined probabilities of all variables; conditional density adjusts probabilities given known variables.” Therefore, we explicitly keep the length TT in the notation of vocabulary indices of tokens that constitute the length-TT responses.",
+        "Assumption 3.3 specifies that, after given the prompt or generated text history X≤0X_{\\leq 0}, an oracle (or very well-trained) LLM can recover the ground-truth probability of X1:TX_{1:T} as a whole follows X≤0X_{\\leq 0}, by multiplying token-by-token generating probabilities in an autoregressive way.555 Here, we implicitly assume that the context length of LLM is sufficiently large to allow for a meaningful discussion. We would like to note that Assumption 3.3 only states that an oracle LLM can perfectly capture the autoregressive way of probability partitioning of text sequences, and this itself does not guarantee the equivalence between stepwise optimal response and the same-length globally optimal response for T>1T>1.666 When T=1T=1, i.e., if the response is of a length 11, the stepwise optimal is just the globally optimal for an oracle LLM, since there is only one step in total, and f​(X1∣X≤0)=g​(X1∣X≤0)f(X_{1}\\mid X_{\\leq 0})=g(X_{1}\\mid X_{\\leq 0}). ",
+        "Assumption 3.4 specifies that from the ground-truth conditional probability perspective, there is a strict preference between how well two different same-length responses follow the prompt X≤0X_{\\leq 0}, i.e., the ground-truth probability mass function f​(X1:T∣X≤0)f(X_{1:T}\\mid X_{\\leq 0}) is injective for any given T>0T>0.",
+        "Assumption 3.5 specifies that if the advantage (in terms of a higher ground-truth conditional probability) of the globally optimal length-TT sequence can be observed at the length-LL prefix-sequence, such advantage will not be reversed when considering longer prefix-sequences.",
+        "Theorem 3.6 provides a necessary (but not sufficient) condition for the deviation of the stepwise optimal length-TT response from the same-length globally optimal response. The uncertainty (i.e., low conditional probabilities) in generating the next token can result from different factors. For instance, a previous mistake or detour makes it challenging to continue in any way that could possibly satisfy the goal specified by the prompt. Such uncertainty can also result from multiple valid ways to proceed in order to achieve the goal. Although we do not have access to the ground-truth conditional probability f​(X1:T∣X≤0)f(X_{1:T}\\mid X_{\\leq 0}), Theorem 3.6 suggests that when noticeable uncertainty arises, one should to be cautious of a potential deviation from the globally optimal response in the generated text."
+      ],
+      "subsections": []
+    },
+    "4 Sanity Check: Semi-Synthetic Settings": {
+      "paragraphs": [
+        "The implication of our theoretical analysis is straightforward. However, it is natural to ask whether the phenomenon actually occurs in real-world LLM decoding scenarios. To provide clear empirical evidence accompanying our theoretical analysis, in this section, we present semi-synthetic experiments that serves as a sanity check. In particular, in moderately realistic settings, we show that greedy decoding for text generation with stepwise optimization results in suboptimal responses. We first outline the semi-synthetic setting, and then present the empirical findings."
+      ],
+      "subsections": [
+        {
+          "title": "Illustrative Approximation",
+          "paragraphs": [
+            "For any modern LLM with a vocabulary size |𝒱||\\mathcal{V}| (typically on the order of 10410^{4} to 10510^{5}), identifying the globally optimal sequence across multiple steps becomes computationally intractable, even for relatively short sequence lengths (<100<100). To ensure the validity of our claim while providing a clear and accessible illustration, we adopt beam search as an approximation strategy of obtaining globally optimal sequence. Since we measure the chance that greedy decoding can attain the global optimum with the stepwise optimal response, this approximation serves as an upper bound on achievable performance, indicating the discrepancy between greedy decoding and the true globally optimal response."
+          ]
+        },
+        {
+          "title": "Approximating Natural Language Scenarios",
+          "paragraphs": [
+            "Since the prompt or context of the generation influence model behavior, we align our experimental setting with common human-LLM interactions. Specifically, we utilize MT-Bench (Zheng et al., 2023) questions as curated prompts, which are designed to evaluate conversational chat models. These samples serve as an approximation of real-world natural language context distributions, ensuring that our findings are grounded in practical scenarios."
+          ]
+        },
+        {
+          "title": "Findings",
+          "paragraphs": [
+            "For each prompt, together with a certain length of generation history (0 means only the prompt is given), we evaluate whether the joint probability of the sequence generated with greedy decoding is greater than or equal to that produced by beam search (the proxy of the global optimum). This comparison indicates the extent to which greedy decoding deviates from the globally optimal response. As illustrated in Figure 4(a), greedy decoding consistently results in suboptimal sequences, and the phenomenon can be observed with a small number of newly generated tokens.",
+            "In addition, the potential deviation may behave differently across various positions in the generated text. For instance, when openings of response diverge, it is hard for greedy decoding to achieve optimal results afterwards. To reduce potential inductive bias resulting from the diversity at early stages of generation, we evaluate generations starting/continuing from various positions throughout generation history, as presented in Figures 4(b)–4(d). We can observe that the deviation persists across different positions, which empirically demonstrate the common existence of sub-optimality in autoregressive decoding for text generation."
+          ]
+        }
+      ]
+    },
+    "5 Empirical Approach and Experiments": {
+      "paragraphs": [
+        "In Sections 5.1–5.2, we provide technical details about our empirical approach and settings of our experiments. Then in Sections 5.3–5.4, we present experimental results to demonstrate both the effectiveness and efficiency of our method."
+      ],
+      "subsections": [
+        {
+          "title": "5.1 Reflection-Window Decoding: Technical Details",
+          "paragraphs": [
+            "Our findings through both the theoretical characterization of sub-optimality in autoregressive decoding for text generation (Section 3), and the sanity check with empirical verifications in semi-synthetic settings (Section 4), suggest the necessity of a built-in reflection-and-refine mechanism at the decoding level. To empirically address this issue, we propose a selective refinement framework that interchangeably refine and generate as the response unfolds.",
+            "Text typically unfolds in a single direction, i.e., from the start to the end, with words, phrases, and sentences. This differentiates text from other forms of objects that occupy multiple dimensional spaces, e.g., images or videos. Taking advantage of this one-dimensional nature, our decoding framework integrates a sliding reflection window along with two additional modules: (1) a pausing criterion that specifies whether we should pause the generation upon reflecting on generated content, and (2) a refinement/correction method that facilitates revision at the decoding level (if the pausing criterion is triggered). We present the pseudocode of our reflection-window decoding approach in Algorithm 1.",
+            "Guided by our theoretical characterization (Theorem 3.6), the reflection at the decoding level needs to capture the (increasing trend of) uncertainty as text generation proceeds. For an empirical pausing criterion, we use the conditional entropy H​(⋅)H(\\cdot) based on the next-token logits across the vocabulary. Specifically, given an LLM which models the conditional distribution g​(Xt∣X1:t−1)g(X_{t}\\mid X_{1:t-1}) of the token at tt-th step given all the observed history X1:t−1=𝐱1:t−1X_{1:t-1}=\\mathbf{x}_{1:t-1}, we use the pausing criterion h​(t;σ,d)h(t;\\sigma,d):",
+            "where σ\\sigma denotes the hyperparameter for the threshold of conditional entropy, and dd denotes that for the window size (how far we look back in history, in terms of the token counts).",
+            "When h​(t(fast);σ,d)h(t^{\\mathrm{(fast)}};\\sigma,d) is True, the pausing criterion (denoted by IfPause​(⋅)\\mathrm{IfPause(\\cdot)} in Algorithm 1, with hyperparameter enclosed) is triggered upon reflecting on the most recent dd generated tokens, i.e., the length-dd reflection window when the fast pointer is at t(fast)t^{\\mathrm{(fast)}}. The two parameters, σ\\sigma and dd, jointly decide the sensitivity and effective region of the pausing criterion, and we present more discussions in Section 5.4.",
+            "When the pausing criterion is triggered, tokens within the current sliding reflection window need to be refined or corrected. Since beam search can approximate the global optimum relatively well, empirically we introduce a fixed-length beam search to generate a new segment with a length dd (denoted by the hyperparameter-enclosed function ReGenerate​(⋅)\\mathrm{ReGenerate(\\cdot)} in Algorithm 1), to replace the content within the reflection window. After the refinement, the slow pointer t(slow)t^{\\mathrm{(slow)}} catches up with the fast one t(fast)t^{\\mathrm{(fast)}} and the model proceeds with generation while maintaining the sliding reflection window.",
+            "We would like to note that our reflection-window decoding approach is highly versatile. While our empirical approach employs a specific pausing criterion and refinement/correction method, practitioners can customize these components by incorporating different functions, namely, IfPause​(⋅)\\mathrm{IfPause(\\cdot)} and ReGenerate​(⋅)\\mathrm{ReGenerate(\\cdot)} in Algorithm 1, to meet their needs. Our selective refinement framework integrates the sliding reflection window mechanism with these components, enabling simultaneous refinement and generation at the decoding level while retaining the flexibility to incorporate additional strategies, such as those based on high-level model behaviors and/or speculative decoding (Section 2.2)."
+          ]
+        },
+        {
+          "title": "Pausing Criterion",
+          "paragraphs": [
+            "Guided by our theoretical characterization (Theorem 3.6), the reflection at the decoding level needs to capture the (increasing trend of) uncertainty as text generation proceeds. For an empirical pausing criterion, we use the conditional entropy H​(⋅)H(\\cdot) based on the next-token logits across the vocabulary. Specifically, given an LLM which models the conditional distribution g​(Xt∣X1:t−1)g(X_{t}\\mid X_{1:t-1}) of the token at tt-th step given all the observed history X1:t−1=𝐱1:t−1X_{1:t-1}=\\mathbf{x}_{1:t-1}, we use the pausing criterion h​(t;σ,d)h(t;\\sigma,d):",
+            "where σ\\sigma denotes the hyperparameter for the threshold of conditional entropy, and dd denotes that for the window size (how far we look back in history, in terms of the token counts).",
+            "When h​(t(fast);σ,d)h(t^{\\mathrm{(fast)}};\\sigma,d) is True, the pausing criterion (denoted by IfPause​(⋅)\\mathrm{IfPause(\\cdot)} in Algorithm 1, with hyperparameter enclosed) is triggered upon reflecting on the most recent dd generated tokens, i.e., the length-dd reflection window when the fast pointer is at t(fast)t^{\\mathrm{(fast)}}. The two parameters, σ\\sigma and dd, jointly decide the sensitivity and effective region of the pausing criterion, and we present more discussions in Section 5.4."
+          ]
+        },
+        {
+          "title": "Refinement/Correction Method",
+          "paragraphs": [
+            "When the pausing criterion is triggered, tokens within the current sliding reflection window need to be refined or corrected. Since beam search can approximate the global optimum relatively well, empirically we introduce a fixed-length beam search to generate a new segment with a length dd (denoted by the hyperparameter-enclosed function ReGenerate​(⋅)\\mathrm{ReGenerate(\\cdot)} in Algorithm 1), to replace the content within the reflection window. After the refinement, the slow pointer t(slow)t^{\\mathrm{(slow)}} catches up with the fast one t(fast)t^{\\mathrm{(fast)}} and the model proceeds with generation while maintaining the sliding reflection window."
+          ]
+        },
+        {
+          "title": "Remark: Versatile Decoding Framework",
+          "paragraphs": [
+            "We would like to note that our reflection-window decoding approach is highly versatile. While our empirical approach employs a specific pausing criterion and refinement/correction method, practitioners can customize these components by incorporating different functions, namely, IfPause​(⋅)\\mathrm{IfPause(\\cdot)} and ReGenerate​(⋅)\\mathrm{ReGenerate(\\cdot)} in Algorithm 1, to meet their needs. Our selective refinement framework integrates the sliding reflection window mechanism with these components, enabling simultaneous refinement and generation at the decoding level while retaining the flexibility to incorporate additional strategies, such as those based on high-level model behaviors and/or speculative decoding (Section 2.2)."
+          ]
+        },
+        {
+          "title": "5.2 Experiment Settings",
+          "paragraphs": [
+            "We provide technical details about settings of our experiments, including models, benchmarks, evaluation metrics, and baseline methods.",
+            "We conduct experiments using multiple models across different families/herds. Specifically, we use Llama-3.1-8B-Instruct (denoted as Llama3.1-8B), which belongs to the Llama 3.1 herds (Llama Team, 2024), Phi-3-Medium-128K-Instruct (Abdin et al., 2024b) (denoted as Phi3-Medium) with 14 billion parameters, Qwen2.5-14B-Instruct (Yang et al., 2024a) (denoted as Qwen2.5-14B) with 14 billion parameters, Qwen2.5-7B-Instruct (denoted as Qwen2.5-7B) with 7 billion parameters, and Mistral-Nemo-Instruct-2407 (MistralAI, 2024) (denoted as Mistral-Nemo) with 12 billion parameters.",
+            "Our experiments are conducted on MMLU (Hendrycks et al., 2020) and MT-Bench (Zheng et al., 2023). MMLU tests model’s general knowledge across 57 diverse subjects, e.g., humanities, STEM (Science, Technology, Engineering, and Mathematics), and social sciences, at varying difficulty levels, making it a comprehensive evaluation of model’s reasoning performance and factual knowledge. MT-Bench, on the other hand, provides a fine-grained evaluation through multi-turn conversational tasks, evaluating not just correctness, but also coherence and fluency.",
+            "For MMLU, we adopt the macro averaged accuracy metric because the number of questions varies across subjects. For MT-Bench, for each pair of responses, we prompt the LLM judge (for which we use GPT-4o, OpenAI 2024) with two responses following the prompting method outlined in Zheng et al. (2023). The LLM judge should return a decision from three options: win, lose or tie. To avoid the influence from the preference bias, for each pair we prompt the LLM judge twice with responses placed in different sequences. When a response gets two win’s (lose’s) or one win (lose) plus one tie, we record the response as (not) prevailing. The rest situations are treated as tie. We use win rate as the measurement of performance on MT-Bench, calculated by win rate≔number of winsnumber of wins+number of losses\\text{win rate}\\coloneqq\\frac{\\text{number of wins}}{\\text{number of wins}+\\text{number of losses}}.",
+            "We compare reflection-window decoding with three baseline methods: greedy decoding, (full-scale) beam search, and Top-kk/Top-pp sampling (Fan et al., 2018; Holtzman et al., 2020). We consider greedy search as one baseline method since it corresponds closely to our theoretical analysis. However, since the widely usage of Top-pp and Top-kk sampling (and often used in combination), we also include it as a baseline approach. Reflection-window decoding only leverages beam search when necessary, i.e., when IfPause​(⋅)\\mathrm{IfPause(\\cdot)} in Algorithm 1 is triggered. For fair comparison, we set the beam size to 44 in both reflection-window decoding and the full-scale beam search."
+          ]
+        },
+        {
+          "title": "LLM Models",
+          "paragraphs": [
+            "We conduct experiments using multiple models across different families/herds. Specifically, we use Llama-3.1-8B-Instruct (denoted as Llama3.1-8B), which belongs to the Llama 3.1 herds (Llama Team, 2024), Phi-3-Medium-128K-Instruct (Abdin et al., 2024b) (denoted as Phi3-Medium) with 14 billion parameters, Qwen2.5-14B-Instruct (Yang et al., 2024a) (denoted as Qwen2.5-14B) with 14 billion parameters, Qwen2.5-7B-Instruct (denoted as Qwen2.5-7B) with 7 billion parameters, and Mistral-Nemo-Instruct-2407 (MistralAI, 2024) (denoted as Mistral-Nemo) with 12 billion parameters."
+          ]
+        },
+        {
+          "title": "Benchmarks and Evaluation Metrics",
+          "paragraphs": [
+            "Our experiments are conducted on MMLU (Hendrycks et al., 2020) and MT-Bench (Zheng et al., 2023). MMLU tests model’s general knowledge across 57 diverse subjects, e.g., humanities, STEM (Science, Technology, Engineering, and Mathematics), and social sciences, at varying difficulty levels, making it a comprehensive evaluation of model’s reasoning performance and factual knowledge. MT-Bench, on the other hand, provides a fine-grained evaluation through multi-turn conversational tasks, evaluating not just correctness, but also coherence and fluency.",
+            "For MMLU, we adopt the macro averaged accuracy metric because the number of questions varies across subjects. For MT-Bench, for each pair of responses, we prompt the LLM judge (for which we use GPT-4o, OpenAI 2024) with two responses following the prompting method outlined in Zheng et al. (2023). The LLM judge should return a decision from three options: win, lose or tie. To avoid the influence from the preference bias, for each pair we prompt the LLM judge twice with responses placed in different sequences. When a response gets two win’s (lose’s) or one win (lose) plus one tie, we record the response as (not) prevailing. The rest situations are treated as tie. We use win rate as the measurement of performance on MT-Bench, calculated by win rate≔number of winsnumber of wins+number of losses\\text{win rate}\\coloneqq\\frac{\\text{number of wins}}{\\text{number of wins}+\\text{number of losses}}."
+          ]
+        },
+        {
+          "title": "Baseline Methods",
+          "paragraphs": [
+            "We compare reflection-window decoding with three baseline methods: greedy decoding, (full-scale) beam search, and Top-kk/Top-pp sampling (Fan et al., 2018; Holtzman et al., 2020). We consider greedy search as one baseline method since it corresponds closely to our theoretical analysis. However, since the widely usage of Top-pp and Top-kk sampling (and often used in combination), we also include it as a baseline approach. Reflection-window decoding only leverages beam search when necessary, i.e., when IfPause​(⋅)\\mathrm{IfPause(\\cdot)} in Algorithm 1 is triggered. For fair comparison, we set the beam size to 44 in both reflection-window decoding and the full-scale beam search."
+          ]
+        },
+        {
+          "title": "5.3 Experiment Results",
+          "paragraphs": [
+            "We compare the performance among greedy decoding, beam search, Top-kk/Top-pp sampling, and our reflection-window decoding. We use an entropy threshold of σ=0.5\\sigma=0.5 and a window size of d=4d=4 in reflection-window decoding.",
+            "Table 1 presents the comparison among greedy decoding, beam search, and reflection-window decoding (with greedy search as the “regular decoding” in Algorithm 1) on four question categories in MMLU (STEM, humanities, social sciences, and others), using Phi3-Medium as the base LLM. Our approach demonstrates comparable or superior performance across all categories, achieving the highest average accuracy of 78.15%78.15\\%. The results containing all MMLU subjects can be found in Table 11 in Appendix.",
+            "We choose Llama3.1-8B as the base model in this experiment. On MT-Bench, the Reflection Window method clearly outperformed both greedy decoding and beam search. In comparisons with greedy decoding, according to assessments by GPT-4o, reflection window prevails in 66.67%66.67\\% of cases, a win rate significantly higher than that of beam search, which only outperformed greedy decoding in 46.3%46.3\\% of cases.",
+            "Figure 5 shows that our reflection-window decoding significantly outperforms beam search in Roleplay, STEM, Math, and Reasoning tasks. These tasks require strong logical consistency, and greedy or fixed search strategies often lead to early sub-optimal choices that degrade output quality. Our approach mitigates this by enabling refinement during generation, making generated contents more coherent.",
+            "Reflection-window decoding generates tokens autogressively when the pausing criterion is not triggered and only performs selective refinements. The framework is compatible with Top-kk/Top-pp sampling except in the refinement/correction mode. In these experiments, we set k=10k=10, p=0.9p=0.9, and temperature as 1.0 for both our approach and the baseline Top-kk/Top-pp sampling. As shown in Table 2, our decoding approach consistently outperforms the standard Top-kk/Top-pp approach across all four models. In particular, the average accuracy improvements range from 0.880.88 percentage points (Mistral-Nemo) to 2.762.76 percentage points (Phi3-Medium), highlighting the effectiveness of our approach even when stochastic sampling is introduced. Notably, the largest performance gains are observed in STEM and humanities categories, suggesting that reflection-window decoding is particularly beneficial for reasoning-heavy tasks. This aligns with observations from the MT-Bench experiments, which also demonstrate that our approach excels in tasks demanding structured logical thinking and complex problem-solving. We present further results from Table 12 to Table 15 in Appendix."
+          ]
+        },
+        {
+          "title": "MMLU",
+          "paragraphs": [
+            "Table 1 presents the comparison among greedy decoding, beam search, and reflection-window decoding (with greedy search as the “regular decoding” in Algorithm 1) on four question categories in MMLU (STEM, humanities, social sciences, and others), using Phi3-Medium as the base LLM. Our approach demonstrates comparable or superior performance across all categories, achieving the highest average accuracy of 78.15%78.15\\%. The results containing all MMLU subjects can be found in Table 11 in Appendix."
+          ]
+        },
+        {
+          "title": "MT-Bench",
+          "paragraphs": [
+            "We choose Llama3.1-8B as the base model in this experiment. On MT-Bench, the Reflection Window method clearly outperformed both greedy decoding and beam search. In comparisons with greedy decoding, according to assessments by GPT-4o, reflection window prevails in 66.67%66.67\\% of cases, a win rate significantly higher than that of beam search, which only outperformed greedy decoding in 46.3%46.3\\% of cases.",
+            "Figure 5 shows that our reflection-window decoding significantly outperforms beam search in Roleplay, STEM, Math, and Reasoning tasks. These tasks require strong logical consistency, and greedy or fixed search strategies often lead to early sub-optimal choices that degrade output quality. Our approach mitigates this by enabling refinement during generation, making generated contents more coherent."
+          ]
+        },
+        {
+          "title": "Compatibility with Top-kk/Top-ppSampling",
+          "paragraphs": [
+            "Reflection-window decoding generates tokens autogressively when the pausing criterion is not triggered and only performs selective refinements. The framework is compatible with Top-kk/Top-pp sampling except in the refinement/correction mode. In these experiments, we set k=10k=10, p=0.9p=0.9, and temperature as 1.0 for both our approach and the baseline Top-kk/Top-pp sampling. As shown in Table 2, our decoding approach consistently outperforms the standard Top-kk/Top-pp approach across all four models. In particular, the average accuracy improvements range from 0.880.88 percentage points (Mistral-Nemo) to 2.762.76 percentage points (Phi3-Medium), highlighting the effectiveness of our approach even when stochastic sampling is introduced. Notably, the largest performance gains are observed in STEM and humanities categories, suggesting that reflection-window decoding is particularly beneficial for reasoning-heavy tasks. This aligns with observations from the MT-Bench experiments, which also demonstrate that our approach excels in tasks demanding structured logical thinking and complex problem-solving. We present further results from Table 12 to Table 15 in Appendix."
+          ]
+        },
+        {
+          "title": "5.4 Further Discussions and Analyses",
+          "paragraphs": [
+            "In Table 3, we aggregate the regeneration statistics on MMLU with Llama3.1-8B. We record two metrics: (1) the regeneration ratio, which calculates the overall ratio of refined/corrected tokens in the completed response, and (2) the regeneration call, which counts the number of times the pausing criterion is triggered and refinement/correction is needed before finishing any particular response. We find that regeneration ratio ranges from 3.5%3.5\\% to 5.5%5.5\\% across all categories with a relatively mild pausing criterion. This suggests that the refinements are usually needed during decoding. While beam search always maintains a complete frontier of candidate sequences, our reflection-window decoding approach only activates beam search when necessary, and at the sub-sequence level.",
+            "We investigate the impact of threshold σ\\sigma on MMLU Social Sciences with Qwen2.5-7B with fixed window size d=4d=4. The results in Table 4 demonstrate that our method performs robustly across σ\\sigma values ranging from 0.250.25 to 0.750.75, with σ=0.25\\sigma=0.25 achieving the highest macro average of 80.31%80.31\\%. While our default setting of σ=0.5\\sigma=0.5 is not the best in this specific experiment, it maintains strong performance and shows consistent improvements on most subjects, suggesting that it serves as a reliable default configuration for general usage.",
+            "In terms of window size dd, we also choose social science subjects using Qwen2.5-7B. The results in Table 5 show that our method maintains strong performance across various window sizes (d=2d=2 to d=6d=6), with overall macro averages consistently around 79.7%79.7\\%. While d=6d=6 achieves the highest macro average, d=4d=4 demonstrates comparable performance and maintains better computational efficiency. These results further support our choice of d=4d=4 as a robust default setting, offering a good balance between performance and efficiency across different models and tasks. We provide additional results on MT-Bench in Table 6 and Table 7, and on MMLU in Table 8 and Table 9 in Appendix."
+          ]
+        },
+        {
+          "title": "Efficiency of Reflection Window",
+          "paragraphs": [
+            "In Table 3, we aggregate the regeneration statistics on MMLU with Llama3.1-8B. We record two metrics: (1) the regeneration ratio, which calculates the overall ratio of refined/corrected tokens in the completed response, and (2) the regeneration call, which counts the number of times the pausing criterion is triggered and refinement/correction is needed before finishing any particular response. We find that regeneration ratio ranges from 3.5%3.5\\% to 5.5%5.5\\% across all categories with a relatively mild pausing criterion. This suggests that the refinements are usually needed during decoding. While beam search always maintains a complete frontier of candidate sequences, our reflection-window decoding approach only activates beam search when necessary, and at the sub-sequence level."
+          ]
+        },
+        {
+          "title": "Entropy Thresholdσ\\sigmaand Window Sizedd",
+          "paragraphs": [
+            "We investigate the impact of threshold σ\\sigma on MMLU Social Sciences with Qwen2.5-7B with fixed window size d=4d=4. The results in Table 4 demonstrate that our method performs robustly across σ\\sigma values ranging from 0.250.25 to 0.750.75, with σ=0.25\\sigma=0.25 achieving the highest macro average of 80.31%80.31\\%. While our default setting of σ=0.5\\sigma=0.5 is not the best in this specific experiment, it maintains strong performance and shows consistent improvements on most subjects, suggesting that it serves as a reliable default configuration for general usage.",
+            "In terms of window size dd, we also choose social science subjects using Qwen2.5-7B. The results in Table 5 show that our method maintains strong performance across various window sizes (d=2d=2 to d=6d=6), with overall macro averages consistently around 79.7%79.7\\%. While d=6d=6 achieves the highest macro average, d=4d=4 demonstrates comparable performance and maintains better computational efficiency. These results further support our choice of d=4d=4 as a robust default setting, offering a good balance between performance and efficiency across different models and tasks. We provide additional results on MT-Bench in Table 6 and Table 7, and on MMLU in Table 8 and Table 9 in Appendix."
+          ]
+        }
+      ]
+    },
+    "6 Conclusion": {
+      "paragraphs": [
+        "In this paper, we theoretically characterize one inherent shortcoming, among others, of the autoregressive decoding for text generation in LLMs. In particular, we show that even when the optimality is defined in terms of the joint probability over all generated tokens, an oracle LLM can still potentially deviate from the globally optimal response of the same length. To mitigate the sub-optimality of the autoregressive way of text generation, we propose an empirical approach guided by our theoretical characterization. We incorporate a sliding reflection window and a pausing criterion so that refinement and generation can be performed interchangeably. Our experimental results demonstrate that our reflection-window decoding strategy achieves significant improvement over regular decoding strategies in inference-intensive settings and maintains performance that is comparable, or even superior to, beam search while being more efficient."
+      ],
+      "subsections": []
+    },
+    "Broader Impact": {
+      "paragraphs": [
+        "In this paper, we theoretically characterize and empirically address the sub-optimality of the autoregressive decoding for text generation. In particular, we propose a selective refinement framework and implement it with a sliding reflection window mechanism, enabling interchangeable refinement and generation as the decoding proceeds. Our approach strikes a balance between efficiency and optimality. There are many potential societal consequences of our work, none which we feel must be specifically highlighted here."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Table of Contents: Appendix": {
+      "paragraphs": [],
+      "subsections": []
+    },
+    "Appendix A The Proof of Theoretical Result": {
+      "paragraphs": [],
+      "subsections": []
+    },
+    "Appendix B Additional Results and Analyses": {
+      "paragraphs": [
+        "In this section, we present additional results and further discussions on influences from hyperparameters. We also provide concrete examples demonstrating the process and overall performance of our reflection-window decoding.",
+        "[Figure: Figure 6: Regeneration ratio on MMLU college-level subjects with Llama3.1-8B]",
+        "[Figure: Figure 7: Test Sample #28]",
+        "[Figure: Figure 8: Test Sample #29]",
+        "[Figure: Figure 9: Test Sample #7]",
+        "[Table: Table 6: Performance across different window sizes dd on MT-Bench with Mistral-Nemo]",
+        "[Table: Table 7: Performance across different window sizes dd on MT-Bench with Llama3.1-8B]",
+        "[Table: Table 8: Accuracy (%\\%) across different window sizes dd on MMLU Social Sciences with Qwen2.5-7B]",
+        "[Table: Table 9: Accuracy (%\\%) across different entropy thresholds σ\\sigma on MMLU Social Sciences with Qwen2.5-7B]",
+        "[Table: Table 10: Average regeneration ratio by window sizes dd on MMLU college-level subjects with Llama3.1-8B]"
+      ],
+      "subsections": [
+        {
+          "title": "B.1 Analysis on Window Sizedd",
+          "paragraphs": [
+            "We conduct extensive experiments on MT-Bench to analyze the impact of window size using both Mistral-Nemo (Table 6) and Llama3.1-8B (Table 7), with a fixed pausing criterion with σ=0.5\\sigma=0.5. These GPT-4o evaluator scores on MT-Bench provide additional evidence that our approach consistently outperforms traditional decoding methods.",
+            "For Mistral-Nemo, the optimal performance is achieved at d=3d=3 with an overall score of 7.93, surpassing both greedy decoding and beam search. For Llama3.1-8B, our method consistently outperforms both greedy decoding and beam search across different window sizes, with d=5d=5 achieving the best overall performance. While d=4d=4 may not always yield the best result, it demonstrates robust performance across both models and serves as a reliable default setting.",
+            "We further evaluate how different window sizes affect the performance on MMLU social science tasks using Qwen2.5-7B. The results are presented in Table 8."
+          ]
+        },
+        {
+          "title": "B.2 Analysis on Thresholdσ\\sigma",
+          "paragraphs": [
+            "We investigate the impact of threshold σ\\sigma on MMLU social science subjects using Qwen2.5-7B with a fixed window size d=4d=4. The detailed results are presented in Table LABEL:tab:qwen-sigma-social-science."
+          ]
+        },
+        {
+          "title": "B.3 Analysis on Regeneration Ratio",
+          "paragraphs": [
+            "To further understand the computational efficiency of our method, we analyze the regeneration ratio under different window size settings. We select six college-level subject categories from the MMLU test set (including biology, chemistry, computer science, mathematics, medicine, and physics) for analysis, and conduct experiments with the Llama3.1-8B model with a threshold of σ=0.5\\sigma=0.5. We consider the window size dd as the key hyperparameter, because it directly influences the regeneration ratio, which is calculate by the product of the times criterion get triggered (the regeneration call) and the window size (dd), divided by the total length of final response.",
+            "As shown in Table 10 and Figure 6, as the window size increases from 2 to 4, the average regeneration ratio shows a clear downward trend, decreasing from 9.60%9.60\\% to 3.70%3.70\\%. The trend indicates that larger window sizes lead to a faster decrease in the number of modifications needed. Notably, across all settings, the regeneration ratio remains below 15%15\\%, suggesting that our method maintains comparable computational workload as greedy decoding for the majority of the time. These results demonstrate the efficiency of our approach, since it only invoke beam search to find optimal approximations for sub-sequences when necessary, while maintaining the overall efficiency comparable to greedy decoding.",
+            "[Figure: Figure 6: Regeneration ratio on MMLU college-level subjects with Llama3.1-8B]"
+          ]
+        },
+        {
+          "title": "B.4 Demonstrative Examples on MT-Bench",
+          "paragraphs": [
+            "In this subsection, we present three examples selected from MT-Bench to illustrate the generation process in our reflection-window decoding. The first example is the 28th test sample from MT-Bench. As is shown in Figure 7, the pausing criterion gets triggered when “part of the car” was generated. The part gets refined and replaced by “specific part, whereas” which leads to a more flexible and natural answer. Figure 8 and Figure 9 are selected from the 29th and 7th test sample of MT-Bench, respectively.",
+            "[Figure: Figure 7: Test Sample #28]",
+            "[Figure: Figure 8: Test Sample #29]",
+            "[Figure: Figure 9: Test Sample #7]"
+          ]
+        }
+      ]
+    },
+    "Appendix C Performance Across All MMLU Subjects": {
+      "paragraphs": [
+        "Due to the size of the table, the material is arranged in the one-table-per-page manner (starting from the next page).",
+        "[supp]",
+        "[Table: Table 11: Comparison among greedy decoding, beam search, and reflection-window decoding on MMLU with Phi3-Medium]",
+        "[Table: Table 12: Comparison between Top-kk/Top-pp and reflection-window decoding on MMLU with Llama3.1-8B]",
+        "[Table: Table 13: Comparison between Top-kk/Top-pp and reflection-window decoding on MMLU with Mistral-Nemo]",
+        "[Table: Table 14: Comparison between Top-kk/Top-pp and reflection-window decoding on MMLU with Phi3-Medium]",
+        "[Table: Table 15: Comparison between Top-kk/Top-pp and reflection-window decoding on MMLU with Qwen2.5-14B]"
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "Abdin et al. (2024a) Abdin, M., Aneja, J., Behl, H., Bubeck, S., Eldan, R., Gunasekar, S., Harrison, M., Hewett, R. J., Javaheripi, M., Kauffmann, P., et al. Phi-4 technical report. arXiv preprint arXiv:2412.08905, 2024a.",
+    "Abdin et al. (2024b) Abdin, M., Jacobs, S. A., Awan, A. A., Aneja, J., Awadallah, A., Awadalla, H., Bach, N., Bahree, A., Bakhtiari, A., Behl, H., et al. Phi-3 technical report: A highly capable language model locally on your phone. arXiv preprint arXiv:2404.14219, 2024b.",
+    "Bai et al. (2022) Bai, Y., Kadavath, S., Kundu, S., Askell, A., Kernion, J., Jones, A., Chen, A., Goldie, A., Mirhoseini, A., McKinnon, C., et al. Constitutional ai: Harmlessness from ai feedback. arXiv preprint arXiv:2212.08073, 2022.",
+    "Brown et al. (2020) Brown, T., Mann, B., Ryder, N., Subbiah, M., Kaplan, J. D., Dhariwal, P., Neelakantan, A., Shyam, P., Sastry, G., Askell, A., et al. Language models are few-shot learners. Advances in Neural Information Processing Systems, 33:1877–1901, 2020.",
+    "Chen et al. (2023a) Chen, C., Borgeaud, S., Irving, G., Lespiau, J.-B., Sifre, L., and Jumper, J. Accelerating large language model decoding with speculative sampling. arXiv preprint arXiv:2302.01318, 2023a.",
+    "Chen et al. (2023b) Chen, X., Lin, M., Schärli, N., and Zhou, D. Teaching large language models to self-debug. arXiv preprint arXiv:2304.05128, 2023b.",
+    "DeepSeek-AI (2025) DeepSeek-AI. DeepSeek-R1: Incentivizing reasoning capability in LLMs via reinforcement learning. arXiv preprint arXiv:2501.12948, 2025.",
+    "Fan et al. (2018) Fan, A., Lewis, M., and Dauphin, Y. Hierarchical neural story generation. In Proceedings of the 56th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pp. 889–898, 2018.",
+    "Fedorenko et al. (2024) Fedorenko, E., Piantadosi, S. T., and Gibson, E. A. Language is primarily a tool for communication rather than thought. Nature, 630(8017):575–586, 2024.",
+    "Ganguli et al. (2023) Ganguli, D., Askell, A., Schiefer, N., Liao, T., Lukošiūtė, K., Chen, A., Goldie, A., Mirhoseini, A., Olsson, C., Hernandez, D., et al. The capacity for moral self-correction in large language models. arXiv preprint arXiv:2302.07459, 2023.",
+    "Gemini Team (2023) Gemini Team. Gemini: A family of highly capable multimodal models. arXiv preprint arXiv:2312.11805, 2023.",
+    "Gemma Team (2024) Gemma Team. Gemma: Open models based on gemini research and technology. arXiv preprint arXiv:2403.08295, 2024.",
+    "Hendrycks et al. (2020) Hendrycks, D., Burns, C., Basart, S., Zou, A., Mazeika, M., Song, D., and Steinhardt, J. Measuring massive multitask language understanding. arXiv preprint arXiv:2009.03300, 2020.",
+    "Holtzman et al. (2018) Holtzman, A., Buys, J., Forbes, M., Bosselut, A., Golub, D., and Choi, Y. Learning to write with cooperative discriminators. arXiv preprint arXiv:1805.06087, 2018.",
+    "Holtzman et al. (2020) Holtzman, A., Buys, J., Du, L., Forbes, M., and Choi, Y. The curious case of neural text degeneration. In International Conference on Learning Representations, 2020.",
+    "Kahneman (2011) Kahneman, D. Thinking, Fast and Slow. Farrar, Straus and Giroux, 2011.",
+    "Kim et al. (2023) Kim, G., Baldi, P., and McAleer, S. Language models can solve computer tasks. arXiv preprint arXiv:2303.17491, 2023.",
+    "Kim et al. (2024) Kim, S., Mangalam, K., Moon, S., Malik, J., Mahoney, M. W., Gholami, A., and Keutzer, K. Speculative decoding with big little decoder. Advances in Neural Information Processing Systems, 36, 2024.",
+    "King (2000) King, S. On writing: A memoir of the craft. Pocket Books, 2000.",
+    "Leviathan et al. (2023) Leviathan, Y., Kalman, M., and Matias, Y. Fast inference from transformers via speculative decoding. In International Conference on Machine Learning, pp. 19274–19286. PMLR, 2023.",
+    "Lew et al. (2023) Lew, A. K., Matheos, G., Zhi-Xuan, T., Ghavamizadeh, M., Gothoskar, N., Russell, S., and Mansinghka, V. K. SMCP3: Sequential monte carlo with probabilistic program proposals. In International conference on artificial intelligence and statistics, pp. 7061–7088. PMLR, 2023.",
+    "Li et al. (2022) Li, J., Tang, T., Zhao, W. X., Nie, J.-Y., and Wen, J.-R. Elmer: A non-autoregressive pre-trained language model for efficient and effective text generation. In Proceedings of the 2022 Conference on Empirical Methods in Natural Language Processing, 2022.",
+    "Lin et al. (2021) Lin, C.-C., Jaech, A., Li, X., Gormley, M. R., and Eisner, J. Limitations of autoregressive models and their alternatives. In Proceedings of the 2021 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies (NAACL-HLT), 2021.",
+    "Llama Team (2024) Llama Team. The llama 3 herd of models. arXiv preprint arXiv:2407.21783, 2024.",
+    "Madaan et al. (2024) Madaan, A., Tandon, N., Gupta, P., Hallinan, S., Gao, L., Wiegreffe, S., Alon, U., Dziri, N., Prabhumoye, S., Yang, Y., et al. Self-refine: Iterative refinement with self-feedback. In Advances in Neural Information Processing Systems, volume 36, 2024.",
+    "MistralAI (2024) MistralAI. Mistral nemo, 2024. URL https://mistral.ai/news/mistral-nemo/.",
+    "Nocedal & Wright (1999) Nocedal, J. and Wright, S. J. Numerical Optimization. Springer, 1999.",
+    "OpenAI (2023) OpenAI. GPT-4 technical report. arXiv preprint arXiv:2303.08774, 2023.",
+    "OpenAI (2024) OpenAI. GPT-4o system card. arXiv preprint arXiv:2410.21276, 2024.",
+    "Pan et al. (2023) Pan, L., Saxon, M., Xu, W., Nathani, D., Wang, X., and Wang, W. Y. Automatically correcting large language models: Surveying the landscape of diverse self-correction strategies. arXiv preprint arXiv:2308.03188, 2023.",
+    "Pearl (2009) Pearl, J. Causality. Cambridge University Press, 2009.",
+    "Peeperkorn et al. (2024) Peeperkorn, M., Kouwenhoven, T., Brown, D., and Jordanous, A. Is temperature the creativity parameter of large language models? In Proceedings of the 15th International Conference on Computational Creativity, 2024.",
+    "Radford et al. (2019) Radford, A., Wu, J., Child, R., Luan, D., Amodei, D., and Sutskever, I. Language models are unsupervised multitask learners. OpenAI Blog, 1(8):9, 2019.",
+    "Serravallo (2017) Serravallo, J. The writing strategies book: Your everything guide to developing skilled writers. Heinemann Portsmouth, NH, 2017.",
+    "Shinn et al. (2023) Shinn, N., Cassano, F., Gopinath, A., Narasimhan, K. R., and Yao, S. Reflexion: Language agents with verbal reinforcement learning. In Thirty-seventh Conference on Neural Information Processing Systems, 2023.",
+    "Spirtes et al. (1993) Spirtes, P., Glymour, C., and Scheines, R. Causation, Prediction, and Search. Springer New York, 1993.",
+    "Sun et al. (2024) Sun, Z., Suresh, A. T., Ro, J. H., Beirami, A., Jain, H., and Yu, F. Spectr: Fast speculative decoding via optimal transport. Advances in Neural Information Processing Systems, 36, 2024.",
+    "Törn & Žilinskas (1989) Törn, A. and Žilinskas, A. Global Optimization, volume 350. Springer, 1989.",
+    "Touvron et al. (2023) Touvron, H., Martin, L., Stone, K., Albert, P., Almahairi, A., Babaei, Y., Bashlykov, N., Batra, S., Bhargava, P., Bhosale, S., et al. Llama 2: Open foundation and fine-tuned chat models. arXiv preprint arXiv:2307.09288, 2023.",
+    "Tyen et al. (2023) Tyen, G., Mansoor, H., Chen, P., Mak, T., and Cărbune, V. Llms cannot find reasoning errors, but can correct them! arXiv preprint arXiv:2311.08516, 2023.",
+    "Vaswani et al. (2017) Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A. N., Kaiser, L., and Polosukhin, I. Attention is all you need. Advances in Neural Information Processing Systems, 2017.",
+    "Wei et al. (2024) Wei, C., Koo, K. K., Tavanaei, A., and Bouyarmane, K. Confidence-aware sub-structure beam search (cabs): Mitigating hallucination in structured data generation with large language models. arXiv preprint arXiv:2406.00069, 2024.",
+    "Wu et al. (2021) Wu, H., Xu, J., Wang, J., and Long, M. Autoformer: Decomposition transformers with auto-correlation for long-term series forecasting. Advances in neural information processing systems, 34:22419–22430, 2021.",
+    "Xia et al. (2023) Xia, H., Ge, T., Wang, P., Chen, S.-Q., Wei, F., and Sui, Z. Speculative decoding: Exploiting speculative execution for accelerating seq2seq generation. In Findings of the Association for Computational Linguistics: EMNLP 2023, pp. 3909–3925, 2023.",
+    "Xia et al. (2024) Xia, H., Yang, Z., Dong, Q., Wang, P., Li, Y., Ge, T., Liu, T., Li, W., and Sui, Z. Unlocking efficiency in large language model inference: A comprehensive survey of speculative decoding. arXiv preprint arXiv:2401.07851, 2024.",
+    "Xie et al. (2024) Xie, Y., Kawaguchi, K., Zhao, Y., Zhao, J. X., Kan, M.-Y., He, J., and Xie, M. Self-evaluation guided beam search for reasoning. Advances in Neural Information Processing Systems, 36, 2024.",
+    "Yang et al. (2024a) Yang, A., Yang, B., Hui, B., Zheng, B., Yu, B., Zhou, C., Li, C., Li, C., Liu, D., Huang, F., et al. Qwen2 technical report. arXiv preprint arXiv:2407.10671, 2024a.",
+    "Yang et al. (2024b) Yang, Y., Lee, S., and Tadepalli, P. Language-informed beam search decoding for multilingual machine translation. arXiv preprint arXiv:2408.05738, 2024b.",
+    "Yao et al. (2022) Yao, S., Zhao, J., Yu, D., Du, N., Shafran, I., Narasimhan, K., and Cao, Y. React: Synergizing reasoning and acting in language models. arXiv preprint arXiv:2210.03629, 2022.",
+    "Zheng et al. (2023) Zheng, L., Chiang, W.-L., Sheng, Y., Zhuang, S., Wu, Z., Zhuang, Y., Lin, Z., Li, Z., Li, D., Xing, E., et al. Judging LLM-as-a-judge with MT-bench and chatbot arena. In Advances in Neural Information Processing Systems, volume 36, pp. 46595–46623, 2023.",
+    "Zhu et al. (2024) Zhu, T., Zhang, K., Xie, J., and Su, Y. Deductive beam search: Decoding deducible rationale for chain-of-thought reasoning. arXiv preprint arXiv:2401.17686, 2024."
+  ]
+}

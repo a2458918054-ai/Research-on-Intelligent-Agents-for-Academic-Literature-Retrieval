@@ -1,0 +1,362 @@
+{
+  "title": "Simplify RLHF as Reward-Weighted SFT: A Variational Method",
+  "authors": "Yuhao DuZhuo LiPengyu ChengZhihong ChenYuejiao XieXiang WanAnningzhe Gao",
+  "abstract": "Reinforcement Learning from Human Feedback (RLHF) is crucial for aligning Large Language Models (LLMs) with human values. However, RLHF has been continuously challenged by its high complexity in implementation and computation consumption. Even with recent simplifications, such as Direct Preference Optimization (DPO) and Advantage Leftover Lunch (A-LoL), the problems of over-fitting and training instability remain hindering the alignment process from the expected optimal performance. To address the existing challenges, we propose a novel simplification of RLHF from the perspective of variational inference, called Variational Alignment with Re-weighting (VAR). More specifically, by directly minimizing the distribution gap between the learning LLM policy and the optimal solution of RLHF, we transform the alignment objective into a reward-driven re-weighted supervised fine-tuning (SFT) form, which only requires minor adjustment on the SFT loss to obtain noticeable improvement on training stability and effectiveness. On comprehensive alignment and generation benchmarks, our VAR method has numerically achieved competitive performance in LLM alignment helpfulness and harmlessness.",
+  "sections": {
+    "1 Introduction": {
+      "paragraphs": [
+        "Large Language Models (LLMs) (OpenAI, 2024; Touvron et al., 2023a; Yang et al., 2024) have achieved remarkable success in extensive applications of artificial intelligence (AI), including dialogue generation (Abdullin et al., 2024), coding (Cobbe et al., 2021; Shao et al., 2024), logical reasoning (Suzgun et al., 2022), and AI agents(Wu et al., 2023). Among the diverse LLM training techniques, Reinforcement Learning from Human Feedback (RLHF) plays a core role in ensuring the LLM generation is helpful and harmless. (Ouyang et al., 2022; Rafailov et al., 2024). In particular, RLHF first learns a reward model (RM) from annotated human preferences, then trains LLMs within a reinforcement learning (RL) scheme via Proximal Policy Optimization (Schulman et al., 2017) to optimize the expected rewards from the learned RM (Ouyang et al., 2022).",
+        "Although recognized as the mainstream solution to LLM alignment (Ouyang et al., 2022; Shao et al., 2024; Touvron et al., 2023b; OpenAI, 2024; Yang et al., 2024), RLHF remains being challenged because of its expensive computational resource consumption (Cheng et al., 2023; Yuan et al., 2023) and complicated implementation (Ouyang et al., 2022; Shao et al., 2024; Yuan et al., 2023) in which multiple models (e.g. the learning policy, the reference, the critic model, and the reward model) are required to cooperate in the online RL training scheme. Moreover, incorporating such a complicated pipeline significantly induces training complexity and instability, leading to the difficulty of training convergence and the high risk of collapse (Song et al., 2023; Go et al., 2023).",
+        "Towards more stable training than online alignment, several ranking-based offline alternatives are proposed, primarily from the perspective of enlarging the likelihood margin between preferred and rejected response pairs in a contrastive approach. Direct Preference Optimization (DPO) (Rafailov et al., 2024) implicitly maximizes the difference in sampling probabilities between good and bad answers. Ethayarajh et al. (2024) introduces Kahneman-Tversky Optimization (KTO) to directly maximize the utility of generations instead of maximizing the log-likelihood of preferences. Although methods like GPRO (Shao et al., 2024) forego the critic model, instead estimating the baseline from group scores and significantly reducing training resources, its online sampling strategy still challenges the practical implementation and training speed. While effective, these methods usually rely on the collection of preferred / rejected response pairs with high quality, which introduces a substitution data collection consumption. Instead, Advantage Leftover Launch (A-LoL) (Baheti et al., ) formulates the reinforcement learning process at the sequence level and derives an advantage-based offline objective that exclusively utilizes preferred responses to achieve human-aligned results. However, it still relies on clipping the importance weights to ensure training stability, which prevents the optimization from reaching the true RLHF optima. Furthermore, approaches like DPO and ALoL could employ negative weights for potential dis-preferred responses, leading to an unstable training process due to the unbounded nature of loss landscape when negative weights are applied (Pal et al., 2024; Yan et al., 2024).",
+        "In this paper, we address these limitations by proposing a reward-driven variational alignment framework that eliminates the need for clipping and avoids the instability introduced by negative weights. Our approach reformulates RLHF as a variational inference problem over positive measures, ensuring a stable and well-defined optimization landscape. Specifically, starting from the closed-form optimal solution of RLHF, we minimize the Kullback–Leibler (KL) divergence (Kullback & Leibler, 1951) between the to-be-learned LLM and its optimal solution. The resulting loss function takes the form of a reward-driven weighted supervised fine-tuning (SFT) loss, where non-negative weights are derived through an exponential reward transformation. Furthermore, we introduce an efficient in-batch normalization technique to approximate the normalization term, enabling scalable and practical implementation. Experimental results demonstrate that our framework outperforms existing methods in both stability and alignment performance, providing a robust solution to the challenges of RLHF."
+      ],
+      "subsections": []
+    },
+    "2 Preliminary": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "Reinforcement Learning from Human Feedback (RLHF)",
+          "paragraphs": [
+            "is an essential approach to alignment LLMs with human values, especially from the perspectives of helpfulness and harmlessness (Ouyang et al., 2022).",
+            "RLHF first learns a reward model r​(𝒙,𝒚)r({\\bm{x}},{\\bm{y}}) from a given collection of human preference data 𝒟p={(𝒙,𝒚w,𝒚l)}\\mathcal{D}_{\\text{p}}=\\{({\\bm{x}},{\\bm{y}}_{w},{\\bm{y}}_{l})\\}, where 𝒙{\\bm{x}} is a user input prompt, 𝒚w,𝒚l{\\bm{y}}_{w},{\\bm{y}}_{l} are the preferred and rejected responses selected by annotators, respectively. To learn a representative RM, following Bradley-Terry (Bradley & Terry, 1952) objective is usually utilized:",
+            "where σ​(⋅)\\sigma(\\cdot) is the Sigmoid function. Intuitively, Equation 1 induces r​(𝒙,𝒚)r({\\bm{x}},{\\bm{y}}) to assign a higher reward score to the preferred response 𝒚w{\\bm{y}}_{w} than the rejected response 𝒚l{\\bm{y}}_{l} with respect to input 𝒙{\\bm{x}}.",
+            "With a learned RM r​(𝒙,𝒚)r({\\bm{x}},{\\bm{y}}), RLHF optimizes the target LLM policy πθ​(𝒚|𝒙)\\pi_{\\theta}({\\bm{y}}|{\\bm{x}}) by maximizing the expected reward:",
+            "where KL​[πθ∥πref]\\text{KL}[\\pi_{\\theta}\\|\\pi_{\\text{ref}}] is the KL divergence (Kullback & Leibler, 1951) between the training policy πθ​(𝒚|𝒙)\\pi_{\\theta}({\\bm{y}}|{\\bm{x}}) with a reference model πref​(𝒚|𝒙)\\pi_{\\text{ref}}({\\bm{y}}|{\\bm{x}}) to prevent πθ​(𝒚|𝒙)\\pi_{\\theta}({\\bm{y}}|{\\bm{x}}) from the degeneration and preserve the generation diversity. β>0\\beta>0 is a hyper-parameter to re-weight the expected reward and the KL regularization term.",
+            "To solve the RLHF objective in Equation 2, Proximal Policy Optimization (PPO) (Schulman et al., 2017) has been recognized as the mainstream optimization algorithm (Rafailov et al., 2024). However, as mentioned in Section 1, PPO suffers from training instability and high complexity in computation and implementation (Yuan et al., 2023; Cheng et al., 2023). Therefore, many of recent works have been proposed to simplify and improve the original PPO algorithm. Rafailov et al. (2024) theoretically demonstrate that Equation 2 has a closed-form solution:",
+            "where Z​(𝒙)=𝔼𝒚∼πref​(𝒙|𝒚)​[exp​(1β​r​(𝒙,𝒚))]Z({\\bm{x}})=\\mathbb{E}_{{\\bm{y}}\\sim\\pi_{\\text{ref}}({\\bm{x}}|{\\bm{y}})}[\\text{exp}(\\frac{1}{\\beta}r({\\bm{x}},{\\bm{y}}))] is the denominator that normalizes the conditional distribution. Based on the relation between the optimal policy π∗​(𝒚|𝒙)\\pi^{*}({\\bm{y}}|{\\bm{x}}) and the RM r​(𝒙,𝒚)r({\\bm{x}},{\\bm{y}}), Rafailov et al. (2024) convert the RM learning objective Equation 1 to an optimal policy learning loss named Direct Preference Optimization (DPO):",
+            "Baheti et al. adopt the PPO objective into an offline scheme by using importance sampling and converting the expectation of πθ​(𝒚|𝒙)\\pi_{\\theta}({\\bm{y}}|{\\bm{x}}) to the expectation of πref​(𝒚|𝒙)\\pi_{\\text{ref}}({\\bm{y}}|{\\bm{x}}), then propose Advantage-Leftover-Lunch (A-LoL) gradient estimation:",
+            "where A^πref\\hat{A}^{\\pi_{\\text{ref}}} is the estimated advantage value (Schulman et al., 2016) with respect to πθ¯\\pi_{\\bar{\\theta}}, also calculated offline."
+          ]
+        },
+        {
+          "title": "Variational Methods",
+          "paragraphs": [
+            "provide a principled framework for approximating unknown probability distributions by leveraging optimization over a family of tractable parameterized distributions (Kingma & Welling, 2022). The fundamental idea of variational methods is to reformulate probabilistic inference as a functional optimization problem. More specifically, the goal is to find a surrogate distribution qθ​(𝒚)q_{\\theta}({\\bm{y}}) from a parameterized family 𝒬={qθ|θ∈Θ}\\mathcal{Q}=\\{q_{\\theta}|\\theta\\in\\Theta\\}, so that qθ​(𝒚)q_{\\theta}({\\bm{y}}) can best approximates the target unknown distribution p​(𝒚)p({\\bm{y}}). This is usually achieved by minimizing the KL divergence KL​[qθ​(𝒚)∥p​(𝒚)]\\text{KL}[q_{\\theta}({\\bm{y}})\\|p({\\bm{y}})] between qθ​(𝒚)q_{\\theta}({\\bm{y}}) and p​(𝒚)p({\\bm{y}}). Mathematically, given the unknown target p​(𝒚)p({\\bm{y}}), variational methods minimize the following KL to find a distribution qθ​(𝒚)q_{\\theta}({\\bm{y}}) from a predefined family 𝒬\\mathcal{Q} that minimizes the KL divergence:",
+            "This objective encourages qθ​(𝒚)q_{\\theta}({\\bm{y}}) to concentrate probability mass where p​(𝒚)p({\\bm{y}}) is large. However, directly minimizing Equation 6 is often intractable, as evaluating p​(𝒚)p({\\bm{y}}) requires computing a normalization constant (e.g., a partition function). To bypass this intractability, variational methods maximize the Evidence Lower Bound (ELBO) (Kingma & Welling, 2022), derived by rearranging the log-evidence log⁡p​(𝒙)\\log p({\\bm{x}}):",
+            "Maximizing the ELBO is equivalent to minimizing KL(qθ∥p(𝒚|𝒙))\\text{KL}\\big{(}q_{\\theta}\\parallel p({\\bm{y}}|{\\bm{x}})\\big{)}, where p​(𝒚|𝒙)=p​(𝒙,𝒚)p​(𝒙)p({\\bm{y}}|{\\bm{x}})=\\frac{p({\\bm{x}},{\\bm{y}})}{p({\\bm{x}})}. The tightness of the bound depends on how well qθ​(𝒚)q_{\\theta}({\\bm{y}}) approximates the true posterior. In our offline policy optimization setting, the target distribution is the optimal policy π∗​(𝒚|𝒙)\\pi^{*}({\\bm{y}}|{\\bm{x}}) and we seek a parametric policy πθ​(𝒚|𝒙)\\pi_{\\theta}({\\bm{y}}|{\\bm{x}}) to approximate π∗\\pi^{*}. By minimizing KL​(π∗∥πθ)\\text{KL}\\big{(}\\pi^{*}\\parallel\\pi_{\\theta}\\big{)}, we align πθ\\pi_{\\theta} with high-reward regions of π∗\\pi^{*}. The ELBO in this context becomes:",
+            "Variational methods bridge the gap between tractable optimization and probabilistic inference by learning parametric approximations to complex distributions. In our work, this framework justifies using a learnable policy πθ​(𝒚|𝒙)\\pi_{\\theta}({\\bm{y}}|{\\bm{x}}) to approximate the optimal policy π∗\\pi^{*} in a reward-weighted manner, while leveraging offline data to estimate the ELBO efficiently through importance sampling."
+          ]
+        }
+      ]
+    },
+    "3 Method": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "3.1 Motivation",
+          "paragraphs": [
+            "Existing preference alignment methods exhibit two fundamental limitations. First, clipping-based approaches like PPO (Schulman et al., 2017) and A-LoL (Baheti et al., ) bound the importance ratio πθ​(𝒚|𝒙)/πref​(𝒚|𝒙)\\pi_{\\theta}({\\bm{y}}|{\\bm{x}})/\\pi_{\\text{ref}}({\\bm{y}}|{\\bm{x}}) within the interval [1−ϵ,1+ϵ][1-\\epsilon,1+\\epsilon]. This flattens the reward distinctions between responses with similar values. For instance, when two responses have rewards R1=100R_{1}=100 and R2=99R_{2}=99, clipped methods assign nearly identical probabilities (∼1/2\\sim 1/2), failing to resolve fine-grained preferences (detailed analysis in Section B.2).",
+            "Second, existing methods that employ negative weights for the to-be-learned policy face intrinsic instability. For example, DPO’s treatment of dis-preferred responses and A-LoL’s alternative weighted SFT method, where the advantage value A^πref\\hat{A}^{\\pi_{\\text{ref}}} can be negative, suffer from this issue. Consider the general weighted SFT objective:",
+            "When w​(𝒙,𝒚)w({\\bm{x}},{\\bm{y}}) takes negative values for dis-preferred responses, the loss becomes unbounded below. Minimizing the loss corresponds to maximizing w​(𝒙,𝒚)​log⁡πθ​(𝒚|𝒙)w({\\bm{x}},{\\bm{y}})\\log\\pi_{\\theta}({\\bm{y}}|{\\bm{x}}). For negative weights (w<0w<0), this reduces to minimizing log⁡πθ​(𝒚|𝒙)\\log\\pi_{\\theta}({\\bm{y}}|{\\bm{x}}), creating a non-compact optimization landscape. While perfect performance (log⁡πθ​(𝒚|𝒙)→0\\log\\pi_{\\theta}({\\bm{y}}|{\\bm{x}})\\rightarrow 0) is theoretically achievable, it is practically unreachable (Gao et al., 2023) (detailed analysis in Appendix B).",
+            "Our key insight is that reward-driven alignment should operate in the space of positive measures. We therefore propose a variational method that naturally induces non-negative weights through exponential reward transformation:",
+            "This construction guarantees that the loss landscape has well-defined minima bounded by the reference policy’s support. By reformulating RLHF as variational inference over positive measures, we achieve stable optimization without artificial clipping or negative weighting."
+          ]
+        },
+        {
+          "title": "3.2 KL Minimization as Variational Inference",
+          "paragraphs": [
+            "This closed-form solution motivates our key insight: preference alignment can be reformulated as variational distribution matching. Therefore, we formulate the policy optimization as a variational inference problem. In the variational inference paradigm (Jordan et al., 1999), we approximate a complex target distribution (here π∗\\pi^{*}) by optimizing within a tractable family of distributions (here πθ\\pi_{\\theta}). This can be achieved by minimizing the KL divergence between the target and the variational distributions:",
+            "where H​(⋅)H(\\cdot) is the entropy function over π∗\\pi^{*} and is a constant related to π∗\\pi^{*}. For conciseness, we adopt the expectation form of the KL divergence and let 𝔼π\\mathbb{E}_{\\pi} denote 𝔼y∼π​(𝒚|𝒙)\\mathbb{E}_{y\\sim\\pi({\\bm{y}}|{\\bm{x}})}. As a result, the approximation of π∗\\pi^{*} under minimizing KL divergence can be achieved by:",
+            "Using importance sampling (Goertzel, 1949; Kahn & Harris, 1951; Kloek & Van Dijk, 1978), which effectively approximates an unknown distribution with a known one, we can rearrange Equation 13 to obtain the following objective by incorporating Equation 3:"
+          ]
+        },
+        {
+          "title": "3.3 In-Batch Normalization Function Estimation",
+          "paragraphs": [
+            "Equation 15 implies that the key challenge in effectively approximating π∗\\pi^{*} through a parameterized model πθ\\pi_{\\theta} lies in the computation of Z​(𝒙)Z({\\bm{x}}). However, estimating Z​(𝒙)Z({\\bm{x}}) involves summing over all possible outputs yy for a given xx, which can be computationally expensive, as mentioned in previous work (Rafailov et al., 2024). To avoid directly computing Z​(𝒙)Z({\\bm{x}}), some alignment methods adopt policy gradient algorithms (e.g., REINFORCE (Williams, 1992) and PPO (Schulman et al., 2017)) that optimize πθ\\pi_{\\theta} without explicitly normalizing over all outputs. Here, we propose a novel approximation of Z​(𝒙)Z({\\bm{x}}) within a mini-batch ℬ\\mathcal{B}, leveraging the insight of “cross-context importance sampling”. Specifically, our method uses pre-collected responses yjy_{j} associated with inputs xjx_{j} in the same batch to estimate Z​(𝒙i)Z({\\bm{x}}_{i}) efficiently, while implicitly suppressing low-reward responses through normalization. Given a batch ℬ={(xi,yi)}i=1B\\mathcal{B}=\\{(x_{i},y_{i})\\}_{i=1}^{B} and a reward model rr, we assume each yjy_{j} can be sampled from a uniform distribution Pref​(y)P_{\\text{ref}}(y) instead of πref​(𝒚|𝒙)\\pi_{\\text{ref}({\\bm{y}}|{\\bm{x}})}, and thus estimate Z​(𝒙i)Z({\\bm{x}}_{i}) for each 𝒙i{\\bm{x}}_{i} by:"
+          ]
+        },
+        {
+          "title": "3.4 Reward-Driven Weighted SFT",
+          "paragraphs": [
+            "Combining the above components, we obtain our final objective:",
+            "where each Z​(𝒙i)Z({\\bm{x}}_{i}) can be approximated by Equation 20. By treating the term πref​(𝒚|𝒙)​exp⁡(1λ​r​(𝒙,𝒚))Z​(𝒙)\\frac{\\pi_{\\text{ref}}({\\bm{y}}|{\\bm{x}})\\exp\\left(\\frac{1}{\\lambda}r({\\bm{x}},{\\bm{y}})\\right)}{Z({\\bm{x}})} as the variational weights, our objective becomes a reward-driven (r​(𝒙,𝒚)r({\\bm{x}},{\\bm{y}})) weighted SFT. Further analysis of the consistency of our objective with the RLHF objective is shown in Appendix D. In conclusion, we summarize the algorithm process of our in-batch estimation and loss computation in Alg. 1."
+          ]
+        }
+      ]
+    },
+    "4 Experiments": {
+      "paragraphs": [
+        "To evaluate the effectiveness of our proposed approach, we conducted experiments under two primary settings: (1) the Helpful and Harmless Assistant Task (HHA) (Bai et al., 2022; Ganguli et al., 2022); and (2) generative benchmarks, including MMLU (Hendrycks et al., ), HumanEval (Chen et al., 2021), BigBench-Hard (Srivastava et al., 2023), and GSM8k (Cobbe et al., 2021)."
+      ],
+      "subsections": [
+        {
+          "title": "4.1 HHA Settings",
+          "paragraphs": [
+            "Our primary experiment utilizes the HHA dataset, which consists of user-assistant conversations paired with model-generated responses labeled as “chosen” or “rejected” based on human preferences. This dataset is divided into four subsets: (1) Harmless-base, containing red-teaming conversations designed to elicit harmful responses; (2) Helpful-base, (3) Helpful-online, and (4) Helpful-rejection, which focus on advice- and assistance-seeking interactions. We evaluate our method using the test sets of these subsets, comprising a total of 8.2K test conversations annotated with human preference labels.",
+            "For model training111Implementation details can be found in Appendix C.1., we employ the OffsetBias (Park et al., 2024) dataset, a preference dataset similar to HHA. We utilize OffsetBias because our method explicitly relies on reward scores during training. We observed that directly applying the HHA training set and its corresponding reward models often results in inappropriate reward scores, such as instances where the chosen response receives a lower reward score than the rejected response. This issue significantly compromises the effectiveness of our method. In contrast, OffsetBias addresses six common types of biases, including length bias—where models tend to assign higher scores to longer sequences—that can mislead reward models into assigning inaccurate reward scores. By mitigating these biases, OffsetBias provides more robust and reliable reward scores, making it better suited for training our model effectively. For all HHA experiments, we use the full training set of OffsetBias, which consists of 8.5K samples.",
+            "To evaluate the scalability of our method, we conducted experiments on two model collections: Llama-{1B, 3B, 8B, 13B}222To ensure the use of the most updated models, we selected Llama3.2-{1B, 3B}, Llama3.1-8B, and Llama2-13B. (Dubey et al., 2024) and Qwen2.5-{0.5B, 1.5B, 3B, 7B, 14B, 32B} (Yang et al., 2024). Specifically, we benchmark our method against DPO across all models and consider two RL training settings: 1) starting from the pre-trained (base) model; (2) starting from the SFT model. For the reward model, we employ a popular OffsetBiasRM (Park et al., 2024) that is trained on the OffsetBias preference dataset. OffsetBiasRM is designed to provide more accurate reward scores by addressing common biases, making it more suitable for our experiments.",
+            "By following previous work (Rafailov et al., 2024; Baheti et al., ), we adopt two popular evaluation strategies: 1) Reward Score: A higher reward score usually indicates more useful and helpful response with respective to the input. Specifically, we use the OffsetBiasRM reward model (Park et al., 2024) to calculate reward scores for sequences generated by the aligned models on the HHA test set. Additionally, we also evaluate reward scores on the split OffsetBias evaluation set to assess the in-distribution ability of the models. 2) Pairwise Winrate Score: Following the common practice of LLM-as-a-judge, we utilize GPT4 and adopt the evaluation template from MT-Bench (Zheng et al., 2023). To alleviate potential positional bias, we present the responses of two models to the judge in two different orders and compare their scores. A model is considered to win only if it does not lose in both orderings. Specifically, we define: Wins: Outperforms in both orderings or wins in one and ties in the other. Tie: Ties in both orderings or wins in one and loses in the other. Loses: Lags in both orderings or ties in one and loses in the other."
+          ]
+        },
+        {
+          "title": "Dataset",
+          "paragraphs": [
+            "Our primary experiment utilizes the HHA dataset, which consists of user-assistant conversations paired with model-generated responses labeled as “chosen” or “rejected” based on human preferences. This dataset is divided into four subsets: (1) Harmless-base, containing red-teaming conversations designed to elicit harmful responses; (2) Helpful-base, (3) Helpful-online, and (4) Helpful-rejection, which focus on advice- and assistance-seeking interactions. We evaluate our method using the test sets of these subsets, comprising a total of 8.2K test conversations annotated with human preference labels.",
+            "For model training111Implementation details can be found in Appendix C.1., we employ the OffsetBias (Park et al., 2024) dataset, a preference dataset similar to HHA. We utilize OffsetBias because our method explicitly relies on reward scores during training. We observed that directly applying the HHA training set and its corresponding reward models often results in inappropriate reward scores, such as instances where the chosen response receives a lower reward score than the rejected response. This issue significantly compromises the effectiveness of our method. In contrast, OffsetBias addresses six common types of biases, including length bias—where models tend to assign higher scores to longer sequences—that can mislead reward models into assigning inaccurate reward scores. By mitigating these biases, OffsetBias provides more robust and reliable reward scores, making it better suited for training our model effectively. For all HHA experiments, we use the full training set of OffsetBias, which consists of 8.5K samples."
+          ]
+        },
+        {
+          "title": "Models",
+          "paragraphs": [
+            "To evaluate the scalability of our method, we conducted experiments on two model collections: Llama-{1B, 3B, 8B, 13B}222To ensure the use of the most updated models, we selected Llama3.2-{1B, 3B}, Llama3.1-8B, and Llama2-13B. (Dubey et al., 2024) and Qwen2.5-{0.5B, 1.5B, 3B, 7B, 14B, 32B} (Yang et al., 2024). Specifically, we benchmark our method against DPO across all models and consider two RL training settings: 1) starting from the pre-trained (base) model; (2) starting from the SFT model. For the reward model, we employ a popular OffsetBiasRM (Park et al., 2024) that is trained on the OffsetBias preference dataset. OffsetBiasRM is designed to provide more accurate reward scores by addressing common biases, making it more suitable for our experiments."
+          ]
+        },
+        {
+          "title": "Evaluation",
+          "paragraphs": [
+            "By following previous work (Rafailov et al., 2024; Baheti et al., ), we adopt two popular evaluation strategies: 1) Reward Score: A higher reward score usually indicates more useful and helpful response with respective to the input. Specifically, we use the OffsetBiasRM reward model (Park et al., 2024) to calculate reward scores for sequences generated by the aligned models on the HHA test set. Additionally, we also evaluate reward scores on the split OffsetBias evaluation set to assess the in-distribution ability of the models. 2) Pairwise Winrate Score: Following the common practice of LLM-as-a-judge, we utilize GPT4 and adopt the evaluation template from MT-Bench (Zheng et al., 2023). To alleviate potential positional bias, we present the responses of two models to the judge in two different orders and compare their scores. A model is considered to win only if it does not lose in both orderings. Specifically, we define: Wins: Outperforms in both orderings or wins in one and ties in the other. Tie: Ties in both orderings or wins in one and loses in the other. Loses: Lags in both orderings or ties in one and loses in the other."
+          ]
+        },
+        {
+          "title": "4.2 HHA Results",
+          "paragraphs": [
+            "Table 1 present the reward scores on the HHA test sets. DPO and VAR denote models trained directly from the Base model (pre-trained only), while SFT+ refers to models first fine-tuned via SFT and then further fine-tuned on the SFT model. From Table 1, we observe that our method outperforms DPO in both Avg. Helpful and Avg. All across all Llama models for the base version, as well as for the SFT+ version, except for Llama3.2-3B, where it shows a marginal decrease of around 0.5% compared to DPO. Additionally, our method achieves comparable results whether trained directly from the base model or the SFT model, particularly for larger LLMs such as Llama3.1-8B and Llama2-13B, whereas DPO struggles to achieve strong results when starting from the base model. Moreover, our method achieves performance comparable to the RLHF objective in a single training step, resembling the simplicity and efficiency of SFT. Table 2 further demonstrates the scalability of our method across different model sizes. Our approach consistently outperforms DPO across all average reward scores on both HHA and OffsetBias, even when starting from the base model. For Qwen2.5-32B, due to limited resources, we employ 4-bit quantization for training. Nevertheless, our method maintains its advantage over DPO.",
+            "Figure 1 present the win rates evaluated by GPT-4o for answers generated by aligned models compared to the SFT targets (chosen answers in the test set) for the Llama series. The Llama series show results consistent with the reward scores, where our method outperforms DPO across all models except Llama2-13B, which achieves comparable results. These findings further demonstrate that our method can achieve the RLHF objective in a single SFT-like step without the need for resource-intensive reinforcement learning. We provide additional results on Qwen series in Section B.3.",
+            "Table 3 shows results on the Llama series instruct versions (i.e., models after RLHF). Our method outperforms DPO by a large margin across three scales (1B, 3B, and 8B) and consistently achieves higher win rates across all subsets of the HHA benchmark. This demonstrates the robustness of our method across models at different training stages, including those that have already undergone RLHF alignment. The results highlight the effectiveness of our approach in further refining and aligning models with human preferences, even when starting from pre-aligned instruct versions.",
+            "Figure 2 illustrates the average validation reward during the training process for three Llama model collections. Comparing our method with DPO, we observe that DPO exhibits greater volatility and tends to decline from the early training steps. In contrast, our method demonstrates a gradual increase in validation reward, ultimately reaching a consistent level. This indicates that our approach is more robust over longer training steps and maintains a more stable training process compared to DPO.",
+            "We calculate the average output sequence lengths for models aligned on Llama3.1-8B across the four subsets of HHA, as shown in Figure 3. Starting from the base models, DPO generates longer sequences than our method. When starting from SFT, our models maintain output sequence lengths similar to the SFT version, while DPO produces sequences approximately twice as long as ours and the SFT version. Longer sequences tend to achieve higher reward scores and GPT-based scores (Baheti et al., ; Ethayarajh et al., 2024). Despite this, our method outperforms DPO in most reward evaluations and winrate evaluations."
+          ]
+        },
+        {
+          "title": "Reward Evaluation",
+          "paragraphs": [
+            "Table 1 present the reward scores on the HHA test sets. DPO and VAR denote models trained directly from the Base model (pre-trained only), while SFT+ refers to models first fine-tuned via SFT and then further fine-tuned on the SFT model. From Table 1, we observe that our method outperforms DPO in both Avg. Helpful and Avg. All across all Llama models for the base version, as well as for the SFT+ version, except for Llama3.2-3B, where it shows a marginal decrease of around 0.5% compared to DPO. Additionally, our method achieves comparable results whether trained directly from the base model or the SFT model, particularly for larger LLMs such as Llama3.1-8B and Llama2-13B, whereas DPO struggles to achieve strong results when starting from the base model. Moreover, our method achieves performance comparable to the RLHF objective in a single training step, resembling the simplicity and efficiency of SFT. Table 2 further demonstrates the scalability of our method across different model sizes. Our approach consistently outperforms DPO across all average reward scores on both HHA and OffsetBias, even when starting from the base model. For Qwen2.5-32B, due to limited resources, we employ 4-bit quantization for training. Nevertheless, our method maintains its advantage over DPO."
+          ]
+        },
+        {
+          "title": "Winrate Evaluation",
+          "paragraphs": [
+            "Figure 1 present the win rates evaluated by GPT-4o for answers generated by aligned models compared to the SFT targets (chosen answers in the test set) for the Llama series. The Llama series show results consistent with the reward scores, where our method outperforms DPO across all models except Llama2-13B, which achieves comparable results. These findings further demonstrate that our method can achieve the RLHF objective in a single SFT-like step without the need for resource-intensive reinforcement learning. We provide additional results on Qwen series in Section B.3.",
+            "Table 3 shows results on the Llama series instruct versions (i.e., models after RLHF). Our method outperforms DPO by a large margin across three scales (1B, 3B, and 8B) and consistently achieves higher win rates across all subsets of the HHA benchmark. This demonstrates the robustness of our method across models at different training stages, including those that have already undergone RLHF alignment. The results highlight the effectiveness of our approach in further refining and aligning models with human preferences, even when starting from pre-aligned instruct versions."
+          ]
+        },
+        {
+          "title": "Training Stability",
+          "paragraphs": [
+            "Figure 2 illustrates the average validation reward during the training process for three Llama model collections. Comparing our method with DPO, we observe that DPO exhibits greater volatility and tends to decline from the early training steps. In contrast, our method demonstrates a gradual increase in validation reward, ultimately reaching a consistent level. This indicates that our approach is more robust over longer training steps and maintains a more stable training process compared to DPO."
+          ]
+        },
+        {
+          "title": "Output Sequence Length Analysis",
+          "paragraphs": [
+            "We calculate the average output sequence lengths for models aligned on Llama3.1-8B across the four subsets of HHA, as shown in Figure 3. Starting from the base models, DPO generates longer sequences than our method. When starting from SFT, our models maintain output sequence lengths similar to the SFT version, while DPO produces sequences approximately twice as long as ours and the SFT version. Longer sequences tend to achieve higher reward scores and GPT-based scores (Baheti et al., ; Ethayarajh et al., 2024). Despite this, our method outperforms DPO in most reward evaluations and winrate evaluations."
+          ]
+        },
+        {
+          "title": "4.3 Generative Benchmark",
+          "paragraphs": [
+            "Following prior settings (Tunstall et al., 2023; Ethayarajh et al., 2024), we utilize UltraFeedback (Cui et al., 2023) as the training dataset. UltraFeedback is a large-scale preference dataset collected from diverse sources, where multiple LLMs generate four distinct responses for each prompt. The dataset comprises 64k prompts, resulting in 256k samples. Additionally, it includes GPT-4-evaluated scores for instruction-following, truthfulness, honesty, and helpfulness. For our experiments, we sampled 10k prompts, selecting the highest average-scored samples for training SFT, OURS, and ALoL, and using the highest-worst score pairs for training DPO. For training, we utilize Llama2-7B and Qwen2.5-7B as the base models. For comparison, we benchmark our method against ALoL and DPO. As for the reward model, we employ OffsetBiasRM for both ALoL and our method, with the same setting in HHA experiments.",
+            "Table 4 presents the results of different methods on Llama2-7B and Qwen2.5-7B models across four benchmarks: MMLU, GSM8k, HumanEval, and BBH. For Llama2-7B, our method consistently outperforms both DPO and ALoL across most benchmarks, achieving the highest average results. On Qwen2.5-7B, our method also demonstrates strong results, achieving the best performance on multiple benchmarks while maintaining competitive results on others, highlighting the robustness and effectiveness across various settings."
+          ]
+        },
+        {
+          "title": "Settings",
+          "paragraphs": [
+            "Following prior settings (Tunstall et al., 2023; Ethayarajh et al., 2024), we utilize UltraFeedback (Cui et al., 2023) as the training dataset. UltraFeedback is a large-scale preference dataset collected from diverse sources, where multiple LLMs generate four distinct responses for each prompt. The dataset comprises 64k prompts, resulting in 256k samples. Additionally, it includes GPT-4-evaluated scores for instruction-following, truthfulness, honesty, and helpfulness. For our experiments, we sampled 10k prompts, selecting the highest average-scored samples for training SFT, OURS, and ALoL, and using the highest-worst score pairs for training DPO. For training, we utilize Llama2-7B and Qwen2.5-7B as the base models. For comparison, we benchmark our method against ALoL and DPO. As for the reward model, we employ OffsetBiasRM for both ALoL and our method, with the same setting in HHA experiments."
+          ]
+        },
+        {
+          "title": "Generative Benchmark Results",
+          "paragraphs": [
+            "Table 4 presents the results of different methods on Llama2-7B and Qwen2.5-7B models across four benchmarks: MMLU, GSM8k, HumanEval, and BBH. For Llama2-7B, our method consistently outperforms both DPO and ALoL across most benchmarks, achieving the highest average results. On Qwen2.5-7B, our method also demonstrates strong results, achieving the best performance on multiple benchmarks while maintaining competitive results on others, highlighting the robustness and effectiveness across various settings."
+          ]
+        },
+        {
+          "title": "4.4 Ablation Study",
+          "paragraphs": [
+            "As per Equation 20, we estimate Z​(𝒙i)Z({\\bm{x}}_{i}) with a mini - batch of data, making batch size BB crucial for training. We conduct an ablation study using batch sizes 2, 4, and 8 under the settings in Section 4.3, with UltraFeedback as the training set. Table 5 shows the impact of different BB values on model performance. The model performs best at B=8B=8, but the improvement over B=4B=4 is just 0.14%, suggesting that a larger BB can slightly boost performance. Thus, we use B=8B=8 for all experiments. However, our method is also robust to batch-size changes, which gives satisfactory results even at B=2B=2, showing stability and suitability for resource-constrained situations."
+          ]
+        },
+        {
+          "title": "4.5 Additional Analysis",
+          "paragraphs": [
+            "We provide case study in Appendix E, from which we can observe our method effectively produce more comprehensive and helpful response with higher quality compared to the baseline methods."
+          ]
+        }
+      ]
+    },
+    "5 Related Work": {
+      "paragraphs": [
+        "Aligning LLMs with human preferences has evolved from studies on RLHF, aiming to achieve human-aligned outcomes (Stiennon et al., 2020; Ouyang et al., 2022; Bai et al., 2022; Lee et al., 2023). The RLHF process typically begins with SFT, followed by further fine-tuning to maximize expected reward scores. This requires the construction of a reward model based on the Maximum Likelihood Estimation (MLE) of the BT model to provide such reward scores. This fine-tuning process is referred to as RLHF, with the PPO algorithm being the most widely applied (Schulman et al., 2017). A series of works focus on self-training, where the workflow involves sampling online data from the model and training it using a two-player min-max game between two policies (Rosset et al., 2024; Swamy et al., 2024; Chen et al., 2024). However, the use of online data in the learning process presents significant challenges, as it requires substantial computational resources and limits training efficiency. To address these challenges, researchers have shifted their focus to offline preference alignment learning algorithms. These methods operate in a single stage and directly optimize a designed loss function to achieve optimal preference alignment based on pairwise datasets (Zhao et al., 2023; Rafailov et al., 2024; Azar et al., 2024; Ethayarajh et al., 2024; Xu et al., 2024). Another approach to alleviate the resource-intensive nature of training is proposed by Remax (Li et al., 2024), which introduces a variance reduction method for LLMs. Most closely related to our work is ALoL (Baheti et al., ), which formulates the reinforcement learning process at the sequence level and derives its advantage-based offline objective. Unlike ALoL, which relies on clipping operations to ensure training stability, we formulate our method by directly approaching the optimal solution of RLHF, thereby achieving a more precise solution to the RLHF objective."
+      ],
+      "subsections": []
+    },
+    "6 Conclusion": {
+      "paragraphs": [
+        "In this paper, we proposed a reward-driven variational alignment framework to address the limitations of existing RLHF methods, such as instability from negative weights and suboptimal performance due to clipping. By reformulating RLHF as a variational problem over positive measures, our approach ensures a stable optimization landscape and derives a reward-driven weighted SFT loss through KL divergence minimization. The introduction of an efficient in-batch normalization technique further enables scalable and practical implementation. Experimental results demonstrate improved alignment performance and training stability, offering a robust and effective solution for preference alignment in RLHF."
+      ],
+      "subsections": []
+    },
+    "Impact Statement": {
+      "paragraphs": [
+        "Our work presents a reward-driven variational alignment framework that overcomes key challenges in RLHF, such as instability from negative weights and suboptimal clipping effects. By reformulating RLHF as a variational problem over positive measures, our method offers a stable and efficient optimization framework for aligning language models with human preferences, enhancing their reliability and scalability in applications like conversational AI, content moderation, and personalized recommendations. While our focus is on improving alignment performance and training stability, we recognize the broader societal implications, including risks of bias amplification, misuse of generative capabilities, and ethical concerns around automating human-like decision-making. We emphasize the need for ongoing research to address these challenges and ensure responsible deployment of RLHF advancements."
+      ],
+      "subsections": []
+    }
+  },
+  "appendices": {
+    "Appendix A Future Work": {
+      "paragraphs": [
+        "We will explore several promising directions to further enhance our framework. First, we aim to develop an online version of our method, enabling real-time interaction for calculating Z​(𝒙)Z({\\bm{x}}) and updating the policy πθ\\pi_{\\theta} dynamically. Second, we plan to conduct extensive experiments across a broader range of tasks, such as multi-turn dialogue and long-form text generation, to validate the generalizability of our approach. Finally, scaling our framework to larger models and testing on more diverse and noisy preference datasets will provide deeper insights into its scalability and robustness."
+      ],
+      "subsections": []
+    },
+    "Appendix B Theoretical Analysis": {
+      "paragraphs": [],
+      "subsections": [
+        {
+          "title": "B.1 Loss Bound Analysis",
+          "paragraphs": [
+            "For any policy πθ​(𝐲|𝐱)\\pi_{\\theta}({\\bm{y}}|{\\bm{x}}) satisfying ∑yπθ​(𝐲|𝐱)=1\\sum_{y}\\pi_{\\theta}({\\bm{y}}|{\\bm{x}})=1 and weights w​(𝐱,𝐲)>0w({\\bm{x}},{\\bm{y}})>0, the weighted SFT loss satisfies:",
+            "with equality if and only if πθ​(𝐲|𝐱)=δy=y∗\\pi_{\\theta}({\\bm{y}}|{\\bm{x}})=\\delta_{y=y^{*}} where δy=y∗\\delta_{y=y^{*}} is the optimal policy when y∗=arg⁡maxy⁡w​(x,y)y^{*}=\\arg\\max_{y}w(x,y).",
+            "Using the inequality log⁡z≤z−1\\log z\\leq z-1 for z>0z>0:",
+            "The equality holds when πθ​(𝒚|𝒙)=1\\pi_{\\theta}({\\bm{y}}|{\\bm{x}})=1 for the yy maximizing w​(x,y)w(x,y). ∎",
+            "If there exists a pair (𝐱0,𝐲0)({\\bm{x}}_{0},{\\bm{y}}_{0}) such that w​(𝐱0,𝐲0)<0w({\\bm{x}}_{0},{\\bm{y}}_{0})<0, then the loss ℒ​(θ)\\mathcal{L}(\\theta) is unbounded below:",
+            "Consider the loss component corresponding to the pair (𝒙0,𝒚0)({\\bm{x}}_{0},{\\bm{y}}_{0}):",
+            "Since w​(𝒙0,𝒚0)<0w({\\bm{x}}_{0},{\\bm{y}}_{0})<0, let |w​(𝒙0,𝒚0)|=−w​(𝒙0,𝒚0)|w({\\bm{x}}_{0},{\\bm{y}}_{0})|=-w({\\bm{x}}_{0},{\\bm{y}}_{0}). Then:",
+            "As πθ​(𝒚0|𝒙0)→0+\\pi_{\\theta}({\\bm{y}}_{0}|{\\bm{x}}_{0})\\to 0^{+}, we have log⁡πθ​(𝒚0|𝒙0)→−∞\\log\\pi_{\\theta}({\\bm{y}}_{0}|{\\bm{x}}_{0})\\to-\\infty, and thus:",
+            "Next, adjust the policy πθ\\pi_{\\theta} such that πθ​(𝒚0|𝒙0)\\pi_{\\theta}({\\bm{y}}_{0}|{\\bm{x}}_{0}) approaches 0 while maintaining normalization. For example, for some 𝒚1≠𝒚0{\\bm{y}}_{1}\\neq{\\bm{y}}_{0}, set:",
+            "In this case, ℒy0​(θ)\\mathcal{L}_{y_{0}}(\\theta) tends to −∞-\\infty, while the behavior of other loss terms is as follows:",
+            "(1) For 𝒚≠𝒚0{\\bm{y}}\\neq{\\bm{y}}_{0} and 𝒚≠𝒚1{\\bm{y}}\\neq{\\bm{y}}_{1}, if w​(𝒙,𝒚)≥0w({\\bm{x}},{\\bm{y}})\\geq 0, the corresponding loss term is:",
+            "If πθ​(𝒚|𝒙)→0\\pi_{\\theta}({\\bm{y}}|{\\bm{x}})\\to 0, these terms tend to +∞+\\infty. However, if their probabilities are kept at 0, the corresponding loss terms are 0.",
+            "(2) For 𝒚1{\\bm{y}}_{1}, if w​(𝒙1,𝒚1)≥0w({\\bm{x}}_{1},{\\bm{y}}_{1})\\geq 0, the corresponding loss term is:",
+            "In summary, the total loss ℒ​(θ)\\mathcal{L}(\\theta) can be decomposed as:",
+            "Thus, ℒ​(θ)→−∞\\mathcal{L}(\\theta)\\to-\\infty as ϵ→0\\epsilon\\to 0, which implies infθℒ​(θ)=−∞\\inf_{\\theta}\\mathcal{L}(\\theta)=-\\infty. ∎"
+          ]
+        },
+        {
+          "title": "Lower Bound of Positive Weighted Loss",
+          "paragraphs": [
+            "For any policy πθ​(𝐲|𝐱)\\pi_{\\theta}({\\bm{y}}|{\\bm{x}}) satisfying ∑yπθ​(𝐲|𝐱)=1\\sum_{y}\\pi_{\\theta}({\\bm{y}}|{\\bm{x}})=1 and weights w​(𝐱,𝐲)>0w({\\bm{x}},{\\bm{y}})>0, the weighted SFT loss satisfies:",
+            "with equality if and only if πθ​(𝐲|𝐱)=δy=y∗\\pi_{\\theta}({\\bm{y}}|{\\bm{x}})=\\delta_{y=y^{*}} where δy=y∗\\delta_{y=y^{*}} is the optimal policy when y∗=arg⁡maxy⁡w​(x,y)y^{*}=\\arg\\max_{y}w(x,y).",
+            "Using the inequality log⁡z≤z−1\\log z\\leq z-1 for z>0z>0:",
+            "The equality holds when πθ​(𝒚|𝒙)=1\\pi_{\\theta}({\\bm{y}}|{\\bm{x}})=1 for the yy maximizing w​(x,y)w(x,y). ∎"
+          ]
+        },
+        {
+          "title": "Unboundedness under Negative Weights",
+          "paragraphs": [
+            "If there exists a pair (𝐱0,𝐲0)({\\bm{x}}_{0},{\\bm{y}}_{0}) such that w​(𝐱0,𝐲0)<0w({\\bm{x}}_{0},{\\bm{y}}_{0})<0, then the loss ℒ​(θ)\\mathcal{L}(\\theta) is unbounded below:",
+            "Consider the loss component corresponding to the pair (𝒙0,𝒚0)({\\bm{x}}_{0},{\\bm{y}}_{0}):",
+            "Since w​(𝒙0,𝒚0)<0w({\\bm{x}}_{0},{\\bm{y}}_{0})<0, let |w​(𝒙0,𝒚0)|=−w​(𝒙0,𝒚0)|w({\\bm{x}}_{0},{\\bm{y}}_{0})|=-w({\\bm{x}}_{0},{\\bm{y}}_{0}). Then:",
+            "As πθ​(𝒚0|𝒙0)→0+\\pi_{\\theta}({\\bm{y}}_{0}|{\\bm{x}}_{0})\\to 0^{+}, we have log⁡πθ​(𝒚0|𝒙0)→−∞\\log\\pi_{\\theta}({\\bm{y}}_{0}|{\\bm{x}}_{0})\\to-\\infty, and thus:",
+            "Next, adjust the policy πθ\\pi_{\\theta} such that πθ​(𝒚0|𝒙0)\\pi_{\\theta}({\\bm{y}}_{0}|{\\bm{x}}_{0}) approaches 0 while maintaining normalization. For example, for some 𝒚1≠𝒚0{\\bm{y}}_{1}\\neq{\\bm{y}}_{0}, set:",
+            "In this case, ℒy0​(θ)\\mathcal{L}_{y_{0}}(\\theta) tends to −∞-\\infty, while the behavior of other loss terms is as follows:",
+            "(1) For 𝒚≠𝒚0{\\bm{y}}\\neq{\\bm{y}}_{0} and 𝒚≠𝒚1{\\bm{y}}\\neq{\\bm{y}}_{1}, if w​(𝒙,𝒚)≥0w({\\bm{x}},{\\bm{y}})\\geq 0, the corresponding loss term is:",
+            "If πθ​(𝒚|𝒙)→0\\pi_{\\theta}({\\bm{y}}|{\\bm{x}})\\to 0, these terms tend to +∞+\\infty. However, if their probabilities are kept at 0, the corresponding loss terms are 0.",
+            "(2) For 𝒚1{\\bm{y}}_{1}, if w​(𝒙1,𝒚1)≥0w({\\bm{x}}_{1},{\\bm{y}}_{1})\\geq 0, the corresponding loss term is:",
+            "In summary, the total loss ℒ​(θ)\\mathcal{L}(\\theta) can be decomposed as:",
+            "Thus, ℒ​(θ)→−∞\\mathcal{L}(\\theta)\\to-\\infty as ϵ→0\\epsilon\\to 0, which implies infθℒ​(θ)=−∞\\inf_{\\theta}\\mathcal{L}(\\theta)=-\\infty. ∎"
+          ]
+        },
+        {
+          "title": "B.2 Analysis of Clip Operator and Policy Distinction",
+          "paragraphs": [
+            "The clip operator:",
+            "commonly used in methods like ALoL to stabilize training, bounds the importance ratio r​(θ,ref)=πθ​(yi|x)πref​(yi|x)r(\\theta,\\text{ref})=\\frac{\\pi_{\\theta}(y_{i}|x)}{\\pi_{\\text{ref}}(y_{i}|x)} within [1−ϵ,1+ϵ][1-\\epsilon,1+\\epsilon]. While effective in controlling gradient variance, clipping introduces bias by flattening reward distinctions between responses with similar values.",
+            "For instance, suppose for a given instruction xx, we have a set of answers {y1,y2,…,yn}\\{y_{1},y_{2},...,y_{n}\\}, and the loss function of R-LoL (R-LoL used here as a simple example; the only difference between A-LoL and R-LoL is replacing r​(𝒙,𝒚)r({\\bm{x}},{\\bm{y}}) in R-LoL to A​(x,y)=r​(𝒙,𝒚)−V​(x)A(x,y)=r({\\bm{x}},{\\bm{y}})-V(x)) with clipping is:",
+            "When ϵ\\epsilon is small, we assume that the parameter θ\\theta in the function r​(θ,r​e​f)r(\\theta,ref) is frozen when we do the update of the policy model πθ\\pi_{\\theta}, i.e., the loss function becomes:",
+            "and we first update θ\\theta, then when we do the next iteration we set θ1=θ\\theta_{1}=\\theta. We denote ηi=R​(x,yi)⋅clip​(r​(θ1,r​e​f),1−ϵ,1+ϵ)−β\\eta_{i}=R(x,y_{i})\\cdot\\text{clip}(r(\\theta_{1},ref),1-\\epsilon,1+\\epsilon)-\\beta and we can see that ηi≈R​(x,yi)\\eta_{i}\\approx R(x,y_{i}) when ϵ,β\\epsilon,\\beta are small.",
+            "We write αi=ηi∑j=1nηj\\alpha_{i}=\\frac{\\eta_{i}}{\\sum_{j=1}^{n}\\eta_{j}}, and since the denominator is independent of xx, we just need to optimize",
+            "and ∑αi=1\\sum\\alpha_{i}=1. By using the Lagrange’s method, construct (for simplicity, write zi=πθ​(yi|x)z_{i}=\\pi_{\\theta}(y_{i}|x))",
+            "and the partial derivatives are",
+            "Hence we can see that the optimal solution of the A-LoL loss is: (BY solving the partial derivatives the optimal solution must have the same distribution as αi\\alpha_{i})",
+            "So we can see that for close rewards responses, this optimal solution will not distinguish their distributions. For example, if we have two responses y1,y2y_{1},y_{2} with R1,R2R_{1},R_{2} as their rewards, then the A-LoL method will give R1R1+R2\\frac{R_{1}}{R_{1}+R_{2}} and R2R1+R2\\frac{R_{2}}{R_{1}+R_{2}} as the optimal solution and could be closed to 1/21/2 if R1/R2R_{1}/R_{2} is closed to 11 (e.g. R1=100,R2=99R_{1}=100,R_{2}=99). However, for our method, it will distinguished by exp⁡(R1−R2)\\exp(R_{1}-R_{2}), i.e. for R1=100,R2=99R_{1}=100,R_{2}=99, our method gives us ee+1\\frac{e}{e+1} and 1e+1\\frac{1}{e+1}, which seems better."
+          ]
+        },
+        {
+          "title": "B.3 Additional Winrate Evaluation on Qwen-series",
+          "paragraphs": [
+            "Figure 4 present the win rates evaluated by GPT-4o for answers generated by aligned models compared to the SFT targets (chosen answers in the test set) for the Qwen collections. our method outperforms DPO across all Qwen models except Qwen2.5-14B, where it shows a slight decrease. The Qwen collections exhibit slightly different trends compared to the reward scores, with our method starting from the base version outperforming the SFT+ version across scales from 0.5B to 14B and achieving comparable results at 32B. These findings further demonstrate that our method can achieve the RLHF objective in a single SFT-like step without the need for resource-intensive reinforcement learning."
+          ]
+        }
+      ]
+    },
+    "Appendix C Implementation Details": {
+      "paragraphs": [
+        "[Figure: Figure 4: GPT-4 evaluation results on the HHA test set for the Qwen series, reporting average win rates. Error bars are calculated across three different random seeds.]"
+      ],
+      "subsections": [
+        {
+          "title": "C.1 HHA Settings",
+          "paragraphs": [
+            "For all comparisons, we ensure consistent settings between our method and DPO. We select learning rates of 1e-5 and 5e-6, employing the AdamW optimizer with a cosine learning rate scheduler. For the Winrate evaluation, we randomly sample 99 instances from each of the four subsets of the HHA test set and conduct experiments using three different random seeds to compute the mean and standard error. To mitigate potential positional bias in GPT-4’s preferences, we randomly shuffle the positions of model-generated sequences and the SFT target during evaluation using gpt-4o-2024-11-20. For the Reward evaluation, we use the entire HHA test set, evaluating across three different random seeds to compute the mean and standard error. We employ generation parameters τ=0.8\\tau=0.8, top_p=0.9\\text{top\\_p}=0.9 and top_k=50\\text{top\\_k}=50 for all the generations. All models are trained on 4×\\timesA100-80GB GPUs, with Llama3-8B and Qwen2.5-14B utilizing 8×\\timesA100-80GB. Due to resource constraints, Qwen2.5-32B is trained using 4-bit quantization (bnb-4bit)333https://huggingface.co/docs/bitsandbytes across 4 nodes, each with 8×\\timesA100-80GB GPUs.",
+            "[Figure: Figure 4: GPT-4 evaluation results on the HHA test set for the Qwen series, reporting average win rates. Error bars are calculated across three different random seeds.]"
+          ]
+        },
+        {
+          "title": "C.2 Generative Benchmark Settings",
+          "paragraphs": [
+            "For all experiments, we use 4×84\\times 8 A100-80GB GPUs, training with a learning rate of 5e-6 and the AdamW optimizer combined with a cosine learning rate scheduler for exactly two epochs. We evaluate the aligned models using the OpenCompass (Contributors, 2023) toolkit, with the following benchmarks: GSM8K (4-shot), MMLU (0-shot), HumanEval (0-shot), and BBH (3-shot chain-of-thought), following the default settings from OpenCompass. For GSM8K, MMLU, and BBH, we use exact match (EM) as the evaluation metric, while for HumanEval, we use pass@1."
+          ]
+        }
+      ]
+    },
+    "Appendix D Consistency Proof of Our Objective with RLHF Optimal Solution": {
+      "paragraphs": [],
+      "subsections": []
+    },
+    "Appendix E Case Study": {
+      "paragraphs": [
+        "Table 6 compares responses from SFT, SFT+VAR, SFT+DPO, Base+VAR, and Base+DPO, along with their corresponding reward scores. Notably, the SFT+DPO response is excessively verbose and includes irrelevant details, yet it receives the highest reward score. This highlights a tendency of the reward model to favor longer sequences, even when the content is less helpful or accurate. In contrast, SFT+VAR provides a concise and accurate answer, demonstrating the effectiveness of our method in balancing response quality and length. Additionally, Base+DPO generates a highly structured but overly complex and repetitive response, while Base+VAR delivers a clear and straightforward answer. Importantly, Base+VAR achieves performance comparable to SFT+VAR, showing that our method can effectively align models even when starting from the base (pre-trained only) version, without the need for SFT.",
+        "[Table: Table 6: Sample generations from different aligned versions of Llama3.1-8B for a prompt about checking a car’s gas tank capacity.]"
+      ],
+      "subsections": []
+    }
+  },
+  "references": [
+    "Abdullin et al. (2024) Abdullin, Y., Molla-Aliod, D., Ofoghi, B., Yearwood, J., and Li, Q. Synthetic dialogue dataset generation using llm agents, 2024. URL https://arxiv.org/abs/2401.17461.",
+    "Azar et al. (2024) Azar, M. G., Guo, Z. D., Piot, B., Munos, R., Rowland, M., Valko, M., and Calandriello, D. A general theoretical paradigm to understand learning from human preferences. In International Conference on Artificial Intelligence and Statistics, pp. 4447–4455. PMLR, 2024.",
+    "(3) Baheti, A., Lu, X., Brahman, F., Le Bras, R., Sap, M., and Riedl, M. Leftover lunch: Advantage-based offline reinforcement learning for language models. In The Twelfth International Conference on Learning Representations.",
+    "Bai et al. (2022) Bai, Y., Jones, A., Ndousse, K., Askell, A., Chen, A., DasSarma, N., Drain, D., Fort, S., Ganguli, D., Henighan, T., et al. Training a helpful and harmless assistant with reinforcement learning from human feedback. arXiv preprint arXiv:2204.05862, 2022.",
+    "Bertsekas (2014) Bertsekas, D. P. Constrained optimization and Lagrange multiplier methods. Academic press, 2014.",
+    "Bradley & Terry (1952) Bradley, R. A. and Terry, M. E. Rank analysis of incomplete block designs: I. the method of paired comparisons. Biometrika, 39(3/4):324–345, 1952.",
+    "Chen et al. (2021) Chen, M., Tworek, J., Jun, H., Yuan, Q., Pinto, H. P. D. O., Kaplan, J., Edwards, H., Burda, Y., Joseph, N., Brockman, G., et al. Evaluating large language models trained on code. arXiv preprint arXiv:2107.03374, 2021.",
+    "Chen et al. (2024) Chen, Z., Deng, Y., Yuan, H., Ji, K., and Gu, Q. Self-play fine-tuning converts weak language models to strong language models, 2024.",
+    "Cheng et al. (2023) Cheng, P., Yang, Y., Li, J., Dai, Y., and Du, N. Adversarial preference optimization. arXiv preprint arXiv:2311.08045, 2023.",
+    "Cobbe et al. (2021) Cobbe, K., Kosaraju, V., Bavarian, M., Chen, M., Jun, H., Kaiser, L., Plappert, M., Tworek, J., Hilton, J., Nakano, R., et al. Training verifiers to solve math word problems. arXiv preprint arXiv:2110.14168, 2021.",
+    "Contributors (2023) Contributors, O. Opencompass: A universal evaluation platform for foundation models. https://github.com/open-compass/opencompass, 2023.",
+    "Cui et al. (2023) Cui, G., Yuan, L., Ding, N., Yao, G., Zhu, W., Ni, Y., Xie, G., Liu, Z., and Sun, M. Ultrafeedback: Boosting language models with high-quality feedback. arXiv e-prints, pp. arXiv–2310, 2023.",
+    "Dubey et al. (2024) Dubey, A., Jauhri, A., Pandey, A., Kadian, A., Al-Dahle, A., Letman, A., Mathur, A., Schelten, A., Yang, A., Fan, A., et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783, 2024.",
+    "Ethayarajh et al. (2024) Ethayarajh, K., Xu, W., Muennighoff, N., Jurafsky, D., and Kiela, D. Kto: Model alignment as prospect theoretic optimization, 2024.",
+    "Ganguli et al. (2022) Ganguli, D., Lovitt, L., Kernion, J., Askell, A., Bai, Y., Kadavath, S., Mann, B., Perez, E., Schiefer, N., Ndousse, K., et al. Red teaming language models to reduce harms: Methods, scaling behaviors, and lessons learned. arXiv preprint arXiv:2209.07858, 2022.",
+    "Gao et al. (2023) Gao, L., Schulman, J., and Hilton, J. Scaling laws for reward model overoptimization. In International Conference on Machine Learning, pp. 10835–10866. PMLR, 2023.",
+    "Go et al. (2023) Go, D., Korbak, T., Kruszewski, G., Rozen, J., Ryu, N., and Dymetman, M. Aligning language models with preferences through f-divergence minimization. arXiv preprint arXiv:2302.08215, 2023.",
+    "Goertzel (1949) Goertzel, G. Quota sampling and importance functions in stochastic solution of particle problems. Technical report, 1949.",
+    "(19) Hendrycks, D., Burns, C., Basart, S., Zou, A., Mazeika, M., Song, D., and Steinhardt, J. Measuring massive multitask language understanding. In International Conference on Learning Representations.",
+    "Jordan et al. (1999) Jordan, M. I., Ghahramani, Z., Jaakkola, T. S., and Saul, L. K. An introduction to variational methods for graphical models. Machine learning, 37:183–233, 1999.",
+    "Kahn & Harris (1951) Kahn, H. and Harris, T. E. Estimation of particle transmission by random sampling. National Bureau of Standards applied mathematics series, 12:27–30, 1951.",
+    "Kingma & Welling (2022) Kingma, D. P. and Welling, M. Auto-encoding variational bayes, 2022. URL https://arxiv.org/abs/1312.6114.",
+    "Kloek & Van Dijk (1978) Kloek, T. and Van Dijk, H. K. Bayesian estimates of equation system parameters: an application of integration by monte carlo. Econometrica: Journal of the Econometric Society, pp. 1–19, 1978.",
+    "Kullback & Leibler (1951) Kullback, S. and Leibler, R. A. On information and sufficiency. The annals of mathematical statistics, 22(1):79–86, 1951.",
+    "Lee et al. (2023) Lee, H., Phatale, S., Mansoor, H., Lu, K., Mesnard, T., Bishop, C., Carbune, V., and Rastogi, A. Rlaif: Scaling reinforcement learning from human feedback with ai feedback. arXiv preprint arXiv:2309.00267, 2023.",
+    "Li et al. (2024) Li, Z., Xu, T., Zhang, Y., Lin, Z., Yu, Y., Sun, R., and Luo, Z.-Q. Remax: A simple, effective, and efficient reinforcement learning method for aligning large language models, 2024.",
+    "OpenAI (2024) OpenAI. Gpt-4 technical report, 2024.",
+    "Ouyang et al. (2022) Ouyang, L., Wu, J., Jiang, X., Almeida, D., Wainwright, C. L., Mishkin, P., Zhang, C., Agarwal, S., Slama, K., Ray, A., Schulman, J., Hilton, J., Kelton, F., Miller, L., Simens, M., Askell, A., Welinder, P., Christiano, P., Leike, J., and Lowe, R. Training language models to follow instructions with human feedback, 2022.",
+    "Pal et al. (2024) Pal, A., Karkhanis, D., Dooley, S., Roberts, M., Naidu, S., and White, C. Smaug: Fixing failure modes of preference optimisation with dpo-positive. arXiv preprint arXiv:2402.13228, 2024.",
+    "Park et al. (2024) Park, J., Jwa, S., Meiying, R., Kim, D., and Choi, S. Offsetbias: Leveraging debiased data for tuning evaluators. In Findings of the Association for Computational Linguistics: EMNLP 2024, pp. 1043–1067, 2024.",
+    "Rafailov et al. (2024) Rafailov, R., Sharma, A., Mitchell, E., Manning, C. D., Ermon, S., and Finn, C. Direct preference optimization: Your language model is secretly a reward model. Advances in Neural Information Processing Systems, 36, 2024.",
+    "Rosset et al. (2024) Rosset, C., Cheng, C.-A., Mitra, A., Santacroce, M., Awadallah, A., and Xie, T. Direct nash optimization: Teaching language models to self-improve with general preferences, 2024.",
+    "Schulman et al. (2016) Schulman, J., Moritz, P., Levine, S., Jordan, M., and Abbeel, P. High-dimensional continuous control using generalized advantage estimation. In International Conference on Learning Representations, 2016.",
+    "Schulman et al. (2017) Schulman, J., Wolski, F., Dhariwal, P., Radford, A., and Klimov, O. Proximal policy optimization algorithms, 2017.",
+    "Shao et al. (2024) Shao, Z., Wang, P., Zhu, Q., Xu, R., Song, J., Bi, X., Zhang, H., Zhang, M., Li, Y. K., Wu, Y., and Guo, D. Deepseekmath: Pushing the limits of mathematical reasoning in open language models, 2024.",
+    "Song et al. (2023) Song, Z., Cai, T., Lee, J. D., and Su, W. J. Reward collapse in aligning large language models. arXiv preprint arXiv:2305.17608, 2023.",
+    "Srivastava et al. (2023) Srivastava, A., Rastogi, A., Rao, A., Shoeb, A. A. M., Abid, A., Fisch, A., Brown, A. R., Santoro, A., Gupta, A., Garriga-Alonso, A., et al. Beyond the imitation game: Quantifying and extrapolating the capabilities of language models. Transactions on Machine Learning Research, 2023.",
+    "Stiennon et al. (2020) Stiennon, N., Ouyang, L., Wu, J., Ziegler, D., Lowe, R., Voss, C., Radford, A., Amodei, D., and Christiano, P. F. Learning to summarize with human feedback. Advances in Neural Information Processing Systems, 33:3008–3021, 2020.",
+    "Suzgun et al. (2022) Suzgun, M., Scales, N., Schärli, N., Gehrmann, S., Tay, Y., Chung, H. W., Chowdhery, A., Le, Q. V., Chi, E. H., Zhou, D., et al. Challenging big-bench tasks and whether chain-of-thought can solve them. arXiv preprint arXiv:2210.09261, 2022.",
+    "Swamy et al. (2024) Swamy, G., Dann, C., Kidambi, R., Wu, Z. S., and Agarwal, A. A minimaximalist approach to reinforcement learning from human feedback, 2024.",
+    "Touvron et al. (2023a) Touvron, H., Lavril, T., Izacard, G., Martinet, X., Lachaux, M.-A., Lacroix, T., Rozière, B., Goyal, N., Hambro, E., Azhar, F., Rodriguez, A., Joulin, A., Grave, E., and Lample, G. Llama: Open and efficient foundation language models, 2023a.",
+    "Touvron et al. (2023b) Touvron, H., Martin, L., Stone, K., Albert, P., Almahairi, A., Babaei, Y., Bashlykov, N., Batra, S., Bhargava, P., Bhosale, S., et al. Llama 2: Open foundation and fine-tuned chat models. arXiv preprint arXiv:2307.09288, 2023b.",
+    "Tunstall et al. (2023) Tunstall, L., Beeching, E., Lambert, N., Rajani, N., Rasul, K., Belkada, Y., Huang, S., von Werra, L., Fourrier, C., Habib, N., et al. Zephyr: Direct distillation of lm alignment. arXiv preprint arXiv:2310.16944, 2023.",
+    "Williams (1992) Williams, R. J. Simple statistical gradient-following algorithms for connectionist reinforcement learning. Machine learning, 8:229–256, 1992.",
+    "Wu et al. (2023) Wu, Q., Bansal, G., Zhang, J., Wu, Y., Zhang, S., Zhu, E., Li, B., Jiang, L., Zhang, X., and Wang, C. Autogen: Enabling next-gen llm applications via multi-agent conversation framework. arXiv preprint arXiv:2308.08155, 2023.",
+    "Xu et al. (2024) Xu, H., Sharaf, A., Chen, Y., Tan, W., Shen, L., Durme, B. V., Murray, K., and Kim, Y. J. Contrastive preference optimization: Pushing the boundaries of llm performance in machine translation, 2024.",
+    "Yan et al. (2024) Yan, Y., Miao, Y., Li, J., Zhang, Y., Xie, J., Deng, Z., and Yan, D. 3d-properties: Identifying challenges in dpo and charting a path forward. arXiv preprint arXiv:2406.07327, 2024.",
+    "Yang et al. (2024) Yang, A., Yang, B., Zhang, B., Hui, B., Zheng, B., Yu, B., Li, C., Liu, D., Huang, F., Wei, H., et al. Qwen2. 5 technical report. arXiv preprint arXiv:2412.15115, 2024.",
+    "Yuan et al. (2023) Yuan, Z., Yuan, H., Tan, C., Wang, W., Huang, S., and Huang, F. Rrhf: Rank responses to align language models with human feedback without tears. arXiv preprint arXiv:2304.05302, 2023.",
+    "Zhao et al. (2023) Zhao, Y., Joshi, R., Liu, T., Khalman, M., Saleh, M., and Liu, P. J. Slic-hf: Sequence likelihood calibration with human feedback. 2023.",
+    "Zheng et al. (2023) Zheng, L., Chiang, W.-L., Sheng, Y., Zhuang, S., Wu, Z., Zhuang, Y., Lin, Z., Li, Z., Li, D., Xing, E. P., Zhang, H., Gonzalez, J. E., and Stoica, I. Judging llm-as-a-judge with mt-bench and chatbot arena, 2023."
+  ]
+}
