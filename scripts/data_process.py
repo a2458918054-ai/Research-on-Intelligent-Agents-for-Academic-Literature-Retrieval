@@ -82,7 +82,7 @@ def process_one_paper(paper, file_id):
         "doc_text": doc_text
     }
 
-# ===================== 批量加载 + 自动提取 ID =====================
+# ===================== 批量加载 + 自动提取完整 ID =====================
 def load_all_papers_from_raw():
     all_papers = []
     json_files = glob(os.path.join(RAW_FOLDER, "*.json"))
@@ -90,12 +90,8 @@ def load_all_papers_from_raw():
 
     for fpath in json_files:
         try:
-            fname = os.path.basename(fpath)
-            if fname.startswith("2502.") and fname.endswith(".json"):
-                file_id = fname.replace("2502.", "").replace(".json", "")
-            else:
-                file_id = fname
-
+            fname = os.path.basename(fpath)  # 例如 2502.00008.json
+            file_id = fname.replace(".json", "")
             with open(fpath, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
