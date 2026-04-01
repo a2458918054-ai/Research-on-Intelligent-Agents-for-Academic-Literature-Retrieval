@@ -98,6 +98,16 @@ def get_query(papers):
                 return p["title"] + " " + p["abstract"]
         print("❌ 未找到该论文")
     return None
+class BM25Retrieval:
+    def __init__(self, papers):
+        self.papers = papers
+        self.bm25 = build_bm25(papers)
+
+    def search(self, query, top_k=10):
+        tokens = simple_tokenize(query)
+        scores = self.bm25.get_scores(tokens)
+        ranked = sorted(zip(self.papers, scores), key=lambda x: x[1], reverse=True)
+        return [(p, float(s)) for p, s in ranked[:top_k]]
 
 # ===================== 主程序 =====================
 if __name__ == "__main__":
