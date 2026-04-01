@@ -20,6 +20,7 @@ FINAL_TOP = 10
 
 # ===================== 清理标题，用于文件夹名称 =====================
 def clean_folder_name(title):
+    title = title.replace("\n", "").replace("\r", "")
     title = re.sub(r'[\\/*?:"<>|]', "", title)
     title = title.replace(" ", "_")
     return title[:50]
