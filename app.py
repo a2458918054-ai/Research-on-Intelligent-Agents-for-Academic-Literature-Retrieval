@@ -4,7 +4,6 @@ import os
 import sys
 from pathlib import Path
 
-
 # 自动把 scripts 加入路径
 BASE_DIR = Path(__file__).parent
 sys.path.append(str(BASE_DIR))

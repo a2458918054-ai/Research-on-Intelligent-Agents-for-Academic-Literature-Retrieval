@@ -74,6 +74,7 @@ def build_reason(paper, sources, keywords):
     return f"来自检索路线：[{source_str}]，匹配关键词：{kw_str}"
 
 # ===================== 给网页调用的接口 =====================
+# ===================== 给网页调用的接口 =====================
 def run_full_pipeline(paper_path):
     print("===== 开始处理 =====")
     query_data, q_original = parse_query_paper(paper_path)
@@ -86,12 +87,29 @@ def run_full_pipeline(paper_path):
     top10 = fuse_ranks(routes)
     paper_map = {p["paper_id"]: p for p in corpus}
 
+    # ===================== 自动创建保存目录 =====================
     folder_name = clean_folder_name(query_data["title"])
     run_dir = BASE_DIR / "results" / "runs" / folder_name
     os.makedirs(run_dir, exist_ok=True)
 
+    # ===================== 【关键：app.py 调用也会保存】 =====================
+    # 保存 query 对比
+    compare_path = run_dir / "query_vs_llm_query.json"
+    compare_data = {
+        "paper_id": query_data["paper_id"],
+        "title": query_data["title"],
+        "original_query": q_original,
+        "llm_profile": llm_profile,
+        "llm_enhanced_query": q_llm
+    }
+    with open(compare_path, "w", encoding="utf-8") as f:
+        json.dump(compare_data, f, ensure_ascii=False, indent=2)
+
+    # 构造最终结果
     final_output = {
+        "query_paper_id": query_data["paper_id"],
         "query_title": query_data["title"],
+        "llm_keywords": kw_llm,
         "top10_papers": []
     }
 
@@ -101,11 +119,18 @@ def run_full_pipeline(paper_path):
         score = round(info["score"], 3)
         final_output["top10_papers"].append({
             "rank": i+1,
+            "paper_id": pid,
             "title": p["title"],
             "fusion_score": score,
             "reason": reason
         })
 
+    # ===================== 保存 TOP10 结果 =====================
+    final_path = run_dir / "top10_result.json"
+    with open(final_path, "w", encoding="utf-8") as f:
+        json.dump(final_output, f, ensure_ascii=False, indent=2)
+
+    print(f"✅ 结果已保存到：{run_dir}")
     return final_output
 
 # ===================== 主流程 =====================
