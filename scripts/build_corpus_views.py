@@ -13,9 +13,9 @@ import os
 import random
 from pathlib import Path
 
-# ====================== 路径配置（适配你的真实路径）======================
+# ====================== 路径配置======================
 BASE_DIR = Path(__file__).parent.parent  # 项目根目录
-RAW_DATA_PATH = BASE_DIR / "data" / "processed" / "papers_mvp.jsonl"  # 你的数据位置
+RAW_DATA_PATH = BASE_DIR / "data" / "processed" / "papers_mvp.jsonl"  
 OUTPUT_DIR = BASE_DIR / "data" / "processed"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -158,14 +158,14 @@ def build_chunk_views(paper_norm):
     return chunks
 
 # ====================== 6. 生成 dev query 子集（20~50 篇）======================
-def build_dev_query_subset(papers, k=30):
-    pids = [p["paper_id"] for p in papers if p.get("paper_id")]
-    random.shuffle(pids)
-    selected = pids[:min(k, len(pids))]
-    with open(DEV_QUERY_OUTPUT, "w", encoding="utf-8") as f:
-        json.dump(selected, f, indent=2)
-    print(f"✅ 开发子集生成完成：{len(selected)} 篇 | {DEV_QUERY_OUTPUT}")
-    return selected
+# def build_dev_query_subset(papers, k=30):
+#     pids = [p["paper_id"] for p in papers if p.get("paper_id")]
+#     random.shuffle(pids)
+#     selected = pids[:min(k, len(pids))]
+#     with open(DEV_QUERY_OUTPUT, "w", encoding="utf-8") as f:
+#         json.dump(selected, f, indent=2)
+#     print(f"✅ 开发子集生成完成：{len(selected)} 篇 | {DEV_QUERY_OUTPUT}")
+#     return selected
 
 # ====================== 7. 输出接口样例（给 Day2~Day5 用）======================
 def save_interface_examples(paper_norm, doc_view, chunks):
@@ -199,8 +199,8 @@ if __name__ == "__main__":
     # 5. 保存接口样例
     save_interface_examples(paper_norm, doc_view, chunks)
 
-    # 6. 生成开发子集
-    build_dev_query_subset(papers, k=30)
+    # # 6. 生成开发子集
+    # build_dev_query_subset(papers, k=30)
 
     print("\n=== Day1 全部完成 ===")
     print("已冻结接口：paper_norm / doc_view / chunk_view / section_role")
