@@ -53,8 +53,12 @@ pip install dashscope
 
 1. 准备环境：安装Python 3\.8\+和dashscope依赖库（执行依赖安装命令），确保环境适配学术研究中常用的工具链。
 
-2. 配置参数：在核心代码中替换DASHSCOPE\_API\_KEY为自己的通义千问API密钥，确认PROMPT\_PATH和COMPARE\_JSON路径正确，确保代码能正常调用API并保存实验数据。
-
+2. 配置参数：右键「此电脑」→ 属性
+高级系统设置 → 环境变量
+在「用户变量」里点「新建」
+变量名：DASHSCOPE_API_KEY
+变量值：你的通义千问API密钥
+确定 → 重启终端
 3. 在终端运行:python app.py
 
 4.网页中打开：http://127.0.0.1:5000/
