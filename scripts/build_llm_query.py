@@ -1,3 +1,5 @@
+from dotenv import load_dotenv  
+load_dotenv()    #自动读 .env
 import json
 import os
 from pathlib import Path
@@ -8,11 +10,11 @@ from dashscope import Generation
 BASE_DIR = Path(__file__).parent.parent
 
 PROMPT_PATH = BASE_DIR / "notes" / "llm_prompt_v1.md"
-
 COMPARE_JSON = BASE_DIR / "results/query_vs_llm_query.json"
+DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
+if not DASHSCOPE_API_KEY:
+    raise ValueError("❌ 未设置环境变量 DASHSCOPE_API_KEY，请先配置")
 
-# 通义千问 KEY
-DASHSCOPE_API_KEY = "sk-447b90f888bc4fb89c0783cbf39ed302"
 dashscope.api_key = DASHSCOPE_API_KEY
 
 # ===================== 加载Prompt =====================
@@ -22,9 +24,8 @@ def load_prompt_template():
 
 # ===================== 构造 LLM 输入 =====================
 def build_llm_paper_content(query_data):
-
     title = query_data["title"]
-    full_text = query_data.get("full_text", "") 
+    full_text = query_data.get("full_text", "")
     abstract = query_data.get("abstract", "")
     intro = query_data.get("intro_text", "")
     conclusion = query_data.get("conclusion_text", "")
